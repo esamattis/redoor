@@ -60,6 +60,9 @@ impl Actor for SessionActor {
                     agent_id,
                     agent_name,
                 } => {
+                    let _ = state.router_ref.cast(RouterMsg::UnregisterWebClient {
+                        session_ref: _myself.clone(),
+                    });
                     let _ = state.router_ref.cast(RouterMsg::RegisterAgent {
                         agent_id: agent_id.clone(),
                         agent_name,
@@ -83,6 +86,11 @@ impl Actor for SessionActor {
                         command,
                         args,
                     });
+                }
+                Message::CommandResponse { agent_id, result } => {
+                    let _ = state
+                        .router_ref
+                        .cast(RouterMsg::RouteResponse { agent_id, result });
                 }
                 _ => {}
             },
