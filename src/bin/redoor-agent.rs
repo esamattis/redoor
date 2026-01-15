@@ -1,5 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use std::env;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 #[tokio::main]
@@ -12,19 +14,66 @@ async fn main() {
         "ws://127.0.0.1:3000/ws"
     };
 
-    println!("Connecting to {}", server_url);
+    let agent_name = if args.len() > 2 {
+        &args[2]
+    } else {
+        "default-agent"
+    };
+
+    let agent_id = format!("{}-{}", agent_name, uuid::Uuid::new_v4());
+
+    println!("Connecting to {} as agent '{}'", server_url, agent_name);
 
     match connect_async(server_url).await {
-        Ok((ws_stream, response)) => {
-            println!("Connected! Response: {:?}", response);
+        Ok((ws_stream, _response)) => {
+            println!("Connected!");
 
-            let (mut write, mut read) = ws_stream.split();
+            let (write, mut read) = ws_stream.split();
+            let write = Arc::new(Mutex::new(write));
+
+            let register_msg = redoor::Message::AgentRegister {
+                agent_id: agent_id.clone(),
+                agent_name: agent_name.to_string(),
+            };
+
+            if let Ok(json) = serde_json::to_string(&register_msg) {
+                let mut write_guard = write.lock().await;
+                if write_guard.send(Message::text(json)).await.is_err() {
+                    eprintln!("Failed to send register message");
+                    return;
+                }
+            }
+
+            let agent_id_clone = agent_id.clone();
+            let write_clone = write.clone();
 
             let read_task = tokio::spawn(async move {
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            println!("Received: {}", text);
+                            if let Ok(redoor_msg) = serde_json::from_str::<redoor::Message>(&text) {
+                                match redoor_msg {
+                                    redoor::Message::Command { command, args, .. } => {
+                                        let result = redoor::CommandHandler::new()
+                                            .execute(&command, &args)
+                                            .await;
+
+                                        let response = redoor::Message::CommandResponse {
+                                            agent_id: agent_id_clone.clone(),
+                                            result,
+                                        };
+
+                                        if let Ok(json) = serde_json::to_string(&response) {
+                                            let mut write_guard = write_clone.lock().await;
+                                            if write_guard.send(Message::text(json)).await.is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         Ok(Message::Close(_)) => {
                             println!("Server closed connection");
@@ -51,7 +100,8 @@ async fn main() {
                 {
                     let trimmed = line.trim();
                     if !trimmed.is_empty() {
-                        if write
+                        let mut write_guard = write.lock().await;
+                        if write_guard
                             .send(Message::text(trimmed.to_string()))
                             .await
                             .is_err()
