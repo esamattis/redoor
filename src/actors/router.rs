@@ -42,6 +42,7 @@ pub enum RouterMsg {
     RouteCommand {
         agent_id: String,
         command: Command,
+        originating_client: ActorRef<SessionMsg>,
     },
     RouteResponse {
         agent_id: String,
@@ -121,7 +122,11 @@ impl Actor for RouterActor {
                     .web_clients
                     .retain(|client| client.get_id() != session_ref.get_id());
             }
-            RouterMsg::RouteCommand { agent_id, command } => {
+            RouterMsg::RouteCommand {
+                agent_id,
+                command,
+                originating_client,
+            } => {
                 log!(
                     Level::Info,
                     "Routing command: agent_id={}, command={:?}",
@@ -129,10 +134,9 @@ impl Actor for RouterActor {
                     command
                 );
                 if let Some(agent_info) = state.agents.get(&agent_id) {
-                    state.pending_responses.insert(
-                        agent_id.clone(),
-                        state.web_clients.first().cloned().unwrap(),
-                    );
+                    state
+                        .pending_responses
+                        .insert(agent_id.clone(), originating_client);
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
                             agent_id: agent_id.clone(),
