@@ -64,6 +64,7 @@ impl Actor for SessionActor {
                         agent_id: agent_id.clone(),
                         agent_name,
                         socket_id: state.socket_id.clone(),
+                        session_ref: _myself.clone(),
                     });
                     state.agent_id = Some(agent_id);
                 }

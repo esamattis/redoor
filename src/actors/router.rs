@@ -28,6 +28,7 @@ pub enum RouterMsg {
         agent_id: String,
         agent_name: String,
         socket_id: String,
+        session_ref: ActorRef<SessionMsg>,
     },
     UnregisterAgent {
         agent_id: String,
@@ -78,6 +79,7 @@ impl Actor for RouterActor {
                 agent_id,
                 agent_name,
                 socket_id,
+                session_ref,
             } => {
                 log!(
                     Level::Info,
@@ -85,6 +87,14 @@ impl Actor for RouterActor {
                     agent_id,
                     agent_name,
                     socket_id
+                );
+                state.agents.insert(
+                    agent_id.clone(),
+                    AgentInfo {
+                        agent_name,
+                        socket_id,
+                        session_ref,
+                    },
                 );
                 broadcast_agent_list(state);
             }
