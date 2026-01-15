@@ -23,6 +23,7 @@ struct AppState {
     agent_names: Arc<Mutex<HashMap<String, String>>>,
     agent_socket_ids: Arc<Mutex<HashMap<String, String>>>,
     web_clients: Arc<Mutex<Vec<AgentSender>>>,
+    pending_responses: Arc<Mutex<HashMap<String, AgentSender>>>,
 }
 
 #[tokio::main]
@@ -32,6 +33,7 @@ async fn main() {
         agent_names: Arc::new(Mutex::new(HashMap::new())),
         agent_socket_ids: Arc::new(Mutex::new(HashMap::new())),
         web_clients: Arc::new(Mutex::new(Vec::new())),
+        pending_responses: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -139,6 +141,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 args
                             );
                             if let Some(agent_tx) = state_clone.agents.lock().await.get(&id) {
+                                state_clone
+                                    .pending_responses
+                                    .lock()
+                                    .await
+                                    .insert(id.clone(), tx_for_recv.clone());
                                 let _ = agent_tx.send(Message::Command {
                                     agent_id: id,
                                     command,
@@ -150,17 +157,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 });
                             }
                         }
-                        Message::CommandResponse { result, .. } => {
+                        Message::CommandResponse {
+                            agent_id: id,
+                            result,
+                        } => {
                             log!(
                                 Level::Info,
-                                "Command response received: socket_id={}, result={}",
-                                socket_id_clone,
+                                "Command response received: agent_id={}, result={}",
+                                id,
                                 result
                             );
-                            let _ = tx_for_recv.send(Message::CommandResponse {
-                                agent_id: socket_id_clone.clone(),
-                                result,
-                            });
+                            if let Some(web_client_tx) =
+                                state_clone.pending_responses.lock().await.remove(&id)
+                            {
+                                let _ = web_client_tx.send(Message::CommandResponse {
+                                    agent_id: id,
+                                    result,
+                                });
+                            }
                         }
                         _ => {
                             let _ = tx_for_recv.send(Message::Error {
