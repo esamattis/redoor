@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -36,27 +35,29 @@ impl CommandHandler {
 
     pub async fn execute(&self, command: Command) -> CommandResult {
         match command {
-            Command::Ls { path } => self.ls(path),
-            Command::Cat { path } => self.cat(path),
+            Command::Ls { path } => self.ls(path).await,
+            Command::Cat { path } => self.cat(path).await,
         }
     }
 
-    fn ls(&self, path: Option<String>) -> CommandResult {
+    async fn ls(&self, path: Option<String>) -> CommandResult {
         let path = path.unwrap_or_else(|| ".".to_string());
-        let path_obj = Path::new(&path);
 
-        match std::fs::read_dir(path_obj) {
-            Ok(entries) => {
-                let files: Vec<String> = entries
-                    .filter_map(|entry| entry.ok())
-                    .filter_map(|entry| {
-                        entry.file_name().into_string().ok().map(|name| {
-                            let metadata = entry.metadata().ok();
-                            let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                            if is_dir { format!("{}/", name) } else { name }
-                        })
-                    })
-                    .collect();
+        match tokio::fs::read_dir(&path).await {
+            Ok(mut entries) => {
+                let mut files = Vec::new();
+                while let Some(entry) = entries.next_entry().await.ok().flatten() {
+                    let metadata = entry.metadata().await.ok();
+                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let name = entry.file_name().into_string().ok();
+                    if let Some(name) = name {
+                        if is_dir {
+                            files.push(format!("{}/", name));
+                        } else {
+                            files.push(name);
+                        }
+                    }
+                }
 
                 CommandResult::Ls(LsResult { files })
             }
@@ -66,10 +67,8 @@ impl CommandHandler {
         }
     }
 
-    fn cat(&self, path: String) -> CommandResult {
-        let path_obj = Path::new(&path);
-
-        match std::fs::read_to_string(path_obj) {
+    async fn cat(&self, path: String) -> CommandResult {
+        match tokio::fs::read_to_string(&path).await {
             Ok(content) => CommandResult::Cat(CatResult { content, path }),
             Err(e) => CommandResult::Error {
                 message: format!("Failed to read file: {}", e),
