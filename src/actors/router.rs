@@ -1,9 +1,9 @@
 use crate::actors::session::SessionMsg;
+use crate::commands::{Command, CommandResult};
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use serde_json::Value;
 use std::collections::HashMap;
 
 pub struct RouterActor;
@@ -41,12 +41,11 @@ pub enum RouterMsg {
     },
     RouteCommand {
         agent_id: String,
-        command: String,
-        args: Vec<String>,
+        command: Command,
     },
     RouteResponse {
         agent_id: String,
-        result: Value,
+        result: CommandResult,
     },
 }
 
@@ -122,17 +121,12 @@ impl Actor for RouterActor {
                     .web_clients
                     .retain(|client| client.get_id() != session_ref.get_id());
             }
-            RouterMsg::RouteCommand {
-                agent_id,
-                command,
-                args,
-            } => {
+            RouterMsg::RouteCommand { agent_id, command } => {
                 log!(
                     Level::Info,
-                    "Routing command: agent_id={}, command={}, args={:?}",
+                    "Routing command: agent_id={}, command={:?}",
                     agent_id,
-                    command,
-                    args
+                    command
                 );
                 if let Some(agent_info) = state.agents.get(&agent_id) {
                     state.pending_responses.insert(
@@ -143,7 +137,6 @@ impl Actor for RouterActor {
                         Message::Command {
                             agent_id: agent_id.clone(),
                             command,
-                            args,
                         },
                     ));
                 }
@@ -152,7 +145,7 @@ impl Actor for RouterActor {
                 if let Some(web_client_ref) = state.pending_responses.remove(&agent_id) {
                     log!(
                         Level::Info,
-                        "Routing response: agent_id={}, result={}, web_client_id={}",
+                        "Routing response: agent_id={}, result={:?}, web_client_id={}",
                         agent_id,
                         result,
                         web_client_ref.get_id()

@@ -61,17 +61,15 @@ async fn main() {
                         Ok(Message::Text(text)) => {
                             if let Ok(redoor_msg) = serde_json::from_str::<redoor::Message>(&text) {
                                 match redoor_msg {
-                                    redoor::Message::Command { command, args, .. } => {
+                                    redoor::Message::Command { command, .. } => {
                                         log!(
                                             Level::Info,
-                                            "Command received: agent_id={}, command={}, args={:?}",
+                                            "Command received: agent_id={}, command={:?}",
                                             agent_id_clone,
-                                            command,
-                                            args
+                                            command
                                         );
-                                        let result = redoor::CommandHandler::new()
-                                            .execute(&command, &args)
-                                            .await;
+                                        let result =
+                                            redoor::CommandHandler::new().execute(command).await;
 
                                         let result_clone = result.clone();
                                         let response = redoor::Message::CommandResponse {
@@ -88,7 +86,7 @@ async fn main() {
                                         }
                                         log!(
                                             Level::Info,
-                                            "Command response sent: agent_id={}, result={}",
+                                            "Command response sent: agent_id={}, result={:?}",
                                             agent_id_clone,
                                             result_clone
                                         );

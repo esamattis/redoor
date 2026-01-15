@@ -17,13 +17,12 @@ pub enum Message {
     #[serde(rename = "command")]
     Command {
         agent_id: String,
-        command: String,
-        args: Vec<String>,
+        command: crate::commands::Command,
     },
     #[serde(rename = "command_response")]
     CommandResponse {
         agent_id: String,
-        result: serde_json::Value,
+        result: crate::commands::CommandResult,
     },
     #[serde(rename = "error")]
     Error { message: String },

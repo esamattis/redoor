@@ -76,16 +76,10 @@ impl Actor for SessionActor {
                         .router_ref
                         .cast(RouterMsg::UnregisterAgent { agent_id });
                 }
-                Message::Command {
-                    agent_id,
-                    command,
-                    args,
-                } => {
-                    let _ = state.router_ref.cast(RouterMsg::RouteCommand {
-                        agent_id,
-                        command,
-                        args,
-                    });
+                Message::Command { agent_id, command } => {
+                    let _ = state
+                        .router_ref
+                        .cast(RouterMsg::RouteCommand { agent_id, command });
                 }
                 Message::CommandResponse { agent_id, result } => {
                     let _ = state
@@ -98,7 +92,7 @@ impl Actor for SessionActor {
                 if let Message::CommandResponse { agent_id, result } = &msg {
                     log!(
                         Level::Info,
-                        "Web client received response: session_id={}, agent_id={}, result={}",
+                        "Web client received response: session_id={}, agent_id={}, result={:?}",
                         state.socket_id,
                         agent_id,
                         result

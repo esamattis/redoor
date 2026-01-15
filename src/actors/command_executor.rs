@@ -1,6 +1,5 @@
-use crate::commands::CommandHandler;
+use crate::commands::{Command, CommandHandler, CommandResult};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use serde_json::Value;
 
 pub struct CommandExecutorActor;
 
@@ -8,9 +7,8 @@ pub struct CommandExecutorState;
 
 pub enum CommandExecutorMsg {
     ExecuteCommand {
-        command: String,
-        args: Vec<String>,
-        reply_to: RpcReplyPort<Value>,
+        command: Command,
+        reply_to: RpcReplyPort<CommandResult>,
     },
 }
 
@@ -34,13 +32,9 @@ impl Actor for CommandExecutorActor {
         _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            CommandExecutorMsg::ExecuteCommand {
-                command,
-                args,
-                reply_to,
-            } => {
+            CommandExecutorMsg::ExecuteCommand { command, reply_to } => {
                 let handler = CommandHandler::new();
-                let result = handler.execute(&command, &args).await;
+                let result = handler.execute(command).await;
                 let _ = reply_to.send(result);
             }
         }

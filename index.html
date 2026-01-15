@@ -172,6 +172,7 @@
         ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
+                console.log('WebSocket received:', msg);
                 
                 switch (msg.type) {
                     case 'agent_list':
@@ -246,12 +247,14 @@
         function handleCommandResponse(msg) {
             const pendingId = msg.agent_id;
             const pending = pendingCommands[pendingId];
-            
+
             if (pending) {
-                if (msg.result.error) {
-                    addOutput(`Error: ${msg.result.error}`, 'error');
-                } else if (msg.result.files) {
+                if (msg.result.type === 'Error') {
+                    addOutput(`Error: ${msg.result.message}`, 'error');
+                } else if (msg.result.type === 'Ls') {
                     addOutput(`Files:\n${msg.result.files.join('\n')}`, 'response');
+                } else if (msg.result.type === 'Cat') {
+                    addOutput(`Content of ${msg.result.path}:\n${msg.result.content}`, 'response');
                 } else {
                     addOutput(JSON.stringify(msg.result, null, 2), 'response');
                 }
@@ -262,21 +265,41 @@
         function sendCommand() {
             const input = commandInput.value.trim();
             if (!input || !selectedAgent) return;
-            
+
             const parts = input.split(/\s+/);
-            const command = parts[0];
+            const cmd = parts[0].toLowerCase();
             const args = parts.slice(1);
-            
+
+            let command;
+            if (cmd === 'ls') {
+                command = {
+                    type: 'Ls',
+                    path: args.length > 0 ? args[0] : null
+                };
+            } else if (cmd === 'cat') {
+                if (args.length === 0) {
+                    addOutput('Error: cat command requires a file path', 'error');
+                    return;
+                }
+                command = {
+                    type: 'Cat',
+                    path: args[0]
+                };
+            } else {
+                addOutput(`Error: Unknown command '${cmd}'`, 'error');
+                return;
+            }
+
             const msg = {
                 type: 'command',
                 agent_id: selectedAgent,
-                command: command,
-                args: args
+                command: command
             };
-            
+
             pendingCommands[selectedAgent] = true;
+            console.log('WebSocket sending:', msg);
             ws.send(JSON.stringify(msg));
-            
+
             addOutput(`$ ${input}`, 'command');
             commandInput.value = '';
         }
