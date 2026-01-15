@@ -21,6 +21,7 @@ struct AppState {
     agents: Arc<Mutex<HashMap<String, AgentSender>>>,
     agent_names: Arc<Mutex<HashMap<String, String>>>,
     agent_socket_ids: Arc<Mutex<HashMap<String, String>>>,
+    web_clients: Arc<Mutex<Vec<AgentSender>>>,
 }
 
 #[tokio::main]
@@ -29,6 +30,7 @@ async fn main() {
         agents: Arc::new(Mutex::new(HashMap::new())),
         agent_names: Arc::new(Mutex::new(HashMap::new())),
         agent_socket_ids: Arc::new(Mutex::new(HashMap::new())),
+        web_clients: Arc::new(Mutex::new(Vec::new())),
     };
 
     let app = Router::new()
@@ -53,11 +55,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
     let socket_id = Uuid::new_v4().to_string();
     let agent_id = Arc::new(Mutex::new(String::new()));
+    let is_agent = Arc::new(Mutex::new(false));
     let tx_for_recv = tx.clone();
 
     let state_clone = state.clone();
     let socket_id_clone = socket_id.clone();
     let agent_id_for_recv = agent_id.clone();
+    let is_agent_clone = is_agent.clone();
 
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -79,6 +83,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             agent_name,
                         } => {
                             *agent_id_for_recv.lock().await = id.clone();
+                            *is_agent_clone.lock().await = true;
+
                             state_clone
                                 .agents
                                 .lock()
@@ -94,6 +100,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 .lock()
                                 .await
                                 .insert(id.clone(), socket_id_clone.clone());
+
+                            state_clone
+                                .web_clients
+                                .lock()
+                                .await
+                                .retain(|tx| !std::ptr::eq(tx, &tx_for_recv));
+
                             broadcast_agent_list(&state_clone).await;
                         }
                         Message::AgentUnregister { agent_id: id } => {
@@ -140,12 +153,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
+    state.web_clients.lock().await.push(tx.clone());
+    broadcast_agent_list(&state).await;
+
     tokio::select! {
         _ = send_task => {},
         _ = recv_task => {},
     }
 
     let id = agent_id.lock().await.clone();
+    let agent_flag = *is_agent.lock().await;
+    if !agent_flag {
+        state
+            .web_clients
+            .lock()
+            .await
+            .retain(|tx_inner| !std::ptr::eq(tx_inner, &tx));
+    }
     if !id.is_empty() {
         state.agents.lock().await.remove(&id);
         state.agent_names.lock().await.remove(&id);
@@ -158,8 +182,8 @@ async fn broadcast_agent_list(state: &AppState) {
     let agents = state.agent_names.lock().await.clone();
     let list_msg = Message::AgentList { agents };
 
-    let agents_map = state.agents.lock().await;
-    for (_agent_id, tx) in agents_map.iter() {
+    let web_clients = state.web_clients.lock().await;
+    for tx in web_clients.iter() {
         let _ = tx.send(list_msg.clone());
     }
 }
