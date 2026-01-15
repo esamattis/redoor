@@ -95,6 +95,15 @@ impl Actor for SessionActor {
                 _ => {}
             },
             SessionMsg::OutgoingMessage(msg) => {
+                if let Message::CommandResponse { agent_id, result } = &msg {
+                    log!(
+                        Level::Info,
+                        "Web client received response: session_id={}, agent_id={}, result={}",
+                        state.socket_id,
+                        agent_id,
+                        result
+                    );
+                }
                 let _ = state.outgoing.send(msg);
             }
         }

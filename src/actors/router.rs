@@ -149,16 +149,23 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteResponse { agent_id, result } => {
-                log!(
-                    Level::Info,
-                    "Routing response: agent_id={}, result={}",
-                    agent_id,
-                    result
-                );
                 if let Some(web_client_ref) = state.pending_responses.remove(&agent_id) {
+                    log!(
+                        Level::Info,
+                        "Routing response: agent_id={}, result={}, web_client_id={}",
+                        agent_id,
+                        result,
+                        web_client_ref.get_id()
+                    );
                     let _ = web_client_ref.cast(SessionMsg::OutgoingMessage(
                         Message::CommandResponse { agent_id, result },
                     ));
+                } else {
+                    log!(
+                        Level::Warning,
+                        "No pending response found for agent_id={}",
+                        agent_id
+                    );
                 }
             }
         }
