@@ -1,4 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
+use redoor::{Level, log};
 use std::env;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,6 +28,13 @@ async fn main() {
     match connect_async(server_url).await {
         Ok((ws_stream, _response)) => {
             println!("Connected!");
+            log!(
+                Level::Info,
+                "Agent connected: agent_id={}, agent_name={}, server={}",
+                agent_id,
+                agent_name,
+                server_url
+            );
 
             let (write, mut read) = ws_stream.split();
             let write = Arc::new(Mutex::new(write));
@@ -54,10 +62,18 @@ async fn main() {
                             if let Ok(redoor_msg) = serde_json::from_str::<redoor::Message>(&text) {
                                 match redoor_msg {
                                     redoor::Message::Command { command, args, .. } => {
+                                        log!(
+                                            Level::Info,
+                                            "Command received: agent_id={}, command={}, args={:?}",
+                                            agent_id_clone,
+                                            command,
+                                            args
+                                        );
                                         let result = redoor::CommandHandler::new()
                                             .execute(&command, &args)
                                             .await;
 
+                                        let result_clone = result.clone();
                                         let response = redoor::Message::CommandResponse {
                                             agent_id: agent_id_clone.clone(),
                                             result,
@@ -70,6 +86,12 @@ async fn main() {
                                                 break;
                                             }
                                         }
+                                        log!(
+                                            Level::Info,
+                                            "Command response sent: agent_id={}, result={}",
+                                            agent_id_clone,
+                                            result_clone
+                                        );
                                     }
                                     _ => {}
                                 }
@@ -120,6 +142,7 @@ async fn main() {
             }
 
             println!("Disconnected");
+            log!(Level::Info, "Agent disconnected: agent_id={}", agent_id);
         }
         Err(e) => {
             eprintln!("Failed to connect: {}", e);

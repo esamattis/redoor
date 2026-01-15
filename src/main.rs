@@ -1,4 +1,5 @@
 mod types;
+use redoor::{Level, log};
 use types::{AgentSender, Message};
 
 use axum::{
@@ -58,6 +59,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let is_agent = Arc::new(Mutex::new(false));
     let tx_for_recv = tx.clone();
 
+    log!(Level::Info, "New connection: socket_id={}", socket_id);
+
     let state_clone = state.clone();
     let socket_id_clone = socket_id.clone();
     let agent_id_for_recv = agent_id.clone();
@@ -94,7 +97,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 .agent_names
                                 .lock()
                                 .await
-                                .insert(id.clone(), agent_name);
+                                .insert(id.clone(), agent_name.clone());
                             state_clone
                                 .agent_socket_ids
                                 .lock()
@@ -107,12 +110,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 .await
                                 .retain(|tx| !std::ptr::eq(tx, &tx_for_recv));
 
+                            log!(
+                                Level::Info,
+                                "Agent registered: agent_id={}, agent_name={}, socket_id={}",
+                                id,
+                                agent_name,
+                                socket_id_clone
+                            );
                             broadcast_agent_list(&state_clone).await;
                         }
                         Message::AgentUnregister { agent_id: id } => {
                             state_clone.agents.lock().await.remove(&id);
                             state_clone.agent_names.lock().await.remove(&id);
                             state_clone.agent_socket_ids.lock().await.remove(&id);
+                            log!(Level::Info, "Agent unregistered: agent_id={}", id);
                             broadcast_agent_list(&state_clone).await;
                         }
                         Message::Command {
@@ -120,6 +131,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             command,
                             args,
                         } => {
+                            log!(
+                                Level::Info,
+                                "Command received: agent_id={}, command={}, args={:?}",
+                                id,
+                                command,
+                                args
+                            );
                             if let Some(agent_tx) = state_clone.agents.lock().await.get(&id) {
                                 let _ = agent_tx.send(Message::Command {
                                     agent_id: id,
@@ -133,6 +151,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                         Message::CommandResponse { result, .. } => {
+                            log!(
+                                Level::Info,
+                                "Command response received: socket_id={}, result={}",
+                                socket_id_clone,
+                                result
+                            );
                             let _ = tx_for_recv.send(Message::CommandResponse {
                                 agent_id: socket_id_clone.clone(),
                                 result,
@@ -174,7 +198,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         state.agents.lock().await.remove(&id);
         state.agent_names.lock().await.remove(&id);
         state.agent_socket_ids.lock().await.remove(&id);
+        log!(
+            Level::Info,
+            "Agent disconnected: agent_id={}, socket_id={}",
+            id,
+            socket_id
+        );
         broadcast_agent_list(&state).await;
+    } else {
+        log!(
+            Level::Info,
+            "Web client disconnected: socket_id={}",
+            socket_id
+        );
     }
 }
 
