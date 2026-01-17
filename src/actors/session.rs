@@ -142,6 +142,7 @@ pub async fn handle_websocket(
     .expect("Failed to spawn SessionActor");
 
     let session_ref_clone = session_ref.clone();
+    let session_ref_stop = session_ref.clone();
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
@@ -151,6 +152,7 @@ pub async fn handle_websocket(
                 }
             }
         }
+        let _ = session_ref_stop.stop(None);
     });
 
     tokio::spawn(async move {
