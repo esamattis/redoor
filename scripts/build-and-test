@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+
+echo "Building Rust binaries..."
+cargo build
+
+echo "Running vitest tests..."
+cd redoor-ui
+pnpm test
