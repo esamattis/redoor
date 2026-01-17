@@ -1,41 +1,6 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[cfg(test)]
-mod export_ts_types {
-    use super::*;
-
-    #[test]
-    fn export_typescript_types() {
-        let types_dir = std::path::Path::new("redoor-ui/src/types");
-        let bindings_dir = std::path::Path::new("bindings");
-
-        std::fs::create_dir_all(types_dir).expect("Failed to create types directory");
-
-        let _ = AgentListResponse::export();
-        let _ = AgentInfoResponse::export();
-        let _ = LsResponse::export();
-        let _ = CatResponse::export();
-        let _ = ErrorResponse::export();
-
-        for file in [
-            "AgentListResponse.ts",
-            "AgentInfoResponse.ts",
-            "LsResponse.ts",
-            "CatResponse.ts",
-            "ErrorResponse.ts",
-        ] {
-            let src = bindings_dir.join(file);
-            let dst = types_dir.join(file);
-            if src.exists() {
-                std::fs::copy(&src, &dst).expect(&format!("Failed to copy {}", file));
-            }
-        }
-
-        println!("TypeScript types generated to {:?}", types_dir);
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
