@@ -155,6 +155,19 @@ class ApiClient {
 
     return response.json()
   }
+
+  async waitForAgentNames(names: string[], timeoutMs: number = 5000): Promise<void> {
+    const startTime = Date.now()
+    while (Date.now() - startTime < timeoutMs) {
+      const agents = await this.listAgents()
+      const currentNames = agents.agents.map(a => a.name)
+      if (names.every(name => currentNames.includes(name))) {
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error(`Timeout waiting for agents: ${names.join(', ')}`)
+  }
 }
 
 const processManager = new ProcessManager()
@@ -230,7 +243,7 @@ describe('Agents API', () => {
     // Verify second agent exited with non-zero code (error)
     expect(exitCode).not.toBe(0)
 
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await apiClient.waitForAgentNames([AGENT_NAME])
 
     const agentsAfterSecond = await apiClient.listAgents()
     // Verify original test agent is still connected
