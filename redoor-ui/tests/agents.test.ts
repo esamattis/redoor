@@ -17,7 +17,7 @@ class ProcessManager {
   spawn(command: string, args: string[], cwd?: string): number {
     const proc = spawn(command, args, {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       cwd,
     })
 
@@ -41,6 +41,10 @@ class ProcessManager {
       this.kill(pid)
     }
   }
+
+  getProcess(pid: number): ChildProcess | undefined {
+    return this.processes.get(pid)
+  }
 }
 
 async function waitForPort(port: number, maxRetries = 50): Promise<void> {
@@ -55,6 +59,43 @@ async function waitForPort(port: number, maxRetries = 50): Promise<void> {
     }
   }
   throw new Error(`Port ${port} not ready after ${maxRetries} retries`)
+}
+
+async function waitForLogMessage(
+  process: ChildProcess,
+  pattern: RegExp,
+  timeoutMs: number = 10000
+): Promise<void> {
+  const stream = process.stdout || process.stderr
+  if (!stream) {
+    throw new Error('No stdout/stderr stream available')
+  }
+
+  const onData = (chunk: Buffer) => {
+    const line = chunk.toString()
+    if (pattern.test(line)) {
+      clearTimeout(timeout)
+      stream.off('data', onData)
+      resolve()
+    }
+  }
+
+  let resolve: () => void
+  let reject: (error: Error) => void
+
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  stream.on('data', onData)
+
+  const timeout = setTimeout(() => {
+    stream.off('data', onData)
+    reject(new Error(`Timeout waiting for log pattern: ${pattern}`))
+  }, timeoutMs)
+
+  return promise
 }
 
 class ApiClient {
@@ -99,13 +140,18 @@ const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`)
 beforeAll(async () => {
   const projectRoot = path.join(__dirname, '../..')
 
-  processManager.spawn(SERVER_PATH, [], projectRoot)
+  const serverPid = processManager.spawn(SERVER_PATH, [], projectRoot)
 
   await waitForPort(SERVER_PORT)
 
   processManager.spawn(AGENT_PATH, [WS_URL, AGENT_NAME], projectRoot)
 
-  await new Promise(resolve => setTimeout(resolve, 3000))
+  const serverProcess = processManager.getProcess(serverPid)
+  if (!serverProcess) {
+    throw new Error('Server process not found')
+  }
+
+  await waitForLogMessage(serverProcess, /Agent registered: agent_id=/, 10000)
 }, 10000)
 
 afterAll(() => {
