@@ -3,16 +3,16 @@ use crate::commands::{Command, CommandResult};
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
-use ractor::{Actor, ActorProcessingErr, ActorRef};
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::HashMap;
 
 pub struct RouterActor;
 
-#[derive(Clone)]
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
+    rest_pending_responses: HashMap<String, RpcReplyPort<CommandResult>>,
 }
 
 #[derive(Clone, Debug)]
@@ -22,7 +22,6 @@ pub struct AgentInfo {
     pub session_ref: ActorRef<SessionMsg>,
 }
 
-#[derive(Clone)]
 pub enum RouterMsg {
     RegisterAgent {
         agent_id: String,
@@ -48,6 +47,14 @@ pub enum RouterMsg {
         agent_id: String,
         result: CommandResult,
     },
+    GetAgentList {
+        reply: RpcReplyPort<HashMap<String, String>>,
+    },
+    ExecuteCommandRest {
+        agent_id: String,
+        command: Command,
+        reply: RpcReplyPort<CommandResult>,
+    },
 }
 
 impl Actor for RouterActor {
@@ -65,6 +72,7 @@ impl Actor for RouterActor {
             agents: HashMap::new(),
             web_clients: Vec::new(),
             pending_responses: HashMap::new(),
+            rest_pending_responses: HashMap::new(),
         })
     }
 
@@ -146,6 +154,8 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteResponse { agent_id, result } => {
+                let mut found = false;
+
                 if let Some(web_client_ref) = state.pending_responses.remove(&agent_id) {
                     log!(
                         Level::Info,
@@ -155,14 +165,64 @@ impl Actor for RouterActor {
                         web_client_ref.get_id()
                     );
                     let _ = web_client_ref.cast(SessionMsg::OutgoingMessage(
-                        Message::CommandResponse { agent_id, result },
+                        Message::CommandResponse {
+                            agent_id: agent_id.clone(),
+                            result: result.clone(),
+                        },
                     ));
-                } else {
+                    found = true;
+                }
+
+                if let Some(reply) = state.rest_pending_responses.remove(&agent_id) {
+                    log!(
+                        Level::Info,
+                        "Routing REST response: agent_id={}, result={:?}",
+                        agent_id,
+                        result
+                    );
+                    let _ = reply.send(result);
+                    found = true;
+                }
+
+                if !found {
                     log!(
                         Level::Warning,
                         "No pending response found for agent_id={}",
                         agent_id
                     );
+                }
+            }
+            RouterMsg::GetAgentList { reply } => {
+                let agents: HashMap<String, String> = state
+                    .agents
+                    .iter()
+                    .map(|(id, info)| (id.clone(), info.agent_name.clone()))
+                    .collect();
+                let _ = reply.send(agents);
+            }
+            RouterMsg::ExecuteCommandRest {
+                agent_id,
+                command,
+                reply,
+            } => {
+                log!(
+                    Level::Info,
+                    "Routing REST command: agent_id={}, command={:?}",
+                    agent_id,
+                    command
+                );
+                if let Some(agent_info) = state.agents.get(&agent_id) {
+                    state.rest_pending_responses.insert(agent_id.clone(), reply);
+                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                        Message::Command {
+                            agent_id: agent_id.clone(),
+                            command,
+                        },
+                    ));
+                } else {
+                    let _ = reply.send(CommandResult::Error {
+                        message: format!("Agent not found: {}", agent_id),
+                    });
                 }
             }
         }
