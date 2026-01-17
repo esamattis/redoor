@@ -89,6 +89,23 @@ impl Actor for RouterActor {
                 socket_id,
                 session_ref,
             } => {
+                let duplicate_name = state
+                    .agents
+                    .values()
+                    .any(|info| info.agent_name == agent_name);
+
+                if duplicate_name {
+                    log!(
+                        Level::Error,
+                        "Agent with name '{}' already registered, rejecting connection",
+                        agent_name
+                    );
+                    let _ = session_ref.cast(SessionMsg::OutgoingMessage(Message::Error {
+                        message: format!("Agent with name '{}' already connected", agent_name),
+                    }));
+                    return Ok(());
+                }
+
                 log!(
                     Level::Info,
                     "Agent registered: agent_id={}, agent_name={}, socket_id={}",

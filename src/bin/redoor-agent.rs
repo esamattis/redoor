@@ -25,6 +25,7 @@ pub enum AgentMsg {
     Reconnect,
     SendWebSocketMessage { msg: WsMessage },
     Shutdown,
+    ExitWithError,
 }
 
 impl AgentActor {
@@ -33,6 +34,7 @@ impl AgentActor {
         text: String,
         agent_id: &str,
         write: &mpsc::UnboundedSender<WsMessage>,
+        agent_ref: ActorRef<AgentMsg>,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
             match redoor_msg {
@@ -59,6 +61,10 @@ impl AgentActor {
                         agent_id,
                         result_clone
                     );
+                }
+                Message::Error { message } => {
+                    log!(Level::Error, "Server error: {}", message);
+                    let _ = agent_ref.cast(AgentMsg::ExitWithError);
                 }
                 _ => {}
             }
@@ -235,7 +241,7 @@ impl Actor for AgentActor {
 
             AgentMsg::WebSocketMessage { text } => {
                 if let Some(tx) = &state.ws_tx {
-                    self.handle_incoming_message(text, &state.agent_id, tx)
+                    self.handle_incoming_message(text, &state.agent_id, tx, myself.clone())
                         .await;
                 }
             }
@@ -279,6 +285,11 @@ impl Actor for AgentActor {
                 state.ws_tx = None;
                 myself.stop(None);
             }
+
+            AgentMsg::ExitWithError => {
+                log!(Level::Error, "Exiting agent due to error");
+                std::process::exit(1);
+            }
         }
 
         Ok(())
@@ -310,7 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "default-agent".to_string()
     };
 
-    let agent_id = format!("{}-{}", agent_name, uuid::Uuid::new_v4());
+    let agent_id = agent_name.clone();
 
     println!("Starting agent '{}'", agent_name);
 

@@ -26,13 +26,18 @@ class ProcessManager {
       throw new Error('Failed to get process PID')
     }
 
-    proc.unref()
     this.processes.set(pid, proc)
     return pid
   }
 
   kill(pid: number): void {
-    process.kill(pid, 'SIGKILL')
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') {
+        throw e
+      }
+    }
     this.processes.delete(pid)
   }
 
@@ -44,6 +49,24 @@ class ProcessManager {
 
   getProcess(pid: number): ChildProcess | undefined {
     return this.processes.get(pid)
+  }
+
+  async waitForExit(pid: number, timeoutMs: number = 10000): Promise<number | null> {
+    const process = this.processes.get(pid)
+    if (!process) {
+      throw new Error(`Process not found: ${pid}`)
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Timeout waiting for process ${pid} to exit`))
+      }, timeoutMs)
+
+      process.once('exit', (code) => {
+        clearTimeout(timeout)
+        resolve(code)
+      })
+    })
   }
 }
 
@@ -137,10 +160,12 @@ class ApiClient {
 const processManager = new ProcessManager()
 const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`)
 
+let serverPid: number
+
 beforeAll(async () => {
   const projectRoot = path.join(__dirname, '../..')
 
-  const serverPid = processManager.spawn(SERVER_PATH, [], projectRoot)
+  serverPid = processManager.spawn(SERVER_PATH, [], projectRoot)
 
   await waitForPort(SERVER_PORT)
 
@@ -161,13 +186,54 @@ afterAll(() => {
 describe('Agents API', () => {
   it('should list directory contents on connected agent', async () => {
     const agents = await apiClient.listAgents()
+    // Verify at least one agent is connected
     expect(agents.agents.length).toBeGreaterThan(0)
 
     const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    // Verify the test agent is present
     expect(testAgent).toBeDefined()
 
     const result = await apiClient.ls(testAgent!.id, 'src')
+    // Verify result contains an array of files
     expect(result.files).toBeInstanceOf(Array)
+    // Verify directory listing returns files
     expect(result.files.length).toBeGreaterThan(0)
+  })
+
+  it('should reject duplicate agent names', async () => {
+    const DUPLICATE_AGENT_NAME = 'duplicate-test-agent'
+
+    const projectRoot = path.join(__dirname, '../..')
+
+    const firstAgentPid = processManager.spawn(AGENT_PATH, [WS_URL, DUPLICATE_AGENT_NAME], projectRoot)
+    const firstAgent = processManager.getProcess(firstAgentPid)
+    // Verify first agent was spawned successfully
+    expect(firstAgent).toBeDefined()
+
+    const serverProcess = processManager.getProcess(serverPid)
+    if (!serverProcess) {
+      throw new Error('Server process not found')
+    }
+
+    await waitForLogMessage(serverProcess, /Agent registered: agent_id=duplicate-test-agent/)
+
+    const agentsAfterFirst = await apiClient.listAgents()
+    // Verify first agent was registered on server
+    expect(agentsAfterFirst.agents.some((a) => a.name === DUPLICATE_AGENT_NAME)).toBe(true)
+
+    const secondAgentPid = processManager.spawn(AGENT_PATH, [WS_URL, DUPLICATE_AGENT_NAME], projectRoot)
+    const secondAgent = processManager.getProcess(secondAgentPid)
+    // Verify second agent was spawned successfully
+    expect(secondAgent).toBeDefined()
+
+    const exitCode = await processManager.waitForExit(secondAgentPid)
+    // Verify second agent exited with non-zero code (error)
+    expect(exitCode).not.toBe(0)
+
+    await new Promise((resolve) => setTimeout(resolve, 500))
+
+    const agentsAfterSecond = await apiClient.listAgents()
+    // Verify original test agent is still connected
+    expect(agentsAfterSecond.agents.some((a) => a.name === AGENT_NAME)).toBe(true)
   })
 })
