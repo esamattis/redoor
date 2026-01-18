@@ -56,7 +56,7 @@ function AgentDetails() {
                             {details.name}
                         </h1>
                         <Link
-                            to="/agents/$agentId/browser"
+                            to="/agents/$agentId/browser/$"
                             params={{ agentId: details.id }}
                             className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
                         >
@@ -83,7 +83,7 @@ function AgentDetails() {
                                 {details.cwd}
                             </span>
                             <Link
-                                to="/agents/$agentId/browser"
+                                to="/agents/$agentId/browser/$"
                                 params={{ agentId: details.id }}
                                 className="text-blue-600 hover:underline text-xs"
                             >
