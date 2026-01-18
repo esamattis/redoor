@@ -26,3 +26,4 @@ It is a Tanstack Router application using file based routing.
 
 Use Tailwind for styling.
 
+Always use the rest apis using `redoor-ui/src/api-client.ts`
