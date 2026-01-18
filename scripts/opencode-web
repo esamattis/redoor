@@ -1,5 +1,4 @@
 #!/bin/sh
-
 set -eu
 
-exec jopencode web --hostname 0.0.0.0
+exec opencode web --hostname 0.0.0.0

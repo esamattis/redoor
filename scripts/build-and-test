@@ -6,4 +6,5 @@ cargo build
 
 echo "Running vitest tests..."
 cd redoor-ui
-pnpm test
+pnpm run check
+pnpm run test
