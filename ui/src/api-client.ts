@@ -101,7 +101,3 @@ export class ApiClient {
         throw new Error(`Timeout waiting for agents: ${names.join(", ")}`);
     }
 }
-
-export const api = new ApiClient(
-    `${window.location.protocol}//${window.location.hostname}:3000`,
-);

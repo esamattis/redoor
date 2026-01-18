@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { api } from "../api-client";
 import {
     Cpu,
     HardDrive,
@@ -11,7 +10,8 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/agents/$agentId")({
-    loader: async ({ params }) => await api.getAgentDetails(params.agentId),
+    loader: async ({ params, context }) =>
+        await context.api.getAgentDetails(params.agentId),
     component: AgentDetails,
     errorComponent: ErrorDisplay,
 });

@@ -3,14 +3,21 @@ import {
     createRootRoute,
     Link,
     useLocation,
+    createRootRouteWithContext,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { Cpu, HardDrive } from "lucide-react";
-import { api } from "../api-client";
+import { ApiClient } from "../api-client";
 
-export const Route = createRootRoute({
-    loader: async () => api.listAgents(),
+interface AppRouterContext {
+    api: ApiClient;
+}
+
+export const Route = createRootRouteWithContext<AppRouterContext>()({
+    loader: async ({ context }) => {
+        return context.api.listAgents();
+    },
     component: RootLayout,
 });
 

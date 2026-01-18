@@ -6,11 +6,18 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
+import { ApiClient } from "@/api-client";
+
+export const api = new ApiClient(
+    `${window.location.protocol}//${window.location.hostname}:3000`,
+);
 
 // Create a new router instance
 const router = createRouter({
     routeTree,
-    context: {},
+    context: {
+        api,
+    },
     defaultPreload: "intent",
     scrollRestoration: true,
     defaultStructuralSharing: true,
