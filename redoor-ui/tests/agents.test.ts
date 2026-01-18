@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { LsResponse } from '../../bindings/LsResponse'
 import type { ErrorResponse } from '../../bindings/ErrorResponse'
 import type { AgentListResponse } from '../../bindings/AgentListResponse'
+import type { EchoResponse } from '../../bindings/EchoResponse'
 import path from 'node:path'
 
 const SERVER_PORT = 3000
@@ -156,6 +157,28 @@ class ApiClient {
     return response.json()
   }
 
+  async echo(agent: string, message: string): Promise<EchoResponse> {
+    const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agent)}/echo`
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      if (text) {
+        const error: ErrorResponse = JSON.parse(text)
+        throw new Error(error.error)
+      }
+      throw new Error(`Request failed: ${response.status} ${response.statusText}`)
+    }
+
+    return response.json()
+  }
+
   async waitForAgentNames(names: string[], timeoutMs: number = 5000): Promise<void> {
     const startTime = Date.now()
     while (Date.now() - startTime < timeoutMs) {
@@ -248,5 +271,20 @@ describe('Agents API', () => {
     const agentsAfterSecond = await apiClient.listAgents()
     // Verify original test agent is still connected
     expect(agentsAfterSecond.agents.some((a) => a.name === AGENT_NAME)).toBe(true)
+  })
+
+  it('should echo message back from connected agent', async () => {
+    const agents = await apiClient.listAgents()
+    // Verify at least one agent is connected
+    expect(agents.agents.length).toBeGreaterThan(0)
+
+    const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    // Verify the test agent is present
+    expect(testAgent).toBeDefined()
+
+    const testMessage = 'Hello, World!'
+    const result = await apiClient.echo(testAgent!.id, testMessage)
+    // Verify message is echoed back correctly
+    expect(result.message).toBe(testMessage)
   })
 })

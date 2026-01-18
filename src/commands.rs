@@ -6,6 +6,7 @@ use ts_rs::TS;
 pub enum Command {
     Ls { path: Option<String> },
     Cat { path: String },
+    Echo { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,10 +21,16 @@ pub struct CatResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EchoResult {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CommandResult {
     Ls(LsResult),
     Cat(CatResult),
+    Echo(EchoResult),
     Error { message: String },
 }
 
@@ -55,6 +62,12 @@ pub struct CatResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct EchoResponse {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -70,6 +83,7 @@ impl CommandHandler {
         match command {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
+            Command::Echo { message } => self.echo(message).await,
         }
     }
 
@@ -107,6 +121,10 @@ impl CommandHandler {
                 message: format!("Failed to read file: {}", e),
             },
         }
+    }
+
+    async fn echo(&self, message: String) -> CommandResult {
+        CommandResult::Echo(EchoResult { message })
     }
 }
 
@@ -158,6 +176,23 @@ mod tests {
                 assert!(message.contains("Failed to read file"));
             }
             _ => panic!("Expected Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_echo_command() {
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::Echo {
+                message: "hello world".to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::Echo(echo_result) => {
+                assert_eq!(echo_result.message, "hello world");
+            }
+            _ => panic!("Expected EchoResult"),
         }
     }
 }

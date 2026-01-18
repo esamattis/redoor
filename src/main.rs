@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
-    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, ErrorResponse,
-    LsResponse,
+    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoResponse,
+    ErrorResponse, LsResponse,
 };
 
 use axum::{
@@ -12,7 +12,7 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use ractor::{ActorRef, call_t};
 use uuid::Uuid;
@@ -48,6 +48,7 @@ async fn main() {
         .route("/api/v1/agents", get(list_agents_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
+        .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
         .with_state(server_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -191,6 +192,67 @@ async fn cat_agent_handler(
             let error_msg = format!("Failed to execute cat command: {:?}", e);
             let status = StatusCode::INTERNAL_SERVER_ERROR;
             (status, Json(ErrorResponse { error: error_msg })).into_response()
+        }
+    }
+}
+
+async fn echo_agent_handler(
+    Path(agent): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let message = match payload.get("message") {
+        Some(msg) if msg.is_string() => msg.as_str().unwrap().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Missing or invalid 'message' field in request body".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: agent.clone(),
+            command: Command::Echo {
+                message: message.clone()
+            },
+            reply,
+        },
+        30000
+    ) {
+        Ok(result) => match result {
+            CommandResult::Echo(echo_result) => (
+                StatusCode::OK,
+                Json(EchoResponse {
+                    message: echo_result.message,
+                }),
+            )
+                .into_response(),
+            CommandResult::Error { message } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected result type".to_string(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(e) => {
+            let error_msg = format!("Failed to execute echo command: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: error_msg }),
+            )
+                .into_response()
         }
     }
 }
