@@ -44,7 +44,6 @@ impl AgentActor {
                     command,
                     ..
                 } => {
-                    let request_id_clone = request_id.clone();
                     log!(
                         Level::Info,
                         "Command received: agent_id={}, request_id={}, command={:?}",
@@ -56,7 +55,7 @@ impl AgentActor {
                     let result_clone = result.clone();
                     let response = Message::CommandResponse {
                         agent_id: agent_id.to_string(),
-                        request_id: request_id.clone(),
+                        request_id,
                         result,
                     };
 
@@ -67,7 +66,7 @@ impl AgentActor {
                         Level::Info,
                         "Command response sent: agent_id={}, request_id={}, result={:?}",
                         agent_id,
-                        request_id_clone,
+                        request_id,
                         result_clone
                     );
                 }

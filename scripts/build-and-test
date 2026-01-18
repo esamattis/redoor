@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+echo "Running cargo test"
+cargo test
+
 echo "Building Rust binaries..."
 cargo build
 

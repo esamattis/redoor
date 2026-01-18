@@ -12,7 +12,7 @@ pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
-    rest_pending_responses: HashMap<String, (RpcReplyPort<CommandResult>, String)>,
+    rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
     next_request_id: u64,
 }
 
@@ -26,6 +26,14 @@ pub struct AgentInfo {
     pub arch: String,
     pub hostname: String,
     pub username: String,
+}
+
+impl RouterState {
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        id
+    }
 }
 
 pub enum RouterMsg {
@@ -55,7 +63,7 @@ pub enum RouterMsg {
     },
     RouteResponse {
         agent_id: String,
-        request_id: String,
+        request_id: u64,
         result: CommandResult,
     },
     GetAgentList {
@@ -174,8 +182,7 @@ impl Actor for RouterActor {
                 command,
                 originating_client,
             } => {
-                let request_id = format!("req_{}", state.next_request_id);
-                state.next_request_id += 1;
+                let request_id = state.next_id();
 
                 log!(
                     Level::Info,
@@ -244,7 +251,7 @@ impl Actor for RouterActor {
                     let _ = web_client_ref.cast(SessionMsg::OutgoingMessage(
                         Message::CommandResponse {
                             agent_id: agent_id.clone(),
-                            request_id: String::new(),
+                            request_id: 0,
                             result: result.clone(),
                         },
                     ));
@@ -272,8 +279,7 @@ impl Actor for RouterActor {
                 command,
                 reply,
             } => {
-                let request_id = format!("req_{}", state.next_request_id);
-                state.next_request_id += 1;
+                let request_id = state.next_id();
 
                 log!(
                     Level::Info,
@@ -285,7 +291,7 @@ impl Actor for RouterActor {
                 if let Some(agent_info) = state.agents.get(&agent_id) {
                     state
                         .rest_pending_responses
-                        .insert(request_id.clone(), (reply, agent_id.clone()));
+                        .insert(request_id, (reply, agent_id.clone()));
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
                             agent_id: agent_id.clone(),
