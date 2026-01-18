@@ -113,25 +113,43 @@ async fn get_agent_details_handler(
 ) -> impl IntoResponse {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::GetAgentDetails {
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
             agent_id: agent.clone(),
-            reply
+            command: Command::GetAgentDetails,
+            reply,
         },
         30000
     ) {
-        Ok(details) => {
-            if details.name.is_empty() {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: format!("Agent not found: {}", agent),
-                    }),
-                )
-                    .into_response()
-            } else {
-                (StatusCode::OK, Json(details)).into_response()
+        Ok(result) => match result {
+            CommandResult::GetAgentDetails(details) => {
+                if details.name.is_empty() {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!("Agent not found: {}", agent),
+                        }),
+                    )
+                        .into_response()
+                } else {
+                    (StatusCode::OK, Json(details)).into_response()
+                }
             }
-        }
+            CommandResult::Error { message } => {
+                let status = if message.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, Json(ErrorResponse { error: message })).into_response()
+            }
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected result type".to_string(),
+                }),
+            )
+                .into_response(),
+        },
         Err(e) => {
             let error_msg = format!("Failed to get agent details: {:?}", e);
             (

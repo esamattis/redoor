@@ -8,6 +8,7 @@ pub enum Command {
     Cat { path: String },
     Echo { message: String },
     AgentInfo,
+    GetAgentDetails,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub enum CommandResult {
     Cat(CatResult),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
+    GetAgentDetails(AgentDetailsResponse),
     Error { message: String },
 }
 
@@ -126,6 +128,7 @@ impl CommandHandler {
             Command::Cat { path } => self.cat(path).await,
             Command::Echo { message } => self.echo(message).await,
             Command::AgentInfo => self.agent_info().await,
+            Command::GetAgentDetails => self.get_agent_details().await,
         }
     }
 
@@ -214,6 +217,43 @@ impl CommandHandler {
             system_uptime,
         })
     }
+
+    async fn get_agent_details(&self) -> CommandResult {
+        use std::env;
+        use sysinfo::System;
+
+        let pid = std::process::id();
+        let cwd = env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let load_avg = System::load_average();
+        let load_average = (load_avg.one, load_avg.five, load_avg.fifteen);
+        let system_uptime = System::uptime();
+
+        let os = std::env::consts::OS.to_string();
+        let arch = std::env::consts::ARCH.to_string();
+        let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
+        let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+
+        CommandResult::GetAgentDetails(AgentDetailsResponse {
+            id: String::new(),
+            name: String::new(),
+            pid,
+            cwd,
+            load_average_one: load_average.0,
+            load_average_five: load_average.1,
+            load_average_fifteen: load_average.2,
+            system_uptime,
+            os,
+            arch,
+            hostname,
+            username,
+            connected_at: 0,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +329,24 @@ mod tests {
                 assert_eq!(echo_result.message, "hello world");
             }
             _ => panic!("Expected EchoResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_agent_details_command() {
+        let handler = CommandHandler::new();
+        let result = handler.execute(Command::GetAgentDetails).await;
+
+        match result {
+            CommandResult::GetAgentDetails(details) => {
+                assert!(details.pid > 0, "PID should be positive");
+                assert!(!details.cwd.is_empty(), "CWD should not be empty");
+                assert!(!details.os.is_empty(), "OS should not be empty");
+                assert!(!details.arch.is_empty(), "ARCH should not be empty");
+                assert!(!details.hostname.is_empty(), "Hostname should not be empty");
+                assert!(!details.username.is_empty(), "Username should not be empty");
+            }
+            _ => panic!("Expected GetAgentDetails result"),
         }
     }
 }
