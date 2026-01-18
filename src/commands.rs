@@ -12,7 +12,7 @@ pub enum Command {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LsResult {
-    pub files: Vec<String>,
+    pub files: Vec<LsEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,8 +59,21 @@ pub struct AgentInfoResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct LsEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub file_type: String,
+    pub size: u64,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct LsResponse {
-    pub files: Vec<String>,
+    pub files: Vec<LsEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -117,6 +130,9 @@ impl CommandHandler {
     }
 
     async fn ls(&self, path: Option<String>) -> CommandResult {
+        use nix::unistd::{Group, User};
+        use std::os::unix::fs::MetadataExt;
+
         let path = path.unwrap_or_else(|| ".".to_string());
 
         match tokio::fs::read_dir(&path).await {
@@ -124,14 +140,34 @@ impl CommandHandler {
                 let mut files = Vec::new();
                 while let Some(entry) = entries.next_entry().await.ok().flatten() {
                     let metadata = entry.metadata().await.ok();
-                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                     let name = entry.file_name().into_string().ok();
-                    if let Some(name) = name {
-                        if is_dir {
-                            files.push(format!("{}/", name));
-                        } else {
-                            files.push(name);
-                        }
+
+                    if let (Some(metadata), Some(name)) = (metadata, name) {
+                        let is_dir = metadata.is_dir();
+                        let file_type = if is_dir { "directory" } else { "file" };
+                        let size = metadata.size();
+                        let uid = metadata.uid();
+                        let gid = metadata.gid();
+
+                        let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
+                            .ok()
+                            .flatten()
+                            .map(|u| u.name);
+
+                        let group = Group::from_gid(nix::unistd::Gid::from_raw(gid))
+                            .ok()
+                            .flatten()
+                            .map(|g| g.name);
+
+                        files.push(LsEntry {
+                            name,
+                            file_type: file_type.to_string(),
+                            size,
+                            owner,
+                            group,
+                            uid,
+                            gid,
+                        });
                     }
                 }
 
@@ -191,7 +227,15 @@ mod tests {
 
         match result {
             CommandResult::Ls(ls_result) => {
-                assert!(!ls_result.files.is_empty());
+                assert!(!ls_result.files.is_empty(), "ls should return files");
+                let first_file = &ls_result.files[0];
+                assert!(
+                    first_file.file_type == "file" || first_file.file_type == "directory",
+                    "file_type should be 'file' or 'directory'"
+                );
+                assert!(first_file.uid > 0, "uid should be populated");
+                assert!(first_file.gid > 0, "gid should be populated");
+                assert!(!first_file.name.is_empty(), "name should not be empty");
             }
             _ => panic!("Expected LsResult"),
         }
