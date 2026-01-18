@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { ApiClient } from '../src/api-client'
+import { ApiClient, Agent } from '../src/api-client'
 import path from 'node:path'
 
 const SERVER_PORT = 3000
@@ -149,13 +149,13 @@ describe('Agents API', () => {
   it('should get agent details', async () => {
     const agents = await apiClient.listAgents()
     // Verify at least one agent is connected
-    expect(agents.agents.length).toBeGreaterThan(0)
+    expect(agents.length).toBeGreaterThan(0)
 
-    const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    const testAgent = agents.find((a) => a.name === AGENT_NAME)
     // Verify the test agent is present
     expect(testAgent).toBeDefined()
 
-    const result = await apiClient.getAgentDetails(testAgent!.id)
+    const result = await testAgent!.getDetails()
     // Verify agent ID matches
     expect(result.id).toBe(testAgent!.id)
     // Verify agent name matches
@@ -192,13 +192,13 @@ describe('Agents API', () => {
   it('should list directory contents on connected agent', async () => {
     const agents = await apiClient.listAgents()
     // Verify at least one agent is connected
-    expect(agents.agents.length).toBeGreaterThan(0)
+    expect(agents.length).toBeGreaterThan(0)
 
-    const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    const testAgent = agents.find((a) => a.name === AGENT_NAME)
     // Verify the test agent is present
     expect(testAgent).toBeDefined()
 
-    const result = await apiClient.ls(testAgent!.id, 'src')
+    const result = await testAgent!.ls('src')
     // Verify result contains an array of files
     expect(result.files).toBeInstanceOf(Array)
     // Verify directory listing returns files
@@ -224,7 +224,7 @@ describe('Agents API', () => {
 
     const agentsAfterFirst = await apiClient.listAgents()
     // Verify first agent was registered on server
-    expect(agentsAfterFirst.agents.some((a) => a.name === DUPLICATE_AGENT_NAME)).toBe(true)
+    expect(agentsAfterFirst.some((a) => a.name === DUPLICATE_AGENT_NAME)).toBe(true)
 
     const secondAgentPid = processManager.spawn(AGENT_PATH, [WS_URL, DUPLICATE_AGENT_NAME], projectRoot)
     const secondAgent = processManager.getProcess(secondAgentPid)
@@ -239,27 +239,28 @@ describe('Agents API', () => {
 
     const agentsAfterSecond = await apiClient.listAgents()
     // Verify original test agent is still connected
-    expect(agentsAfterSecond.agents.some((a) => a.name === AGENT_NAME)).toBe(true)
+    expect(agentsAfterSecond.some((a) => a.name === AGENT_NAME)).toBe(true)
   })
 
   it('should echo message back from connected agent', async () => {
     const agents = await apiClient.listAgents()
     // Verify at least one agent is connected
-    expect(agents.agents.length).toBeGreaterThan(0)
+    expect(agents.length).toBeGreaterThan(0)
 
-    const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    const testAgent = agents.find((a) => a.name === AGENT_NAME)
     // Verify the test agent is present
     expect(testAgent).toBeDefined()
 
     const testMessage = 'Hello, World!'
-    const result = await apiClient.echo(testAgent!.id, testMessage)
+    const result = await testAgent!.echo(testMessage)
     // Verify message is echoed back correctly
     expect(result.message).toBe(testMessage)
   })
 
   it('should return 404 for non-existent agent details', async () => {
     const nonExistentAgentId = 'non-existent-agent-id'
+    const agent = new Agent(apiClient.baseUrl, { id: nonExistentAgentId, name: 'non-existent' })
     // Verify that requesting details for non-existent agent throws an error
-    await expect(apiClient.getAgentDetails(nonExistentAgentId)).rejects.toThrow('Agent not found')
+    await expect(agent.getDetails()).rejects.toThrow('Agent not found')
   })
 })

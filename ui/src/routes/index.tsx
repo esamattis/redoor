@@ -8,7 +8,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-    const { agents } = RootRoute.useLoaderData();
+    const agents = RootRoute.useLoaderData();
 
     return (
         <div className="p-6">

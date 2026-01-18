@@ -1,6 +1,5 @@
 import {
     Outlet,
-    createRootRoute,
     Link,
     useLocation,
     createRootRouteWithContext,
@@ -22,7 +21,7 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
 });
 
 function RootLayout() {
-    const { agents } = Route.useLoaderData();
+    const agents = Route.useLoaderData();
     const location = useLocation();
 
     return (
