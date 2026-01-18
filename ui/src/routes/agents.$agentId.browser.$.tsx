@@ -2,21 +2,22 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Folder, File, ArrowUp, AlertCircle } from "lucide-react";
 import { getParentPath, formatSize } from "../utils/path";
 
-export const Route = createFileRoute("/agents/$agentId/browser")({
+export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, context }) => {
         const agents = await context.api.listAgents();
         const agent = agents.find((a) => a.id === params.agentId);
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
         const details = await agent.getDetails();
-        const fullPath = details.cwd;
+        const relativePath = params._splat || "";
+        const fullPath = relativePath ? `${details.cwd}/${relativePath}` : details.cwd;
         const lsResult = await agent.ls(fullPath);
 
         return {
             agentId: agent.id,
             agentName: agent.name,
             cwd: details.cwd,
-            relativePath: "",
+            relativePath,
             fullPath,
             files: lsResult.files,
         };
@@ -68,7 +69,7 @@ function BrowserHeader(props: {
     isAtCwd: boolean;
     parentPath: string | null;
 }) {
-    const { agentId, agentName, relativePath, isAtCwd } = props;
+    const { agentId, agentName, relativePath, isAtCwd, parentPath } = props;
 
     return (
         <div className="mb-6">
@@ -80,8 +81,8 @@ function BrowserHeader(props: {
                 />
                 <div className="flex gap-2">
                     <Link
-                        to="/agents/$agentId/browser"
-                        params={{ agentId }}
+                        to={parentPath ? `/agents/$agentId/browser/$` : "/agents/$agentId/browser"}
+                        params={parentPath ? { agentId, _splat: parentPath } : { agentId }}
                         className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
                         disabled={isAtCwd}
                     >
@@ -132,7 +133,13 @@ function Breadcrumbs(props: {
                         {isLast ? (
                             <span className="text-gray-900 font-medium">{part}</span>
                         ) : (
-                            <span className="text-gray-900 font-medium">{part}</span>
+                            <Link
+                                to="/agents/$agentId/browser/$"
+                                params={{ agentId, _splat: accumulatedPath }}
+                                className="text-blue-600 hover:underline font-medium"
+                            >
+                                {part}
+                            </Link>
                         )}
                     </div>
                 );
@@ -197,8 +204,9 @@ function FileEntry(props: {
     };
     isParent: boolean;
 }) {
-    const { entry, isParent } = props;
+    const { agentId, relativePath, entry, isParent } = props;
     const isDirectory = entry.type === "directory" || isParent;
+    const splatValue = relativePath ? `${relativePath}/${entry.name}` : entry.name;
 
     if (isDirectory && !isParent) {
         return (
@@ -207,9 +215,13 @@ function FileEntry(props: {
                     <Folder className="h-5 w-5 text-blue-500" />
                 </td>
                 <td className="p-3">
-                    <span className="flex items-center gap-3 cursor-pointer text-blue-600 font-medium">
+                    <Link
+                        to="/agents/$agentId/browser/$"
+                        params={{ agentId, _splat: splatValue }}
+                        className="flex items-center gap-3 text-blue-600 font-medium hover:underline"
+                    >
                         {entry.name}
-                    </span>
+                    </Link>
                 </td>
                 <td className="p-3 text-gray-400">-</td>
                 <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
