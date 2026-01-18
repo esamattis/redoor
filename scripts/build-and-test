@@ -4,11 +4,23 @@ set -e
 echo "Running cargo test"
 cargo test
 
+echo "building the ui and generating route types"
+(
+    cd ui
+    pnpm build
+)
+
 echo "Building Rust binaries..."
 cargo build
 
-echo "Running vitest tests..."
 cd ui
+
+echo "Running vitest tests..."
 pnpm run test
-pnpm run check
+
+echo "Running playwright tests..."
+pnpm exec playwright test
+
+echo "Running type checks and linting..."
+pnpm run types
 pnpm run lint
