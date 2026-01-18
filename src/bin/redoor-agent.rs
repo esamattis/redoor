@@ -204,7 +204,7 @@ impl Actor for AgentActor {
                         let mut write = write;
                         tokio::spawn(async move {
                             while let Some(msg) = rx.recv().await {
-                                if SinkExt::send(&mut write, msg).await.is_err() {
+                                if write.send(msg).await.is_err() {
                                     break;
                                 }
                             }
