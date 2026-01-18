@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
-    AgentDetailsResponse, AgentInfoResponse, AgentListResponse, CatResponse, Command,
-    CommandResult, EchoResponse, ErrorResponse, LsResponse,
+    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoResponse,
+    ErrorResponse, LsResponse,
 };
 
 use axum::{
