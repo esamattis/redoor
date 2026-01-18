@@ -3,8 +3,8 @@ Rust Tokio app using Axum and the Ractor Actor framework.
 
 Architecture:
 
-- Websocket server
-- redoor agents that connects to the server via via Websockets
+- REST API and Websocket server
+- redoor agents connects to the server via Websockets
 - The server exposes REST API which can be used to execute commands in the agents using the websocket connection
 
 Guidelines

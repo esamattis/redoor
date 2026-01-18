@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import {
     Cpu,
     HardDrive,
@@ -7,6 +7,7 @@ import {
     User,
     Activity,
     AlertCircle,
+    FolderOpen,
 } from "lucide-react";
 
 export const Route = createFileRoute("/agents/$agentId")({
@@ -49,10 +50,20 @@ function AgentDetails() {
         <div className="p-6">
             <div className="max-w-4xl mx-auto">
                 <div className="mb-6">
-                    <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-                        <HardDrive className="h-8 w-8 text-blue-600" />
-                        {details.name}
-                    </h1>
+                    <div className="flex items-center justify-between">
+                        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                            <HardDrive className="h-8 w-8 text-blue-600" />
+                            {details.name}
+                        </h1>
+                        <Link
+                            to="/agents/$agentId/browser"
+                            params={{ agentId: details.id }}
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                        >
+                            <FolderOpen className="h-4 w-4" />
+                            Browse Files
+                        </Link>
+                    </div>
                     <p className="text-sm text-gray-500 mt-1">
                         ID: {details.id}
                     </p>
@@ -64,10 +75,21 @@ function AgentDetails() {
                         icon={<Cpu className="h-5 w-5" />}
                     >
                         <DetailItem label="PID" value={details.pid} />
-                        <DetailItem
-                            label="Working Directory"
-                            value={details.cwd}
-                        />
+                        <div className="flex items-center gap-3 text-sm">
+                            <span className="text-gray-500 w-24 flex-shrink-0">
+                                Working Directory:
+                            </span>
+                            <span className="text-gray-900 font-mono text-xs truncate">
+                                {details.cwd}
+                            </span>
+                            <Link
+                                to="/agents/$agentId/browser"
+                                params={{ agentId: details.id }}
+                                className="text-blue-600 hover:underline text-xs"
+                            >
+                                Browse Files
+                            </Link>
+                        </div>
                     </DetailCard>
 
                     <DetailCard
@@ -119,6 +141,7 @@ function AgentDetails() {
                     </DetailCard>
                 </div>
             </div>
+            <Outlet />
         </div>
     );
 }
