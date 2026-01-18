@@ -39,3 +39,5 @@ function DetailCard(props: {
     children: React.ReactNode;
 }) { }
 ```
+
+After modifying the routes run `cd ui && pnpm run build` to regenerate the route types.
