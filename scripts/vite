@@ -4,6 +4,6 @@ set -eu
 
 cd "$(dirname $(dirname "$(readlink -f "$0")"))"
 
-cd redoor-ui
+cd ui
 
 pnpm run dev

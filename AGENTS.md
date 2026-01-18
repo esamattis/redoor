@@ -20,13 +20,13 @@ Guidelines
 
 # UI
 
-The application UI  in in redoor-ui directory.
+The application UI is in the `ui` dir
 
 It is a Tanstack Router application using file based routing.
 
 Use Tailwind for styling.
 
-Always use the rest apis using `redoor-ui/src/api-client.ts`
+Always use the rest apis using `ui/src/api-client.ts`
 
 If you need to add new apis to the client always use the generated typescript bindings
 

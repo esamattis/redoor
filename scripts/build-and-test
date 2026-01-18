@@ -5,6 +5,6 @@ echo "Building Rust binaries..."
 cargo build
 
 echo "Running vitest tests..."
-cd redoor-ui
+cd ui
 pnpm run check
 pnpm run test
