@@ -10,7 +10,7 @@ import {
     FolderOpen,
 } from "lucide-react";
 
-export const Route = createFileRoute("/agents/$agentId")({
+export const Route = createFileRoute("/agents/$agentId/")({
     loader: async ({ params, context }) => {
         const agents = await context.api.listAgents();
         const agent = agents.find((a) => a.id === params.agentId);
