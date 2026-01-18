@@ -15,6 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use ractor::{ActorRef, call_t};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -50,6 +51,12 @@ async fn main() {
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(server_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

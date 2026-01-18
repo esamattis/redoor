@@ -1,39 +1,32 @@
-import { createFileRoute } from '@tanstack/react-router'
-import logo from '../logo.svg'
+import { createFileRoute, useRouter } from '@tanstack/react-router'
+import type { AgentListResponse } from '../../../bindings/AgentListResponse'
 
 export const Route = createFileRoute('/')({
-  component: App,
+  loader: async ({ context }) => {
+    const { agents } = context;
+    if (agents.length === 0) {
+      return null
+    }
+    return agents[0]?.id ?? null
+  },
+  component: Index,
 })
 
-function App() {
-  return (
-    <div className="text-center">
-      <header className="min-h-screen flex flex-col items-center justify-center bg-[#282c34] text-white text-[calc(10px+2vmin)]">
-        <img
-          src={logo}
-          className="h-[40vmin] pointer-events-none animate-[spin_20s_linear_infinite]"
-          alt="logo"
-        />
-        <p>
-          Edit <code>src/routes/index.tsx</code> and save to reload.
-        </p>
-        <a
-          className="text-[#61dafb] hover:underline"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-        <a
-          className="text-[#61dafb] hover:underline"
-          href="https://tanstack.com"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn TanStack
-        </a>
-      </header>
-    </div>
-  )
+function Index() {
+  const agentId = Route.useLoaderData()
+
+  if (!agentId) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <p className="text-gray-500">No agents available</p>
+        </div>
+      </div>
+    )
+  }
+
+  const navigate = useRouter().navigate
+  navigate({ to: '/agents/$agentId', params: { agentId } })
+
+  return null
 }

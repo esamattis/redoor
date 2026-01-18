@@ -24,3 +24,4 @@ chrono = "0.4"
 ractor = "0.15.10"
 ts-rs = "11.1.0"
 sysinfo = "0.33"
+tower-http = { version = "0.6", features = ["cors"] }
