@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { LsResponse } from '../../bindings/LsResponse'
 import type { ErrorResponse } from '../../bindings/ErrorResponse'
 import type { AgentListResponse } from '../../bindings/AgentListResponse'
+import type { AgentDetailsResponse } from '../../bindings/AgentDetailsResponse'
 import type { EchoResponse } from '../../bindings/EchoResponse'
 import path from 'node:path'
 
@@ -141,6 +142,22 @@ class ApiClient {
     return response.json()
   }
 
+  async getAgentDetails(agent: string): Promise<AgentDetailsResponse> {
+    const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agent)}`
+    const response = await fetch(url)
+
+    if (!response.ok) {
+      const text = await response.text()
+      if (text) {
+        const error: ErrorResponse = JSON.parse(text)
+        throw new Error(error.error)
+      }
+      throw new Error(`Request failed: ${response.status} ${response.statusText}`)
+    }
+
+    return response.json()
+  }
+
   async ls(agent: string, path: string): Promise<LsResponse> {
     const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agent)}/ls/${encodeURIComponent(path)}`
     const response = await fetch(url)
@@ -220,6 +237,49 @@ afterAll(() => {
 })
 
 describe('Agents API', () => {
+  it('should get agent details', async () => {
+    const agents = await apiClient.listAgents()
+    // Verify at least one agent is connected
+    expect(agents.agents.length).toBeGreaterThan(0)
+
+    const testAgent = agents.agents.find((a) => a.name === AGENT_NAME)
+    // Verify the test agent is present
+    expect(testAgent).toBeDefined()
+
+    const result = await apiClient.getAgentDetails(testAgent!.id)
+    // Verify agent ID matches
+    expect(result.id).toBe(testAgent!.id)
+    // Verify agent name matches
+    expect(result.name).toBe(AGENT_NAME)
+    // Verify PID is positive
+    expect(result.pid).toBeGreaterThan(0)
+    // Verify CWD is a non-empty string
+    expect(result.cwd).toBeDefined()
+    expect(result.cwd.length).toBeGreaterThan(0)
+    // Verify OS, arch, hostname are non-empty strings
+    expect(result.os).toBeDefined()
+    expect(result.os.length).toBeGreaterThan(0)
+    expect(result.arch).toBeDefined()
+    expect(result.arch.length).toBeGreaterThan(0)
+    expect(result.hostname).toBeDefined()
+    expect(result.hostname.length).toBeGreaterThan(0)
+    // Verify load averages are numbers
+    expect(result.load_average_one).toBeDefined()
+    expect(typeof result.load_average_one).toBe('number')
+    expect(result.load_average_five).toBeDefined()
+    expect(typeof result.load_average_five).toBe('number')
+    expect(result.load_average_fifteen).toBeDefined()
+    expect(typeof result.load_average_fifteen).toBe('number')
+    // Verify system uptime is a positive number
+    expect(result.system_uptime).toBeDefined()
+    expect(typeof result.system_uptime).toBe('number')
+    expect(result.system_uptime).toBeGreaterThan(0)
+    // Verify connected_at is a positive number
+    expect(result.connected_at).toBeDefined()
+    expect(typeof result.connected_at).toBe('number')
+    expect(result.connected_at).toBeGreaterThan(0)
+  })
+
   it('should list directory contents on connected agent', async () => {
     const agents = await apiClient.listAgents()
     // Verify at least one agent is connected
@@ -286,5 +346,11 @@ describe('Agents API', () => {
     const result = await apiClient.echo(testAgent!.id, testMessage)
     // Verify message is echoed back correctly
     expect(result.message).toBe(testMessage)
+  })
+
+  it('should return 404 for non-existent agent details', async () => {
+    const nonExistentAgentId = 'non-existent-agent-id'
+    // Verify that requesting details for non-existent agent throws an error
+    await expect(apiClient.getAgentDetails(nonExistentAgentId)).rejects.toThrow('Agent not found')
   })
 })

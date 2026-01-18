@@ -59,6 +59,10 @@ impl Actor for SessionActor {
                 Message::AgentRegister {
                     agent_id,
                     agent_name,
+                    os,
+                    arch,
+                    hostname,
+                    username,
                 } => {
                     let _ = state.router_ref.cast(RouterMsg::UnregisterWebClient {
                         session_ref: _myself.clone(),
@@ -68,6 +72,10 @@ impl Actor for SessionActor {
                         agent_name,
                         socket_id: state.socket_id.clone(),
                         session_ref: _myself.clone(),
+                        os,
+                        arch,
+                        hostname,
+                        username,
                     });
                     state.agent_id = Some(agent_id);
                 }

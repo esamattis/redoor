@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
-    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoResponse,
-    ErrorResponse, LsResponse,
+    AgentDetailsResponse, AgentInfoResponse, AgentListResponse, CatResponse, Command,
+    CommandResult, EchoResponse, ErrorResponse, LsResponse,
 };
 
 use axum::{
@@ -46,6 +46,7 @@ async fn main() {
         .route("/ws", get(websocket_handler))
         .route("/", get(index_handler))
         .route("/api/v1/agents", get(list_agents_handler))
+        .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
@@ -90,6 +91,42 @@ async fn list_agents_handler(AxumState(state): AxumState<ServerState>) -> impl I
         }
         Err(e) => {
             let error_msg = format!("Failed to get agents: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: error_msg }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_agent_details_handler(
+    Path(agent): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::GetAgentDetails {
+            agent_id: agent.clone(),
+            reply
+        },
+        30000
+    ) {
+        Ok(details) => {
+            if details.name.is_empty() {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Agent not found: {}", agent),
+                    }),
+                )
+                    .into_response()
+            } else {
+                (StatusCode::OK, Json(details)).into_response()
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to get agent details: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse { error: error_msg }),

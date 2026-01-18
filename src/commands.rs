@@ -7,6 +7,7 @@ pub enum Command {
     Ls { path: Option<String> },
     Cat { path: String },
     Echo { message: String },
+    AgentInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,11 +27,20 @@ pub struct EchoResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInfoResult {
+    pub pid: u32,
+    pub cwd: String,
+    pub load_average: (f64, f64, f64),
+    pub system_uptime: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CommandResult {
     Ls(LsResult),
     Cat(CatResult),
     Echo(EchoResult),
+    AgentInfo(AgentInfoResult),
     Error { message: String },
 }
 
@@ -68,6 +78,24 @@ pub struct EchoResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct AgentDetailsResponse {
+    pub id: String,
+    pub name: String,
+    pub pid: u32,
+    pub cwd: String,
+    pub load_average_one: f64,
+    pub load_average_five: f64,
+    pub load_average_fifteen: f64,
+    pub system_uptime: u64,
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+    pub username: String,
+    pub connected_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -84,6 +112,7 @@ impl CommandHandler {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
             Command::Echo { message } => self.echo(message).await,
+            Command::AgentInfo => self.agent_info().await,
         }
     }
 
@@ -125,6 +154,29 @@ impl CommandHandler {
 
     async fn echo(&self, message: String) -> CommandResult {
         CommandResult::Echo(EchoResult { message })
+    }
+
+    async fn agent_info(&self) -> CommandResult {
+        use std::env;
+        use sysinfo::System;
+
+        let pid = std::process::id();
+        let cwd = env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let load_avg = System::load_average();
+        let load_average = (load_avg.one, load_avg.five, load_avg.fifteen);
+        let system_uptime = System::uptime();
+
+        CommandResult::AgentInfo(AgentInfoResult {
+            pid,
+            cwd,
+            load_average,
+            system_uptime,
+        })
     }
 }
 

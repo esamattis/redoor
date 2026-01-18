@@ -13,6 +13,8 @@ pub struct RouterState {
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
     rest_pending_responses: HashMap<String, RpcReplyPort<CommandResult>>,
+    agent_details_pending_responses:
+        HashMap<String, RpcReplyPort<crate::commands::AgentDetailsResponse>>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,6 +22,11 @@ pub struct AgentInfo {
     pub agent_name: String,
     pub socket_id: String,
     pub session_ref: ActorRef<SessionMsg>,
+    pub connected_at: i64,
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+    pub username: String,
 }
 
 pub enum RouterMsg {
@@ -28,6 +35,10 @@ pub enum RouterMsg {
         agent_name: String,
         socket_id: String,
         session_ref: ActorRef<SessionMsg>,
+        os: String,
+        arch: String,
+        hostname: String,
+        username: String,
     },
     UnregisterAgent {
         agent_id: String,
@@ -55,6 +66,10 @@ pub enum RouterMsg {
         command: Command,
         reply: RpcReplyPort<CommandResult>,
     },
+    GetAgentDetails {
+        agent_id: String,
+        reply: RpcReplyPort<crate::commands::AgentDetailsResponse>,
+    },
 }
 
 impl Actor for RouterActor {
@@ -73,6 +88,7 @@ impl Actor for RouterActor {
             web_clients: Vec::new(),
             pending_responses: HashMap::new(),
             rest_pending_responses: HashMap::new(),
+            agent_details_pending_responses: HashMap::new(),
         })
     }
 
@@ -88,6 +104,10 @@ impl Actor for RouterActor {
                 agent_name,
                 socket_id,
                 session_ref,
+                os,
+                arch,
+                hostname,
+                username,
             } => {
                 let duplicate_name = state
                     .agents
@@ -113,12 +133,18 @@ impl Actor for RouterActor {
                     agent_name,
                     socket_id
                 );
+                let connected_at = chrono::Utc::now().timestamp();
                 state.agents.insert(
                     agent_id.clone(),
                     AgentInfo {
                         agent_name,
                         socket_id,
                         session_ref,
+                        connected_at,
+                        os,
+                        arch,
+                        hostname,
+                        username,
                     },
                 );
                 broadcast_agent_list(state);
@@ -173,6 +199,47 @@ impl Actor for RouterActor {
             RouterMsg::RouteResponse { agent_id, result } => {
                 let mut found = false;
 
+                if let Some(reply) = state.agent_details_pending_responses.remove(&agent_id) {
+                    if let (Some(agent_info), CommandResult::AgentInfo(info_result)) =
+                        (state.agents.get(&agent_id), &result)
+                    {
+                        let response = crate::commands::AgentDetailsResponse {
+                            id: agent_id.clone(),
+                            name: agent_info.agent_name.clone(),
+                            pid: info_result.pid,
+                            cwd: info_result.cwd.clone(),
+                            load_average_one: info_result.load_average.0,
+                            load_average_five: info_result.load_average.1,
+                            load_average_fifteen: info_result.load_average.2,
+                            system_uptime: info_result.system_uptime,
+                            os: agent_info.os.clone(),
+                            arch: agent_info.arch.clone(),
+                            hostname: agent_info.hostname.clone(),
+                            username: agent_info.username.clone(),
+                            connected_at: agent_info.connected_at,
+                        };
+                        log!(
+                            Level::Info,
+                            "Routing REST agent details response: agent_id={}, response={:?}",
+                            agent_id,
+                            response
+                        );
+                        let _ = reply.send(response);
+                        found = true;
+                    }
+                }
+
+                if let Some(reply) = state.rest_pending_responses.remove(&agent_id) {
+                    log!(
+                        Level::Info,
+                        "Routing REST response: agent_id={}, result={:?}",
+                        agent_id,
+                        result
+                    );
+                    let _ = reply.send(result.clone());
+                    found = true;
+                }
+
                 if let Some(web_client_ref) = state.pending_responses.remove(&agent_id) {
                     log!(
                         Level::Info,
@@ -187,17 +254,6 @@ impl Actor for RouterActor {
                             result: result.clone(),
                         },
                     ));
-                    found = true;
-                }
-
-                if let Some(reply) = state.rest_pending_responses.remove(&agent_id) {
-                    log!(
-                        Level::Info,
-                        "Routing REST response: agent_id={}, result={:?}",
-                        agent_id,
-                        result
-                    );
-                    let _ = reply.send(result);
                     found = true;
                 }
 
@@ -240,6 +296,36 @@ impl Actor for RouterActor {
                     let _ = reply.send(CommandResult::Error {
                         message: format!("Agent not found: {}", agent_id),
                     });
+                }
+            }
+            RouterMsg::GetAgentDetails { agent_id, reply } => {
+                if let Some(agent_info) = state.agents.get(&agent_id) {
+                    state
+                        .agent_details_pending_responses
+                        .insert(agent_id.clone(), reply);
+                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                        Message::Command {
+                            agent_id: agent_id.clone(),
+                            command: Command::AgentInfo,
+                        },
+                    ));
+                } else {
+                    let response = crate::commands::AgentDetailsResponse {
+                        id: agent_id.clone(),
+                        name: String::new(),
+                        pid: 0,
+                        cwd: String::new(),
+                        load_average_one: 0.0,
+                        load_average_five: 0.0,
+                        load_average_fifteen: 0.0,
+                        system_uptime: 0,
+                        os: String::new(),
+                        arch: String::new(),
+                        hostname: String::new(),
+                        username: String::new(),
+                        connected_at: 0,
+                    };
+                    let _ = reply.send(response);
                 }
             }
         }

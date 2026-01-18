@@ -2,6 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{Level, commands::CommandHandler, log, types::Message};
 use std::env;
+use sysinfo::System;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
@@ -204,9 +205,19 @@ impl Actor for AgentActor {
 
                         let _ = myself.cast(AgentMsg::ConnectionEstablished);
 
+                        let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
+                        let os = std::env::consts::OS.to_string();
+                        let arch = std::env::consts::ARCH.to_string();
+                        let username =
+                            std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+
                         let register_msg = Message::AgentRegister {
                             agent_id: state.agent_id.clone(),
                             agent_name: state.agent_name.clone(),
+                            os,
+                            arch,
+                            hostname,
+                            username,
                         };
 
                         if let Ok(json) = serde_json::to_string(&register_msg) {

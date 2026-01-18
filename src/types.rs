@@ -9,6 +9,10 @@ pub enum Message {
     AgentRegister {
         agent_id: String,
         agent_name: String,
+        os: String,
+        arch: String,
+        hostname: String,
+        username: String,
     },
     #[serde(rename = "agent_unregister")]
     AgentUnregister { agent_id: String },
