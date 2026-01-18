@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
-    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoResponse,
-    ErrorResponse, LsResponse,
+    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
+    EchoResponse, ErrorResponse, LsResponse,
 };
 
 use axum::{
@@ -261,27 +261,14 @@ async fn cat_agent_handler(
 async fn echo_agent_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
-    Json(payload): Json<serde_json::Value>,
+    Json(payload): Json<EchoRequest>,
 ) -> impl IntoResponse {
-    let message = match payload.get("message") {
-        Some(msg) if msg.is_string() => msg.as_str().unwrap().to_string(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Missing or invalid 'message' field in request body".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest {
             agent_id: agent.clone(),
             command: Command::Echo {
-                message: message.clone()
+                request: payload.clone()
             },
             reply,
         },

@@ -39,17 +39,24 @@ impl AgentActor {
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
             match redoor_msg {
-                Message::Command { command, .. } => {
+                Message::Command {
+                    request_id,
+                    command,
+                    ..
+                } => {
+                    let request_id_clone = request_id.clone();
                     log!(
                         Level::Info,
-                        "Command received: agent_id={}, command={:?}",
+                        "Command received: agent_id={}, request_id={}, command={:?}",
                         agent_id,
+                        request_id,
                         command
                     );
                     let result = CommandHandler::new().execute(command).await;
                     let result_clone = result.clone();
                     let response = Message::CommandResponse {
                         agent_id: agent_id.to_string(),
+                        request_id: request_id.clone(),
                         result,
                     };
 
@@ -58,8 +65,9 @@ impl AgentActor {
                     }
                     log!(
                         Level::Info,
-                        "Command response sent: agent_id={}, result={:?}",
+                        "Command response sent: agent_id={}, request_id={}, result={:?}",
                         agent_id,
+                        request_id_clone,
                         result_clone
                     );
                 }

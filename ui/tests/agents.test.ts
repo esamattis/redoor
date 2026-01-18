@@ -277,6 +277,31 @@ describe('Agents API', () => {
     expect(result.message).toBe(testMessage)
   })
 
+  it('should handle concurrent echo requests with random sleep', async () => {
+    const agents = await apiClient.listAgents()
+    // Verify at least one agent is connected
+    expect(agents.length).toBeGreaterThan(0)
+
+    const testAgent = agents.find((a) => a.name === AGENT_NAME)
+    // Verify the test agent is present
+    expect(testAgent).toBeDefined()
+
+    const CONCURRENT_REQUESTS = 20
+    const uniqueMessages = Array.from({ length: CONCURRENT_REQUESTS }, (_, i) => `concurrent-test-${i}`)
+
+    const promises = uniqueMessages.map((message) =>
+      testAgent!.echo(message, true),
+    )
+
+    const results = await Promise.all(promises)
+
+    expect(results.length).toBe(CONCURRENT_REQUESTS)
+
+    for (let i = 0; i < results.length; i++) {
+      expect(results[i]!.message).toBe(uniqueMessages[i]!)
+    }
+  })
+
   it('should return 404 for non-existent agent details', async () => {
     const nonExistentAgentId = 'non-existent-agent-id'
     const agent = new Agent(apiClient.baseUrl, { id: nonExistentAgentId, name: 'non-existent' })

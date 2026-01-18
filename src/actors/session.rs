@@ -84,27 +84,43 @@ impl Actor for SessionActor {
                         .router_ref
                         .cast(RouterMsg::UnregisterAgent { agent_id });
                 }
-                Message::Command { agent_id, command } => {
+                Message::Command {
+                    agent_id,
+                    request_id: _,
+                    command,
+                } => {
                     let _ = state.router_ref.cast(RouterMsg::RouteCommand {
                         agent_id,
                         command,
                         originating_client: _myself.clone(),
                     });
                 }
-                Message::CommandResponse { agent_id, result } => {
-                    let _ = state
-                        .router_ref
-                        .cast(RouterMsg::RouteResponse { agent_id, result });
+                Message::CommandResponse {
+                    agent_id,
+                    request_id,
+                    result,
+                } => {
+                    let _ = state.router_ref.cast(RouterMsg::RouteResponse {
+                        agent_id,
+                        request_id,
+                        result,
+                    });
                 }
                 _ => {}
             },
             SessionMsg::OutgoingMessage(msg) => {
-                if let Message::CommandResponse { agent_id, result } = &msg {
+                if let Message::CommandResponse {
+                    agent_id,
+                    request_id,
+                    result,
+                } = &msg
+                {
                     log!(
                         Level::Info,
-                        "Web client received response: session_id={}, agent_id={}, result={:?}",
+                        "Web client received response: session_id={}, agent_id={}, request_id={}, result={:?}",
                         state.socket_id,
                         agent_id,
+                        request_id,
                         result
                     );
                 }

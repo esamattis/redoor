@@ -21,11 +21,13 @@ pub enum Message {
     #[serde(rename = "command")]
     Command {
         agent_id: String,
+        request_id: String,
         command: crate::commands::Command,
     },
     #[serde(rename = "command_response")]
     CommandResponse {
         agent_id: String,
+        request_id: String,
         result: crate::commands::CommandResult,
     },
     #[serde(rename = "error")]

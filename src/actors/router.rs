@@ -12,7 +12,8 @@ pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
-    rest_pending_responses: HashMap<String, RpcReplyPort<CommandResult>>,
+    rest_pending_responses: HashMap<String, (RpcReplyPort<CommandResult>, String)>,
+    next_request_id: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +55,7 @@ pub enum RouterMsg {
     },
     RouteResponse {
         agent_id: String,
+        request_id: String,
         result: CommandResult,
     },
     GetAgentList {
@@ -82,6 +84,7 @@ impl Actor for RouterActor {
             web_clients: Vec::new(),
             pending_responses: HashMap::new(),
             rest_pending_responses: HashMap::new(),
+            next_request_id: 1,
         })
     }
 
@@ -171,10 +174,14 @@ impl Actor for RouterActor {
                 command,
                 originating_client,
             } => {
+                let request_id = format!("req_{}", state.next_request_id);
+                state.next_request_id += 1;
+
                 log!(
                     Level::Info,
-                    "Routing command: agent_id={}, command={:?}",
+                    "Routing command: agent_id={}, request_id={}, command={:?}",
                     agent_id,
+                    request_id,
                     command
                 );
                 if let Some(agent_info) = state.agents.get(&agent_id) {
@@ -184,29 +191,37 @@ impl Actor for RouterActor {
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
                             agent_id: agent_id.clone(),
+                            request_id,
                             command,
                         },
                     ));
                 }
             }
-            RouterMsg::RouteResponse { agent_id, result } => {
+            RouterMsg::RouteResponse {
+                agent_id,
+                request_id,
+                result,
+            } => {
                 let mut found = false;
 
-                if let Some(reply) = state.rest_pending_responses.remove(&agent_id) {
+                if let Some((reply, stored_agent_id)) =
+                    state.rest_pending_responses.remove(&request_id)
+                {
                     log!(
                         Level::Info,
-                        "Routing REST response: agent_id={}, result={:?}",
+                        "Routing REST response: agent_id={}, request_id={}, result={:?}",
                         agent_id,
+                        request_id,
                         result
                     );
 
-                    let result_to_send = match (&result, state.agents.get(&agent_id)) {
+                    let result_to_send = match (&result, state.agents.get(&stored_agent_id)) {
                         (CommandResult::GetAgentDetails(details), Some(agent_info)) => {
                             // Agent returns runtime data (pid, cwd, load averages, system uptime, os, arch, hostname, username)
                             // but doesn't have access to registration metadata (id, name, connected_at) stored in router cache
                             // Fill in these fields from cached registration data before returning to REST API caller
                             let mut details = details.clone();
-                            details.id = agent_id.clone();
+                            details.id = stored_agent_id.clone();
                             details.name = agent_info.agent_name.clone();
                             details.connected_at = agent_info.connected_at;
                             CommandResult::GetAgentDetails(details)
@@ -229,6 +244,7 @@ impl Actor for RouterActor {
                     let _ = web_client_ref.cast(SessionMsg::OutgoingMessage(
                         Message::CommandResponse {
                             agent_id: agent_id.clone(),
+                            request_id: String::new(),
                             result: result.clone(),
                         },
                     ));
@@ -238,8 +254,8 @@ impl Actor for RouterActor {
                 if !found {
                     log!(
                         Level::Warning,
-                        "No pending response found for agent_id={}",
-                        agent_id
+                        "No pending response found for request_id={}",
+                        request_id
                     );
                 }
             }
@@ -256,17 +272,24 @@ impl Actor for RouterActor {
                 command,
                 reply,
             } => {
+                let request_id = format!("req_{}", state.next_request_id);
+                state.next_request_id += 1;
+
                 log!(
                     Level::Info,
-                    "Routing REST command: agent_id={}, command={:?}",
+                    "Routing REST command: agent_id={}, request_id={}, command={:?}",
                     agent_id,
+                    request_id,
                     command
                 );
                 if let Some(agent_info) = state.agents.get(&agent_id) {
-                    state.rest_pending_responses.insert(agent_id.clone(), reply);
+                    state
+                        .rest_pending_responses
+                        .insert(request_id.clone(), (reply, agent_id.clone()));
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
                             agent_id: agent_id.clone(),
+                            request_id,
                             command,
                         },
                     ));

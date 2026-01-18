@@ -6,7 +6,7 @@ use ts_rs::TS;
 pub enum Command {
     Ls { path: Option<String> },
     Cat { path: String },
-    Echo { message: String },
+    Echo { request: EchoRequest },
     AgentInfo,
     GetAgentDetails,
 }
@@ -87,6 +87,14 @@ pub struct CatResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct EchoRequest {
+    pub message: String,
+    #[serde(default)]
+    pub random_sleep: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct EchoResponse {
     pub message: String,
 }
@@ -126,7 +134,7 @@ impl CommandHandler {
         match command {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
-            Command::Echo { message } => self.echo(message).await,
+            Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
         }
@@ -191,8 +199,14 @@ impl CommandHandler {
         }
     }
 
-    async fn echo(&self, message: String) -> CommandResult {
-        CommandResult::Echo(EchoResult { message })
+    async fn echo(&self, request: EchoRequest) -> CommandResult {
+        if request.random_sleep {
+            let sleep_ms = fastrand::u64(10..500);
+            tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
+        }
+        CommandResult::Echo(EchoResult {
+            message: request.message,
+        })
     }
 
     async fn agent_info(&self) -> CommandResult {
@@ -320,7 +334,10 @@ mod tests {
         let handler = CommandHandler::new();
         let result = handler
             .execute(Command::Echo {
-                message: "hello world".to_string(),
+                request: EchoRequest {
+                    message: "hello world".to_string(),
+                    random_sleep: false,
+                },
             })
             .await;
 

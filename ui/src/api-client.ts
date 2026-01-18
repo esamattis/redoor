@@ -2,6 +2,7 @@ import type { LsResponse } from "../../bindings/LsResponse";
 import type { ErrorResponse } from "../../bindings/ErrorResponse";
 import type { AgentListResponse } from "../../bindings/AgentListResponse";
 import type { AgentDetailsResponse } from "../../bindings/AgentDetailsResponse";
+import type { EchoRequest } from "../../bindings/EchoRequest";
 import type { EchoResponse } from "../../bindings/EchoResponse";
 import type { AgentInfoResponse } from "../../bindings/AgentInfoResponse";
 
@@ -36,7 +37,8 @@ export class Agent {
         );
     }
 
-    async echo(message: string): Promise<EchoResponse> {
+    async echo(message: string, random_sleep: boolean = false): Promise<EchoResponse> {
+        const request: EchoRequest = { message, random_sleep };
         return apiRequest(
             this.baseUrl,
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/echo`,
@@ -45,7 +47,7 @@ export class Agent {
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ message }),
+                body: JSON.stringify(request),
             },
         );
     }
