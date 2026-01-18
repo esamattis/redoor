@@ -1,5 +1,8 @@
 #!/bin/bash
 set -e
 
-cargo test generate_ts_bindings
+# Generate TypeScript bindings using ts-rs
+# Note: ts-rs generates bindings automatically during test compilation for all structs marked with #[ts(export)]
+# No actual test with this name exists - the test compilation triggers the bindings generation
+cargo test export_bindings
 
