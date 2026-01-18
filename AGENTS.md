@@ -4,7 +4,7 @@ Rust Tokio app using Axum and the Ractor Actor framework.
 Architecture:
 
 - Websocket server
-- redoor agents that connects to the server via via Websockets 
+- redoor agents that connects to the server via via Websockets
 - The server exposes REST API which can be used to execute commands in the agents using the websocket connection
 
 Guidelines
@@ -20,7 +20,7 @@ Guidelines
 
 # UI
 
-The application UI  in in redoor-ui directory. 
+The application UI  in in redoor-ui directory.
 
 It is a Tanstack Router application using file based routing.
 
@@ -29,3 +29,13 @@ Use Tailwind for styling.
 Always use the rest apis using `redoor-ui/src/api-client.ts`
 
 If you need to add new apis to the client always use the generated typescript bindings
+
+Never destructure props. Always to this with components:
+
+```tsx
+function DetailCard(props: {
+    title: string;
+    icon: React.ReactNode;
+    children: React.ReactNode;
+}) { }
+```
