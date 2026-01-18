@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+
+cargo test generate_ts_bindings
+
