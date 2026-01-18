@@ -6,5 +6,6 @@ cargo build
 
 echo "Running vitest tests..."
 cd ui
-pnpm run check
 pnpm run test
+pnpm run check
+pnpm run lint
