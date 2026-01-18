@@ -3,10 +3,14 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "vite",
+        "vite": "vite",
         "build": "vite build && tsc",
         "check": "tsc",
         "lint": "oxlint",
+        "dev": "run-p -l vite redoor:*",
+        "redoor:server": "../scripts/redoor",
+        "redoor:agent1": "../scripts/redoor-agent agent1",
+        "redoor:agent2": "../scripts/redoor-agent agent2",
         "lint:fix": "oxlint --fix",
         "preview": "vite preview",
         "test": "vitest run"

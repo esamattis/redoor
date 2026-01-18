@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -eu
+
+cd "$(dirname $(dirname "$(readlink -f "$0")"))"
+
+cd ui
+
+pnpm run dev
