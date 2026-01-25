@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Folder, File, ArrowUp, AlertCircle } from "lucide-react";
-import { getParentPath, formatSize } from "../utils/path";
+import { Folder, File, ArrowUp, AlertCircle, Download, ArrowLeft } from "lucide-react";
+import { getParentPath, formatSize, getRawDownloadUrl } from "../utils/path";
+import { type LsResponse, isLsDirectoryResponse, isLsFileResponse, type LsFileResponse } from "../api-client";
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, context }) => {
@@ -11,7 +12,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         const details = await agent.getDetails();
         const relativePath = params._splat || "";
         const fullPath = relativePath ? `${details.cwd}/${relativePath}` : details.cwd;
-        const lsResult = await agent.ls(fullPath);
+        const lsResult: LsResponse = await agent.ls(fullPath);
 
         return {
             agentId: agent.id,
@@ -19,7 +20,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             cwd: details.cwd,
             relativePath,
             fullPath,
-            files: lsResult.files,
+            lsResult,
         };
     },
     component: FileBrowser,
@@ -28,38 +29,60 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const { agentId, agentName, relativePath, files } = data;
+    const { agentId, agentName, relativePath, lsResult, cwd } = data;
 
     const isAtCwd = relativePath === "";
     const parentPath = getParentPath(relativePath);
 
-    const directories = files.filter((f) => f.type === "directory");
-    const regularFiles = files.filter((f) => f.type === "file");
+    if (isLsDirectoryResponse(lsResult)) {
+        const directories = lsResult.files.filter((f) => f.type === "directory");
+        const regularFiles = lsResult.files.filter((f) => f.type === "file");
 
-    directories.sort((a, b) => a.name.localeCompare(b.name));
-    regularFiles.sort((a, b) => a.name.localeCompare(b.name));
+        directories.sort((a, b) => a.name.localeCompare(b.name));
+        regularFiles.sort((a, b) => a.name.localeCompare(b.name));
 
-    const sortedFiles = [...directories, ...regularFiles];
+        const sortedFiles = [...directories, ...regularFiles];
 
-    return (
-        <div className="p-6">
-            <div className="max-w-4xl mx-auto">
-                <BrowserHeader
-                    agentId={agentId}
-                    agentName={agentName}
-                    relativePath={relativePath}
-                    isAtCwd={isAtCwd}
-                    parentPath={parentPath}
-                />
-                <FileList
-                    agentId={agentId}
-                    relativePath={relativePath}
-                    files={sortedFiles}
-                    isAtCwd={isAtCwd}
-                />
+        return (
+            <div className="p-6">
+                <div className="max-w-4xl mx-auto">
+                    <BrowserHeader
+                        agentId={agentId}
+                        agentName={agentName}
+                        relativePath={relativePath}
+                        isAtCwd={isAtCwd}
+                        parentPath={parentPath}
+                    />
+                    <FileList
+                        agentId={agentId}
+                        relativePath={relativePath}
+                        files={sortedFiles}
+                        isAtCwd={isAtCwd}
+                    />
+                </div>
             </div>
-        </div>
-    );
+        );
+    }
+
+    if (isLsFileResponse(lsResult)) {
+        const fileName = relativePath.split("/").pop() || lsResult.path;
+        return (
+            <div className="p-6">
+                <div className="max-w-4xl mx-auto">
+                    <FileDetailView
+                        agentId={agentId}
+                        agentName={agentName}
+                        relativePath={relativePath}
+                        fileName={fileName}
+                        lsResult={lsResult}
+                        cwd={cwd}
+                    />
+                </div>
+            </div>
+        );
+    }
+
+    return null;
 }
 
 function BrowserHeader(props: {
@@ -235,11 +258,117 @@ function FileEntry(props: {
             <td className="p-3">
                 <File className="h-5 w-5 text-gray-400" />
             </td>
-            <td className="p-3 text-gray-900">{entry.name}</td>
+            <td className="p-3">
+                <Link
+                    to="/agents/$agentId/browser/$"
+                    params={{ agentId, _splat: splatValue }}
+                    className="text-blue-600 font-medium hover:underline"
+                >
+                    {entry.name}
+                </Link>
+            </td>
             <td className="p-3 text-gray-500">{formatSize(entry.size)}</td>
             <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
             <td className="p-3 text-gray-500">{entry.group || "-"}</td>
         </tr>
+    );
+}
+
+function FileDetailView(props: {
+    agentId: string;
+    agentName: string;
+    relativePath: string;
+    fileName: string;
+    lsResult: LsFileResponse;
+    cwd: string;
+}) {
+    const { agentId, agentName, relativePath, fileName, lsResult } = props;
+    const parentPath = getParentPath(relativePath);
+    const rawDownloadUrl = getRawDownloadUrl(window.location.origin, agentId, lsResult.path);
+
+    return (
+        <div>
+            <div className="mb-6">
+                <div className="flex items-center justify-between mb-4">
+                    <Breadcrumbs
+                        agentId={agentId}
+                        agentName={agentName}
+                        relativePath={relativePath}
+                    />
+                    <div className="flex gap-2">
+                        <Link
+                            to="/agents/$agentId/browser/$"
+                            params={{ agentId, _splat: parentPath ?? undefined }}
+                            className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
+                        >
+                            <ArrowLeft className="h-4 w-4" />
+                            Back
+                        </Link>
+                        <Link
+                            to="/agents/$agentId"
+                            params={{ agentId }}
+                            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                        >
+                            Back to Agent
+                        </Link>
+                    </div>
+                </div>
+            </div>
+
+            <div className="bg-white border rounded-lg p-6">
+                <div className="flex items-center gap-4 mb-6">
+                    <div className="p-3 bg-blue-100 rounded-lg">
+                        <File className="h-8 w-8 text-blue-600" />
+                    </div>
+                    <h1 className="text-2xl font-bold text-gray-900">{fileName}</h1>
+                </div>
+
+                <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-4">
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">Size</p>
+                            <p className="text-gray-900 font-medium">{formatSize(BigInt(lsResult.size as unknown as number))}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">Owner</p>
+                            <p className="text-gray-900 font-medium">{lsResult.owner || "-"}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">Group</p>
+                            <p className="text-gray-900 font-medium">{lsResult.group || "-"}</p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">UID</p>
+                            <p className="text-gray-900 font-medium">{lsResult.uid}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">GID</p>
+                            <p className="text-gray-900 font-medium">{lsResult.gid}</p>
+                        </div>
+                    </div>
+
+                    <div>
+                        <p className="text-sm text-gray-500 mb-1">Full Path</p>
+                        <p className="text-gray-900 font-mono text-sm bg-gray-50 p-2 rounded">{lsResult.path}</p>
+                    </div>
+
+                    <div>
+                        <p className="text-sm text-gray-500 mb-1">Download</p>
+                        <a
+                            href={rawDownloadUrl}
+                            download={fileName}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                        >
+                            <Download className="h-4 w-4" />
+                            Download File
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
     );
 }
 

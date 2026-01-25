@@ -13,8 +13,18 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LsResult {
+pub struct LsDirectoryResult {
     pub files: Vec<LsEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LsFileResult {
+    pub size: u64,
+    pub path: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +49,8 @@ pub struct AgentInfoResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CommandResult {
-    Ls(LsResult),
+    LsDirectory(LsDirectoryResult),
+    LsFile(LsFileResult),
     Cat(CatResult),
     RawDownload { path: String },
     Echo(EchoResult),
@@ -76,8 +87,19 @@ pub struct LsEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct LsResponse {
+pub struct LsDirectoryResponse {
     pub files: Vec<LsEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LsFileResponse {
+    pub size: u64,
+    pub path: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -149,46 +171,78 @@ impl CommandHandler {
 
         let path = path.unwrap_or_else(|| ".".to_string());
 
-        match tokio::fs::read_dir(&path).await {
-            Ok(mut entries) => {
-                let mut files = Vec::new();
-                while let Some(entry) = entries.next_entry().await.ok().flatten() {
-                    let metadata = entry.metadata().await.ok();
-                    let name = entry.file_name().into_string().ok();
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => {
+                if metadata.is_dir() {
+                    match tokio::fs::read_dir(&path).await {
+                        Ok(mut entries) => {
+                            let mut files = Vec::new();
+                            while let Some(entry) = entries.next_entry().await.ok().flatten() {
+                                let entry_metadata = entry.metadata().await.ok();
+                                let name = entry.file_name().into_string().ok();
 
-                    if let (Some(metadata), Some(name)) = (metadata, name) {
-                        let is_dir = metadata.is_dir();
-                        let file_type = if is_dir { "directory" } else { "file" };
-                        let size = metadata.size();
-                        let uid = metadata.uid();
-                        let gid = metadata.gid();
+                                if let (Some(entry_metadata), Some(name)) = (entry_metadata, name) {
+                                    let is_dir = entry_metadata.is_dir();
+                                    let file_type = if is_dir { "directory" } else { "file" };
+                                    let size = entry_metadata.size();
+                                    let uid = entry_metadata.uid();
+                                    let gid = entry_metadata.gid();
 
-                        let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
-                            .ok()
-                            .flatten()
-                            .map(|u| u.name);
+                                    let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
+                                        .ok()
+                                        .flatten()
+                                        .map(|u| u.name);
 
-                        let group = Group::from_gid(nix::unistd::Gid::from_raw(gid))
-                            .ok()
-                            .flatten()
-                            .map(|g| g.name);
+                                    let group = Group::from_gid(nix::unistd::Gid::from_raw(gid))
+                                        .ok()
+                                        .flatten()
+                                        .map(|g| g.name);
 
-                        files.push(LsEntry {
-                            name,
-                            file_type: file_type.to_string(),
-                            size,
-                            owner,
-                            group,
-                            uid,
-                            gid,
-                        });
+                                    files.push(LsEntry {
+                                        name,
+                                        file_type: file_type.to_string(),
+                                        size,
+                                        owner,
+                                        group,
+                                        uid,
+                                        gid,
+                                    });
+                                }
+                            }
+
+                            CommandResult::LsDirectory(LsDirectoryResult { files })
+                        }
+                        Err(e) => CommandResult::Error {
+                            message: format!("Failed to read directory: {}", e),
+                        },
                     }
-                }
+                } else {
+                    let size = metadata.size();
+                    let uid = metadata.uid();
+                    let gid = metadata.gid();
 
-                CommandResult::Ls(LsResult { files })
+                    let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
+                        .ok()
+                        .flatten()
+                        .map(|u| u.name);
+
+                    let group = Group::from_gid(nix::unistd::Gid::from_raw(gid))
+                        .ok()
+                        .flatten()
+                        .map(|g| g.name);
+
+                    CommandResult::LsFile(LsFileResult {
+                        size,
+                        path,
+                        owner,
+                        group,
+                        uid,
+                        gid,
+                    })
+                }
             }
             Err(e) => CommandResult::Error {
-                message: format!("Failed to read directory: {}", e),
+                message: format!("Failed to get metadata: {}", e),
             },
         }
     }
@@ -287,7 +341,7 @@ mod tests {
         let result = handler.execute(Command::Ls { path: None }).await;
 
         match result {
-            CommandResult::Ls(ls_result) => {
+            CommandResult::LsDirectory(ls_result) => {
                 assert!(!ls_result.files.is_empty(), "ls should return files");
                 let first_file = &ls_result.files[0];
                 assert!(
@@ -298,7 +352,7 @@ mod tests {
                 assert!(first_file.gid > 0, "gid should be populated");
                 assert!(!first_file.name.is_empty(), "name should not be empty");
             }
-            _ => panic!("Expected LsResult"),
+            _ => panic!("Expected LsDirectoryResult"),
         }
     }
 

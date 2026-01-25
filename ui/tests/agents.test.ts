@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { ApiClient, Agent } from '../src/api-client'
+import { ApiClient, Agent, isLsDirectoryResponse } from '../src/api-client'
 import path from 'node:path'
 import { ProcessManager, waitForPort, waitForLogMessage } from './test-utils'
 
@@ -86,34 +86,38 @@ describe('Agents API', () => {
     expect(agents.length).toBeGreaterThan(0)
 
     const testAgent = agents.find((a) => a.name === AGENT_NAME)
-    // Verify the test agent is present
+    // Verify test agent is present
     expect(testAgent).toBeDefined()
 
     const result = await testAgent!.ls('src')
+    // Verify result is a directory response
+    expect(isLsDirectoryResponse(result)).toBe(true)
     // Verify result contains an array of files
-    expect(result.files).toBeInstanceOf(Array)
-    // Verify directory listing returns files
-    expect(result.files.length).toBeGreaterThan(0)
-    // Verify file entries contain metadata
-    const firstFile = result.files[0]!
-    expect(firstFile.name).toBeDefined()
-    expect(typeof firstFile.name).toBe('string')
-    expect(firstFile.type).toBeDefined()
-    expect(typeof firstFile.type).toBe('string')
-    expect(firstFile.type).toMatch(/^(file|directory)$/)
-    expect(firstFile.size).toBeDefined()
-    expect(typeof firstFile.size).toBe('number')
-    expect(firstFile.size).toBeGreaterThanOrEqual(0)
-    expect(firstFile.uid).toBeDefined()
-    expect(typeof firstFile.uid).toBe('number')
-    expect(firstFile.uid).toBeGreaterThan(0)
-    expect(firstFile.gid).toBeDefined()
-    expect(typeof firstFile.gid).toBe('number')
-    expect(firstFile.gid).toBeGreaterThan(0)
-    expect(firstFile.owner).toBeDefined()
-    expect(firstFile.owner === null || typeof firstFile.owner === 'string')
-    expect(firstFile.group).toBeDefined()
-    expect(firstFile.group === null || typeof firstFile.group === 'string')
+    if (isLsDirectoryResponse(result)) {
+      expect(result.files).toBeInstanceOf(Array)
+      // Verify directory listing returns files
+      expect(result.files.length).toBeGreaterThan(0)
+      // Verify file entries contain metadata
+      const firstFile = result.files[0]!
+      expect(firstFile.name).toBeDefined()
+      expect(typeof firstFile.name).toBe('string')
+      expect(firstFile.type).toBeDefined()
+      expect(typeof firstFile.type).toBe('string')
+      expect(firstFile.type).toMatch(/^(file|directory)$/)
+      expect(firstFile.size).toBeDefined()
+      expect(typeof firstFile.size).toBe('number')
+      expect(firstFile.size).toBeGreaterThanOrEqual(0)
+      expect(firstFile.uid).toBeDefined()
+      expect(typeof firstFile.uid).toBe('number')
+      expect(firstFile.uid).toBeGreaterThan(0)
+      expect(firstFile.gid).toBeDefined()
+      expect(typeof firstFile.gid).toBe('number')
+      expect(firstFile.gid).toBeGreaterThan(0)
+      expect(firstFile.owner).toBeDefined()
+      expect(firstFile.owner === null || typeof firstFile.owner === 'string')
+      expect(firstFile.group).toBeDefined()
+      expect(firstFile.group === null || typeof firstFile.group === 'string')
+    }
   })
 
   it('should reject duplicate agent names', async () => {

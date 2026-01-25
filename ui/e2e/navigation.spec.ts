@@ -205,4 +205,101 @@ test.describe.serial("File Browser Navigation", () => {
             .nth(2);
         await expect(fileSizeColumn).not.toHaveText("-");
     });
+
+    test("should navigate to file detail view", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page.getByRole("link", { name: ".test" }).click();
+
+        await page
+            .getByRole("cell", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt" })
+            .click();
+
+        await expect(page.locator("h1.text-2xl.font-bold")).toContainText("file1.txt");
+        await expect(page.getByText("Size")).toBeVisible();
+        await expect(page.getByText("Owner")).toBeVisible();
+        await expect(page.getByText("Group")).toBeVisible();
+        await expect(page.getByText("UID")).toBeVisible();
+        await expect(page.getByText("GID")).toBeVisible();
+        await expect(page.getByText("Full Path")).toBeVisible();
+        await expect(page.getByRole("link", { name: "Download File" })).toBeVisible();
+        await expect(page.getByRole("link", { name: "Back", exact: true })).toBeVisible();
+    });
+
+    test("should display correct file size on detail view", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page.getByRole("link", { name: ".test" }).click();
+
+        await page
+            .getByRole("cell", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt" })
+            .click();
+
+        const sizeText = await page
+            .locator("p", { hasText: "Size" })
+            .locator("..")
+            .locator("p.text-gray-900")
+            .textContent();
+
+        expect(sizeText).toBeDefined();
+        expect(sizeText).not.toBe("-");
+    });
+
+    test("should navigate back from file detail view", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page.getByRole("link", { name: ".test" }).click();
+
+        await page
+            .getByRole("cell", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt" })
+            .click();
+
+        const backButton = page.getByRole("link", { name: "Back", exact: true });
+        await backButton.click();
+
+        await expect(page.getByRole("cell", { name: "file1.txt" })).toBeVisible();
+        await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
+    });
+
+    test("should navigate back to agent from file detail view", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page.getByRole("link", { name: ".test" }).click();
+
+        await page
+            .getByRole("cell", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt" })
+            .click();
+
+        const backToAgentButton = page.getByRole("link", {
+            name: "Back to Agent",
+        });
+        await backToAgentButton.click();
+
+        await expect(page).toHaveURL(new RegExp(`/agents/${agentId}$`));
+    });
+
+    test("should navigate to nested file detail view", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page.getByRole("link", { name: ".test" }).click();
+        await page.getByRole("link", { name: "subdir1" }).click();
+
+        await page
+            .getByRole("cell", { name: "nested1.txt" })
+            .getByRole("link", { name: "nested1.txt" })
+            .click();
+
+        await expect(page.locator("h1.text-2xl.font-bold")).toContainText("nested1.txt");
+        await expect(page.getByText("Size")).toBeVisible();
+        await expect(page.getByText("Full Path")).toBeVisible();
+
+        const backLink = page.getByRole("link", { name: "Back", exact: true });
+        await backLink.click();
+
+        await expect(page.getByRole("cell", { name: "nested1.txt" })).toBeVisible();
+        await expect(page.getByRole("cell", { name: "nested2.txt" })).toBeVisible();
+    });
 });

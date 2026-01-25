@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
     AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-    EchoResponse, ErrorResponse, LsResponse,
+    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse,
 };
 
 use axum::{
@@ -183,10 +183,22 @@ async fn ls_agent_handler(
         30000
     ) {
         Ok(result) => match result {
-            CommandResult::Ls(ls_result) => (
+            CommandResult::LsDirectory(ls_result) => (
                 StatusCode::OK,
-                Json(LsResponse {
+                Json(LsDirectoryResponse {
                     files: ls_result.files,
+                }),
+            )
+                .into_response(),
+            CommandResult::LsFile(ls_result) => (
+                StatusCode::OK,
+                Json(LsFileResponse {
+                    size: ls_result.size,
+                    path: ls_result.path,
+                    owner: ls_result.owner,
+                    group: ls_result.group,
+                    uid: ls_result.uid,
+                    gid: ls_result.gid,
                 }),
             )
                 .into_response(),

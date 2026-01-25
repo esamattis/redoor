@@ -1,10 +1,23 @@
-import type { LsResponse } from "../../bindings/LsResponse";
+import type { LsDirectoryResponse } from "../../bindings/LsDirectoryResponse";
+import type { LsFileResponse } from "../../bindings/LsFileResponse";
 import type { ErrorResponse } from "../../bindings/ErrorResponse";
 import type { AgentListResponse } from "../../bindings/AgentListResponse";
 import type { AgentDetailsResponse } from "../../bindings/AgentDetailsResponse";
 import type { EchoRequest } from "../../bindings/EchoRequest";
 import type { EchoResponse } from "../../bindings/EchoResponse";
 import type { AgentInfoResponse } from "../../bindings/AgentInfoResponse";
+
+export type { LsDirectoryResponse, LsFileResponse };
+
+export type LsResponse = LsDirectoryResponse | LsFileResponse;
+
+export function isLsDirectoryResponse(response: LsResponse): response is LsDirectoryResponse {
+    return "files" in response;
+}
+
+export function isLsFileResponse(response: LsResponse): response is LsFileResponse {
+    return "size" in response;
+}
 
 export class Agent {
     private baseUrl: string;
@@ -31,7 +44,7 @@ export class Agent {
     }
 
     async ls(path: string): Promise<LsResponse> {
-        return apiRequest(
+        return apiRequest<LsResponse>(
             this.baseUrl,
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls/${encodeURIComponent(path)}`,
         );
