@@ -6,14 +6,16 @@ use redoor::commands::{
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         Path, State as AxumState,
         ws::{WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
+use bytes::Bytes;
 use ractor::{ActorRef, call_t};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
@@ -50,6 +52,7 @@ async fn main() {
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
+        .route("/api/v1/agents/{agent}/raw/{*path}", get(raw_agent_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
         .layer(
             CorsLayer::new()
@@ -302,6 +305,68 @@ async fn echo_agent_handler(
                 Json(ErrorResponse { error: error_msg }),
             )
                 .into_response()
+        }
+    }
+}
+
+async fn raw_agent_handler(
+    Path((agent, path)): Path<(String, String)>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let (response_sender, mut response_receiver) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteStreamCommandRest {
+            agent_id: agent.clone(),
+            command: Command::RawDownload { path: path.clone() },
+            reply,
+            chunk_sender: response_sender,
+        },
+        30000
+    ) {
+        Ok(()) => {
+            let mut is_error = false;
+            let body = Body::from_stream(async_stream::stream! {
+                while let Some(chunk) = response_receiver.recv().await {
+                    if chunk.len() >= redoor::streaming::HEADER_SIZE {
+                        let chunk_is_last = chunk[20] == 1;
+                        let chunk_is_error = chunk[21] == 1;
+
+                        if chunk_is_error {
+                            is_error = true;
+                        }
+
+                        if chunk.len() > redoor::streaming::HEADER_SIZE {
+                            let data = chunk[redoor::streaming::HEADER_SIZE..].to_vec();
+                            yield Ok::<_, axum::Error>(Bytes::from(data));
+                        }
+                    }
+                }
+            });
+
+            if is_error {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse { error: format!("File not found: {}", path) }),
+                ).into_response()
+            } else {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Content-Disposition", format!("attachment; filename=\"{}\"",
+                        path.split('/').last().unwrap_or("file")))
+                    .body(body)
+                    .unwrap()
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to start stream: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: error_msg }),
+            ).into_response()
         }
     }
 }

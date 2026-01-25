@@ -51,6 +51,24 @@ export class Agent {
             },
         );
     }
+
+    async raw(path: string): Promise<ArrayBuffer> {
+        const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodeURIComponent(path)}`;
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            const text = await response.text();
+            if (text) {
+                const error: ErrorResponse = JSON.parse(text);
+                throw new Error(error.error);
+            }
+            throw new Error(
+                `Request failed: ${response.status} ${response.statusText}`,
+            );
+        }
+
+        return response.arrayBuffer();
+    }
 }
 
 async function apiRequest<T>(

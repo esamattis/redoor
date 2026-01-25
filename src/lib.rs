@@ -1,6 +1,7 @@
 pub mod actors;
 pub mod commands;
 pub mod logging;
+pub mod streaming;
 pub mod types;
 
 pub use actors::{command_executor, router, session};

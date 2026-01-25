@@ -27,3 +27,5 @@ sysinfo = "0.33"
 tower-http = { version = "0.6", features = ["cors"] }
 nix = { version = "0.30.1", features = ["user"] }
 fastrand = "2.0"
+async-stream = "0.3"
+bytes = "1.0"

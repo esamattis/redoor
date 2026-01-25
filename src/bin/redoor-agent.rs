@@ -1,6 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use redoor::{Level, commands::CommandHandler, log, types::Message};
+use redoor::{Level, commands::{Command, CommandHandler}, log, streaming, types::Message};
 use std::env;
 use sysinfo::System;
 use tokio::sync::mpsc;
@@ -14,6 +14,7 @@ pub struct AgentState {
     agent_name: String,
     server_url: String,
     ws_tx: Option<mpsc::UnboundedSender<WsMessage>>,
+    active_request_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -22,9 +23,11 @@ pub enum AgentMsg {
     ConnectionEstablished,
     ConnectionFailed { error: String },
     WebSocketMessage { text: String },
+    WebSocketBinaryMessage { bytes: Vec<u8> },
     ConnectionLost { reason: String },
     Reconnect,
     SendWebSocketMessage { msg: WsMessage },
+    SendWebSocketBinary { bytes: Vec<u8> },
     Shutdown,
     ExitWithError,
 }
@@ -51,6 +54,12 @@ impl AgentActor {
                         request_id,
                         command
                     );
+
+                    if let Command::RawDownload { path } = command {
+                        let _ = self.raw_download(path, request_id, write, agent_ref.clone()).await;
+                        return;
+                    }
+
                     let result = CommandHandler::new().execute(command).await;
                     let result_clone = result.clone();
                     let response = Message::CommandResponse {
@@ -79,6 +88,100 @@ impl AgentActor {
         }
     }
 
+    async fn raw_download(
+        &self,
+        path: String,
+        request_id: u64,
+        write: &mpsc::UnboundedSender<WsMessage>,
+        agent_ref: ActorRef<AgentMsg>,
+    ) {
+        use tokio::io::AsyncReadExt;
+
+        match tokio::fs::File::open(&path).await {
+            Ok(mut file) => {
+                let mut chunk_index = 0u64;
+                let chunk_size = streaming::CHUNK_SIZE;
+                let mut buffer = vec![0u8; chunk_size];
+
+                loop {
+                    match file.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = streaming::StreamChunk {
+                                request_id,
+                                chunk_index,
+                                is_last: false,
+                                is_error: false,
+                                data: buffer[..n].to_vec(),
+                            };
+                            let _ = write.send(WsMessage::Binary(chunk.to_bytes().into()));
+                            chunk_index += 1;
+                        }
+                        Err(e) => {
+                            log!(Level::Error, "Failed to read file: {}", e);
+                            let error_chunk = streaming::StreamChunk {
+                                request_id,
+                                chunk_index,
+                                is_last: true,
+                                is_error: true,
+                                data: Vec::new(),
+                            };
+                            let _ = write.send(WsMessage::Binary(error_chunk.to_bytes().into()));
+                            return;
+                        }
+                    }
+                }
+
+                let final_chunk = streaming::StreamChunk {
+                    request_id,
+                    chunk_index,
+                    is_last: true,
+                    is_error: false,
+                    data: Vec::new(),
+                };
+                let _ = write.send(WsMessage::Binary(final_chunk.to_bytes().into()));
+
+                let final_response = Message::CommandResponse {
+                    agent_id: agent_ref.get_id().to_string(),
+                    request_id,
+                    result: redoor::commands::CommandResult::RawDownload { path: path.clone() },
+                };
+                if let Ok(json) = serde_json::to_string(&final_response) {
+                    let _ = write.send(WsMessage::text(json));
+                }
+
+                log!(
+                    Level::Info,
+                    "Raw download complete: path={}, chunks={}",
+                    path,
+                    chunk_index + 1
+                );
+            }
+            Err(e) => {
+                log!(Level::Error, "Failed to open file: {}", e);
+                let error_chunk = streaming::StreamChunk {
+                    request_id,
+                    chunk_index: 0,
+                    is_last: true,
+                    is_error: true,
+                    data: Vec::new(),
+                };
+                let _ = write.send(WsMessage::Binary(error_chunk.to_bytes().into()));
+
+                let response = Message::CommandResponse {
+                    agent_id: agent_ref.get_id().to_string(),
+                    request_id,
+                    result: redoor::commands::CommandResult::Error {
+                        message: format!("Failed to open file: {}", e),
+                    },
+                };
+                if let Ok(json) = serde_json::to_string(&response) {
+                    let _ = write.send(WsMessage::text(json));
+                }
+            }
+        }
+    }
+
     async fn spawn_read_task(
         mut read: futures_util::stream::SplitStream<
             tokio_tungstenite::WebSocketStream<
@@ -93,6 +196,11 @@ impl AgentActor {
                     Ok(WsMessage::Text(text)) => {
                         let _ = agent_ref.cast(AgentMsg::WebSocketMessage {
                             text: text.to_string(),
+                        });
+                    }
+                    Ok(WsMessage::Binary(bytes)) => {
+                        let _ = agent_ref.cast(AgentMsg::WebSocketBinaryMessage {
+                            bytes: bytes.to_vec(),
                         });
                     }
                     Ok(WsMessage::Close(_)) => {
@@ -165,6 +273,7 @@ impl Actor for AgentActor {
             agent_name,
             server_url,
             ws_tx: None,
+            active_request_id: None,
         })
     }
 
@@ -290,6 +399,25 @@ impl Actor for AgentActor {
                             Level::Error,
                             "Failed to send message, connection may be lost"
                         );
+                    }
+                }
+            }
+
+            AgentMsg::SendWebSocketBinary { bytes } => {
+                if let Some(tx) = &state.ws_tx {
+                    if tx.send(WsMessage::Binary(bytes.into())).is_err() {
+                        log!(
+                            Level::Error,
+                            "Failed to send binary message, connection may be lost"
+                        );
+                    }
+                }
+            }
+
+            AgentMsg::WebSocketBinaryMessage { bytes } => {
+                if let Ok(chunk) = streaming::StreamChunk::from_bytes(&bytes) {
+                    if chunk.is_last {
+                        state.active_request_id = None;
                     }
                 }
             }

@@ -6,6 +6,7 @@ use ts_rs::TS;
 pub enum Command {
     Ls { path: Option<String> },
     Cat { path: String },
+    RawDownload { path: String },
     Echo { request: EchoRequest },
     AgentInfo,
     GetAgentDetails,
@@ -40,6 +41,7 @@ pub struct AgentInfoResult {
 pub enum CommandResult {
     Ls(LsResult),
     Cat(CatResult),
+    RawDownload { path: String },
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
@@ -134,6 +136,7 @@ impl CommandHandler {
         match command {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
+            Command::RawDownload { path } => self.raw_download(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
@@ -197,6 +200,10 @@ impl CommandHandler {
                 message: format!("Failed to read file: {}", e),
             },
         }
+    }
+
+    async fn raw_download(&self, path: String) -> CommandResult {
+        CommandResult::RawDownload { path }
     }
 
     async fn echo(&self, request: EchoRequest) -> CommandResult {
@@ -326,6 +333,23 @@ mod tests {
                 assert!(message.contains("Failed to read file"));
             }
             _ => panic!("Expected Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_raw_download_command() {
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::RawDownload {
+                path: "test.txt".to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::RawDownload { path } => {
+                assert_eq!(path, "test.txt");
+            }
+            _ => panic!("Expected RawDownload"),
         }
     }
 

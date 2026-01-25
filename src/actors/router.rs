@@ -13,6 +13,7 @@ pub struct RouterState {
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
+    rest_streaming_responses: HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     next_request_id: u64,
 }
 
@@ -74,6 +75,20 @@ pub enum RouterMsg {
         command: Command,
         reply: RpcReplyPort<CommandResult>,
     },
+    RouteStreamChunk {
+        agent_id: String,
+        request_id: u64,
+        chunk_index: u64,
+        is_last: bool,
+        is_error: bool,
+        data: Vec<u8>,
+    },
+    ExecuteStreamCommandRest {
+        agent_id: String,
+        command: Command,
+        reply: RpcReplyPort<()>,
+        chunk_sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    },
 }
 
 impl Actor for RouterActor {
@@ -92,6 +107,7 @@ impl Actor for RouterActor {
             web_clients: Vec::new(),
             pending_responses: HashMap::new(),
             rest_pending_responses: HashMap::new(),
+            rest_streaming_responses: HashMap::new(),
             next_request_id: 1,
         })
     }
@@ -303,6 +319,79 @@ impl Actor for RouterActor {
                     let _ = reply.send(CommandResult::Error {
                         message: format!("Agent not found: {}", agent_id),
                     });
+                }
+            }
+            RouterMsg::RouteStreamChunk {
+                agent_id,
+                request_id,
+                chunk_index,
+                is_last,
+                is_error,
+                data,
+            } => {
+                if let Some(chunk_sender) = state.rest_streaming_responses.remove(&request_id) {
+                    let chunk = crate::streaming::StreamChunk {
+                        request_id,
+                        chunk_index,
+                        is_last,
+                        is_error,
+                        data,
+                    };
+
+                    if !is_last && !is_error {
+                        state.rest_streaming_responses.insert(request_id, chunk_sender.clone());
+                    }
+
+                    let _ = chunk_sender.send(chunk.to_bytes());
+
+                    if is_last || is_error {
+                        log!(
+                            Level::Info,
+                            "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
+                            agent_id,
+                            request_id,
+                            chunk_index + 1,
+                            is_error
+                        );
+                    }
+                } else {
+                    log!(
+                        Level::Warning,
+                        "No streaming response found for request_id={}",
+                        request_id
+                    );
+                }
+            }
+            RouterMsg::ExecuteStreamCommandRest {
+                agent_id,
+                command,
+                reply,
+                chunk_sender,
+            } => {
+                let request_id = state.next_id();
+
+                log!(
+                    Level::Info,
+                    "Routing REST streaming command: agent_id={}, request_id={}, command={:?}",
+                    agent_id,
+                    request_id,
+                    command
+                );
+
+                if let Some(agent_info) = state.agents.get(&agent_id) {
+                    state.rest_streaming_responses.insert(request_id, chunk_sender);
+
+                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                        Message::Command {
+                            agent_id: agent_id.clone(),
+                            request_id,
+                            command,
+                        },
+                    ));
+
+                    let _ = reply.send(());
+                } else {
+                    let _ = reply.send(());
                 }
             }
         }
