@@ -341,7 +341,10 @@ impl Actor for AgentActor {
                         };
 
                         if let Ok(json) = serde_json::to_string(&register_msg) {
-                            let _ = tx.send(WsMessage::text(json));
+                            log!(Level::Info, "Sending agent registration message: {}", json);
+                            if let Err(e) = tx.send(WsMessage::text(json)).await {
+                                log!(Level::Error, "Failed to send agent registration: {}", e);
+                            }
                         }
                     }
                     Err(e) => {
