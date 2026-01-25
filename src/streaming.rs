@@ -1,5 +1,5 @@
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
-pub const HEADER_SIZE: usize = 25;
+pub const HEADER_SIZE: usize = 23;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_protocol_constants() {
         assert_eq!(PROTOCOL_MAGIC, 0x52415844);
-        assert_eq!(HEADER_SIZE, 25);
+        assert_eq!(HEADER_SIZE, 23);
         assert_eq!(CHUNK_SIZE, 64 * 1024);
     }
 }
