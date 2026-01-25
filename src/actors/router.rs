@@ -13,7 +13,7 @@ pub struct RouterState {
     web_clients: Vec<ActorRef<SessionMsg>>,
     pending_responses: HashMap<String, ActorRef<SessionMsg>>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
-    rest_streaming_responses: HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    rest_streaming_responses: HashMap<u64, tokio::sync::mpsc::Sender<Vec<u8>>>,
     next_request_id: u64,
 }
 
@@ -87,7 +87,7 @@ pub enum RouterMsg {
         agent_id: String,
         command: Command,
         reply: RpcReplyPort<()>,
-        chunk_sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        chunk_sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     },
 }
 
@@ -342,7 +342,13 @@ impl Actor for RouterActor {
                         state.rest_streaming_responses.insert(request_id, chunk_sender.clone());
                     }
 
-                    let _ = chunk_sender.send(chunk.to_bytes());
+                    if let Err(_e) = chunk_sender.send(chunk.to_bytes()).await {
+                        log!(
+                            Level::Warning,
+                            "Failed to send chunk to REST stream (channel closed or full): request_id={}",
+                            request_id
+                        );
+                    }
 
                     if is_last || is_error {
                         log!(

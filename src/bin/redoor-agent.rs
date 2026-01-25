@@ -13,7 +13,7 @@ pub struct AgentState {
     agent_id: String,
     agent_name: String,
     server_url: String,
-    ws_tx: Option<mpsc::UnboundedSender<WsMessage>>,
+    ws_tx: Option<mpsc::Sender<WsMessage>>,
     active_request_id: Option<u64>,
 }
 
@@ -37,7 +37,7 @@ impl AgentActor {
         &self,
         text: String,
         agent_id: &str,
-        write: &mpsc::UnboundedSender<WsMessage>,
+        write: &mpsc::Sender<WsMessage>,
         agent_ref: ActorRef<AgentMsg>,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
@@ -92,7 +92,7 @@ impl AgentActor {
         &self,
         path: String,
         request_id: u64,
-        write: &mpsc::UnboundedSender<WsMessage>,
+        write: &mpsc::Sender<WsMessage>,
         agent_ref: ActorRef<AgentMsg>,
     ) {
         use tokio::io::AsyncReadExt;
@@ -114,7 +114,10 @@ impl AgentActor {
                                 is_error: false,
                                 data: buffer[..n].to_vec(),
                             };
-                            let _ = write.send(WsMessage::Binary(chunk.to_bytes().into()));
+                            if write.send(WsMessage::Binary(chunk.to_bytes().into())).await.is_err() {
+                                log!(Level::Warning, "WebSocket channel full or closed, aborting download");
+                                return;
+                            }
                             chunk_index += 1;
                         }
                         Err(e) => {
@@ -304,7 +307,7 @@ impl Actor for AgentActor {
                         );
 
                         let (write, read) = ws_stream.split();
-                        let (tx, mut rx) = mpsc::unbounded_channel();
+                        let (tx, mut rx) = mpsc::channel::<WsMessage>(32);
 
                         state.ws_tx = Some(tx.clone());
 
@@ -314,6 +317,7 @@ impl Actor for AgentActor {
                         tokio::spawn(async move {
                             while let Some(msg) = rx.recv().await {
                                 if write.send(msg).await.is_err() {
+                                    log!(Level::Warning, "Failed to send WebSocket message");
                                     break;
                                 }
                             }
@@ -394,7 +398,7 @@ impl Actor for AgentActor {
 
             AgentMsg::SendWebSocketMessage { msg } => {
                 if let Some(tx) = &state.ws_tx {
-                    if tx.send(msg).is_err() {
+                    if tx.send(msg).await.is_err() {
                         log!(
                             Level::Error,
                             "Failed to send message, connection may be lost"
@@ -405,7 +409,7 @@ impl Actor for AgentActor {
 
             AgentMsg::SendWebSocketBinary { bytes } => {
                 if let Some(tx) = &state.ws_tx {
-                    if tx.send(WsMessage::Binary(bytes.into())).is_err() {
+                    if tx.send(WsMessage::Binary(bytes.into())).await.is_err() {
                         log!(
                             Level::Error,
                             "Failed to send binary message, connection may be lost"

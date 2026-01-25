@@ -15,6 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::stream::StreamExt;
 use ractor::{ActorRef, call_t};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
@@ -330,7 +331,7 @@ async fn raw_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let (response_sender, mut response_receiver) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
 
     match call_t!(
         &state.router_ref,
@@ -343,39 +344,61 @@ async fn raw_agent_handler(
         30000
     ) {
         Ok(()) => {
-            let mut is_error = false;
-            let mut all_data = Vec::new();
-
-            while let Some(chunk) = response_receiver.recv().await {
-                if chunk.len() >= redoor::streaming::HEADER_SIZE {
-                    let chunk_is_error = chunk[21] == 1;
-
-                    if chunk_is_error {
-                        is_error = true;
-                    }
-
-                    if chunk.len() > redoor::streaming::HEADER_SIZE {
-                        let data = &chunk[redoor::streaming::HEADER_SIZE..];
-                        all_data.extend_from_slice(data);
-                    }
+            let first_chunk = match response_receiver.recv().await {
+                Some(chunk) => chunk,
+                None => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse { error: "No data received".to_string() }),
+                    ).into_response();
                 }
-            }
+            };
+
+            let is_error = if first_chunk.len() >= redoor::streaming::HEADER_SIZE {
+                first_chunk[21] == 1
+            } else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error: "Invalid chunk received".to_string() }),
+                ).into_response();
+            };
 
             if is_error {
-                (
+                return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse { error: format!("File not found: {}", path) }),
-                ).into_response()
-            } else {
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "application/octet-stream")
-                    .header("Content-Disposition", format!("attachment; filename=\"{}\"",
-                        path.split('/').last().unwrap_or("file")))
-                    .body(Body::from(all_data))
-                    .unwrap()
-                    .into_response()
+                ).into_response();
             }
+
+            let first_data = if first_chunk.len() > redoor::streaming::HEADER_SIZE {
+                first_chunk[redoor::streaming::HEADER_SIZE..].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            use async_stream::stream;
+
+            let stream = stream! {
+                if !first_data.is_empty() {
+                    yield bytes::Bytes::from(first_data);
+                }
+
+                while let Some(chunk) = response_receiver.recv().await {
+                    if chunk.len() > redoor::streaming::HEADER_SIZE {
+                        let data = &chunk[redoor::streaming::HEADER_SIZE..];
+                        yield bytes::Bytes::copy_from_slice(data);
+                    }
+                }
+            };
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Disposition", format!("attachment; filename=\"{}\"",
+                    path.split('/').last().unwrap_or("file")))
+                .body(Body::from_stream(stream.map(|v| Ok::<_, std::io::Error>(v))))
+                .unwrap()
+                .into_response()
         }
         Err(e) => {
             let error_msg = format!("Failed to start stream: {:?}", e);
