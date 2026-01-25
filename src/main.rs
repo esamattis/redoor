@@ -15,7 +15,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use bytes::Bytes;
 use ractor::{ActorRef, call_t};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
@@ -28,6 +27,7 @@ struct ServerState {
 #[tokio::main]
 async fn main() {
     use ractor::Actor;
+    use std::env;
 
     let (router_ref, _) = actors::router::RouterActor::spawn(None, actors::router::RouterActor, ())
         .await
@@ -62,8 +62,13 @@ async fn main() {
         )
         .with_state(server_state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Server running on http://0.0.0.0:3000");
+    let port = env::var("REDOOR_PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .unwrap_or(3000);
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    println!("Server running on http://{}", addr);
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -327,23 +332,22 @@ async fn raw_agent_handler(
     ) {
         Ok(()) => {
             let mut is_error = false;
-            let body = Body::from_stream(async_stream::stream! {
-                while let Some(chunk) = response_receiver.recv().await {
-                    if chunk.len() >= redoor::streaming::HEADER_SIZE {
-                        let chunk_is_last = chunk[20] == 1;
-                        let chunk_is_error = chunk[21] == 1;
+            let mut all_data = Vec::new();
 
-                        if chunk_is_error {
-                            is_error = true;
-                        }
+            while let Some(chunk) = response_receiver.recv().await {
+                if chunk.len() >= redoor::streaming::HEADER_SIZE {
+                    let chunk_is_error = chunk[21] == 1;
 
-                        if chunk.len() > redoor::streaming::HEADER_SIZE {
-                            let data = chunk[redoor::streaming::HEADER_SIZE..].to_vec();
-                            yield Ok::<_, axum::Error>(Bytes::from(data));
-                        }
+                    if chunk_is_error {
+                        is_error = true;
+                    }
+
+                    if chunk.len() > redoor::streaming::HEADER_SIZE {
+                        let data = &chunk[redoor::streaming::HEADER_SIZE..];
+                        all_data.extend_from_slice(data);
                     }
                 }
-            });
+            }
 
             if is_error {
                 (
@@ -356,7 +360,7 @@ async fn raw_agent_handler(
                     .header("Content-Type", "application/octet-stream")
                     .header("Content-Disposition", format!("attachment; filename=\"{}\"",
                         path.split('/').last().unwrap_or("file")))
-                    .body(body)
+                    .body(Body::from(all_data))
                     .unwrap()
                     .into_response()
             }

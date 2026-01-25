@@ -1,107 +1,14 @@
-import { spawn, ChildProcess } from 'node:child_process'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { ApiClient, Agent } from '../src/api-client'
 import path from 'node:path'
 import { writeFileSync, unlinkSync } from 'node:fs'
-import type { ErrorResponse } from '../../bindings/ErrorResponse'
+import { ProcessManager, waitForPort, waitForLogMessage } from './test-utils'
 
 const SERVER_PORT = 3000
 const SERVER_PATH = path.join(__dirname, '../../target/debug/redoor')
 const AGENT_PATH = path.join(__dirname, '../../target/debug/redoor-agent')
 const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`
 const AGENT_NAME = 'raw-test-agent'
-
-class ProcessManager {
-  private processes: Map<number, ChildProcess> = new Map()
-
-  spawn(command: string, args: string[], cwd?: string): number {
-    const proc = spawn(command, args, {
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd,
-    })
-
-    const pid = proc.pid
-    if (pid === undefined) {
-      throw new Error('Failed to get process PID')
-    }
-
-    this.processes.set(pid, proc)
-    return pid
-  }
-
-  kill(pid: number): void {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') {
-        throw e
-      }
-    }
-    this.processes.delete(pid)
-  }
-
-  killAll(): void {
-    for (const pid of this.processes.keys()) {
-      this.kill(pid)
-    }
-  }
-
-  getProcess(pid: number): ChildProcess | undefined {
-    return this.processes.get(pid)
-  }
-}
-
-async function waitForPort(port: number, maxRetries = 50): Promise<void> {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/`)
-      if (response.ok) {
-        return
-      }
-    } catch {
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-  }
-  throw new Error(`Port ${port} not ready after ${maxRetries} retries`)
-}
-
-async function waitForLogMessage(
-  process: ChildProcess,
-  pattern: RegExp,
-  timeoutMs: number = 10000
-): Promise<void> {
-  const stream = process.stdout || process.stderr
-  if (!stream) {
-    throw new Error('No stdout/stderr stream available')
-  }
-
-  let resolve: () => void
-  let reject: (error: Error) => void
-
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-
-  const onData = (chunk: Buffer) => {
-    const line = chunk.toString()
-    if (pattern.test(line)) {
-      clearTimeout(timeout)
-      stream.off('data', onData)
-      resolve()
-    }
-  }
-
-  stream.on('data', onData)
-
-  const timeout = setTimeout(() => {
-    stream.off('data', onData)
-    reject(new Error(`Timeout waiting for log pattern: ${pattern}`))
-  }, timeoutMs)
-
-  return promise
-}
 
 describe('Raw Download API', () => {
   const processManager = new ProcessManager()
@@ -111,6 +18,7 @@ describe('Raw Download API', () => {
 
   beforeAll(async () => {
     const projectRoot = path.join(__dirname, '../..')
+    process.env.REDOOR_PORT = SERVER_PORT.toString()
     serverPid = processManager.spawn(SERVER_PATH, [], projectRoot)
     await waitForPort(SERVER_PORT)
     processManager.spawn(AGENT_PATH, [WS_URL, AGENT_NAME], projectRoot)

@@ -455,10 +455,15 @@ impl Actor for AgentActor {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
+    let port = env::var("REDOOR_PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .unwrap_or(3000);
+
     let server_url = if args.len() > 1 {
         args[1].clone()
     } else {
-        "ws://127.0.0.1:3000/ws".to_string()
+        format!("ws://127.0.0.1:{}/ws", port)
     };
 
     let agent_name = if args.len() > 2 {

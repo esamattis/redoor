@@ -12,5 +12,11 @@ export default defineConfig({
         hookTimeout: 10000,
         testTimeout: 30000,
         exclude: ["node_modules", "e2e"],
+        pool: "forks",
+        poolOptions: {
+            forks: {
+                singleFork: true,
+            },
+        },
     },
 });
