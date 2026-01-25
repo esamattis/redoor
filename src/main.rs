@@ -333,7 +333,7 @@ async fn raw_agent_handler(
 ) -> impl IntoResponse {
     let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
 
-    match call_t!(
+    if call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteStreamCommandRest {
             agent_id: agent.clone(),
@@ -342,70 +342,72 @@ async fn raw_agent_handler(
             chunk_sender: response_sender,
         },
         30000
-    ) {
-        Ok(()) => {
-            let first_chunk = match response_receiver.recv().await {
-                Some(chunk) => chunk,
-                None => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse { error: "No data received".to_string() }),
-                    ).into_response();
-                }
-            };
-
-            let is_error = if first_chunk.len() >= redoor::streaming::HEADER_SIZE {
-                first_chunk[21] == 1
-            } else {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse { error: "Invalid chunk received".to_string() }),
-                ).into_response();
-            };
-
-            if is_error {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse { error: format!("File not found: {}", path) }),
-                ).into_response();
-            }
-
-            let first_data = if first_chunk.len() > redoor::streaming::HEADER_SIZE {
-                first_chunk[redoor::streaming::HEADER_SIZE..].to_vec()
-            } else {
-                Vec::new()
-            };
-
-            use async_stream::stream;
-
-            let stream = stream! {
-                if !first_data.is_empty() {
-                    yield bytes::Bytes::from(first_data);
-                }
-
-                while let Some(chunk) = response_receiver.recv().await {
-                    if chunk.len() > redoor::streaming::HEADER_SIZE {
-                        let data = &chunk[redoor::streaming::HEADER_SIZE..];
-                        yield bytes::Bytes::copy_from_slice(data);
-                    }
-                }
-            };
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/octet-stream")
-                .header("Content-Disposition", format!("attachment; filename=\"{}\"",
-                    path.split('/').last().unwrap_or("file")))
-                .body(Body::from_stream(stream.map(|v| Ok::<_, std::io::Error>(v))))
-                .unwrap()
-                .into_response()
-        }
-        Err(e) => {
-            let error_msg = format!("Failed to start stream: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: error_msg }),
-            ).into_response()
-        }
+    )
+    .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: "Failed to start stream".to_string() }),
+        )
+            .into_response();
     }
+
+    let first_chunk_bytes = match response_receiver.recv().await {
+        Some(chunk) => chunk,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: "No data received".to_string() }),
+            )
+                .into_response();
+        }
+    };
+
+    let first_chunk = match redoor::streaming::StreamChunk::from_bytes(&first_chunk_bytes) {
+        Ok(chunk) => chunk,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Invalid chunk received".to_string(),
+                },
+            ))
+                .into_response();
+        }
+    };
+
+    if first_chunk.is_error {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("File not found: {}", path),
+            }),
+        )
+            .into_response();
+    }
+
+    use async_stream::stream;
+
+    let stream = stream! {
+        if !first_chunk.data.is_empty() {
+            yield bytes::Bytes::from(first_chunk.data);
+        }
+
+        while let Some(chunk) = response_receiver.recv().await {
+            if let Ok(parsed) = redoor::streaming::StreamChunk::from_bytes(&chunk) {
+                yield bytes::Bytes::from(parsed.data);
+            }
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/octet-stream")
+        .header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", path.split('/').last().unwrap_or("file")),
+        )
+        .body(Body::from_stream(stream.map(|v| Ok::<_, std::io::Error>(v))))
+        .unwrap()
+        .into_response()
 }

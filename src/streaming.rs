@@ -28,6 +28,10 @@ impl StreamChunk {
         bytes
     }
 
+    pub fn parse_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
+        Self::from_bytes(bytes).map(|chunk| chunk.data)
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < HEADER_SIZE {
             return Err(format!(
