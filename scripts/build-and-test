@@ -35,7 +35,7 @@ echo "Running vitest tests..."
 silent_unless_error pnpm run test
 
 echo "Running playwright tests..."
-silent_unless_error pnpm exec playwright test
+silent_unless_error pnpm exec playwright test --reporter=line
 
 echo "Running type checks and linting..."
 silent_unless_error pnpm run types

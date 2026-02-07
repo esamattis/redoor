@@ -7,6 +7,7 @@ pub enum Command {
     Ls { path: Option<String> },
     Cat { path: String },
     RawDownload { path: String },
+    Metadata { path: String },
     Echo { request: EchoRequest },
     AgentInfo,
     GetAgentDetails,
@@ -33,6 +34,14 @@ pub struct CatResult {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MetadataResponse {
+    pub path: String,
+    pub mime_type: String,
+    pub file_size: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EchoResult {
     pub message: String,
@@ -53,6 +62,7 @@ pub enum CommandResult {
     LsFile(LsFileResult),
     Cat(CatResult),
     RawDownload { path: String },
+    Metadata(MetadataResponse),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
@@ -159,6 +169,7 @@ impl CommandHandler {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
             Command::RawDownload { path } => self.raw_download(path).await,
+            Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
@@ -258,6 +269,34 @@ impl CommandHandler {
 
     async fn raw_download(&self, path: String) -> CommandResult {
         CommandResult::RawDownload { path }
+    }
+
+    async fn metadata(&self, path: String) -> CommandResult {
+        use std::os::unix::fs::MetadataExt;
+        use std::path::Path;
+
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => {
+                // Determine MIME type from file extension
+                let mime_type = Path::new(&path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .and_then(|ext| mime_guess::from_ext(ext).first())
+                    .map(|mime| mime.to_string())
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+
+                let file_size = metadata.size();
+
+                CommandResult::Metadata(MetadataResponse {
+                    path,
+                    mime_type,
+                    file_size,
+                })
+            }
+            Err(e) => CommandResult::Error {
+                message: format!("Failed to get file metadata: {}", e),
+            },
+        }
     }
 
     async fn echo(&self, request: EchoRequest) -> CommandResult {

@@ -4,11 +4,13 @@ use redoor::commands::{
     EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse,
 };
 
+use serde::Deserialize;
+
 use axum::{
     Json, Router,
     body::Body,
     extract::{
-        Path, State as AxumState,
+        Path, Query, State as AxumState,
         ws::{WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -23,6 +25,11 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct ServerState {
     router_ref: ActorRef<actors::router::RouterMsg>,
+}
+
+#[derive(Deserialize)]
+struct RawQueryParams {
+    download: Option<String>,
 }
 
 #[tokio::main]
@@ -329,8 +336,47 @@ async fn echo_agent_handler(
 
 async fn raw_agent_handler(
     Path((agent, path)): Path<(String, String)>,
+    Query(params): Query<RawQueryParams>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    // Get file metadata first
+    let metadata = match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: agent.clone(),
+            command: Command::Metadata { path: path.clone() },
+            reply,
+        },
+        5000
+    ) {
+        Ok(CommandResult::Metadata(metadata)) => metadata,
+        Ok(CommandResult::Error { message }) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response();
+        }
+        Ok(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected response type from metadata command".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get file metadata: {:?}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
 
     if call_t!(
@@ -404,16 +450,21 @@ async fn raw_agent_handler(
         }
     };
 
-    Response::builder()
+    let mut response_builder = Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "application/octet-stream")
-        .header(
+        .header("Content-Type", metadata.mime_type)
+        .header("Content-Length", metadata.file_size.to_string());
+
+    // Add Content-Disposition only if download=1 query parameter is present
+    if params.download.as_deref() == Some("1") {
+        let filename = path.split('/').last().unwrap_or("file");
+        response_builder = response_builder.header(
             "Content-Disposition",
-            format!(
-                "attachment; filename=\"{}\"",
-                path.split('/').last().unwrap_or("file")
-            ),
-        )
+            format!("attachment; filename=\"{}\"", filename),
+        );
+    }
+
+    response_builder
         .body(Body::from_stream(
             stream.map(|v| Ok::<_, std::io::Error>(v)),
         ))

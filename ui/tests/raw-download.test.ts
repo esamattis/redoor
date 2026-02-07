@@ -1,99 +1,111 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { ApiClient, Agent } from '../src/api-client'
-import path from 'node:path'
-import { writeFileSync, unlinkSync } from 'node:fs'
-import { ProcessManager, waitForPort, waitForLogMessage } from './test-utils'
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { ApiClient, Agent } from "../src/api-client";
+import path from "node:path";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { ProcessManager, waitForPort, waitForLogMessage } from "./test-utils";
 
-const SERVER_PORT = 3000
-const SERVER_PATH = path.join(__dirname, '../../target/debug/redoor')
-const AGENT_PATH = path.join(__dirname, '../../target/debug/redoor-agent')
-const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`
-const AGENT_NAME = 'raw-test-agent'
+const SERVER_PORT = 3000;
+const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
+const AGENT_PATH = path.join(__dirname, "../../target/debug/redoor-agent");
+const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`;
+const AGENT_NAME = "raw-test-agent";
 
-describe('Raw Download API', () => {
-  const processManager = new ProcessManager()
-  const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`)
-  let serverPid: number
-  let testAgent: Agent
+describe("Raw Download API", () => {
+    const processManager = new ProcessManager();
+    const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`);
+    let serverPid: number;
+    let testAgent: Agent;
 
-  beforeAll(async () => {
-    const projectRoot = path.join(__dirname, '../..')
-    process.env.REDOOR_PORT = SERVER_PORT.toString()
-    serverPid = processManager.spawn(SERVER_PATH, [], projectRoot)
-    await waitForPort(SERVER_PORT)
-    processManager.spawn(AGENT_PATH, [WS_URL, AGENT_NAME], projectRoot)
+    beforeAll(async () => {
+        const projectRoot = path.join(__dirname, "../..");
+        process.env.REDOOR_PORT = SERVER_PORT.toString();
+        serverPid = processManager.spawn(SERVER_PATH, [], projectRoot);
+        await waitForPort(SERVER_PORT);
+        processManager.spawn(AGENT_PATH, [WS_URL, AGENT_NAME], projectRoot);
 
-    const serverProcess = processManager.getProcess(serverPid)
-    if (!serverProcess) {
-      throw new Error('Server process not found')
-    }
-    await waitForLogMessage(serverProcess, /Agent registered: agent_id=/, 10000)
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+        await waitForLogMessage(
+            serverProcess,
+            /Agent registered: agent_id=/,
+            10000,
+        );
 
-    const agents = await apiClient.listAgents()
-    testAgent = agents.find((a) => a.name === AGENT_NAME)!
-    expect(testAgent).toBeDefined()
-  }, 30000)
+        const agents = await apiClient.listAgents();
+        testAgent = agents.find((a) => a.name === AGENT_NAME)!;
+        expect(testAgent).toBeDefined();
+    }, 30000);
 
-  afterAll(() => {
-    processManager.killAll()
-  })
+    afterAll(() => {
+        processManager.killAll();
+    });
 
-  it('should download small file via raw endpoint', async () => {
-    const testContent = 'Hello, World!\nThis is a test file.'
-    const testFilePath = path.join(__dirname, '../../test-file.txt')
+    it("should download small file via raw endpoint", async () => {
+        const testContent = "Hello, World!\nThis is a test file.";
+        const testFilePath = path.join(__dirname, "../../test-file.txt");
 
-    writeFileSync(testFilePath, testContent, 'utf-8')
+        writeFileSync(testFilePath, testContent, "utf-8");
 
-    const result = await testAgent.raw(testFilePath)
-    const downloadedContent = Buffer.from(result).toString('utf-8')
-    expect(downloadedContent).toBe(testContent)
+        const result = await testAgent.raw(testFilePath);
+        const downloadedContent = Buffer.from(result).toString("utf-8");
+        expect(downloadedContent).toBe(testContent);
 
-    unlinkSync(testFilePath)
-  })
+        unlinkSync(testFilePath);
+    });
 
-  it('should download large file via raw endpoint', async () => {
-    const largeContent = 'x'.repeat(100 * 1024)
-    const testFilePath = path.join(__dirname, '../../large-test-file.txt')
+    it("should download large file via raw endpoint", async () => {
+        const largeContent = "x".repeat(100 * 1024);
+        const testFilePath = path.join(__dirname, "../../large-test-file.txt");
 
-    writeFileSync(testFilePath, largeContent, 'utf-8')
+        writeFileSync(testFilePath, largeContent, "utf-8");
 
-    const result = await testAgent.raw(testFilePath)
-    const downloadedContent = Buffer.from(result).toString('utf-8')
-    expect(downloadedContent.length).toBe(largeContent.length)
-    expect(downloadedContent).toBe(largeContent)
+        const result = await testAgent.raw(testFilePath);
+        const downloadedContent = Buffer.from(result).toString("utf-8");
+        expect(downloadedContent.length).toBe(largeContent.length);
+        expect(downloadedContent).toBe(largeContent);
 
-    unlinkSync(testFilePath)
-  })
+        unlinkSync(testFilePath);
+    });
 
-  it('should handle binary file download', async () => {
-    const binaryContent = Buffer.from([0, 1, 2, 3, 255, 254, 253])
-    const testFilePath = path.join(__dirname, '../../binary-test-file.bin')
+    it("should handle binary file download", async () => {
+        const binaryContent = Buffer.from([0, 1, 2, 3, 255, 254, 253]);
+        const testFilePath = path.join(__dirname, "../../binary-test-file.bin");
 
-    writeFileSync(testFilePath, binaryContent)
+        writeFileSync(testFilePath, binaryContent);
 
-    const result = await testAgent.raw(testFilePath)
-    const downloadedContent = Buffer.from(result)
-    expect(Buffer.compare(downloadedContent, binaryContent)).toBe(0)
+        const result = await testAgent.raw(testFilePath);
+        const downloadedContent = Buffer.from(result);
+        expect(Buffer.compare(downloadedContent, binaryContent)).toBe(0);
 
-    unlinkSync(testFilePath)
-  })
+        unlinkSync(testFilePath);
+    });
 
-  it('should return error for non-existent file', async () => {
-    const nonExistentPath = '/tmp/non-existent-file-12345.txt'
-    await expect(testAgent.raw(nonExistentPath)).rejects.toThrow()
-  })
+    it("should return error for non-existent file", async () => {
+        const nonExistentPath = "/tmp/non-existent-file-12345.txt";
+        await expect(testAgent.raw(nonExistentPath)).rejects.toThrow();
+    });
 
-  it('should set correct Content-Disposition header', async () => {
-    const testContent = 'test content'
-    const testFilePath = path.join(__dirname, '../../test-disposition.txt')
+    it("should set correct Content-Disposition header", async () => {
+        const testContent = "test content";
+        const testFilePath = path.join(__dirname, "../../test-disposition.txt");
 
-    writeFileSync(testFilePath, testContent)
+        writeFileSync(testFilePath, testContent);
 
-    const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`
-    const response = await fetch(url)
-    expect(response.headers.get('Content-Disposition')).toMatch(/attachment/)
-    expect(response.headers.get('Content-Disposition')).toMatch(/test-disposition\.txt/)
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}?download=1`;
+        const response = await fetch(url);
+        console.log(
+            "Content-Disposition headers:",
+            response.headers.get("Content-Disposition"),
+        );
+        expect(response.headers.get("Content-Disposition")).toMatch(
+            /attachment/,
+        );
+        expect(response.headers.get("Content-Disposition")).toMatch(
+            /test-disposition\.txt/,
+        );
 
-    unlinkSync(testFilePath)
-  })
-})
+        unlinkSync(testFilePath);
+    });
+});

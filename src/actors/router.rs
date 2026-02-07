@@ -398,11 +398,8 @@ impl Actor for RouterActor {
                             command,
                         },
                     ));
-
-                    let _ = reply.send(());
-                } else {
-                    let _ = reply.send(());
                 }
+                let _ = reply.send(());
             }
         }
         Ok(())
