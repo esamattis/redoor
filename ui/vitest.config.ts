@@ -10,7 +10,7 @@ export default defineConfig({
     test: {
         environment: "node",
         hookTimeout: 10000,
-        testTimeout: 30000,
+        testTimeout: 10000,
         exclude: ["node_modules", "e2e"],
         pool: "forks",
         poolOptions: {
