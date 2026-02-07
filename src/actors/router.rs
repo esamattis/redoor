@@ -339,7 +339,9 @@ impl Actor for RouterActor {
                     };
 
                     if !is_last && !is_error {
-                        state.rest_streaming_responses.insert(request_id, chunk_sender.clone());
+                        state
+                            .rest_streaming_responses
+                            .insert(request_id, chunk_sender.clone());
                     }
 
                     if let Err(_e) = chunk_sender.send(chunk.to_bytes()).await {
@@ -385,7 +387,9 @@ impl Actor for RouterActor {
                 );
 
                 if let Some(agent_info) = state.agents.get(&agent_id) {
-                    state.rest_streaming_responses.insert(request_id, chunk_sender);
+                    state
+                        .rest_streaming_responses
+                        .insert(request_id, chunk_sender);
 
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {

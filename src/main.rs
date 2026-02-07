@@ -347,7 +347,9 @@ async fn raw_agent_handler(
     {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: "Failed to start stream".to_string() }),
+            Json(ErrorResponse {
+                error: "Failed to start stream".to_string(),
+            }),
         )
             .into_response();
     }
@@ -357,7 +359,9 @@ async fn raw_agent_handler(
         None => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: "No data received".to_string() }),
+                Json(ErrorResponse {
+                    error: "No data received".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -370,8 +374,8 @@ async fn raw_agent_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "Invalid chunk received".to_string(),
-                },
-            ))
+                }),
+            )
                 .into_response();
         }
     };
@@ -405,9 +409,14 @@ async fn raw_agent_handler(
         .header("Content-Type", "application/octet-stream")
         .header(
             "Content-Disposition",
-            format!("attachment; filename=\"{}\"", path.split('/').last().unwrap_or("file")),
+            format!(
+                "attachment; filename=\"{}\"",
+                path.split('/').last().unwrap_or("file")
+            ),
         )
-        .body(Body::from_stream(stream.map(|v| Ok::<_, std::io::Error>(v))))
+        .body(Body::from_stream(
+            stream.map(|v| Ok::<_, std::io::Error>(v)),
+        ))
         .unwrap()
         .into_response()
 }

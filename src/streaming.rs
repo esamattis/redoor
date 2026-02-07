@@ -98,8 +98,15 @@ mod tests {
         };
         let bytes = chunk.to_bytes();
         let decoded = StreamChunk::from_bytes(&bytes).unwrap();
-        println!("Decoded: request_id={}, chunk_index={}, is_last={}, is_error={}, data.len={}, data={:?}",
-            decoded.request_id, decoded.chunk_index, decoded.is_last, decoded.is_error, decoded.data.len(), decoded.data);
+        println!(
+            "Decoded: request_id={}, chunk_index={}, is_last={}, is_error={}, data.len={}, data={:?}",
+            decoded.request_id,
+            decoded.chunk_index,
+            decoded.is_last,
+            decoded.is_error,
+            decoded.data.len(),
+            decoded.data
+        );
         assert_eq!(decoded.request_id, 123);
         assert_eq!(decoded.chunk_index, 0);
         assert_eq!(decoded.is_last, false);
