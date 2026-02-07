@@ -1,6 +1,11 @@
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use redoor::{Level, commands::{Command, CommandHandler}, log, streaming, types::Message};
+use redoor::{
+    Level,
+    commands::{Command, CommandHandler},
+    log, streaming,
+    types::Message,
+};
 use std::env;
 use sysinfo::System;
 use tokio::sync::mpsc;
@@ -56,7 +61,9 @@ impl AgentActor {
                     );
 
                     if let Command::RawDownload { path } = command {
-                        let _ = self.raw_download(path, request_id, write, agent_ref.clone()).await;
+                        let _ = self
+                            .raw_download(path, request_id, write, agent_ref.clone())
+                            .await;
                         return;
                     }
 
@@ -69,7 +76,7 @@ impl AgentActor {
                     };
 
                     if let Ok(json) = serde_json::to_string(&response) {
-                        let _ = write.send(WsMessage::text(json));
+                        let _ = write.send(WsMessage::text(json)).await;
                     }
                     log!(
                         Level::Info,
@@ -114,8 +121,15 @@ impl AgentActor {
                                 is_error: false,
                                 data: buffer[..n].to_vec(),
                             };
-                            if write.send(WsMessage::Binary(chunk.to_bytes().into())).await.is_err() {
-                                log!(Level::Warning, "WebSocket channel full or closed, aborting download");
+                            if write
+                                .send(WsMessage::Binary(chunk.to_bytes().into()))
+                                .await
+                                .is_err()
+                            {
+                                log!(
+                                    Level::Warning,
+                                    "WebSocket channel full or closed, aborting download"
+                                );
                                 return;
                             }
                             chunk_index += 1;
@@ -129,7 +143,9 @@ impl AgentActor {
                                 is_error: true,
                                 data: Vec::new(),
                             };
-                            let _ = write.send(WsMessage::Binary(error_chunk.to_bytes().into()));
+                            let _ = write
+                                .send(WsMessage::Binary(error_chunk.to_bytes().into()))
+                                .await;
                             return;
                         }
                     }
@@ -142,7 +158,9 @@ impl AgentActor {
                     is_error: false,
                     data: Vec::new(),
                 };
-                let _ = write.send(WsMessage::Binary(final_chunk.to_bytes().into()));
+                let _ = write
+                    .send(WsMessage::Binary(final_chunk.to_bytes().into()))
+                    .await;
 
                 let final_response = Message::CommandResponse {
                     agent_id: agent_ref.get_id().to_string(),
@@ -150,7 +168,7 @@ impl AgentActor {
                     result: redoor::commands::CommandResult::RawDownload { path: path.clone() },
                 };
                 if let Ok(json) = serde_json::to_string(&final_response) {
-                    let _ = write.send(WsMessage::text(json));
+                    let _ = write.send(WsMessage::text(json)).await;
                 }
 
                 log!(
@@ -169,7 +187,9 @@ impl AgentActor {
                     is_error: true,
                     data: Vec::new(),
                 };
-                let _ = write.send(WsMessage::Binary(error_chunk.to_bytes().into()));
+                let _ = write
+                    .send(WsMessage::Binary(error_chunk.to_bytes().into()))
+                    .await;
 
                 let response = Message::CommandResponse {
                     agent_id: agent_ref.get_id().to_string(),
@@ -179,7 +199,7 @@ impl AgentActor {
                     },
                 };
                 if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = write.send(WsMessage::text(json));
+                    let _ = write.send(WsMessage::text(json)).await;
                 }
             }
         }

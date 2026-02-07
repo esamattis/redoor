@@ -137,14 +137,17 @@ impl Actor for SessionActor {
             }
             SessionMsg::IncomingBinary(bytes) => {
                 if let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) {
-                    let _ = state.router_ref.cast(crate::actors::router::RouterMsg::RouteStreamChunk {
-                        agent_id: state.agent_id.clone().unwrap_or_default(),
-                        request_id: chunk.request_id,
-                        chunk_index: chunk.chunk_index,
-                        is_last: chunk.is_last,
-                        is_error: chunk.is_error,
-                        data: chunk.data,
-                    });
+                    let _ =
+                        state
+                            .router_ref
+                            .cast(crate::actors::router::RouterMsg::RouteStreamChunk {
+                                agent_id: state.agent_id.clone().unwrap_or_default(),
+                                request_id: chunk.request_id,
+                                chunk_index: chunk.chunk_index,
+                                is_last: chunk.is_last,
+                                is_error: chunk.is_error,
+                                data: chunk.data,
+                            });
                 }
             }
             SessionMsg::OutgoingBinary(bytes) => {
@@ -197,11 +200,19 @@ pub async fn handle_websocket(
     tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             match msg {
-                WsMessage::Text(text) => {
-                    if let Ok(message) = serde_json::from_str::<Message>(&text) {
+                WsMessage::Text(text) => match serde_json::from_str::<Message>(&text) {
+                    Ok(message) => {
                         let _ = session_ref_clone.cast(SessionMsg::IncomingMessage(message));
                     }
-                }
+                    Err(e) => {
+                        log!(
+                            Level::Error,
+                            "Failed to deserialize WebSocket message: {}, raw text: {}",
+                            e,
+                            text
+                        );
+                    }
+                },
                 WsMessage::Binary(bytes) => {
                     let _ = session_ref_clone.cast(SessionMsg::IncomingBinary(bytes.to_vec()));
                 }
