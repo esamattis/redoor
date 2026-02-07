@@ -1,8 +1,23 @@
 #!/bin/bash
-set -e
+set -eu
+
+run_test() {
+    local tmpfile=$(mktemp -t redoor-test)
+    echo "Running: $*"
+    echo "Writing output to: $tmpfile"
+    local exit_code=0
+    "$@" > "$tmpfile" 2>&1 || exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        cat "$tmpfile"
+        exit $exit_code
+    fi
+    echo "Test passed: $*"
+    rm -f "$tmpfile"
+    return $exit_code
+}
 
 echo "Running cargo test"
-cargo test
+run_test cargo test
 
 echo "building the ui and generating route types"
 (
@@ -16,11 +31,11 @@ cargo build
 cd ui
 
 echo "Running vitest tests..."
-pnpm run test
+run_test pnpm run test
 
 echo "Running playwright tests..."
-pnpm exec playwright test
+run_test pnpm exec playwright test
 
 echo "Running type checks and linting..."
-pnpm run types
-pnpm run lint
+run_test pnpm run types
+run_test pnpm run lint
