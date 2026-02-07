@@ -1,41 +1,42 @@
 #!/bin/bash
 set -eu
 
-run_test() {
+silent_unless_error() {
     local tmpfile=$(mktemp -t redoor-test)
     echo "Running: $*"
     echo "Writing output to: $tmpfile"
     local exit_code=0
     "$@" > "$tmpfile" 2>&1 || exit_code=$?
     if [ $exit_code -ne 0 ]; then
+        echo "❌ failed with exit code $exit_code: $*"
+        echo
         cat "$tmpfile"
         exit $exit_code
     fi
-    echo "Test passed: $*"
+    echo "✅ $*"
     rm -f "$tmpfile"
     return $exit_code
 }
 
 echo "Running cargo test"
-run_test cargo test
+silent_unless_error cargo test
 
 echo "building the ui and generating route types"
-(
-    cd ui
-    pnpm build
-)
+cd ui
+silent_unless_error pnpm build
+cd ..
 
 echo "Building Rust binaries..."
-cargo build
+silent_unless_error cargo build
 
 cd ui
 
 echo "Running vitest tests..."
-run_test pnpm run test
+silent_unless_error pnpm run test
 
 echo "Running playwright tests..."
-run_test pnpm exec playwright test
+silent_unless_error pnpm exec playwright test
 
 echo "Running type checks and linting..."
-run_test pnpm run types
-run_test pnpm run lint
+silent_unless_error pnpm run types
+silent_unless_error pnpm run lint
