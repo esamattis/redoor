@@ -17,6 +17,7 @@ Guidelines
 - Add comments to test assertions why they are there
 - Always after changes run `./scripts/build-and-test`
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
+- Never make git commit unless asked to!
 
 
 # UI
