@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "../src/api-client";
 import path from "node:path";
+import fs from "node:fs";
 import { createServer } from "node:net";
 import {
     ProcessManager,
@@ -109,6 +110,100 @@ describe("Raw Download API", () => {
     it("should return error for non-existent file", async () => {
         const nonExistentPath = "/tmp/non-existent-file-12345.txt";
         await expect(testAgent.raw(nonExistentPath)).rejects.toThrow();
+    });
+
+    it("should return error for non-existent agent", async () => {
+        const fakeAgent = new Agent(apiClient.baseUrl, {
+            id: "non-existent-agent-id",
+            name: "fake",
+        });
+        // Server should return an error instead of hanging forever
+        await expect(fakeAgent.raw("/tmp/somefile")).rejects.toThrow(
+            /not found/i,
+        );
+    });
+
+    it("should handle agent disconnect during download", async () => {
+        // Create a large file that takes multiple chunks to transfer
+        const largeContent = "x".repeat(1024 * 1024); // 1MB, spans ~16 chunks at 64KB each
+        const testFilePath = tempFiles.create(largeContent, {
+            suffix: ".txt",
+        });
+
+        const projectRoot = path.join(__dirname, "../..");
+        const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+        const ephemeralAgentName = "ephemeral-raw-agent";
+
+        // Spawn a second agent that we can kill mid-transfer
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+
+        const waitForEphemeralAgent = waitForLogMessage(
+            serverProcess,
+            new RegExp(`Agent registered:.*agent_name=${ephemeralAgentName}`),
+            10000,
+        );
+
+        const ephemeralAgentPid = processManager.spawn(
+            AGENT_PATH,
+            [wsUrl, ephemeralAgentName],
+            projectRoot,
+        );
+
+        await waitForEphemeralAgent;
+
+        const agents = await apiClient.listAgents();
+        const ephemeralAgent = agents.find(
+            (a) => a.name === ephemeralAgentName,
+        )!;
+        expect(ephemeralAgent).toBeDefined();
+
+        // Start the download in the background
+        const downloadPromise = ephemeralAgent.raw(testFilePath);
+
+        // Give a moment for download to start, then kill the agent
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        processManager.kill(ephemeralAgentPid);
+
+        // The download should fail with an error or complete (if data was already sent),
+        // but it must NOT hang forever
+        const result = await Promise.race([
+            downloadPromise
+                .then((data) => ({ ok: true, data }))
+                .catch((e: Error) => ({ ok: false, error: e.message })),
+            new Promise((_, reject) =>
+                setTimeout(
+                    () =>
+                        reject(
+                            new Error(
+                                "Download hung for 10s after agent disconnect",
+                            ),
+                        ),
+                    10000,
+                ),
+            ),
+        ]);
+
+        // The download should have either completed (got data before kill)
+        // or failed with an error — but it must NOT hang
+        expect(result).toBeDefined();
+    }, 15000);
+
+    it("should return proper error for permission denied", async () => {
+        const testFilePath = tempFiles.create("secret", { suffix: ".txt" });
+        fs.chmodSync(testFilePath, 0o000);
+
+        try {
+            // The agent should propagate the actual OS error message
+            await expect(testAgent.raw(testFilePath)).rejects.toThrow(
+                /permission denied/i,
+            );
+        } finally {
+            // Restore permissions so cleanup works
+            fs.chmodSync(testFilePath, 0o644);
+        }
     });
 
     it("should set correct Content-Disposition header", async () => {

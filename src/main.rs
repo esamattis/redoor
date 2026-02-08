@@ -17,7 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::stream::StreamExt;
+
 use ractor::{ActorRef, call_t};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
@@ -375,7 +375,7 @@ async fn raw_agent_handler(
 
     let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
 
-    if call_t!(
+    match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteStreamCommandRest {
             agent_id: agent.clone(),
@@ -384,16 +384,24 @@ async fn raw_agent_handler(
             chunk_sender: response_sender,
         },
         30000
-    )
-    .is_err()
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Failed to start stream".to_string(),
-            }),
-        )
-            .into_response();
+    ) {
+        Ok(Ok(())) => {} // stream started successfully
+        Ok(Err(error_msg)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse { error: error_msg }),
+            )
+                .into_response();
+        }
+        Err(_e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to start stream".to_string(),
+                }),
+            )
+                .into_response();
+        }
     }
 
     let first_chunk_bytes = match response_receiver.recv().await {
@@ -423,25 +431,44 @@ async fn raw_agent_handler(
     };
 
     if first_chunk.is_error {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("File not found: {}", path),
-            }),
-        )
-            .into_response();
+        let error_msg = if first_chunk.data.is_empty() {
+            format!("File error: {}", path)
+        } else {
+            String::from_utf8_lossy(&first_chunk.data).to_string()
+        };
+
+        let status = if error_msg.contains("No such file") || error_msg.contains("not found") {
+            StatusCode::NOT_FOUND
+        } else if error_msg.contains("Permission denied") {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+
+        return (status, Json(ErrorResponse { error: error_msg })).into_response();
     }
 
     use async_stream::stream;
 
     let stream = stream! {
         if !first_chunk.data.is_empty() {
-            yield bytes::Bytes::from(first_chunk.data);
+            yield Ok(bytes::Bytes::from(first_chunk.data));
         }
 
         while let Some(chunk) = response_receiver.recv().await {
             if let Ok(parsed) = redoor::streaming::StreamChunk::from_bytes(&chunk) {
-                yield bytes::Bytes::from(parsed.data);
+                if parsed.is_error {
+                    let error_msg = if parsed.data.is_empty() {
+                        "File read error on agent".to_string()
+                    } else {
+                        String::from_utf8_lossy(&parsed.data).to_string()
+                    };
+                    yield Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+                    break;
+                }
+                if !parsed.data.is_empty() {
+                    yield Ok(bytes::Bytes::from(parsed.data));
+                }
             }
         }
     };
@@ -461,9 +488,7 @@ async fn raw_agent_handler(
     }
 
     response_builder
-        .body(Body::from_stream(
-            stream.map(|v| Ok::<_, std::io::Error>(v)),
-        ))
+        .body(Body::from_stream(stream))
         .unwrap()
         .into_response()
 }

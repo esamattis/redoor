@@ -27,7 +27,7 @@ pub struct RouterActor;
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
-    rest_streaming_responses: HashMap<u64, tokio::sync::mpsc::Sender<Vec<u8>>>,
+    rest_streaming_responses: HashMap<u64, (String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
     next_request_id: u64,
 }
 
@@ -100,7 +100,7 @@ pub enum RouterMsg {
     ExecuteStreamCommandRest {
         agent_id: String,
         command: Command,
-        reply: RpcReplyPort<()>,
+        reply: RpcReplyPort<Result<(), String>>,
         chunk_sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     },
 }
@@ -183,6 +183,48 @@ impl Actor for RouterActor {
             RouterMsg::UnregisterAgent { agent_id } => {
                 log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                 state.agents.remove(&agent_id);
+
+                // Clean up any in-flight streaming responses for this agent.
+                // Dropping the Sender closes the channel, which causes the REST handler's
+                // recv() to return None, unblocking it.
+                let orphaned_requests: Vec<u64> = state
+                    .rest_streaming_responses
+                    .iter()
+                    .filter(|(_, (aid, _))| aid == &agent_id)
+                    .map(|(request_id, _)| *request_id)
+                    .collect();
+
+                for request_id in &orphaned_requests {
+                    log!(
+                        Level::Warning,
+                        "Cleaning up orphaned streaming response: request_id={}, agent_id={}",
+                        request_id,
+                        agent_id
+                    );
+                    state.rest_streaming_responses.remove(request_id);
+                }
+
+                // Also clean up any pending one-shot REST responses for this agent
+                let orphaned_oneshot: Vec<u64> = state
+                    .rest_pending_responses
+                    .iter()
+                    .filter(|(_, (_, aid))| aid == &agent_id)
+                    .map(|(request_id, _)| *request_id)
+                    .collect();
+
+                for request_id in &orphaned_oneshot {
+                    if let Some((reply, _)) = state.rest_pending_responses.remove(request_id) {
+                        log!(
+                            Level::Warning,
+                            "Cleaning up orphaned pending response: request_id={}, agent_id={}",
+                            request_id,
+                            agent_id
+                        );
+                        let _ = reply.send(CommandResult::Error {
+                            message: format!("Agent disconnected: {}", agent_id),
+                        });
+                    }
+                }
             }
             RouterMsg::RouteResponse {
                 agent_id,
@@ -270,7 +312,9 @@ impl Actor for RouterActor {
                 is_error,
                 data,
             } => {
-                if let Some(chunk_sender) = state.rest_streaming_responses.remove(&request_id) {
+                if let Some((agent_id_stored, chunk_sender)) =
+                    state.rest_streaming_responses.remove(&request_id)
+                {
                     let chunk = crate::streaming::StreamChunk {
                         request_id,
                         chunk_index,
@@ -282,7 +326,7 @@ impl Actor for RouterActor {
                     if !is_last && !is_error {
                         state
                             .rest_streaming_responses
-                            .insert(request_id, chunk_sender.clone());
+                            .insert(request_id, (agent_id_stored, chunk_sender.clone()));
                     }
 
                     if let Err(_e) = chunk_sender.send(chunk.to_bytes()).await {
@@ -330,7 +374,7 @@ impl Actor for RouterActor {
                 if let Some(agent_info) = state.agents.get(&agent_id) {
                     state
                         .rest_streaming_responses
-                        .insert(request_id, chunk_sender);
+                        .insert(request_id, (agent_id.clone(), chunk_sender));
 
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
@@ -339,8 +383,15 @@ impl Actor for RouterActor {
                             command,
                         },
                     ));
+                    let _ = reply.send(Ok(()));
+                } else {
+                    log!(
+                        Level::Warning,
+                        "Agent not found for streaming command: agent_id={}",
+                        agent_id
+                    );
+                    let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
                 }
-                let _ = reply.send(());
             }
         }
         Ok(())

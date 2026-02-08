@@ -136,12 +136,13 @@ impl AgentActor {
                         }
                         Err(e) => {
                             log!(Level::Error, "Failed to read file: {}", e);
+                            let error_msg = format!("Failed to read file: {}", e);
                             let error_chunk = streaming::StreamChunk {
                                 request_id,
                                 chunk_index,
                                 is_last: true,
                                 is_error: true,
-                                data: Vec::new(),
+                                data: error_msg.into_bytes(),
                             };
                             let _ = write
                                 .send(WsMessage::Binary(error_chunk.to_bytes().into()))
@@ -180,12 +181,13 @@ impl AgentActor {
             }
             Err(e) => {
                 log!(Level::Error, "Failed to open file: {}", e);
+                let error_msg = format!("Failed to open file: {}", e);
                 let error_chunk = streaming::StreamChunk {
                     request_id,
                     chunk_index: 0,
                     is_last: true,
                     is_error: true,
-                    data: Vec::new(),
+                    data: error_msg.into_bytes(),
                 };
                 let _ = write
                     .send(WsMessage::Binary(error_chunk.to_bytes().into()))
