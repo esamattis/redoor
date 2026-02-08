@@ -2,7 +2,7 @@
 set -eu
 
 silent_unless_error() {
-    local tmpfile=$(mktemp -t redoor-test)
+    local tmpfile=$(mktemp -t redoor-test.XXX)
     echo -n "> $*"
     local exit_code=0
     "$@" >"$tmpfile" 2>&1 || exit_code=$?
