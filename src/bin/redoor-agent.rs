@@ -60,8 +60,15 @@ impl AgentActor {
                         command
                     );
 
-                    if let Command::RawDownload { path } = command {
-                        let _ = self.raw_download(path, request_id, write).await;
+                    if let Command::RawDownload {
+                        path,
+                        range_start,
+                        range_end,
+                    } = command
+                    {
+                        let _ = self
+                            .raw_download(path, range_start, range_end, request_id, write)
+                            .await;
                         return;
                     }
 
@@ -93,8 +100,15 @@ impl AgentActor {
         }
     }
 
-    async fn raw_download(&self, path: String, request_id: u64, write: &mpsc::Sender<WsMessage>) {
-        use tokio::io::AsyncReadExt;
+    async fn raw_download(
+        &self,
+        path: String,
+        range_start: Option<u64>,
+        range_end: Option<u64>,
+        request_id: u64,
+        write: &mpsc::Sender<WsMessage>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         match tokio::fs::File::open(&path).await {
             Ok(mut file) => {
@@ -102,10 +116,59 @@ impl AgentActor {
                 let chunk_size = streaming::CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
 
+                // Handle range request
+                let mut bytes_remaining: Option<u64> = None;
+
+                // Seek to start position if range is specified
+                if let Some(start) = range_start {
+                    if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+                        log!(Level::Error, "Failed to seek file: {}", e);
+                        let error_msg = format!("Failed to seek file: {}", e);
+                        let error_chunk = streaming::StreamChunk {
+                            request_id,
+                            chunk_index,
+                            is_last: true,
+                            is_error: true,
+                            data: error_msg.into_bytes(),
+                        };
+                        let _ = write
+                            .send(WsMessage::Binary(error_chunk.to_bytes().into()))
+                            .await;
+                        return;
+                    }
+
+                    // Calculate bytes remaining to read
+                    if let Some(end) = range_end {
+                        // range_end is exclusive, so we read up to but not including end
+                        bytes_remaining = Some(end.saturating_sub(start));
+                    }
+                }
+
                 loop {
+                    // Determine how much to read in this iteration
+                    let read_size = match bytes_remaining {
+                        Some(remaining) => {
+                            if remaining == 0 {
+                                break; // We've read all the requested bytes
+                            }
+                            std::cmp::min(chunk_size, remaining as usize)
+                        }
+                        None => chunk_size,
+                    };
+
+                    // Resize buffer if needed for the last partial chunk
+                    if read_size < buffer.len() {
+                        buffer.resize(read_size, 0);
+                    }
+
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => {
+                            // Update bytes remaining
+                            if let Some(ref mut remaining) = bytes_remaining {
+                                *remaining = remaining.saturating_sub(n as u64);
+                            }
+
                             let chunk = streaming::StreamChunk {
                                 request_id,
                                 chunk_index,

@@ -221,4 +221,171 @@ describe("Raw Download API", () => {
         );
         expect(response.headers.get("Content-Disposition")).toMatch(/\.txt/);
     });
+
+    it("should indicate range support with Accept-Ranges header", async () => {
+        const testContent = "test content for range check";
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, { method: "HEAD" });
+
+        expect(response.headers.get("Accept-Ranges")).toBe("bytes");
+    });
+
+    it("should return 206 Partial Content for range request", async () => {
+        // Create test file with known content (100 bytes)
+        const testContent = "0123456789".repeat(10); // 100 bytes
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=0-9" },
+        });
+
+        expect(response.status).toBe(206);
+        expect(response.headers.get("Content-Range")).toBe("bytes 0-9/100");
+        expect(response.headers.get("Content-Length")).toBe("10");
+
+        const data = await response.arrayBuffer();
+        const content = Buffer.from(data).toString("utf-8");
+        expect(content).toBe("0123456789");
+    });
+
+    it("should handle suffix range request (last N bytes)", async () => {
+        // Create test file with known content (100 bytes)
+        const testContent = "0123456789".repeat(10); // 100 bytes
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=-10" },
+        });
+
+        expect(response.status).toBe(206);
+        // Last 10 bytes should be "0123456789"
+        expect(response.headers.get("Content-Range")).toBe("bytes 90-99/100");
+        expect(response.headers.get("Content-Length")).toBe("10");
+
+        const data = await response.arrayBuffer();
+        const content = Buffer.from(data).toString("utf-8");
+        expect(content).toBe("0123456789");
+    });
+
+    it("should handle open-ended range request (from byte to end)", async () => {
+        // Create test file with known content (100 bytes)
+        const testContent = "0123456789".repeat(10); // 100 bytes
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=50-" },
+        });
+
+        expect(response.status).toBe(206);
+        // From byte 50 to end (99) = 50 bytes
+        expect(response.headers.get("Content-Range")).toBe("bytes 50-99/100");
+        expect(response.headers.get("Content-Length")).toBe("50");
+
+        const data = await response.arrayBuffer();
+        expect(data.byteLength).toBe(50);
+    });
+
+    it("should return 416 for unsatisfiable range", async () => {
+        // Create a small test file (10 bytes)
+        const testContent = "0123456789";
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=100-200" },
+        });
+
+        expect(response.status).toBe(416);
+        expect(response.headers.get("Content-Range")).toBe("bytes */10");
+    });
+
+    it("should handle range request for binary file", async () => {
+        // Create binary file with pattern 0x00-0xFF repeated
+        const pattern = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+        const testContent = Buffer.concat([pattern, pattern, pattern, pattern]); // 1024 bytes
+        const testFilePath = tempFiles.create(testContent, { suffix: ".bin" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=100-109" },
+        });
+
+        expect(response.status).toBe(206);
+        expect(response.headers.get("Content-Range")).toBe(
+            "bytes 100-109/1024",
+        );
+        expect(response.headers.get("Content-Length")).toBe("10");
+
+        const data = await response.arrayBuffer();
+        expect(data.byteLength).toBe(10);
+
+        // Verify the content matches expected bytes (wrapping around at 256)
+        const expected = new Uint8Array([
+            100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+        ]);
+        const actual = new Uint8Array(data);
+        for (let i = 0; i < 10; i++) {
+            expect(actual[i]).toBe(expected[i]);
+        }
+    });
+
+    it("should return 200 OK for full file without Range header", async () => {
+        const testContent = "Full file content without range";
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url);
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Content-Range")).toBeNull();
+        expect(response.headers.get("Content-Length")).toBe(
+            testContent.length.toString(),
+        );
+
+        const data = await response.arrayBuffer();
+        const content = Buffer.from(data).toString("utf-8");
+        expect(content).toBe(testContent);
+    });
+
+    it("should handle range at end of file", async () => {
+        // Create test file with known content (100 bytes)
+        const testContent = "0123456789".repeat(10); // 100 bytes
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=95-99" },
+        });
+
+        expect(response.status).toBe(206);
+        expect(response.headers.get("Content-Range")).toBe("bytes 95-99/100");
+        expect(response.headers.get("Content-Length")).toBe("5");
+
+        const data = await response.arrayBuffer();
+        expect(data.byteLength).toBe(5);
+    });
+
+    it("should clamp range end to file size", async () => {
+        // Create test file (50 bytes)
+        const testContent = "x".repeat(50);
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+
+        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
+        const response = await fetch(url, {
+            headers: { Range: "bytes=40-100" }, // Request beyond file size
+        });
+
+        expect(response.status).toBe(206);
+        // Should clamp to 40-49 (10 bytes)
+        expect(response.headers.get("Content-Range")).toBe("bytes 40-49/50");
+        expect(response.headers.get("Content-Length")).toBe("10");
+
+        const data = await response.arrayBuffer();
+        expect(data.byteLength).toBe(10);
+    });
 });

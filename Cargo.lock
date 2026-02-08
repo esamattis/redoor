@@ -897,6 +897,7 @@ dependencies = [
  "chrono",
  "fastrand",
  "futures-util",
+ "headers",
  "mime_guess",
  "nix",
  "ractor",

@@ -4,11 +4,23 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
-    Ls { path: Option<String> },
-    Cat { path: String },
-    RawDownload { path: String },
-    Metadata { path: String },
-    Echo { request: EchoRequest },
+    Ls {
+        path: Option<String>,
+    },
+    Cat {
+        path: String,
+    },
+    RawDownload {
+        path: String,
+        range_start: Option<u64>,
+        range_end: Option<u64>,
+    },
+    Metadata {
+        path: String,
+    },
+    Echo {
+        request: EchoRequest,
+    },
     AgentInfo,
     GetAgentDetails,
 }
@@ -168,7 +180,11 @@ impl CommandHandler {
         match command {
             Command::Ls { path } => self.ls(path).await,
             Command::Cat { path } => self.cat(path).await,
-            Command::RawDownload { path } => self.raw_download(path).await,
+            Command::RawDownload {
+                path,
+                range_start,
+                range_end,
+            } => self.raw_download(path, range_start, range_end).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
@@ -267,7 +283,12 @@ impl CommandHandler {
         }
     }
 
-    async fn raw_download(&self, path: String) -> CommandResult {
+    async fn raw_download(
+        &self,
+        path: String,
+        _range_start: Option<u64>,
+        _range_end: Option<u64>,
+    ) -> CommandResult {
         CommandResult::RawDownload { path }
     }
 
@@ -435,6 +456,8 @@ mod tests {
         let result = handler
             .execute(Command::RawDownload {
                 path: "test.txt".to_string(),
+                range_start: None,
+                range_end: None,
             })
             .await;
 

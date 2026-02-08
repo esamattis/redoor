@@ -17,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 
 use ractor::{ActorRef, call_t};
 use tower_http::cors::{Any, CorsLayer};
@@ -330,10 +331,45 @@ async fn echo_agent_handler(
     }
 }
 
+/// Parse Range header and return (start, end) byte positions (inclusive)
+/// Returns None if no valid range can be satisfied
+/// Only supports a single range for simplicity
+fn parse_range_header(range: &RangeHeader, file_size: u64) -> Option<(u64, u64)> {
+    use std::ops::Bound;
+
+    // Get satisfiable ranges - these are already validated against file_size
+    let mut ranges = range.satisfiable_ranges(file_size);
+
+    // Get the first range (we only support single range for now)
+    let (start_bound, end_bound) = ranges.next()?;
+
+    let start = match start_bound {
+        Bound::Included(s) => s,
+        Bound::Excluded(s) => s + 1,
+        Bound::Unbounded => 0,
+    };
+
+    // For the end bound, we need to clamp to file_size - 1
+    // The satisfiable_ranges method doesn't clamp the end bound for us
+    let end = match end_bound {
+        Bound::Included(e) => std::cmp::min(e, file_size - 1),
+        Bound::Excluded(e) => std::cmp::min(e.saturating_sub(1), file_size - 1),
+        Bound::Unbounded => file_size - 1,
+    };
+
+    // Final validation
+    if start >= file_size || start > end {
+        return None;
+    }
+
+    Some((start, end))
+}
+
 async fn raw_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     Query(params): Query<RawQueryParams>,
     AxumState(state): AxumState<ServerState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     // Get file metadata first
     let metadata = match call_t!(
@@ -373,6 +409,40 @@ async fn raw_agent_handler(
         }
     };
 
+    // Parse Range header if present
+    let range_option = headers.typed_get::<RangeHeader>();
+    let (range_start, range_end, status_code, content_length, content_range_header) =
+        if let Some(range) = range_option {
+            match parse_range_header(&range, metadata.file_size) {
+                Some((start, end)) => {
+                    // end is inclusive, so content_length = end - start + 1
+                    let length = end - start + 1;
+                    let content_range = format!("bytes {}-{}/{}", start, end, metadata.file_size);
+                    (
+                        Some(start),
+                        Some(end + 1), // range_end is exclusive for the command
+                        StatusCode::PARTIAL_CONTENT,
+                        length,
+                        Some(content_range),
+                    )
+                }
+                None => {
+                    // Range not satisfiable
+                    return (
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        [("Content-Range", format!("bytes */{}", metadata.file_size))],
+                        Json(ErrorResponse {
+                            error: "Range not satisfiable".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            // No range header - return full file
+            (None, None, StatusCode::OK, metadata.file_size, None)
+        };
+
     let (response_sender, mut response_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(32);
 
@@ -380,7 +450,11 @@ async fn raw_agent_handler(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteStreamCommandRest {
             agent_id: agent.clone(),
-            command: Command::RawDownload { path: path.clone() },
+            command: Command::RawDownload {
+                path: path.clone(),
+                range_start,
+                range_end,
+            },
             reply,
             chunk_sender: response_sender,
         },
@@ -460,9 +534,15 @@ async fn raw_agent_handler(
     };
 
     let mut response_builder = Response::builder()
-        .status(StatusCode::OK)
+        .status(status_code)
         .header("Content-Type", metadata.mime_type)
-        .header("Content-Length", metadata.file_size.to_string());
+        .header("Content-Length", content_length.to_string())
+        .header("Accept-Ranges", "bytes");
+
+    // Add Content-Range header for partial content
+    if let Some(content_range) = content_range_header {
+        response_builder = response_builder.header("Content-Range", content_range);
+    }
 
     // Add Content-Disposition only if download=1 query parameter is present
     if params.download.as_deref() == Some("1") {
