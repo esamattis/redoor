@@ -292,19 +292,119 @@ impl CommandHandler {
         CommandResult::RawDownload { path }
     }
 
+    async fn detect_mime_type_from_content(path: &str) -> Option<String> {
+        // Read first 8KB of file
+        let content = match tokio::fs::read(path).await {
+            Ok(data) => data,
+            Err(_) => return None,
+        };
+
+        // Check for shebang pattern at the start (scripts without extension)
+        if content.starts_with(b"#!") {
+            return Some("text/plain".to_string());
+        }
+
+        // Check for UTF-8 BOM
+        if content.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            return Some("text/plain".to_string());
+        }
+
+        // Check for common binary magic numbers
+        if content.starts_with(b"%PDF") {
+            return Some("application/pdf".to_string());
+        }
+
+        if content.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+            return Some("image/png".to_string());
+        }
+
+        if content.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return Some("image/jpeg".to_string());
+        }
+
+        if content.starts_with(b"GIF87a") || content.starts_with(b"GIF89a") {
+            return Some("image/gif".to_string());
+        }
+
+        if content.starts_with(b"PK\x03\x04") || content.starts_with(b"PK\x05\x06") {
+            return Some("application/zip".to_string());
+        }
+
+        if content.starts_with(&[0x7F, 0x45, 0x4C, 0x46]) {
+            return Some("application/x-executable".to_string());
+        }
+
+        if content.starts_with(&[0x00, 0x61, 0x73, 0x6D]) {
+            return Some("application/wasm".to_string());
+        }
+
+        if content.starts_with(b"\x1F\x8B") {
+            return Some("application/gzip".to_string());
+        }
+
+        if content.starts_with(b"BZh") {
+            return Some("application/x-bzip2".to_string());
+        }
+
+        if content.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
+            return Some("application/x-xz".to_string());
+        }
+
+        if content.starts_with(b"Rar!") || content.starts_with(b"Rar\x1A\x07") {
+            return Some("application/x-rar-compressed".to_string());
+        }
+
+        if content.starts_with(b"\x37\x7A\xBC\xAF\x27\x1C") {
+            return Some("application/x-7z-compressed".to_string());
+        }
+
+        if content.starts_with(b"fLaC") {
+            return Some("audio/flac".to_string());
+        }
+
+        if content.starts_with(b"ID3")
+            || content.starts_with(&[0xFF, 0xFB])
+            || content.starts_with(&[0xFF, 0xF3])
+            || content.starts_with(&[0xFF, 0xF2])
+        {
+            return Some("audio/mpeg".to_string());
+        }
+
+        if content.starts_with(b"\x00\x00\x00 ftyp")
+            || content.starts_with(b"\x00\x00\x00\x18ftyp")
+            || content.starts_with(b"\x00\x00\x00\x14ftyp")
+        {
+            return Some("video/mp4".to_string());
+        }
+
+        if content.starts_with(b"RIFF") && content.len() >= 8 && &content[8..12] == b"AVI " {
+            return Some("video/x-msvideo".to_string());
+        }
+
+        None
+    }
+
     async fn metadata(&self, path: String) -> CommandResult {
         use std::os::unix::fs::MetadataExt;
         use std::path::Path;
 
         match tokio::fs::metadata(&path).await {
             Ok(metadata) => {
-                // Determine MIME type from file extension
-                let mime_type = Path::new(&path)
+                // Determine MIME type from file extension or content
+                let mime_type = match Path::new(&path)
                     .extension()
                     .and_then(|ext| ext.to_str())
                     .and_then(|ext| mime_guess::from_ext(ext).first())
                     .map(|mime| mime.to_string())
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                {
+                    Some(mime) => mime,
+                    None => {
+                        // No extension found, try content-based detection
+                        Self::detect_mime_type_from_content(&path)
+                            .await
+                            .unwrap_or_else(|| "application/octet-stream".to_string())
+                    }
+                };
 
                 let file_size = metadata.size();
 
