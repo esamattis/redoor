@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { ApiClient, Agent, isLsDirectoryResponse } from "../src/api-client";
+import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
 import path from "node:path";
 import { createServer } from "node:net";
 import { ProcessManager, waitForPort, waitForLogMessage } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../../target/debug/redoor-agent");
+const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
+const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "test-agent";
 
 const processManager = new ProcessManager();
@@ -30,7 +30,7 @@ async function getAvailablePort(): Promise<number> {
 }
 
 beforeAll(async () => {
-    const projectRoot = path.join(__dirname, "../..");
+    const projectRoot = path.join(__dirname, "..");
 
     // Get a dynamic port to avoid conflicts
     serverPort = await getAvailablePort();
@@ -117,7 +117,7 @@ describe("Agents API", () => {
         // Verify test agent is present
         expect(testAgent).toBeDefined();
 
-        const result = await testAgent!.ls("src");
+        const result = await testAgent!.ls("ui/src");
         // Verify result is a directory response
         expect(isLsDirectoryResponse(result)).toBe(true);
         // Verify result contains an array of files

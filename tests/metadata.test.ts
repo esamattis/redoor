@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { ApiClient, Agent } from "../src/api-client";
+import { ApiClient, Agent } from "@/api-client";
 import path from "node:path";
 import { createServer } from "node:net";
 import {
@@ -9,8 +9,8 @@ import {
     TempFileManager,
 } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../../target/debug/redoor-agent");
+const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
+const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "test-agent-metadata";
 
 /**
@@ -40,7 +40,7 @@ describe("Metadata Content-Type Detection", () => {
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "../..");
+        const projectRoot = path.join(__dirname, "..");
 
         // Get a dynamic port to avoid conflicts
         serverPort = await getAvailablePort();

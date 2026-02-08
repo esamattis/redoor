@@ -6,7 +6,7 @@
         "vite": "vite ./ui",
         "build": "vite build ./ui",
         "check": "run-s types lint",
-        "types": "tsc -p ui/tsconfig.json",
+        "types": "tsc -p tsconfig.json",
         "format": "cd ui && prettier --write .",
         "format:check": "cd ui && prettier --check .",
         "playwright": "playwright test --reporter=line --config ui/playwright.config.ts",
@@ -17,7 +17,7 @@
         "redoor:agent2": "./scripts/redoor-agent agent2",
         "lint:fix": "oxlint --fix",
         "preview": "vite preview",
-        "test": "vitest run --config ui/vitest.config.ts ui/tests"
+        "test": "vitest run --config vitest.config.ts tests"
     },
     "dependencies": {
         "@playwright/mcp": "^0.0.56",
