@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "../src/api-client";
 import path from "node:path";
+import { createServer } from "node:net";
 import {
     ProcessManager,
     waitForPort,
@@ -8,16 +9,29 @@ import {
     TempFileManager,
 } from "./test-utils";
 
-const SERVER_PORT = 3000;
 const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
 const AGENT_PATH = path.join(__dirname, "../../target/debug/redoor-agent");
-const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`;
 const AGENT_NAME = "raw-test-agent";
+
+/**
+ * Finds an available ephemeral port to avoid conflicts with other tests.
+ */
+async function getAvailablePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const server = createServer();
+        server.listen(0, "127.0.0.1", () => {
+            const port = (server.address() as { port: number }).port;
+            server.close(() => resolve(port));
+        });
+        server.on("error", reject);
+    });
+}
 
 describe("Raw Download API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
-    const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`);
+    let serverPort: number;
+    let apiClient: ApiClient;
     let serverPid: number;
     let testAgent: Agent;
 
@@ -27,20 +41,31 @@ describe("Raw Download API", () => {
 
     beforeAll(async () => {
         const projectRoot = path.join(__dirname, "../..");
-        process.env.REDOOR_PORT = SERVER_PORT.toString();
+
+        // Get a dynamic port to avoid conflicts
+        serverPort = await getAvailablePort();
+        apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
+        const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+
+        process.env.REDOOR_PORT = serverPort.toString();
         serverPid = processManager.spawn(SERVER_PATH, [], projectRoot);
-        await waitForPort(SERVER_PORT);
-        processManager.spawn(AGENT_PATH, [WS_URL, AGENT_NAME], projectRoot);
+        await waitForPort(serverPort);
 
         const serverProcess = processManager.getProcess(serverPid);
         if (!serverProcess) {
             throw new Error("Server process not found");
         }
-        await waitForLogMessage(
+
+        // Start waiting for log message BEFORE spawning agent to avoid race condition
+        const waitForAgentPromise = waitForLogMessage(
             serverProcess,
             /Agent registered: agent_id=/,
             10000,
         );
+
+        processManager.spawn(AGENT_PATH, [wsUrl, AGENT_NAME], projectRoot);
+
+        await waitForAgentPromise;
 
         const agents = await apiClient.listAgents();
         testAgent = agents.find((a) => a.name === AGENT_NAME)!;

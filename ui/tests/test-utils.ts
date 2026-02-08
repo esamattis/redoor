@@ -151,15 +151,55 @@ export async function waitForPort(
     throw new Error(`Port ${port} not ready after ${maxRetries} retries`);
 }
 
+/**
+ * Accumulates output from a stream for later inspection.
+ * Helps avoid race conditions where output is emitted before listeners are attached.
+ */
+class OutputBuffer {
+    private chunks: string[] = [];
+    private maxSize: number;
+
+    constructor(maxSize: number = 1000) {
+        this.maxSize = maxSize;
+    }
+
+    add(chunk: string): void {
+        this.chunks.push(chunk);
+        if (this.chunks.length > this.maxSize) {
+            this.chunks.shift();
+        }
+    }
+
+    getContent(): string {
+        return this.chunks.join("");
+    }
+
+    matches(pattern: RegExp): boolean {
+        return pattern.test(this.getContent());
+    }
+}
+
+/**
+ * Waits for a log pattern to appear in the process output.
+ * Uses an OutputBuffer to capture all output from the start, avoiding race conditions
+ * where the pattern is emitted before this function is called.
+ */
 export async function waitForLogMessage(
     process: ChildProcess,
     pattern: RegExp,
     timeoutMs: number = 10000,
 ): Promise<void> {
-    const stream = process.stdout || process.stderr;
-    if (!stream) {
+    // Get both stdout and stderr streams
+    const stdout = process.stdout;
+    const stderr = process.stderr;
+
+    if (!stdout && !stderr) {
         throw new Error("No stdout/stderr stream available");
     }
+
+    // Use output buffers to track all output from both streams
+    const stdoutBuffer = new OutputBuffer();
+    const stderrBuffer = new OutputBuffer();
 
     let resolve: () => void;
     let reject: (error: Error) => void;
@@ -169,20 +209,46 @@ export async function waitForLogMessage(
         reject = rej;
     });
 
-    const onData = (chunk: Buffer) => {
-        const line = chunk.toString();
-        if (pattern.test(line)) {
+    const checkPattern = () => {
+        if (stdoutBuffer.matches(pattern) || stderrBuffer.matches(pattern)) {
             clearTimeout(timeout);
-            stream.off("data", onData);
+            cleanup();
             resolve();
         }
     };
 
-    stream.on("data", onData);
+    const onStdoutData = (chunk: Buffer) => {
+        stdoutBuffer.add(chunk.toString());
+        checkPattern();
+    };
+
+    const onStderrData = (chunk: Buffer) => {
+        stderrBuffer.add(chunk.toString());
+        checkPattern();
+    };
+
+    const cleanup = () => {
+        if (stdout) stdout.off("data", onStdoutData);
+        if (stderr) stderr.off("data", onStderrData);
+    };
+
+    if (stdout) stdout.on("data", onStdoutData);
+    if (stderr) stderr.on("data", onStderrData);
+
+    // Check immediately in case the pattern was already emitted
+    checkPattern();
 
     const timeout = setTimeout(() => {
-        stream.off("data", onData);
-        reject(new Error(`Timeout waiting for log pattern: ${pattern}`));
+        cleanup();
+        const stdoutContent = stdoutBuffer.getContent().slice(-2000);
+        const stderrContent = stderrBuffer.getContent().slice(-2000);
+        reject(
+            new Error(
+                `Timeout waiting for log pattern: ${pattern}\n\n` +
+                    `Last stdout (up to 2000 chars):\n${stdoutContent}\n\n` +
+                    `Last stderr (up to 2000 chars):\n${stderrContent}`,
+            ),
+        );
     }, timeoutMs);
 
     return promise;
