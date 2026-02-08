@@ -64,13 +64,6 @@ impl StreamChunk {
             return Err(format!("Invalid reserved byte: {} (must be 0)", bytes[22]));
         }
 
-        println!(
-            "Total bytes: {}, data starts at: {}",
-            bytes.len(),
-            HEADER_SIZE
-        );
-        println!("Data portion len: {}", bytes.len() - HEADER_SIZE);
-        println!("Data portion: {:?}", &bytes[HEADER_SIZE..]);
         let data = bytes[HEADER_SIZE..].to_vec();
 
         Ok(StreamChunk {
