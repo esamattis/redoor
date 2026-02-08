@@ -13,7 +13,9 @@ function Index() {
     return (
         <div className="p-6">
             <div className="max-w-6xl mx-auto">
-                <h1 className="text-2xl font-bold text-gray-900 mb-6">Agents</h1>
+                <h1 className="text-2xl font-bold text-gray-900 mb-6">
+                    Agents
+                </h1>
                 {agents.length === 0 ? (
                     <div className="flex items-center justify-center h-64 border-2 border-dashed border-gray-300 rounded-lg">
                         <p className="text-gray-500">No agents connected</p>

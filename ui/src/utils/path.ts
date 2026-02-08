@@ -21,6 +21,10 @@ export function formatSize(bytes: bigint): string {
     return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-export function getRawDownloadUrl(baseUrl: string, agentId: string, path: string): string {
+export function getRawDownloadUrl(
+    baseUrl: string,
+    agentId: string,
+    path: string,
+): string {
     return `${baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/raw/${path}`;
 }

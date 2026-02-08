@@ -1,7 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Folder, File, ArrowUp, AlertCircle, Download, ArrowLeft } from "lucide-react";
+import {
+    Folder,
+    File,
+    ArrowUp,
+    AlertCircle,
+    Download,
+    ArrowLeft,
+} from "lucide-react";
 import { getParentPath, formatSize, getRawDownloadUrl } from "../utils/path";
-import { type LsResponse, isLsDirectoryResponse, isLsFileResponse, type LsFileResponse } from "../api-client";
+import {
+    type LsResponse,
+    isLsDirectoryResponse,
+    isLsFileResponse,
+    type LsFileResponse,
+} from "../api-client";
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, context }) => {
@@ -11,7 +23,9 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         const details = await agent.getDetails();
         const relativePath = params._splat || "";
-        const fullPath = relativePath ? `${details.cwd}/${relativePath}` : details.cwd;
+        const fullPath = relativePath
+            ? `${details.cwd}/${relativePath}`
+            : details.cwd;
         const lsResult: LsResponse = await agent.ls(fullPath);
 
         return {
@@ -35,7 +49,9 @@ function FileBrowser() {
     const parentPath = getParentPath(relativePath);
 
     if (isLsDirectoryResponse(lsResult)) {
-        const directories = lsResult.files.filter((f) => f.type === "directory");
+        const directories = lsResult.files.filter(
+            (f) => f.type === "directory",
+        );
         const regularFiles = lsResult.files.filter((f) => f.type === "file");
 
         directories.sort((a, b) => a.name.localeCompare(b.name));
@@ -146,7 +162,9 @@ function Breadcrumbs(props: {
                 {agentName}
             </Link>
             {parts.map((part, index) => {
-                accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
+                accumulatedPath = accumulatedPath
+                    ? `${accumulatedPath}/${part}`
+                    : part;
                 paths.push(accumulatedPath);
                 const isLast = index === parts.length - 1;
 
@@ -154,7 +172,9 @@ function Breadcrumbs(props: {
                     <div key={index} className="flex items-center gap-2">
                         <span className="text-gray-400">/</span>
                         {isLast ? (
-                            <span className="text-gray-900 font-medium">{part}</span>
+                            <span className="text-gray-900 font-medium">
+                                {part}
+                            </span>
                         ) : (
                             <Link
                                 to="/agents/$agentId/browser/$"
@@ -191,11 +211,21 @@ function FileList(props: {
         <table className="w-full bg-white border rounded-lg">
             <thead>
                 <tr className="border-b bg-gray-50">
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">Type</th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">Name</th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">Size</th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">Owner</th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">Group</th>
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Type
+                    </th>
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Name
+                    </th>
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Size
+                    </th>
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Owner
+                    </th>
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Group
+                    </th>
                 </tr>
             </thead>
             <tbody>
@@ -229,7 +259,9 @@ function FileEntry(props: {
 }) {
     const { agentId, relativePath, entry, isParent } = props;
     const isDirectory = entry.type === "directory" || isParent;
-    const splatValue = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+    const splatValue = relativePath
+        ? `${relativePath}/${entry.name}`
+        : entry.name;
 
     if (isDirectory && !isParent) {
         return (
@@ -284,7 +316,11 @@ function FileDetailView(props: {
 }) {
     const { agentId, agentName, relativePath, fileName, lsResult } = props;
     const parentPath = getParentPath(relativePath);
-    const rawDownloadUrl = getRawDownloadUrl(window.location.origin, agentId, lsResult.path);
+    const rawDownloadUrl = getRawDownloadUrl(
+        window.location.origin,
+        agentId,
+        lsResult.path,
+    );
 
     return (
         <div>
@@ -298,7 +334,10 @@ function FileDetailView(props: {
                     <div className="flex gap-2">
                         <Link
                             to="/agents/$agentId/browser/$"
-                            params={{ agentId, _splat: parentPath ?? undefined }}
+                            params={{
+                                agentId,
+                                _splat: parentPath ?? undefined,
+                            }}
                             className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
                         >
                             <ArrowLeft className="h-4 w-4" />
@@ -320,39 +359,55 @@ function FileDetailView(props: {
                     <div className="p-3 bg-blue-100 rounded-lg">
                         <File className="h-8 w-8 text-blue-600" />
                     </div>
-                    <h1 className="text-2xl font-bold text-gray-900">{fileName}</h1>
+                    <h1 className="text-2xl font-bold text-gray-900">
+                        {fileName}
+                    </h1>
                 </div>
 
                 <div className="space-y-4">
                     <div className="grid grid-cols-3 gap-4">
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Size</p>
-                            <p className="text-gray-900 font-medium">{formatSize(BigInt(lsResult.size as unknown as number))}</p>
+                            <p className="text-gray-900 font-medium">
+                                {formatSize(
+                                    BigInt(lsResult.size as unknown as number),
+                                )}
+                            </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Owner</p>
-                            <p className="text-gray-900 font-medium">{lsResult.owner || "-"}</p>
+                            <p className="text-gray-900 font-medium">
+                                {lsResult.owner || "-"}
+                            </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Group</p>
-                            <p className="text-gray-900 font-medium">{lsResult.group || "-"}</p>
+                            <p className="text-gray-900 font-medium">
+                                {lsResult.group || "-"}
+                            </p>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <p className="text-sm text-gray-500 mb-1">UID</p>
-                            <p className="text-gray-900 font-medium">{lsResult.uid}</p>
+                            <p className="text-gray-900 font-medium">
+                                {lsResult.uid}
+                            </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">GID</p>
-                            <p className="text-gray-900 font-medium">{lsResult.gid}</p>
+                            <p className="text-gray-900 font-medium">
+                                {lsResult.gid}
+                            </p>
                         </div>
                     </div>
 
                     <div>
                         <p className="text-sm text-gray-500 mb-1">Full Path</p>
-                        <p className="text-gray-900 font-mono text-sm bg-gray-50 p-2 rounded">{lsResult.path}</p>
+                        <p className="text-gray-900 font-mono text-sm bg-gray-50 p-2 rounded">
+                            {lsResult.path}
+                        </p>
                     </div>
 
                     <div>
@@ -375,19 +430,27 @@ function FileDetailView(props: {
 function FileBrowserError({ error }: { error: Error }) {
     const errorMessage = error.message.toLowerCase();
 
-    if (errorMessage.includes("not found") || errorMessage.includes("agent not found")) {
+    if (
+        errorMessage.includes("not found") ||
+        errorMessage.includes("agent not found")
+    ) {
         return (
             <div className="flex items-center justify-center h-full">
                 <div className="text-center flex flex-col items-center gap-2">
                     <AlertCircle className="h-12 w-12 text-red-500" />
                     <p className="text-gray-500">Agent not found</p>
-                    <Link to="/" className="text-blue-600 hover:underline">Back to agents</Link>
+                    <Link to="/" className="text-blue-600 hover:underline">
+                        Back to agents
+                    </Link>
                 </div>
             </div>
         );
     }
 
-    if (errorMessage.includes("no such file or directory") || errorMessage.includes("directory not found")) {
+    if (
+        errorMessage.includes("no such file or directory") ||
+        errorMessage.includes("directory not found")
+    ) {
         return (
             <div className="flex items-center justify-center h-full">
                 <div className="text-center flex flex-col items-center gap-2">

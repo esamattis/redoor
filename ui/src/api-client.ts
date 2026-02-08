@@ -11,11 +11,15 @@ export type { LsDirectoryResponse, LsFileResponse };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
-export function isLsDirectoryResponse(response: LsResponse): response is LsDirectoryResponse {
+export function isLsDirectoryResponse(
+    response: LsResponse,
+): response is LsDirectoryResponse {
     return "files" in response;
 }
 
-export function isLsFileResponse(response: LsResponse): response is LsFileResponse {
+export function isLsFileResponse(
+    response: LsResponse,
+): response is LsFileResponse {
     return "size" in response;
 }
 
@@ -50,7 +54,10 @@ export class Agent {
         );
     }
 
-    async echo(message: string, random_sleep: boolean = false): Promise<EchoResponse> {
+    async echo(
+        message: string,
+        random_sleep: boolean = false,
+    ): Promise<EchoResponse> {
         const request: EchoRequest = { message, random_sleep };
         return apiRequest(
             this.baseUrl,

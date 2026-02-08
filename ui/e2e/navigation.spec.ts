@@ -215,15 +215,21 @@ test.describe.serial("File Browser Navigation", () => {
             .getByRole("link", { name: "file1.txt" })
             .click();
 
-        await expect(page.locator("h1.text-2xl.font-bold")).toContainText("file1.txt");
+        await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
+            "file1.txt",
+        );
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Owner")).toBeVisible();
         await expect(page.getByText("Group")).toBeVisible();
         await expect(page.getByText("UID")).toBeVisible();
         await expect(page.getByText("GID")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
-        await expect(page.getByRole("link", { name: "Download File" })).toBeVisible();
-        await expect(page.getByRole("link", { name: "Back", exact: true })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "Download File" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "Back", exact: true }),
+        ).toBeVisible();
     });
 
     test("should display correct file size on detail view", async ({
@@ -256,10 +262,15 @@ test.describe.serial("File Browser Navigation", () => {
             .getByRole("link", { name: "file1.txt" })
             .click();
 
-        const backButton = page.getByRole("link", { name: "Back", exact: true });
+        const backButton = page.getByRole("link", {
+            name: "Back",
+            exact: true,
+        });
         await backButton.click();
 
-        await expect(page.getByRole("cell", { name: "file1.txt" })).toBeVisible();
+        await expect(
+            page.getByRole("cell", { name: "file1.txt" }),
+        ).toBeVisible();
         await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
     });
 
@@ -292,14 +303,20 @@ test.describe.serial("File Browser Navigation", () => {
             .getByRole("link", { name: "nested1.txt" })
             .click();
 
-        await expect(page.locator("h1.text-2xl.font-bold")).toContainText("nested1.txt");
+        await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
+            "nested1.txt",
+        );
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
 
         const backLink = page.getByRole("link", { name: "Back", exact: true });
         await backLink.click();
 
-        await expect(page.getByRole("cell", { name: "nested1.txt" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "nested2.txt" })).toBeVisible();
+        await expect(
+            page.getByRole("cell", { name: "nested1.txt" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("cell", { name: "nested2.txt" }),
+        ).toBeVisible();
     });
 });

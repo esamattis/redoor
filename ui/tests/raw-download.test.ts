@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "../src/api-client";
 import path from "node:path";
-import { ProcessManager, waitForPort, waitForLogMessage, TempFileManager } from "./test-utils";
+import {
+    ProcessManager,
+    waitForPort,
+    waitForLogMessage,
+    TempFileManager,
+} from "./test-utils";
 
 const SERVER_PORT = 3000;
 const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
@@ -67,7 +72,9 @@ describe("Raw Download API", () => {
 
     it("should handle binary file download", async () => {
         const binaryContent = Buffer.from([0, 1, 2, 3, 255, 254, 253]);
-        const testFilePath = tempFiles.create(binaryContent, { suffix: ".bin" });
+        const testFilePath = tempFiles.create(binaryContent, {
+            suffix: ".bin",
+        });
 
         const result = await testAgent.raw(testFilePath);
         const downloadedContent = Buffer.from(result);
@@ -92,8 +99,6 @@ describe("Raw Download API", () => {
         expect(response.headers.get("Content-Disposition")).toMatch(
             /attachment/,
         );
-        expect(response.headers.get("Content-Disposition")).toMatch(
-            /\.txt/,
-        );
+        expect(response.headers.get("Content-Disposition")).toMatch(/\.txt/);
     });
 });
