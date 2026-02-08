@@ -73,7 +73,8 @@ export class Agent {
     }
 
     async raw(path: string): Promise<ArrayBuffer> {
-        const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodeURIComponent(path)}`;
+        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
         const response = await fetch(url);
 
         if (!response.ok) {
