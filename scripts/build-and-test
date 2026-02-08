@@ -22,8 +22,8 @@ silent_unless_error cargo test
 silent_unless_error pnpm run -C ui build
 silent_unless_error cargo build
 silent_unless_error pnpm run -C ui test
-silent_unless_error pnpm run -C ui playwright
 silent_unless_error pnpm run -C ui types
+silent_unless_error pnpm run -C ui playwright
 silent_unless_error pnpm run -C ui lint
 silent_unless_error pnpm run -C ui format:check
 silent_unless_error cargo fmt -- --check
