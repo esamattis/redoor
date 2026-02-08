@@ -1,3 +1,5 @@
 /target
 .test
 node_modules
+playwright-report
+test-results
