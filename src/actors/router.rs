@@ -6,8 +6,24 @@ use crate::types::Message;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::HashMap;
 
+/// Central command router actor (singleton).
+///
+/// `RouterActor` acts as the hub between the REST API and connected agents.
+/// It maintains a registry of all connected agents (each identified by an
+/// `AgentInfo` that includes a handle back to the agent's `SessionActor`),
+/// and correlates outgoing commands with incoming responses using request IDs.
+///
+/// When the REST API wants to execute a command on an agent, it sends an
+/// `ExecuteCommandRest` message here. The router looks up the target agent's
+/// `SessionActor` reference and forwards the command over the WebSocket.
+/// When the agent responds, the router matches the response's `request_id`
+/// to the waiting REST reply port and completes the round-trip.
 pub struct RouterActor;
 
+/// Internal state for the [`RouterActor`].
+///
+/// Tracks all connected agents and maps in-flight request IDs to their
+/// corresponding REST reply ports (for both one-shot and streaming responses).
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
@@ -15,6 +31,11 @@ pub struct RouterState {
     next_request_id: u64,
 }
 
+/// Metadata about a connected agent, cached at registration time.
+///
+/// Stored in the router's agent registry and used to route commands to the
+/// correct [`SessionActor`] via `session_ref`, as well as to enrich
+/// responses with registration-time metadata (e.g. `connected_at`, `agent_name`).
 #[derive(Clone, Debug)]
 pub struct AgentInfo {
     pub agent_name: String,
@@ -35,7 +56,9 @@ impl RouterState {
     }
 }
 
+/// Messages accepted by the [`RouterActor`].
 pub enum RouterMsg {
+    /// An agent has connected and identified itself; add it to the registry.
     RegisterAgent {
         agent_id: String,
         agent_name: String,
@@ -46,22 +69,25 @@ pub enum RouterMsg {
         hostname: String,
         username: String,
     },
-    UnregisterAgent {
-        agent_id: String,
-    },
+    /// An agent has disconnected; remove it from the registry.
+    UnregisterAgent { agent_id: String },
+    /// An agent sent a command response; match it to the pending REST reply port.
     RouteResponse {
         agent_id: String,
         request_id: u64,
         result: CommandResult,
     },
+    /// Request the list of currently connected agents (used by the REST API).
     GetAgentList {
         reply: RpcReplyPort<HashMap<String, String>>,
     },
+    /// Execute a one-shot command on an agent, initiated from the REST API.
     ExecuteCommandRest {
         agent_id: String,
         command: Command,
         reply: RpcReplyPort<CommandResult>,
     },
+    /// An agent sent a streaming chunk; forward it to the waiting REST stream sender.
     RouteStreamChunk {
         agent_id: String,
         request_id: u64,
@@ -70,6 +96,7 @@ pub enum RouterMsg {
         is_error: bool,
         data: Vec<u8>,
     },
+    /// Execute a streaming command on an agent, initiated from the REST API.
     ExecuteStreamCommandRest {
         agent_id: String,
         command: Command,

@@ -7,21 +7,48 @@ use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use tokio::sync::mpsc;
 
+/// Per-WebSocket-connection actor that bridges the raw WebSocket transport and
+/// the actor system. Each connected agent gets its own `SessionActor` instance,
+/// spawned in [`handle_websocket`].
+///
+/// **Inbound**: deserializes WebSocket text/binary frames into typed messages and
+/// forwards them to the [`RouterActor`](super::router::RouterActor) (e.g.
+/// agent registration, command responses, stream chunks).
+///
+/// **Outbound**: receives [`SessionMsg::OutgoingMessage`] /
+/// [`SessionMsg::OutgoingBinary`] from other actors and pushes them into the
+/// WebSocket send channels so they reach the remote agent.
 pub struct SessionActor;
 
+/// Internal state held by a [`SessionActor`] for the lifetime of one WebSocket
+/// connection.
 pub struct SessionState {
+    /// Unique identifier for this WebSocket connection.
     pub socket_id: String,
+    /// Handle to the singleton [`RouterActor`](super::router::RouterActor) used
+    /// to forward inbound messages (registrations, responses, stream chunks).
     pub router_ref: ActorRef<RouterMsg>,
+    /// The agent ID assigned after the agent sends an `AgentRegister` message.
+    /// `None` until registration completes.
     pub agent_id: Option<String>,
+    /// Channel for sending serialized JSON messages back to the agent over the
+    /// WebSocket.
     pub outgoing: mpsc::UnboundedSender<Message>,
+    /// Channel for sending raw binary frames (e.g. stream chunks) back to the
+    /// agent over the WebSocket.
     pub outgoing_binary: mpsc::UnboundedSender<Vec<u8>>,
 }
 
+/// Messages that can be sent to a [`SessionActor`].
 #[derive(Clone)]
 pub enum SessionMsg {
+    /// A JSON message received from the remote agent over the WebSocket.
     IncomingMessage(Message),
+    /// A JSON message to send to the remote agent (e.g. a command from the REST API).
     OutgoingMessage(Message),
+    /// A binary frame received from the remote agent (e.g. a stream chunk).
     IncomingBinary(Vec<u8>),
+    /// A binary frame to send to the remote agent.
     OutgoingBinary(Vec<u8>),
 }
 
@@ -157,6 +184,13 @@ impl Actor for SessionActor {
     }
 }
 
+/// Entry point for a new WebSocket connection. Splits the socket into send/receive
+/// halves, spawns a [`SessionActor`] to manage the connection, and wires up
+/// background tasks that shuttle frames between the WebSocket and the actor.
+///
+/// When the remote side disconnects, the receive task detects the closed stream
+/// and stops the `SessionActor`, which in turn unregisters the agent from the
+/// [`RouterActor`](super::router::RouterActor) via its `post_stop` hook.
 pub async fn handle_websocket(
     socket: WebSocket,
     socket_id: String,
