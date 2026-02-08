@@ -75,7 +75,9 @@ async fn main() {
         .parse::<u16>()
         .unwrap_or(3000);
     let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect(&format!("Failed to bind to address {}", addr));
     println!("Server running on http://{}", addr);
     axum::serve(listener, app).await.unwrap();
 }
