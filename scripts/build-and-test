@@ -37,3 +37,6 @@ echo "Running type checks and linting..."
 silent_unless_error pnpm run -C ui types
 silent_unless_error pnpm run -C ui lint
 silent_unless_error pnpm run -C ui format:check
+
+echo "Running cargo format check..."
+silent_unless_error cargo fmt -- --check
