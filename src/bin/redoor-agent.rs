@@ -61,9 +61,7 @@ impl AgentActor {
                     );
 
                     if let Command::RawDownload { path } = command {
-                        let _ = self
-                            .raw_download(path, request_id, write, agent_ref.clone())
-                            .await;
+                        let _ = self.raw_download(path, request_id, write).await;
                         return;
                     }
 
@@ -95,13 +93,7 @@ impl AgentActor {
         }
     }
 
-    async fn raw_download(
-        &self,
-        path: String,
-        request_id: u64,
-        write: &mpsc::Sender<WsMessage>,
-        agent_ref: ActorRef<AgentMsg>,
-    ) {
+    async fn raw_download(&self, path: String, request_id: u64, write: &mpsc::Sender<WsMessage>) {
         use tokio::io::AsyncReadExt;
 
         match tokio::fs::File::open(&path).await {
@@ -163,15 +155,6 @@ impl AgentActor {
                     .send(WsMessage::Binary(final_chunk.to_bytes().into()))
                     .await;
 
-                let final_response = Message::CommandResponse {
-                    agent_id: agent_ref.get_id().to_string(),
-                    request_id,
-                    result: redoor::commands::CommandResult::RawDownload { path: path.clone() },
-                };
-                if let Ok(json) = serde_json::to_string(&final_response) {
-                    let _ = write.send(WsMessage::text(json)).await;
-                }
-
                 log!(
                     Level::Info,
                     "Raw download complete: path={}, chunks={}",
@@ -192,17 +175,6 @@ impl AgentActor {
                 let _ = write
                     .send(WsMessage::Binary(error_chunk.to_bytes().into()))
                     .await;
-
-                let response = Message::CommandResponse {
-                    agent_id: agent_ref.get_id().to_string(),
-                    request_id,
-                    result: redoor::commands::CommandResult::Error {
-                        message: format!("Failed to open file: {}", e),
-                    },
-                };
-                if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = write.send(WsMessage::text(json)).await;
-                }
             }
         }
     }
