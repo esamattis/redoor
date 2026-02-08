@@ -317,12 +317,13 @@ function FileDetailView(props: {
     lsResult: LsFileResponse;
     cwd: string;
 }) {
-    const { agentId, agentName, relativePath, fileName, lsResult } = props;
+    const { agentId, agentName, relativePath, fileName, lsResult, cwd } = props;
     const parentPath = getParentPath(relativePath);
     const rawDownloadUrl = getRawDownloadUrl(
         window.location.origin,
         agentId,
         lsResult.path,
+        cwd,
     );
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(

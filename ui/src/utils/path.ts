@@ -25,6 +25,12 @@ export function getRawDownloadUrl(
     baseUrl: string,
     agentId: string,
     path: string,
+    cwd?: string,
 ): string {
-    return `${baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/raw/${path}`;
+    let relativePath = path;
+    if (cwd && path.startsWith(cwd)) {
+        // Remove the cwd prefix and leading slash
+        relativePath = path.slice(cwd.length).replace(/^\//, "");
+    }
+    return `${baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/raw/${relativePath}`;
 }
