@@ -210,8 +210,9 @@ describe("Raw Download API", () => {
         const testContent = "test content";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}?download=1`;
-        const response = await fetch(url);
+        const response = await testAgent.download(testFilePath, {
+            download: true,
+        });
         console.log(
             "Content-Disposition headers:",
             response.headers.get("Content-Disposition"),
@@ -226,8 +227,9 @@ describe("Raw Download API", () => {
         const testContent = "test content for range check";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, { method: "HEAD" });
+        const response = await testAgent.download(testFilePath, {
+            method: "HEAD",
+        });
 
         expect(response.headers.get("Accept-Ranges")).toBe("bytes");
     });
@@ -237,9 +239,8 @@ describe("Raw Download API", () => {
         const testContent = "0123456789".repeat(10); // 100 bytes
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=0-9" },
+        const response = await testAgent.download(testFilePath, {
+            range: [0, 9],
         });
 
         expect(response.status).toBe(206);
@@ -256,9 +257,8 @@ describe("Raw Download API", () => {
         const testContent = "0123456789".repeat(10); // 100 bytes
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=-10" },
+        const response = await testAgent.download(testFilePath, {
+            range: [null, 10],
         });
 
         expect(response.status).toBe(206);
@@ -276,9 +276,8 @@ describe("Raw Download API", () => {
         const testContent = "0123456789".repeat(10); // 100 bytes
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=50-" },
+        const response = await testAgent.download(testFilePath, {
+            range: [50, null],
         });
 
         expect(response.status).toBe(206);
@@ -295,9 +294,8 @@ describe("Raw Download API", () => {
         const testContent = "0123456789";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=100-200" },
+        const response = await testAgent.download(testFilePath, {
+            range: [100, 200],
         });
 
         expect(response.status).toBe(416);
@@ -310,9 +308,8 @@ describe("Raw Download API", () => {
         const testContent = Buffer.concat([pattern, pattern, pattern, pattern]); // 1024 bytes
         const testFilePath = tempFiles.create(testContent, { suffix: ".bin" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=100-109" },
+        const response = await testAgent.download(testFilePath, {
+            range: [100, 109],
         });
 
         expect(response.status).toBe(206);
@@ -338,8 +335,7 @@ describe("Raw Download API", () => {
         const testContent = "Full file content without range";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url);
+        const response = await testAgent.download(testFilePath);
 
         expect(response.status).toBe(200);
         expect(response.headers.get("Content-Range")).toBeNull();
@@ -357,9 +353,8 @@ describe("Raw Download API", () => {
         const testContent = "0123456789".repeat(10); // 100 bytes
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=95-99" },
+        const response = await testAgent.download(testFilePath, {
+            range: [95, 99],
         });
 
         expect(response.status).toBe(206);
@@ -375,9 +370,8 @@ describe("Raw Download API", () => {
         const testContent = "x".repeat(50);
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}`;
-        const response = await fetch(url, {
-            headers: { Range: "bytes=40-100" }, // Request beyond file size
+        const response = await testAgent.download(testFilePath, {
+            range: [40, 100], // Request beyond file size
         });
 
         expect(response.status).toBe(206);

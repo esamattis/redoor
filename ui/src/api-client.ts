@@ -73,11 +73,47 @@ export class Agent {
     }
 
     async raw(path: string): Promise<ArrayBuffer> {
-        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-        const url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
-        const response = await fetch(url);
+        const response = await this.download(path);
+        return response.arrayBuffer();
+    }
 
-        if (!response.ok) {
+    async download(
+        path: string,
+        options?: {
+            range?: [number | null, number | null];
+            method?: "GET" | "HEAD";
+            download?: boolean;
+        },
+    ): Promise<Response> {
+        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        let url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
+
+        if (options?.download) {
+            url += "?download=1";
+        }
+
+        const fetchOptions: RequestInit = {};
+        if (options?.method) {
+            fetchOptions.method = options.method;
+        }
+        if (options?.range) {
+            const [start, end] = options.range;
+            if (start === null && end !== null) {
+                // Suffix range: bytes=-N
+                fetchOptions.headers = { Range: `bytes=-${end}` };
+            } else if (end === null) {
+                // Open-ended range: bytes=start-
+                fetchOptions.headers = { Range: `bytes=${start}-` };
+            } else if (end !== undefined) {
+                // Full range: bytes=start-end
+                fetchOptions.headers = { Range: `bytes=${start}-${end}` };
+            }
+        }
+
+        const response = await fetch(url, fetchOptions);
+
+        // 416 Range Not Satisfiable is a valid response for range requests
+        if (!response.ok && response.status !== 416) {
             const text = await response.text();
             if (text) {
                 const error: ErrorResponse = JSON.parse(text);
@@ -88,7 +124,7 @@ export class Agent {
             );
         }
 
-        return response.arrayBuffer();
+        return response;
     }
 }
 
