@@ -27,7 +27,13 @@ pub struct RouterActor;
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
-    rest_streaming_responses: HashMap<u64, (String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+    rest_streaming_responses: HashMap<
+        u64,
+        (
+            String,
+            tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+        ),
+    >,
     next_request_id: u64,
 }
 
@@ -90,18 +96,14 @@ pub enum RouterMsg {
     /// An agent sent a streaming chunk; forward it to the waiting REST stream sender.
     RouteStreamChunk {
         agent_id: String,
-        request_id: u64,
-        chunk_index: u64,
-        is_last: bool,
-        is_error: bool,
-        data: Vec<u8>,
+        chunk: crate::streaming::StreamChunk,
     },
     /// Execute a streaming command on an agent, initiated from the REST API.
     ExecuteStreamCommandRest {
         agent_id: String,
         command: Command,
         reply: RpcReplyPort<Result<(), String>>,
-        chunk_sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
     },
 }
 
@@ -304,47 +306,26 @@ impl Actor for RouterActor {
                     });
                 }
             }
-            RouterMsg::RouteStreamChunk {
-                agent_id,
-                request_id,
-                chunk_index,
-                is_last,
-                is_error,
-                data,
-            } => {
-                if let Some((agent_id_stored, chunk_sender)) =
-                    state.rest_streaming_responses.remove(&request_id)
-                {
-                    let chunk = crate::streaming::StreamChunk {
-                        request_id,
-                        chunk_index,
-                        is_last,
-                        is_error,
-                        data,
-                    };
+            RouterMsg::RouteStreamChunk { agent_id, chunk } => {
+                let request_id = chunk.request_id;
 
-                    if !is_last && !is_error {
-                        state
-                            .rest_streaming_responses
-                            .insert(request_id, (agent_id_stored, chunk_sender.clone()));
-                    }
-
-                    if let Err(_e) = chunk_sender.send(chunk.to_bytes()).await {
+                if let Some((_, chunk_sender)) = state.rest_streaming_responses.get(&request_id) {
+                    if let Err(_e) = chunk_sender.send(chunk.clone()).await {
                         log!(
                             Level::Warning,
-                            "Failed to send chunk to REST stream (channel closed or full): request_id={}",
+                            "Failed to send chunk to REST stream: request_id={}",
                             request_id
                         );
-                    }
-
-                    if is_last || is_error {
+                        state.rest_streaming_responses.remove(&request_id);
+                    } else if chunk.is_last || chunk.is_error {
+                        state.rest_streaming_responses.remove(&request_id);
                         log!(
                             Level::Info,
                             "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
                             agent_id,
                             request_id,
-                            chunk_index + 1,
-                            is_error
+                            chunk.chunk_index + 1,
+                            chunk.is_error
                         );
                     }
                 } else {

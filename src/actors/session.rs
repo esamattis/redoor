@@ -150,11 +150,7 @@ impl Actor for SessionActor {
                             .router_ref
                             .cast(crate::actors::router::RouterMsg::RouteStreamChunk {
                                 agent_id: state.agent_id.clone().unwrap_or_default(),
-                                request_id: chunk.request_id,
-                                chunk_index: chunk.chunk_index,
-                                is_last: chunk.is_last,
-                                is_error: chunk.is_error,
-                                data: chunk.data,
+                                chunk,
                             });
                 }
             }
