@@ -4,7 +4,7 @@ set -eu
 silent_unless_error() {
     local tmpfile=$(mktemp -t redoor-test)
     echo "Running: $*"
-    echo "Writing output to: $tmpfile"
+    echo "output: $tmpfile"
     local exit_code=0
     "$@" >"$tmpfile" 2>&1 || exit_code=$?
     if [ $exit_code -ne 0 ]; then
@@ -18,25 +18,13 @@ silent_unless_error() {
     return $exit_code
 }
 
-echo "Running cargo test"
 silent_unless_error cargo test
-
-echo "building the ui and generating route types"
 silent_unless_error pnpm run -C ui build
-
-echo "Building Rust binaries..."
 silent_unless_error cargo build
-
-echo "Running vitest tests..."
 silent_unless_error pnpm run -C ui test
-
-echo "Running playwright tests..."
 silent_unless_error pnpm run -C ui playwright
-
-echo "Running type checks and linting..."
 silent_unless_error pnpm run -C ui types
 silent_unless_error pnpm run -C ui lint
 silent_unless_error pnpm run -C ui format:check
-
-echo "Running cargo format check..."
 silent_unless_error cargo fmt -- --check
+silent_unless_error cargo clippy
