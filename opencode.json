@@ -3,7 +3,7 @@
     "mcp": {
         "playwright": {
             "type": "local",
-            "command": ["./ui/node_modules/.bin/mcp-server-playwright"],
+            "command": ["./node_modules/.bin/mcp-server-playwright"],
             "enabled": true
         }
     },
