@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "../src/api-client";
 import path from "node:path";
-import { writeFileSync, unlinkSync } from "node:fs";
-import { ProcessManager, waitForPort, waitForLogMessage } from "./test-utils";
+import { ProcessManager, waitForPort, waitForLogMessage, TempFileManager } from "./test-utils";
 
 const SERVER_PORT = 3000;
 const SERVER_PATH = path.join(__dirname, "../../target/debug/redoor");
@@ -12,9 +11,14 @@ const AGENT_NAME = "raw-test-agent";
 
 describe("Raw Download API", () => {
     const processManager = new ProcessManager();
+    const tempFiles = new TempFileManager();
     const apiClient = new ApiClient(`http://127.0.0.1:${SERVER_PORT}`);
     let serverPid: number;
     let testAgent: Agent;
+
+    afterEach(() => {
+        tempFiles.cleanup();
+    });
 
     beforeAll(async () => {
         const projectRoot = path.join(__dirname, "../..");
@@ -44,42 +48,30 @@ describe("Raw Download API", () => {
 
     it("should download small file via raw endpoint", async () => {
         const testContent = "Hello, World!\nThis is a test file.";
-        const testFilePath = path.join(__dirname, "../../test-file.txt");
-
-        writeFileSync(testFilePath, testContent, "utf-8");
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
         const result = await testAgent.raw(testFilePath);
         const downloadedContent = Buffer.from(result).toString("utf-8");
         expect(downloadedContent).toBe(testContent);
-
-        unlinkSync(testFilePath);
     });
 
     it("should download large file via raw endpoint", async () => {
         const largeContent = "x".repeat(100 * 1024);
-        const testFilePath = path.join(__dirname, "../../large-test-file.txt");
-
-        writeFileSync(testFilePath, largeContent, "utf-8");
+        const testFilePath = tempFiles.create(largeContent, { suffix: ".txt" });
 
         const result = await testAgent.raw(testFilePath);
         const downloadedContent = Buffer.from(result).toString("utf-8");
         expect(downloadedContent.length).toBe(largeContent.length);
         expect(downloadedContent).toBe(largeContent);
-
-        unlinkSync(testFilePath);
     });
 
     it("should handle binary file download", async () => {
         const binaryContent = Buffer.from([0, 1, 2, 3, 255, 254, 253]);
-        const testFilePath = path.join(__dirname, "../../binary-test-file.bin");
-
-        writeFileSync(testFilePath, binaryContent);
+        const testFilePath = tempFiles.create(binaryContent, { suffix: ".bin" });
 
         const result = await testAgent.raw(testFilePath);
         const downloadedContent = Buffer.from(result);
         expect(Buffer.compare(downloadedContent, binaryContent)).toBe(0);
-
-        unlinkSync(testFilePath);
     });
 
     it("should return error for non-existent file", async () => {
@@ -89,9 +81,7 @@ describe("Raw Download API", () => {
 
     it("should set correct Content-Disposition header", async () => {
         const testContent = "test content";
-        const testFilePath = path.join(__dirname, "../../test-disposition.txt");
-
-        writeFileSync(testFilePath, testContent);
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
         const url = `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(testAgent.id)}/raw/${encodeURIComponent(testFilePath)}?download=1`;
         const response = await fetch(url);
@@ -103,9 +93,7 @@ describe("Raw Download API", () => {
             /attachment/,
         );
         expect(response.headers.get("Content-Disposition")).toMatch(
-            /test-disposition\.txt/,
+            /\.txt/,
         );
-
-        unlinkSync(testFilePath);
     });
 });
