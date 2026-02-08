@@ -20,17 +20,3 @@ export function formatSize(bytes: bigint): string {
     }
     return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
-
-export function getRawDownloadUrl(
-    baseUrl: string,
-    agentId: string,
-    path: string,
-    cwd?: string,
-): string {
-    let relativePath = path;
-    if (cwd && path.startsWith(cwd)) {
-        // Remove the cwd prefix and leading slash
-        relativePath = path.slice(cwd.length).replace(/^\//, "");
-    }
-    return `${baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/raw/${relativePath}`;
-}

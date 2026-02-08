@@ -10,7 +10,7 @@ import {
     Copy,
     Check,
 } from "lucide-react";
-import { getParentPath, formatSize, getRawDownloadUrl } from "../utils/path";
+import { getParentPath, formatSize } from "../utils/path";
 import {
     type LsResponse,
     isLsDirectoryResponse,
@@ -30,6 +30,9 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             ? `${details.cwd}/${relativePath}`
             : details.cwd;
         const lsResult: LsResponse = await agent.ls(fullPath);
+        const downloadUrl = isLsFileResponse(lsResult)
+            ? agent.getDownloadUrl(lsResult.path, { cwd: details.cwd })
+            : undefined;
 
         return {
             agentId: agent.id,
@@ -38,6 +41,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             relativePath,
             fullPath,
             lsResult,
+            downloadUrl,
         };
     },
     component: FileBrowser,
@@ -94,7 +98,7 @@ function FileBrowser() {
                         relativePath={relativePath}
                         fileName={fileName}
                         lsResult={lsResult}
-                        cwd={cwd}
+                        downloadUrl={data.downloadUrl!}
                     />
                 </div>
             </div>
@@ -315,16 +319,17 @@ function FileDetailView(props: {
     relativePath: string;
     fileName: string;
     lsResult: LsFileResponse;
-    cwd: string;
+    downloadUrl: string;
 }) {
-    const { agentId, agentName, relativePath, fileName, lsResult, cwd } = props;
-    const parentPath = getParentPath(relativePath);
-    const rawDownloadUrl = getRawDownloadUrl(
-        window.location.origin,
+    const {
         agentId,
-        lsResult.path,
-        cwd,
-    );
+        agentName,
+        relativePath,
+        fileName,
+        lsResult,
+        downloadUrl,
+    } = props;
+    const parentPath = getParentPath(relativePath);
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
@@ -431,7 +436,7 @@ function FileDetailView(props: {
                     <div>
                         <p className="text-sm text-gray-500 mb-1">Download</p>
                         <a
-                            href={rawDownloadUrl}
+                            href={downloadUrl}
                             download={fileName}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
                         >
@@ -448,12 +453,12 @@ function FileDetailView(props: {
                         {/* wget row */}
                         <div className="flex items-center gap-2 mb-2">
                             <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
-                                wget "{rawDownloadUrl}"
+                                wget "{downloadUrl}"
                             </code>
                             <button
                                 onClick={() =>
                                     copyToClipboard(
-                                        `wget "${rawDownloadUrl}"`,
+                                        `wget "${downloadUrl}"`,
                                         "wget",
                                     )
                                 }
@@ -471,12 +476,12 @@ function FileDetailView(props: {
                         {/* curl row */}
                         <div className="flex items-center gap-2">
                             <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
-                                curl -O "{rawDownloadUrl}"
+                                curl -O "{downloadUrl}"
                             </code>
                             <button
                                 onClick={() =>
                                     copyToClipboard(
-                                        `curl -O "${rawDownloadUrl}"`,
+                                        `curl -O "${downloadUrl}"`,
                                         "curl",
                                     )
                                 }

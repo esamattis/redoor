@@ -77,6 +77,26 @@ export class Agent {
         return response.arrayBuffer();
     }
 
+    getDownloadUrl(
+        path: string,
+        options?: { cwd?: string; download?: boolean },
+    ): string {
+        let relativePath = path;
+        if (options?.cwd && path.startsWith(options.cwd)) {
+            // Remove the cwd prefix and leading slash
+            relativePath = path.slice(options.cwd.length).replace(/^\//, "");
+        }
+        const encodedPath = relativePath
+            .split("/")
+            .map(encodeURIComponent)
+            .join("/");
+        let url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
+        if (options?.download) {
+            url += "?download=1";
+        }
+        return url;
+    }
+
     async download(
         path: string,
         options?: {
@@ -85,12 +105,9 @@ export class Agent {
             download?: boolean;
         },
     ): Promise<Response> {
-        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-        let url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
-
-        if (options?.download) {
-            url += "?download=1";
-        }
+        const url = this.getDownloadUrl(path, {
+            download: options?.download,
+        });
 
         const fetchOptions: RequestInit = {};
         if (options?.method) {
