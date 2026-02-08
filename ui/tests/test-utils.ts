@@ -140,7 +140,9 @@ export async function waitForPort(
 ): Promise<void> {
     for (let i = 0; i < maxRetries; i++) {
         try {
-            const response = await fetch(`http://127.0.0.1:${port}/`);
+            const response = await fetch(
+                `http://127.0.0.1:${port}/api/v1/agents`,
+            );
             if (response.ok) {
                 return;
             }

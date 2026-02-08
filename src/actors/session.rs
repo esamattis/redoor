@@ -37,16 +37,11 @@ impl Actor for SessionActor {
 
     async fn pre_start(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         let (socket_id, router_ref, outgoing, outgoing_binary) = args;
         log!(Level::Info, "SessionActor started: socket_id={}", socket_id);
-
-        let myself_clone = myself.clone();
-        let _ = router_ref.cast(RouterMsg::RegisterWebClient {
-            session_ref: myself_clone,
-        });
 
         Ok(SessionState {
             socket_id,
@@ -73,9 +68,6 @@ impl Actor for SessionActor {
                     hostname,
                     username,
                 } => {
-                    let _ = state.router_ref.cast(RouterMsg::UnregisterWebClient {
-                        session_ref: _myself.clone(),
-                    });
                     let _ = state.router_ref.cast(RouterMsg::RegisterAgent {
                         agent_id: agent_id.clone(),
                         agent_name,
@@ -92,17 +84,6 @@ impl Actor for SessionActor {
                     let _ = state
                         .router_ref
                         .cast(RouterMsg::UnregisterAgent { agent_id });
-                }
-                Message::Command {
-                    agent_id,
-                    request_id: _,
-                    command,
-                } => {
-                    let _ = state.router_ref.cast(RouterMsg::RouteCommand {
-                        agent_id,
-                        command,
-                        originating_client: _myself.clone(),
-                    });
                 }
                 Message::CommandResponse {
                     agent_id,

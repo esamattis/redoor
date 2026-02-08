@@ -55,7 +55,6 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws", get(websocket_handler))
-        .route("/", get(index_handler))
         .route("/api/v1/agents", get(list_agents_handler))
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
@@ -92,11 +91,6 @@ async fn websocket_handler(
 async fn handle_socket(socket: WebSocket, router_ref: ActorRef<actors::router::RouterMsg>) {
     let socket_id = Uuid::new_v4().to_string();
     actors::session::handle_websocket(socket, socket_id, router_ref).await;
-}
-
-async fn index_handler() -> impl IntoResponse {
-    let html = include_str!("../index.html");
-    axum::response::Html(html)
 }
 
 async fn list_agents_handler(AxumState(state): AxumState<ServerState>) -> impl IntoResponse {

@@ -10,8 +10,6 @@ pub struct RouterActor;
 
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
-    web_clients: Vec<ActorRef<SessionMsg>>,
-    pending_responses: HashMap<String, ActorRef<SessionMsg>>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
     rest_streaming_responses: HashMap<u64, tokio::sync::mpsc::Sender<Vec<u8>>>,
     next_request_id: u64,
@@ -50,17 +48,6 @@ pub enum RouterMsg {
     },
     UnregisterAgent {
         agent_id: String,
-    },
-    RegisterWebClient {
-        session_ref: ActorRef<SessionMsg>,
-    },
-    UnregisterWebClient {
-        session_ref: ActorRef<SessionMsg>,
-    },
-    RouteCommand {
-        agent_id: String,
-        command: Command,
-        originating_client: ActorRef<SessionMsg>,
     },
     RouteResponse {
         agent_id: String,
@@ -104,8 +91,6 @@ impl Actor for RouterActor {
         log!(Level::Info, "RouterActor started");
         Ok(RouterState {
             agents: HashMap::new(),
-            web_clients: Vec::new(),
-            pending_responses: HashMap::new(),
             rest_pending_responses: HashMap::new(),
             rest_streaming_responses: HashMap::new(),
             next_request_id: 1,
@@ -167,66 +152,16 @@ impl Actor for RouterActor {
                         username,
                     },
                 );
-                broadcast_agent_list(state);
             }
             RouterMsg::UnregisterAgent { agent_id } => {
                 log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                 state.agents.remove(&agent_id);
-                broadcast_agent_list(state);
-            }
-            RouterMsg::RegisterWebClient { session_ref } => {
-                log!(
-                    Level::Info,
-                    "Web client registered: session_id={}",
-                    session_ref.get_id()
-                );
-                state.web_clients.push(session_ref);
-                broadcast_agent_list(state);
-            }
-            RouterMsg::UnregisterWebClient { session_ref } => {
-                log!(
-                    Level::Info,
-                    "Web client unregistered: session_id={}",
-                    session_ref.get_id()
-                );
-                state
-                    .web_clients
-                    .retain(|client| client.get_id() != session_ref.get_id());
-            }
-            RouterMsg::RouteCommand {
-                agent_id,
-                command,
-                originating_client,
-            } => {
-                let request_id = state.next_id();
-
-                log!(
-                    Level::Info,
-                    "Routing command: agent_id={}, request_id={}, command={:?}",
-                    agent_id,
-                    request_id,
-                    command
-                );
-                if let Some(agent_info) = state.agents.get(&agent_id) {
-                    state
-                        .pending_responses
-                        .insert(agent_id.clone(), originating_client);
-                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
-                        Message::Command {
-                            agent_id: agent_id.clone(),
-                            request_id,
-                            command,
-                        },
-                    ));
-                }
             }
             RouterMsg::RouteResponse {
                 agent_id,
                 request_id,
                 result,
             } => {
-                let mut found = false;
-
                 if let Some((reply, stored_agent_id)) =
                     state.rest_pending_responses.remove(&request_id)
                 {
@@ -253,28 +188,7 @@ impl Actor for RouterActor {
                     };
 
                     let _ = reply.send(result_to_send);
-                    found = true;
-                }
-
-                if let Some(web_client_ref) = state.pending_responses.remove(&agent_id) {
-                    log!(
-                        Level::Info,
-                        "Routing response: agent_id={}, result={:?}, web_client_id={}",
-                        agent_id,
-                        result,
-                        web_client_ref.get_id()
-                    );
-                    let _ = web_client_ref.cast(SessionMsg::OutgoingMessage(
-                        Message::CommandResponse {
-                            agent_id: agent_id.clone(),
-                            request_id: 0,
-                            result: result.clone(),
-                        },
-                    ));
-                    found = true;
-                }
-
-                if !found {
+                } else {
                     log!(
                         Level::Warning,
                         "No pending response found for request_id={}",
@@ -403,19 +317,5 @@ impl Actor for RouterActor {
             }
         }
         Ok(())
-    }
-}
-
-fn broadcast_agent_list(state: &RouterState) {
-    let agents: HashMap<String, String> = state
-        .agents
-        .iter()
-        .map(|(id, info)| (id.clone(), info.agent_name.clone()))
-        .collect();
-
-    for web_client in &state.web_clients {
-        let _ = web_client.cast(SessionMsg::OutgoingMessage(Message::AgentList {
-            agents: agents.clone(),
-        }));
     }
 }
