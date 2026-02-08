@@ -14,6 +14,7 @@ Guidelines
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
 - The generated ts bindings are put in the `bindings` directory
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
+- Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pnpm run test`
 - Add comments to test assertions why they are there
 - Always after changes run `./scripts/build-and-test`
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
