@@ -21,9 +21,7 @@ impl StreamChunk {
         bytes.push(if self.is_last { 1 } else { 0 });
         bytes.push(if self.is_error { 1 } else { 0 });
         bytes.push(0);
-        for byte in &self.data {
-            bytes.push(*byte);
-        }
+        bytes.extend_from_slice(&self.data);
 
         bytes
     }
