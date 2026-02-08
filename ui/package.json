@@ -9,6 +9,7 @@
         "types": "tsc",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
+        "playwright": "pnpm exec playwright test --reporter=line",
         "lint": "oxlint",
         "dev": "run-p -l vite redoor:*",
         "redoor:server": "../scripts/redoor",
