@@ -1,3 +1,4 @@
+import React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
     Folder,
@@ -6,6 +7,8 @@ import {
     AlertCircle,
     Download,
     ArrowLeft,
+    Copy,
+    Check,
 } from "lucide-react";
 import { getParentPath, formatSize, getRawDownloadUrl } from "../utils/path";
 import {
@@ -322,6 +325,20 @@ function FileDetailView(props: {
         lsResult.path,
     );
 
+    const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
+        null,
+    );
+
+    const copyToClipboard = async (text: string, commandType: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopiedCommand(commandType);
+            setTimeout(() => setCopiedCommand(null), 2000);
+        } catch (err) {
+            console.error("Failed to copy:", err);
+        }
+    };
+
     return (
         <div>
             <div className="mb-6">
@@ -420,6 +437,58 @@ function FileDetailView(props: {
                             <Download className="h-4 w-4" />
                             Download File
                         </a>
+                    </div>
+
+                    <div>
+                        <p className="text-sm text-gray-500 mb-2">
+                            Command Line Downloads
+                        </p>
+
+                        {/* wget row */}
+                        <div className="flex items-center gap-2 mb-2">
+                            <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
+                                wget "{rawDownloadUrl}"
+                            </code>
+                            <button
+                                onClick={() =>
+                                    copyToClipboard(
+                                        `wget "${rawDownloadUrl}"`,
+                                        "wget",
+                                    )
+                                }
+                                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
+                                aria-label="Copy wget command"
+                            >
+                                {copiedCommand === "wget" ? (
+                                    <Check className="h-4 w-4 text-green-600" />
+                                ) : (
+                                    <Copy className="h-4 w-4" />
+                                )}
+                            </button>
+                        </div>
+
+                        {/* curl row */}
+                        <div className="flex items-center gap-2">
+                            <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
+                                curl -O "{rawDownloadUrl}"
+                            </code>
+                            <button
+                                onClick={() =>
+                                    copyToClipboard(
+                                        `curl -O "${rawDownloadUrl}"`,
+                                        "curl",
+                                    )
+                                }
+                                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
+                                aria-label="Copy curl command"
+                            >
+                                {copiedCommand === "curl" ? (
+                                    <Check className="h-4 w-4 text-green-600" />
+                                ) : (
+                                    <Copy className="h-4 w-4" />
+                                )}
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
