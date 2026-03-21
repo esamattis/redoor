@@ -265,17 +265,18 @@ function SelectedFilesPanel() {
                             </div>
                             <div>
                                 <h2 className="text-sm font-semibold text-gray-900">
-                                    Selected files
+                                    Selected items
                                 </h2>
                                 <p className="text-xs text-gray-500">
-                                    Files selected for copy operations
+                                    Files and directories selected for copy
+                                    operations
                                 </p>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
                                 {selectedFiles.length}{" "}
-                                {selectedFiles.length === 1 ? "file" : "files"}
+                                {selectedFiles.length === 1 ? "item" : "items"}
                             </span>
                             <button
                                 type="button"
@@ -295,7 +296,7 @@ function SelectedFilesPanel() {
                                         Agent
                                     </th>
                                     <th className="p-3 text-left text-sm font-medium text-gray-600">
-                                        File
+                                        Item
                                     </th>
                                     <th className="p-3 text-left text-sm font-medium text-gray-600">
                                         Path

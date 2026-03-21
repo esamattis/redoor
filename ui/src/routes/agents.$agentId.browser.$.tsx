@@ -344,12 +344,12 @@ function BrowserHeader(props: {
 
 type CopySelectedFilesState =
     | { type: "idle" }
-    | { type: "copying"; fileCount: number }
+    | { type: "copying"; itemCount: number }
     | { type: "success"; message: string }
     | { type: "error"; message: string };
 
 /**
- * Shows copy actions for the currently selected files when browsing a directory.
+ * Shows copy actions for the currently selected files and directories when browsing a directory.
  */
 function SelectedFilesDirectoryActions(props: {
     agent: Agent;
@@ -369,7 +369,7 @@ function SelectedFilesDirectoryActions(props: {
 
     const statusMessage =
         copyState.type === "copying"
-            ? `Copying ${copyState.fileCount} ${copyState.fileCount === 1 ? "file" : "files"}...`
+            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
             : copyState.type === "idle"
               ? null
               : copyState.message;
@@ -382,7 +382,7 @@ function SelectedFilesDirectoryActions(props: {
 
         setCopyState({
             type: "copying",
-            fileCount: selectedFilesForOtherAgents.length,
+            itemCount: selectedFilesForOtherAgents.length,
         });
 
         try {
@@ -429,7 +429,7 @@ function SelectedFilesDirectoryActions(props: {
                     type: "error",
                     message:
                         successfulCopies.length > 0
-                            ? `Copied ${successfulCopies.length} of ${selectedFilesForOtherAgents.length} files. ${failureMessage}`
+                            ? `Copied ${successfulCopies.length} of ${selectedFilesForOtherAgents.length} items. ${failureMessage}`
                             : failureMessage,
                 });
                 return;
@@ -439,8 +439,8 @@ function SelectedFilesDirectoryActions(props: {
                 type: "success",
                 message:
                     selectedFilesForOtherAgents.length === 1
-                        ? `Copied ${selectedFilesForOtherAgents[0]?.fileName ?? "file"}`
-                        : `Copied ${selectedFilesForOtherAgents.length} files`,
+                        ? `Copied ${selectedFilesForOtherAgents[0]?.fileName ?? "item"}`
+                        : `Copied ${selectedFilesForOtherAgents.length} items`,
             });
         } catch (error) {
             setCopyState({
@@ -463,16 +463,16 @@ function SelectedFilesDirectoryActions(props: {
                 <div>
                     <p className="text-sm font-medium text-blue-900">
                         {selectedFiles.length}{" "}
-                        {selectedFiles.length === 1 ? "file is" : "files are"}{" "}
+                        {selectedFiles.length === 1 ? "item is" : "items are"}{" "}
                         selected
                     </p>
                     <p className="text-xs text-blue-700">
                         {selectedFilesForOtherAgents.length === 0
-                            ? "Select files from another agent to copy them into this directory."
+                            ? "Select files or directories from another agent to copy them into this directory."
                             : `Ready to copy ${selectedFilesForOtherAgents.length} ${
                                   selectedFilesForOtherAgents.length === 1
-                                      ? "file"
-                                      : "files"
+                                      ? "item"
+                                      : "items"
                               } here.`}
                     </p>
                 </div>
@@ -485,7 +485,7 @@ function SelectedFilesDirectoryActions(props: {
                     className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <Copy className="h-4 w-4" />
-                    {isCopying ? "Copying..." : "Copy selected files here"}
+                    {isCopying ? "Copying..." : "Copy selected items here"}
                 </button>
             </div>
             {statusMessage ? (
@@ -639,56 +639,23 @@ function FileEntry(props: {
         : splatValue;
     const isSelected = selectedFileKeys.has(`${agentId}:${fullPath}`);
 
-    if (isDirectory && !isParent) {
-        return (
-            <tr
-                className="border-b hover:bg-gray-50"
-                aria-label={`Directory entry ${entry.name}`}
-            >
-                <td className="p-3 text-gray-300">
-                    <Square className="h-4 w-4" />
-                </td>
-                <td className="p-3">
-                    <Folder className="h-5 w-5 text-blue-500" />
-                </td>
-                <td className="p-3">
-                    <Link
-                        to="/agents/$agentId/browser/$"
-                        params={{ agentId, _splat: splatValue }}
-                        className="flex items-center gap-3 text-blue-600 font-medium hover:underline"
-                    >
-                        {entry.name}
-                    </Link>
-                </td>
-                <td
-                    className="p-3 text-gray-400"
-                    aria-label={`Size for ${entry.name}`}
-                >
-                    -
-                </td>
-                <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
-                <td className="p-3 text-gray-500">{entry.group || "-"}</td>
-            </tr>
-        );
-    }
-
     return (
         <tr
             className="border-b hover:bg-gray-50"
-            aria-label={`File entry ${entry.name}`}
+            aria-label={`${isDirectory ? "Directory" : "File"} entry ${entry.name}`}
         >
             <td className="p-3" aria-label="">
                 <button
                     type="button"
                     aria-label={
                         isSelected
-                            ? `Unselect file ${entry.name}`
-                            : `Select file ${entry.name}`
+                            ? `Unselect ${isDirectory ? "directory" : "file"} ${entry.name}`
+                            : `Select ${isDirectory ? "directory" : "file"} ${entry.name}`
                     }
                     title={
                         isSelected
-                            ? `Unselect file ${entry.name}`
-                            : `Select file ${entry.name}`
+                            ? `Unselect ${isDirectory ? "directory" : "file"} ${entry.name}`
+                            : `Select ${isDirectory ? "directory" : "file"} ${entry.name}`
                     }
                     aria-pressed={isSelected}
                     onClick={() =>
@@ -710,22 +677,28 @@ function FileEntry(props: {
                 </button>
             </td>
             <td className="p-3">
-                <File className="h-5 w-5 text-gray-400" />
+                {isDirectory ? (
+                    <Folder className="h-5 w-5 text-blue-500" />
+                ) : (
+                    <File className="h-5 w-5 text-gray-400" />
+                )}
             </td>
             <td className="p-3">
                 <Link
                     to="/agents/$agentId/browser/$"
                     params={{ agentId, _splat: splatValue }}
-                    className="text-blue-600 font-medium hover:underline"
+                    className={`${isDirectory ? "flex items-center gap-3 " : ""}text-blue-600 font-medium hover:underline`}
                 >
                     {entry.name}
                 </Link>
             </td>
             <td
-                className="p-3 text-gray-500"
+                className={
+                    isDirectory ? "p-3 text-gray-400" : "p-3 text-gray-500"
+                }
                 aria-label={`Size for ${entry.name}`}
             >
-                {formatSize(entry.size)}
+                {isDirectory ? "-" : formatSize(entry.size)}
             </td>
             <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
             <td className="p-3 text-gray-500">{entry.group || "-"}</td>

@@ -389,6 +389,56 @@ test.describe.serial("File Browser Navigation", () => {
         }
     });
 
+    test("should gate copy action to cross-agent selections in directory view", async ({
+        page,
+    }) => {
+        const sourceDir = path.join(TEST_DIR, "copy-source");
+        const destinationDir = path.join(TEST_DIR, "copy-destination");
+        const sourceFilePath = path.join(sourceDir, "copy-me.txt");
+        const sourceFileContents = "copied through directory selection";
+
+        await fs.mkdir(sourceDir, { recursive: true });
+        await fs.mkdir(destinationDir, { recursive: true });
+        await fs.writeFile(sourceFilePath, sourceFileContents);
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/copy-source`,
+        );
+
+        // This waits for the source file entry to be visible before trying to select it.
+        await expect(
+            page.getByRole("button", { name: "Select file copy-me.txt" }),
+        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Select file copy-me.txt" })
+            .click();
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/copy-destination`,
+        );
+
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected items here",
+        });
+
+        // This verifies the in-page selection state is reset when navigating between directory views on the same agent.
+        await expect(
+            page.getByText("0 items are selected", { exact: true }),
+        ).toBeVisible();
+        // This verifies same-agent selections are intentionally unavailable for the destination directory view.
+        await expect(copyButton).toBeDisabled();
+        // This checks the inline helper text explains that only cross-agent selections can be copied here.
+        await expect(
+            page.getByText(
+                "Select files or directories from another agent to copy them into this directory.",
+            ),
+        ).toBeVisible();
+        // This confirms the page does not render the global selected-items panel after the in-page selection state has been cleared.
+        await expect(
+            page.getByRole("heading", { name: "Selected items" }),
+        ).toHaveCount(0);
+    });
+
     test("should delete file from detail view after confirmation", async ({
         page,
     }) => {
