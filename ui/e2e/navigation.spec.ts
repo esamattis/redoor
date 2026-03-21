@@ -144,7 +144,7 @@ test.describe.serial("File Browser Navigation", () => {
             .getByText("deep")
             .click();
 
-        const upButton = page.getByRole("link", { name: "Up" });
+        const upButton = page.getByRole("link", { name: "Parent Directory" });
         await upButton.click();
 
         await expect(page.getByRole("cell", { name: "deep" })).toBeVisible();
@@ -158,7 +158,7 @@ test.describe.serial("File Browser Navigation", () => {
         await upButton.click();
 
         await expect(page).toHaveURL(new RegExp(`/agents/${agentId}`));
-        await expect(upButton).toHaveClass(/disabled:opacity-50/);
+        await expect(upButton).toHaveAttribute("aria-disabled", "true");
     });
 
     test("should navigate back to agent page using Back to Agent button", async ({
@@ -218,11 +218,8 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
             "file1.txt",
         );
-        await expect(page.getByText("Size")).toBeVisible();
-        await expect(page.getByText("Owner")).toBeVisible();
-        await expect(page.getByText("Group")).toBeVisible();
-        await expect(page.getByText("UID")).toBeVisible();
-        await expect(page.getByText("GID")).toBeVisible();
+        await expect(page.getByText("File Size")).toBeVisible();
+        await expect(page.getByText("Owner / Group")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
         await expect(
             page.getByRole("link", { name: "Download File" }),
@@ -244,9 +241,9 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         const sizeText = await page
-            .locator("p", { hasText: "Size" })
+            .locator("p", { hasText: "File Size" })
             .locator("..")
-            .locator("p.text-gray-900")
+            .locator("p.font-display")
             .textContent();
 
         expect(sizeText).toBeDefined();
@@ -286,7 +283,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         const backToAgentButton = page.getByRole("link", {
-            name: "Back to Agent",
+            name: "Agent View",
         });
         await backToAgentButton.click();
 
