@@ -9,6 +9,9 @@ export const Route = createFileRoute("/")({
 
 function Index() {
     const { agents } = RootRoute.useLoaderData();
+    const sortedAgents = [...agents].sort((left, right) =>
+        left.name.localeCompare(right.name),
+    );
 
     return (
         <div className="p-6">
@@ -22,7 +25,7 @@ function Index() {
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {agents.map((agent) => (
+                        {sortedAgents.map((agent) => (
                             <Link
                                 key={agent.id}
                                 to="/agents/$agentId"

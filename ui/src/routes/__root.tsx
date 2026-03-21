@@ -164,6 +164,11 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
 function RootLayout() {
     const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
+    const sortedAgents = React.useMemo(() => {
+        return [...agents].sort((left, right) =>
+            left.name.localeCompare(right.name),
+        );
+    }, [agents]);
 
     return (
         <div className="flex h-screen">
@@ -179,7 +184,7 @@ function RootLayout() {
                         </div>
                     ) : (
                         <ul className="divide-y">
-                            {agents.map((agent) => {
+                            {sortedAgents.map((agent) => {
                                 const isActive =
                                     location.pathname ===
                                     `/agents/${encodeURIComponent(agent.id)}`;
