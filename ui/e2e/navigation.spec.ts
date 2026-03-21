@@ -73,9 +73,15 @@ test.describe.serial("File Browser Navigation", () => {
 
         await expect(page.getByText("file1.txt")).toBeVisible();
         await expect(page.getByText("file2.txt")).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir2" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir3" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir1", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir2", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir3", exact: true }),
+        ).toBeVisible();
 
         const fileEntries = page.locator("tbody tr");
         await expect(fileEntries).toHaveCount(5);
@@ -86,17 +92,13 @@ test.describe.serial("File Browser Navigation", () => {
         await page
             .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
-        await page
-            .getByRole("cell", { name: "subdir2" })
-            .getByText("subdir2")
-            .click();
+        await page.getByRole("link", { name: "subdir2", exact: true }).click();
 
-        await expect(page.getByRole("cell", { name: "deep" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "deep", exact: true }),
+        ).toBeVisible();
 
-        await page
-            .getByRole("cell", { name: "deep" })
-            .getByText("deep")
-            .click();
+        await page.getByRole("link", { name: "deep", exact: true }).click();
 
         await expect(page.getByText("nested3.txt")).toBeVisible();
 
@@ -120,9 +122,15 @@ test.describe.serial("File Browser Navigation", () => {
 
         await breadcrumbs.getByText(testDirName, { exact: true }).click();
         await expect(page.getByText("file1.txt")).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir2" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir3" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir1", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir2", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir3", exact: true }),
+        ).toBeVisible();
 
         await page.getByRole("link", { name: "subdir1" }).click();
         const subdir1Breadcrumbs = page.locator(
@@ -138,25 +146,25 @@ test.describe.serial("File Browser Navigation", () => {
         await page
             .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
-        await page
-            .getByRole("cell", { name: "subdir2" })
-            .getByText("subdir2")
-            .click();
-        await page
-            .getByRole("cell", { name: "deep" })
-            .getByText("deep")
-            .click();
+        await page.getByRole("link", { name: "subdir2", exact: true }).click();
+        await page.getByRole("link", { name: "deep", exact: true }).click();
 
         const upButton = page.getByRole("link", { name: "Up", exact: true });
         await upButton.click();
 
-        await expect(page.getByRole("cell", { name: "deep" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "deep", exact: true }),
+        ).toBeVisible();
 
         await upButton.click();
 
         await expect(page.getByText("file1.txt")).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir2" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir1", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir2", exact: true }),
+        ).toBeVisible();
 
         await upButton.click();
 
@@ -196,17 +204,14 @@ test.describe.serial("File Browser Navigation", () => {
             .filter({ hasText: /^(file1|file2)\.txt$/ });
         await expect(fileEntries).toHaveCount(2);
 
-        const dirSizeColumn = page
-            .getByRole("cell", { name: "subdir1" })
-            .locator("xpath=..")
-            .getByRole("cell", { name: "-" });
+        const dirSizeColumn = page.getByRole("cell", {
+            name: "Size for subdir1",
+        });
         await expect(dirSizeColumn).toBeVisible();
 
-        const fileSizeColumn = page
-            .getByRole("cell", { name: "file1.txt" })
-            .locator("xpath=..")
-            .locator("td")
-            .nth(2);
+        const fileSizeColumn = page.getByRole("cell", {
+            name: "Size for file1.txt",
+        });
         await expect(fileSizeColumn).not.toHaveText("-");
     });
 
@@ -217,8 +222,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         await page
-            .getByRole("cell", { name: "file1.txt" })
-            .getByRole("link", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
         await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
@@ -247,8 +251,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         await page
-            .getByRole("cell", { name: "file1.txt" })
-            .getByRole("link", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
         const sizeText = await page
@@ -268,8 +271,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         await page
-            .getByRole("cell", { name: "file1.txt" })
-            .getByRole("link", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
         const backButton = page.getByRole("link", {
@@ -278,10 +280,13 @@ test.describe.serial("File Browser Navigation", () => {
         });
         await backButton.click();
 
+        // This confirms returning from detail view restores the file list without matching the selection control cell.
         await expect(
-            page.getByRole("cell", { name: "file1.txt" }),
+            page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
-        await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir1", exact: true }),
+        ).toBeVisible();
     });
 
     test("should navigate back to agent from file detail view", async ({
@@ -293,8 +298,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         await page
-            .getByRole("cell", { name: "file1.txt" })
-            .getByRole("link", { name: "file1.txt" })
+            .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
         const backToAgentButton = page.getByRole("link", {
@@ -313,8 +317,7 @@ test.describe.serial("File Browser Navigation", () => {
         await page.getByRole("link", { name: "subdir1" }).click();
 
         await page
-            .getByRole("cell", { name: "nested1.txt" })
-            .getByRole("link", { name: "nested1.txt" })
+            .getByRole("link", { name: "nested1.txt", exact: true })
             .click();
 
         await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
@@ -326,11 +329,12 @@ test.describe.serial("File Browser Navigation", () => {
         const backLink = page.getByRole("link", { name: "Back", exact: true });
         await backLink.click();
 
+        // These assertions verify the nested directory listing is restored after using the back link.
         await expect(
-            page.getByRole("cell", { name: "nested1.txt" }),
+            page.getByRole("link", { name: "nested1.txt", exact: true }),
         ).toBeVisible();
         await expect(
-            page.getByRole("cell", { name: "nested2.txt" }),
+            page.getByRole("link", { name: "nested2.txt", exact: true }),
         ).toBeVisible();
     });
 

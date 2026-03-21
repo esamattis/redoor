@@ -1,4 +1,5 @@
 import React from "react";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
     createFileRoute,
     Link,
@@ -17,6 +18,8 @@ import {
     Upload,
     Trash2,
     X,
+    Square,
+    CheckSquare,
 } from "lucide-react";
 import { getParentPath, formatSize } from "../utils/path";
 import {
@@ -26,6 +29,12 @@ import {
     isLsFileResponse,
     type LsFileResponse,
 } from "../api-client";
+import {
+    selectedFilesAtom,
+    selectedFileKeysAtom,
+    toggleSelectedFileAtom,
+    unselectFileAtom,
+} from "../selected-files";
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -94,8 +103,14 @@ function FileBrowser() {
                         parentPath={parentPath}
                         directoryPath={data.fullPath}
                     />
+                    <SelectedFilesDirectoryActions
+                        agent={agent}
+                        agentId={agentId}
+                        directoryPath={data.fullPath}
+                    />
                     <FileList
                         agentId={agentId}
+                        agentName={agentName}
                         relativePath={relativePath}
                         files={sortedFiles}
                         isAtCwd={isAtCwd}
@@ -327,6 +342,169 @@ function BrowserHeader(props: {
     );
 }
 
+type CopySelectedFilesState =
+    | { type: "idle" }
+    | { type: "copying"; fileCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+/**
+ * Shows copy actions for the currently selected files when browsing a directory.
+ */
+function SelectedFilesDirectoryActions(props: {
+    agent: Agent;
+    agentId: string;
+    directoryPath: string;
+}) {
+    const router = useRouter();
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
+        type: "idle",
+    });
+
+    const selectedFilesForOtherAgents = React.useMemo(() => {
+        return selectedFiles.filter((file) => file.agentId !== props.agentId);
+    }, [props.agentId, selectedFiles]);
+
+    const statusMessage =
+        copyState.type === "copying"
+            ? `Copying ${copyState.fileCount} ${copyState.fileCount === 1 ? "file" : "files"}...`
+            : copyState.type === "idle"
+              ? null
+              : copyState.message;
+    const isCopying = copyState.type === "copying";
+
+    const handleCopySelectedFiles = async () => {
+        if (selectedFilesForOtherAgents.length === 0) {
+            return;
+        }
+
+        setCopyState({
+            type: "copying",
+            fileCount: selectedFilesForOtherAgents.length,
+        });
+
+        try {
+            const results = await Promise.allSettled(
+                selectedFilesForOtherAgents.map((file) =>
+                    props.agent.copyTo(
+                        {
+                            agent: props.agentId,
+                            path: joinBrowserPath(
+                                props.directoryPath,
+                                file.fileName,
+                            ),
+                        },
+                        file.path,
+                    ),
+                ),
+            );
+
+            const successfulCopies = selectedFilesForOtherAgents.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+            const failedCopies = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successfulCopies.length > 0) {
+                successfulCopies.forEach((file) => {
+                    unselectFile({
+                        agentId: file.agentId,
+                        path: file.path,
+                    });
+                });
+                await router.invalidate();
+            }
+
+            if (failedCopies.length > 0) {
+                const firstFailedCopy = failedCopies[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedCopy ? firstFailedCopy.reason : undefined,
+                ).replace(/^Upload failed$/, "Copy failed");
+
+                setCopyState({
+                    type: "error",
+                    message:
+                        successfulCopies.length > 0
+                            ? `Copied ${successfulCopies.length} of ${selectedFilesForOtherAgents.length} files. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+
+            setCopyState({
+                type: "success",
+                message:
+                    selectedFilesForOtherAgents.length === 1
+                        ? `Copied ${selectedFilesForOtherAgents[0]?.fileName ?? "file"}`
+                        : `Copied ${selectedFilesForOtherAgents.length} files`,
+            });
+        } catch (error) {
+            setCopyState({
+                type: "error",
+                message: getErrorMessage(error).replace(
+                    /^Upload failed$/,
+                    "Copy failed",
+                ),
+            });
+        }
+    };
+
+    if (selectedFiles.length === 0) {
+        return null;
+    }
+
+    return (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                    <p className="text-sm font-medium text-blue-900">
+                        {selectedFiles.length}{" "}
+                        {selectedFiles.length === 1 ? "file is" : "files are"}{" "}
+                        selected
+                    </p>
+                    <p className="text-xs text-blue-700">
+                        {selectedFilesForOtherAgents.length === 0
+                            ? "Select files from another agent to copy them into this directory."
+                            : `Ready to copy ${selectedFilesForOtherAgents.length} ${
+                                  selectedFilesForOtherAgents.length === 1
+                                      ? "file"
+                                      : "files"
+                              } here.`}
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={handleCopySelectedFiles}
+                    disabled={
+                        isCopying || selectedFilesForOtherAgents.length === 0
+                    }
+                    className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    <Copy className="h-4 w-4" />
+                    {isCopying ? "Copying..." : "Copy selected files here"}
+                </button>
+            </div>
+            {statusMessage ? (
+                <p
+                    role={copyState.type === "error" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`mt-3 text-sm ${
+                        copyState.type === "error"
+                            ? "text-red-600"
+                            : "text-blue-800"
+                    }`}
+                >
+                    {statusMessage}
+                </p>
+            ) : null}
+        </div>
+    );
+}
+
 function Breadcrumbs(props: {
     agentId: string;
     agentName: string;
@@ -379,6 +557,7 @@ function Breadcrumbs(props: {
 
 function FileList(props: {
     agentId: string;
+    agentName: string;
     relativePath: string;
     files: Array<{
         name: string;
@@ -391,12 +570,15 @@ function FileList(props: {
     }>;
     isAtCwd: boolean;
 }) {
-    const { agentId, relativePath, files } = props;
+    const { agentId, agentName, relativePath, files } = props;
 
     return (
         <table className="w-full bg-white border rounded-lg">
             <thead>
                 <tr className="border-b bg-gray-50">
+                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        Select
+                    </th>
                     <th className="text-left p-3 text-sm font-medium text-gray-600">
                         Type
                     </th>
@@ -419,6 +601,7 @@ function FileList(props: {
                     <FileEntry
                         key={index}
                         agentId={agentId}
+                        agentName={agentName}
                         relativePath={relativePath}
                         entry={entry}
                         isParent={false}
@@ -431,6 +614,7 @@ function FileList(props: {
 
 function FileEntry(props: {
     agentId: string;
+    agentName: string;
     relativePath: string;
     entry: {
         name: string;
@@ -443,15 +627,27 @@ function FileEntry(props: {
     };
     isParent: boolean;
 }) {
-    const { agentId, relativePath, entry, isParent } = props;
+    const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
+    const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
+    const { agentId, agentName, relativePath, entry, isParent } = props;
     const isDirectory = entry.type === "directory" || isParent;
     const splatValue = relativePath
         ? `${relativePath}/${entry.name}`
         : entry.name;
+    const fullPath = Route.useLoaderData().cwd
+        ? joinBrowserPath(Route.useLoaderData().cwd, splatValue)
+        : splatValue;
+    const isSelected = selectedFileKeys.has(`${agentId}:${fullPath}`);
 
     if (isDirectory && !isParent) {
         return (
-            <tr className="border-b hover:bg-gray-50">
+            <tr
+                className="border-b hover:bg-gray-50"
+                aria-label={`Directory entry ${entry.name}`}
+            >
+                <td className="p-3 text-gray-300">
+                    <Square className="h-4 w-4" />
+                </td>
                 <td className="p-3">
                     <Folder className="h-5 w-5 text-blue-500" />
                 </td>
@@ -464,7 +660,12 @@ function FileEntry(props: {
                         {entry.name}
                     </Link>
                 </td>
-                <td className="p-3 text-gray-400">-</td>
+                <td
+                    className="p-3 text-gray-400"
+                    aria-label={`Size for ${entry.name}`}
+                >
+                    -
+                </td>
                 <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
                 <td className="p-3 text-gray-500">{entry.group || "-"}</td>
             </tr>
@@ -472,7 +673,42 @@ function FileEntry(props: {
     }
 
     return (
-        <tr className="border-b hover:bg-gray-50">
+        <tr
+            className="border-b hover:bg-gray-50"
+            aria-label={`File entry ${entry.name}`}
+        >
+            <td className="p-3" aria-label="">
+                <button
+                    type="button"
+                    aria-label={
+                        isSelected
+                            ? `Unselect file ${entry.name}`
+                            : `Select file ${entry.name}`
+                    }
+                    title={
+                        isSelected
+                            ? `Unselect file ${entry.name}`
+                            : `Select file ${entry.name}`
+                    }
+                    aria-pressed={isSelected}
+                    onClick={() =>
+                        toggleSelectedFile({
+                            agentId,
+                            agentName,
+                            path: fullPath,
+                            relativePath: splatValue,
+                            fileName: entry.name,
+                        })
+                    }
+                    className="rounded p-1 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                >
+                    {isSelected ? (
+                        <CheckSquare className="h-4 w-4 text-blue-600" />
+                    ) : (
+                        <Square className="h-4 w-4" />
+                    )}
+                </button>
+            </td>
             <td className="p-3">
                 <File className="h-5 w-5 text-gray-400" />
             </td>
@@ -485,7 +721,12 @@ function FileEntry(props: {
                     {entry.name}
                 </Link>
             </td>
-            <td className="p-3 text-gray-500">{formatSize(entry.size)}</td>
+            <td
+                className="p-3 text-gray-500"
+                aria-label={`Size for ${entry.name}`}
+            >
+                {formatSize(entry.size)}
+            </td>
             <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
             <td className="p-3 text-gray-500">{entry.group || "-"}</td>
         </tr>

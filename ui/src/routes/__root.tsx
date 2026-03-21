@@ -5,6 +5,7 @@ import {
     useLocation,
     createRootRouteWithContext,
 } from "@tanstack/react-router";
+import { useAtomValue, useSetAtom } from "jotai";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
@@ -14,6 +15,8 @@ import {
     ArrowUpFromLine,
     Copy,
     AlertCircle,
+    X,
+    Files,
 } from "lucide-react";
 import {
     ApiClient,
@@ -23,6 +26,11 @@ import {
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { formatSize } from "../utils/path";
+import {
+    selectedFilesAtom,
+    unselectFileAtom,
+    clearSelectedFilesAtom,
+} from "../selected-files";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -216,6 +224,7 @@ function RootLayout() {
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
+                <SelectedFilesPanel />
                 <TransferProgressPanel
                     agents={agents}
                     transfers={transferProgress.transfers}
@@ -233,6 +242,128 @@ function RootLayout() {
                 ]}
             />
         </div>
+    );
+}
+
+function SelectedFilesPanel() {
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
+
+    if (selectedFiles.length === 0) {
+        return null;
+    }
+
+    return (
+        <section className="sticky bottom-0 border-t bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+            <div className="px-6 py-4">
+                <div className="max-w-full">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="flex items-start gap-3">
+                            <div className="rounded-lg bg-blue-50 p-2 text-blue-700">
+                                <Files className="h-4 w-4" />
+                            </div>
+                            <div>
+                                <h2 className="text-sm font-semibold text-gray-900">
+                                    Selected files
+                                </h2>
+                                <p className="text-xs text-gray-500">
+                                    Files selected for copy operations
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+                                {selectedFiles.length}{" "}
+                                {selectedFiles.length === 1 ? "file" : "files"}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => clearSelectedFiles()}
+                                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                            >
+                                Clear all
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="max-h-64 overflow-auto rounded-lg border bg-white">
+                        <table className="w-full">
+                            <thead className="sticky top-0 bg-gray-50">
+                                <tr className="border-b">
+                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                        Agent
+                                    </th>
+                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                        File
+                                    </th>
+                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                        Path
+                                    </th>
+                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                        Action
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {selectedFiles.map((file) => (
+                                    <tr
+                                        key={`${file.agentId}:${file.path}`}
+                                        className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                                    >
+                                        <td className="p-3">
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-medium text-gray-900">
+                                                    {file.agentName}
+                                                </span>
+                                                <span className="text-xs text-gray-500">
+                                                    {file.agentId}
+                                                </span>
+                                            </div>
+                                        </td>
+                                        <td className="p-3">
+                                            <Link
+                                                to="/agents/$agentId/browser/$"
+                                                params={{
+                                                    agentId: file.agentId,
+                                                    _splat:
+                                                        file.relativePath ||
+                                                        undefined,
+                                                }}
+                                                className="text-sm font-medium text-blue-600 hover:underline"
+                                            >
+                                                {file.fileName}
+                                            </Link>
+                                        </td>
+                                        <td className="p-3">
+                                            <div className="break-all font-mono text-xs text-gray-700">
+                                                {file.path}
+                                            </div>
+                                        </td>
+                                        <td className="p-3">
+                                            <button
+                                                type="button"
+                                                aria-label={`Unselect ${file.fileName}`}
+                                                onClick={() =>
+                                                    unselectFile({
+                                                        agentId: file.agentId,
+                                                        path: file.path,
+                                                    })
+                                                }
+                                                className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                            >
+                                                <X className="h-3.5 w-3.5" />
+                                                Unselect
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
     );
 }
 
