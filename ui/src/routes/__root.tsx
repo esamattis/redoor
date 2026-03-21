@@ -261,13 +261,13 @@ function CollapsibleBottomPanel(props: {
     );
 
     return (
-        <section className="sticky bottom-0 border-t bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
-            <div className="px-6 py-4">
-                <div className="max-w-full">
-                    <div className="flex items-center justify-between gap-3">
+        <section className="sticky bottom-0 z-10 border-t border-blue-200/80 bg-white/95 shadow-[0_-10px_30px_-12px_rgba(59,130,246,0.35)] backdrop-blur supports-[backdrop-filter]:bg-white/80">
+            <div>
+                <div className="max-w-full bg-white/90 p-4">
+                    <div className="flex items-center justify-between gap-3 pb-3">
                         <div className="flex items-start gap-3">
                             {props.icon ? (
-                                <div className="rounded-lg bg-blue-50 p-2 text-blue-700">
+                                <div className="bg-blue-50/70 p-2 text-blue-700">
                                     {props.icon}
                                 </div>
                             ) : null}
@@ -275,7 +275,7 @@ function CollapsibleBottomPanel(props: {
                                 <h2 className="text-sm font-semibold text-gray-900">
                                     {props.title}
                                 </h2>
-                                <p className="text-xs text-gray-500">
+                                <p className="text-xs text-slate-600">
                                     {props.description}
                                 </p>
                             </div>
@@ -290,7 +290,7 @@ function CollapsibleBottomPanel(props: {
                                 onClick={() =>
                                     setIsCollapsed((value) => !value)
                                 }
-                                className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
                             >
                                 {isCollapsed ? (
                                     <ChevronUp className="h-3.5 w-3.5" />
@@ -303,7 +303,7 @@ function CollapsibleBottomPanel(props: {
                     </div>
 
                     {isCollapsed ? null : (
-                        <div className="mt-3">{props.children}</div>
+                        <div className="mt-4">{props.children}</div>
                     )}
                 </div>
             </div>
@@ -326,7 +326,7 @@ function SelectedFilesPanel() {
             description="Files and directories selected for copy operations"
             icon={<Files className="h-4 w-4" />}
             badge={
-                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800">
                     {selectedFiles.length}{" "}
                     {selectedFiles.length === 1 ? "item" : "items"}
                 </span>
@@ -335,13 +335,13 @@ function SelectedFilesPanel() {
                 <button
                     type="button"
                     onClick={() => clearSelectedFiles()}
-                    className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
                 >
                     Clear all
                 </button>
             }
         >
-            <div className="max-h-64 overflow-auto rounded-lg border bg-white">
+            <div className="max-h-64 overflow-auto bg-white">
                 <table className="w-full">
                     <thead className="sticky top-0 bg-gray-50">
                         <tr className="border-b">
@@ -431,13 +431,13 @@ function TransferProgressPanel(props: {
             title="Transfer progress"
             description="Active, completed, and failed transfers"
             badge={
-                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800">
                     {props.transfers.length}{" "}
                     {props.transfers.length === 1 ? "transfer" : "transfers"}
                 </span>
             }
         >
-            <div className="max-h-64 overflow-auto rounded-lg border">
+            <div className="max-h-64 overflow-auto bg-white">
                 <table className="w-full bg-white">
                     <thead className="sticky top-0 bg-gray-50">
                         <tr className="border-b">
