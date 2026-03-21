@@ -149,11 +149,7 @@ function AgentDetails() {
     );
 }
 
-function DetailCard({
-    title,
-    icon,
-    children,
-}: {
+function DetailCard(props: {
     title: string;
     icon: React.ReactNode;
     children: React.ReactNode;
@@ -161,26 +157,24 @@ function DetailCard({
     return (
         <div className="bg-white rounded-lg border p-4">
             <div className="flex items-center gap-2 mb-3 text-gray-700 font-semibold">
-                {icon}
-                <h3 className="text-sm uppercase tracking-wide">{title}</h3>
+                {props.icon}
+                <h3 className="text-sm uppercase tracking-wide">
+                    {props.title}
+                </h3>
             </div>
-            <div className="space-y-2">{children}</div>
+            <div className="space-y-2">{props.children}</div>
         </div>
     );
 }
 
-function DetailItem({
-    label,
-    value,
-}: {
-    label: string;
-    value: string | number;
-}) {
+function DetailItem(props: { label: string; value: string | number }) {
     return (
         <div className="flex items-center gap-3 text-sm">
-            <span className="text-gray-500 w-24 flex-shrink-0">{label}:</span>
+            <span className="text-gray-500 w-24 flex-shrink-0">
+                {props.label}:
+            </span>
             <span className="text-gray-900 font-mono text-xs truncate">
-                {value}
+                {props.value}
             </span>
         </div>
     );

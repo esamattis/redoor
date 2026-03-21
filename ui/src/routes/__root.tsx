@@ -194,13 +194,13 @@ function RootLayout() {
                     ) : (
                         <ul className="divide-y">
                             {sortedAgents.map((agent) => {
-                                const isActive =
-                                    location.pathname ===
-                                    `/agents/${encodeURIComponent(agent.id)}`;
+                                const isActive = location.pathname.startsWith(
+                                    `/agents/${encodeURIComponent(agent.id)}/browser`,
+                                );
                                 return (
                                     <li key={agent.id}>
                                         <Link
-                                            to="/agents/$agentId"
+                                            to="/agents/$agentId/browser/$"
                                             params={{ agentId: agent.id }}
                                             className={`px-4 py-3 hover:bg-gray-100 cursor-pointer flex items-center gap-3 ${
                                                 isActive

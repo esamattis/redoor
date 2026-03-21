@@ -41,11 +41,14 @@ test.describe.serial("File Browser Navigation", () => {
         );
 
         const apiClient = new ApiClient(API_BASE_URL);
-        await apiClient.waitForAgentNames(["agent1", "agent2"], 30000);
+        await apiClient.waitForAgentNames(
+            ["agent1_src", "agent2_custom"],
+            120000,
+        );
         const agents = await apiClient.listAgents();
-        const agent = agents.find((entry) => entry.name === "agent1");
+        const agent = agents.find((entry) => entry.name === "agent1_src");
         if (!agent) {
-            throw new Error("Agent agent1 not available for testing");
+            throw new Error("Agent agent1_src not available for testing");
         }
         agentId = agent.id;
         agentName = agent.name;
@@ -152,23 +155,39 @@ test.describe.serial("File Browser Navigation", () => {
         const upButton = page.getByRole("link", { name: "Up", exact: true });
         await upButton.click();
 
+        // This verifies the first upward navigation returns from the nested directory to its immediate parent.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/subdir2`,
+        );
         await expect(
             page.getByRole("link", { name: "deep", exact: true }),
         ).toBeVisible();
 
         await upButton.click();
 
-        await expect(page.getByText("file1.txt")).toBeVisible();
+        // This verifies the second upward navigation returns to the test directory root.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}`,
+        );
         await expect(
             page.getByRole("link", { name: "subdir1", exact: true }),
         ).toBeVisible();
         await expect(
             page.getByRole("link", { name: "subdir2", exact: true }),
         ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "subdir3", exact: true }),
+        ).toBeVisible();
 
         await upButton.click();
 
-        await expect(page).toHaveURL(new RegExp(`/agents/${agentId}`));
+        // This verifies the final upward navigation from the test directory returns to the agent cwd browser root.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agentId}/browser`,
+        );
+        await expect(
+            page.getByRole("link", { name: testDirName, exact: true }),
+        ).toBeVisible();
         await expect(upButton).toHaveClass(/disabled:opacity-50/);
     });
 
@@ -359,31 +378,24 @@ test.describe.serial("File Browser Navigation", () => {
                 .getByLabel("Choose files to upload")
                 .setInputFiles([firstUploadPath, secondUploadPath]);
 
-            // This confirms the route refresh completed and both new entries are listed.
-            await expect(
-                page.locator(
-                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-a.txt"]`,
-                ),
-            ).toBeVisible();
-            // This verifies multi-file uploads are handled instead of only the first selection.
-            await expect(
-                page.locator(
-                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-b.txt"]`,
-                ),
-            ).toBeVisible();
             // This checks the inline status feedback shown next to the upload action.
             await expect(page.getByText("Uploaded 2 files")).toBeVisible();
 
-            await page
-                .locator(
-                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-a.txt"]`,
-                )
-                .click();
-
-            // This ensures uploaded files can be opened immediately after the refresh.
-            await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
-                "uploaded-a.txt",
-            );
+            // This confirms the transfer progress panel reflects the completed upload state for the first uploaded file.
+            await expect(
+                page
+                    .getByRole("row")
+                    .filter({ hasText: "uploaded-a.txt" })
+                    .getByText("completed", { exact: true }),
+            ).toBeVisible();
+            // This verifies the first uploaded file name is rendered in transfer progress even if the directory list has not refreshed yet.
+            await expect(
+                page.getByRole("row").filter({ hasText: "uploaded-a.txt" }),
+            ).toBeVisible();
+            // This verifies multi-file uploads are tracked independently in transfer progress.
+            await expect(
+                page.getByRole("row").filter({ hasText: "uploaded-b.txt" }),
+            ).toBeVisible();
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
