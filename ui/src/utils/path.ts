@@ -1,8 +1,11 @@
 export function getParentPath(path: string): string | null {
-    const parts = path.split("/").filter((part) => part !== "" && part !== ".");
-    if (parts.length === 0) return null;
-    parts.pop();
-    return parts.join("/") || null;
+    const normalizedPath = path.replace(/\/+$/, "");
+    if (normalizedPath === "") return null;
+
+    const lastSlashIndex = normalizedPath.lastIndexOf("/");
+    if (lastSlashIndex === -1) return null;
+
+    return normalizedPath.slice(0, lastSlashIndex) || null;
 }
 
 export function formatSize(bytes: number): string {

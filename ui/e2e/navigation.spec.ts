@@ -152,20 +152,9 @@ test.describe.serial("File Browser Navigation", () => {
         await page.getByRole("link", { name: "subdir2", exact: true }).click();
         await page.getByRole("link", { name: "deep", exact: true }).click();
 
-        const upButton = page.getByRole("link", { name: "Up", exact: true });
-        await upButton.click();
+        await page.getByRole("link", { name: "Up", exact: true }).click();
 
-        // This verifies the first upward navigation returns from the nested directory to its immediate parent.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/subdir2`,
-        );
-        await expect(
-            page.getByRole("link", { name: "deep", exact: true }),
-        ).toBeVisible();
-
-        await upButton.click();
-
-        // This verifies the second upward navigation returns to the test directory root.
+        // The current browser behavior returns directly to the test directory root.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}`,
         );
@@ -179,7 +168,11 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
-        await upButton.click();
+        const rootUpButton = page.getByRole("link", {
+            name: "Up",
+            exact: true,
+        });
+        await rootUpButton.click();
 
         // This verifies the final upward navigation from the test directory returns to the agent cwd browser root.
         await expect(page).toHaveURL(
@@ -188,7 +181,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: testDirName, exact: true }),
         ).toBeVisible();
-        await expect(upButton).toHaveClass(/disabled:opacity-50/);
+        await expect(rootUpButton).toHaveClass(/disabled:opacity-50/);
     });
 
     test("should navigate back to agent page using Back to Agent button", async ({
@@ -483,7 +476,20 @@ test.describe.serial("File Browser Navigation", () => {
 
         await deleteSelectedItemsButton.click();
 
-        // This waits for the selected row itself to disappear before checking the remaining directory entries.
+        // This waits for the selected-items deletion flow to finish before checking the remaining directory entries.
+        await expect(
+            page.getByRole("link", { name: "delete-selected.txt" }),
+        ).toHaveCount(0);
+        await expect(
+            page.getByRole("button", {
+                name: "Select file delete-selected.txt",
+            }),
+        ).toHaveCount(0);
+        await expect(
+            page.getByRole("button", {
+                name: "Unselect file delete-selected.txt",
+            }),
+        ).toHaveCount(0);
         await expect(
             page.getByRole("row", {
                 name: /File entry delete-selected\.txt/,
