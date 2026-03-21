@@ -4,8 +4,8 @@ import {
     Link,
     useLocation,
     createRootRouteWithContext,
-    useRouter,
 } from "@tanstack/react-router";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
@@ -16,53 +16,46 @@ import {
     AlertCircle,
 } from "lucide-react";
 import { ApiClient, type TransferProgressEntry } from "../api-client";
+import { rootDataQueryOptions, type RootQueryData } from "../queries/root-data";
 import { formatSize } from "../utils/path";
 
-interface AppRouterContext {
+export interface AppRouterContext {
     api: ApiClient;
+    queryClient: QueryClient;
 }
 
-export type RootLoaderData = {
-    agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
-    transferProgress: Awaited<ReturnType<ApiClient["getTransferProgress"]>>;
-};
+function useRootQuery() {
+    const context = Route.useRouteContext();
 
-export function getAgentFromRootLoaderData(
-    loaderData: RootLoaderData,
-    agentId: string,
-) {
-    return loaderData.agents.find((agent) => agent.id === agentId);
+    return useQuery({
+        ...rootDataQueryOptions(context.api),
+        initialData: Route.useLoaderData(),
+        refetchInterval: 5000,
+    });
+}
+
+export function useRootData(): RootQueryData {
+    const rootQuery = useRootQuery();
+
+    return (
+        rootQuery.data ?? {
+            agents: [],
+            transferProgress: {
+                transfers: [],
+            },
+        }
+    );
 }
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
-    loader: async ({ context }) => {
-        const [agents, transferProgress] = await Promise.all([
-            context.api.listAgents(),
-            context.api.getTransferProgress(),
-        ]);
-
-        return {
-            agents,
-            transferProgress,
-        } satisfies RootLoaderData;
-    },
+    loader: async ({ context }) =>
+        context.queryClient.ensureQueryData(rootDataQueryOptions(context.api)),
     component: RootLayout,
 });
 
 function RootLayout() {
-    const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
-    const router = useRouter();
-
-    React.useEffect(() => {
-        const intervalId = window.setInterval(() => {
-            void router.invalidate();
-        }, 5000);
-
-        return () => {
-            window.clearInterval(intervalId);
-        };
-    }, [router]);
+    const { agents, transferProgress } = useRootData();
 
     return (
         <div className="flex h-screen">

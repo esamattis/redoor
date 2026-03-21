@@ -1,14 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { HardDrive } from "lucide-react";
 
-import { Route as RootRoute } from "./__root";
+import { useRootData } from "./__root";
 
 export const Route = createFileRoute("/")({
     component: Index,
 });
 
 function Index() {
-    const { agents } = RootRoute.useLoaderData();
+    const { agents } = useRootData();
 
     return (
         <div className="p-6">

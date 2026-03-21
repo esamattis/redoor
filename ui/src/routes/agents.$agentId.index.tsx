@@ -13,8 +13,9 @@ import {
 export const Route = createFileRoute("/agents/$agentId/")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
-        const agents = rootMatch.loaderData?.agents ?? [];
-        const agent = agents.find((entry) => entry.id === params.agentId);
+        const agent = rootMatch.loaderData?.agents.find(
+            (entry) => entry.id === params.agentId,
+        );
 
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
