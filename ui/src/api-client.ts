@@ -12,6 +12,9 @@ import type { TransferProgressListResponse } from "../../bindings/TransferProgre
 import type { TransferProgressState } from "../../bindings/TransferProgressState";
 import type { UiEvent } from "../../bindings/UiEvent";
 import type { RawDeleteResponse } from "../../bindings/RawDeleteResponse";
+import type { CopyFileRequest } from "../../bindings/CopyFileRequest";
+import type { CopyFileResponse } from "../../bindings/CopyFileResponse";
+import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
 
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
@@ -21,6 +24,9 @@ export type {
     TransferProgressListResponse,
     TransferProgressState,
     UiEvent,
+    CopyFileRequest,
+    CopyFileResponse,
+    CopyEndpoint,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -34,6 +40,10 @@ type TransferProgressEntryJson = Omit<
 
 type TransferProgressListResponseJson = {
     transfers: Array<TransferProgressEntryJson>;
+};
+
+type CopyFileResponseJson = {
+    copy_request_id: number | string | bigint;
 };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
@@ -164,6 +174,35 @@ export class Agent {
         }
 
         return response.json();
+    }
+
+    async copyTo(
+        destination: CopyEndpoint,
+        sourcePath: string,
+    ): Promise<CopyFileResponse> {
+        const request: CopyFileRequest = {
+            source: {
+                agent: this.info.id,
+                path: sourcePath,
+            },
+            dest: destination,
+        };
+
+        const response = await apiRequest<CopyFileResponseJson>(
+            this.baseUrl,
+            "/api/v1/copy",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(request),
+            },
+        );
+
+        return {
+            copy_request_id: BigInt(response.copy_request_id),
+        };
     }
 
     async download(

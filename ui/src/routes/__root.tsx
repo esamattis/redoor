@@ -12,6 +12,7 @@ import {
     HardDrive,
     ArrowDownToLine,
     ArrowUpFromLine,
+    Copy,
     AlertCircle,
 } from "lucide-react";
 import {
@@ -275,7 +276,7 @@ function TransferProgressPanel(props: {
                                         Direction
                                     </th>
                                     <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        File path
+                                        Path
                                     </th>
                                     <th className="text-left p-3 text-sm font-medium text-gray-600">
                                         Progress
@@ -291,6 +292,20 @@ function TransferProgressPanel(props: {
                                         (entry) =>
                                             entry.id === transfer.agent_id,
                                     );
+                                    const sourceAgent = transfer.source
+                                        ? props.agents.find(
+                                              (entry) =>
+                                                  entry.id ===
+                                                  transfer.source?.agent,
+                                          )
+                                        : undefined;
+                                    const destAgent = transfer.dest
+                                        ? props.agents.find(
+                                              (entry) =>
+                                                  entry.id ===
+                                                  transfer.dest?.agent,
+                                          )
+                                        : undefined;
 
                                     return (
                                         <tr
@@ -300,11 +315,17 @@ function TransferProgressPanel(props: {
                                             <td className="p-3">
                                                 <div className="flex flex-col">
                                                     <span className="text-sm font-medium text-gray-900">
-                                                        {agent?.name ??
-                                                            transfer.agent_id}
+                                                        {transfer.direction ===
+                                                        "copy"
+                                                            ? `${sourceAgent?.name ?? transfer.source?.agent} -> ${destAgent?.name ?? transfer.dest?.agent}`
+                                                            : (agent?.name ??
+                                                              transfer.agent_id)}
                                                     </span>
                                                     <span className="text-xs text-gray-500">
-                                                        {transfer.agent_id}
+                                                        {transfer.direction ===
+                                                        "copy"
+                                                            ? `${transfer.source?.agent} -> ${transfer.dest?.agent}`
+                                                            : transfer.agent_id}
                                                     </span>
                                                 </div>
                                             </td>
@@ -320,19 +341,46 @@ function TransferProgressPanel(props: {
                                                     {transfer.direction ===
                                                     "upload" ? (
                                                         <ArrowUpFromLine className="h-3.5 w-3.5" />
-                                                    ) : (
+                                                    ) : transfer.direction ===
+                                                      "download" ? (
                                                         <ArrowDownToLine className="h-3.5 w-3.5" />
+                                                    ) : (
+                                                        <Copy className="h-3.5 w-3.5" />
                                                     )}
                                                     {transfer.direction ===
                                                     "upload"
                                                         ? "Upload"
-                                                        : "Download"}
+                                                        : transfer.direction ===
+                                                            "download"
+                                                          ? "Download"
+                                                          : "Copy"}
                                                 </span>
                                             </td>
                                             <td className="p-3">
-                                                <div className="font-mono text-xs text-gray-700 break-all">
-                                                    {transfer.path}
-                                                </div>
+                                                {transfer.direction ===
+                                                "copy" ? (
+                                                    <div className="space-y-1 font-mono text-xs text-gray-700 break-all">
+                                                        <div>
+                                                            {
+                                                                transfer.source
+                                                                    ?.path
+                                                            }
+                                                        </div>
+                                                        <div className="text-gray-400">
+                                                            -&gt;
+                                                        </div>
+                                                        <div>
+                                                            {
+                                                                transfer.dest
+                                                                    ?.path
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="font-mono text-xs text-gray-700 break-all">
+                                                        {transfer.path}
+                                                    </div>
+                                                )}
                                             </td>
                                             <td className="p-3">
                                                 <div className="flex flex-col gap-1 text-sm text-gray-700">

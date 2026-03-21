@@ -1,8 +1,8 @@
 use redoor::actors;
 use redoor::commands::{
-    AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawDeleteResponse,
-    RawUploadResponse, UiEvent,
+    AgentDetailsResponse, AgentInfoResponse, AgentListResponse, CatResponse, Command,
+    CommandResult, CopyFileRequest, CopyFileResponse, EchoRequest, EchoResponse, ErrorResponse,
+    LsDirectoryResponse, LsFileResponse, RawDeleteResponse, RawUploadResponse, UiEvent,
 };
 
 use serde::Deserialize;
@@ -33,6 +33,66 @@ struct ServerState {
 #[derive(Deserialize)]
 struct RawQueryParams {
     download: Option<String>,
+}
+
+fn join_agent_path(cwd: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        cwd.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+async fn get_agent_details(
+    state: &ServerState,
+    agent_id: &str,
+) -> Result<AgentDetailsResponse, Response> {
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: agent_id.to_string(),
+            command: Command::GetAgentDetails,
+            reply,
+        },
+        30000
+    ) {
+        Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
+        Ok(CommandResult::Error { message }) => {
+            let status = if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, Json(ErrorResponse { error: message })).into_response())
+        }
+        Ok(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected result type while fetching agent details".to_string(),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get agent details: {:?}", e),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+async fn resolve_agent_path(
+    state: &ServerState,
+    agent_id: &str,
+    path: String,
+) -> Result<String, Response> {
+    if path.starts_with('/') {
+        return Ok(path);
+    }
+
+    let details = get_agent_details(state, agent_id).await?;
+    Ok(join_agent_path(&details.cwd, &path))
 }
 
 #[tokio::main]
@@ -73,6 +133,7 @@ async fn main() {
                 .put(raw_agent_put_handler)
                 .delete(raw_agent_delete_handler),
         )
+        .route("/api/v1/copy", post(copy_file_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
         .layer(
             CorsLayer::new()
@@ -358,6 +419,126 @@ async fn cat_agent_handler(
             (status, Json(ErrorResponse { error: error_msg })).into_response()
         }
     }
+}
+
+async fn copy_file_handler(
+    AxumState(state): AxumState<ServerState>,
+    Json(payload): Json<CopyFileRequest>,
+) -> impl IntoResponse {
+    let source_path = match resolve_agent_path(
+        &state,
+        &payload.source.agent,
+        payload.source.path.clone(),
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+
+    let dest_path =
+        match resolve_agent_path(&state, &payload.dest.agent, payload.dest.path.clone()).await {
+            Ok(path) => path,
+            Err(response) => return response,
+        };
+
+    if payload.source.agent == payload.dest.agent && source_path == dest_path {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source and destination must be different".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let source_metadata = match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: payload.source.agent.clone(),
+            command: Command::Metadata {
+                path: source_path.clone(),
+            },
+            reply,
+        },
+        30000
+    ) {
+        Ok(CommandResult::Metadata(metadata)) => metadata,
+        Ok(CommandResult::Error { message }) => {
+            let status = if message.contains("No such file") || message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("Is a directory") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            return (status, Json(ErrorResponse { error: message })).into_response();
+        }
+        Ok(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected response type from metadata command".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get source metadata: {:?}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if !source_metadata.is_file {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Copy supports regular files only".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let copy_request_id = match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::StartCopyRest {
+            source_agent_id: payload.source.agent.clone(),
+            source_path: source_path.clone(),
+            dest_agent_id: payload.dest.agent.clone(),
+            dest_path: dest_path.clone(),
+            total_bytes: source_metadata.file_size,
+            reply,
+        },
+        30000
+    ) {
+        Ok(Ok(copy_request_id)) => copy_request_id,
+        Ok(Err(error_msg)) => {
+            let status = if error_msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if error_msg.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to start copy: {:?}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(CopyFileResponse { copy_request_id })).into_response()
 }
 
 async fn echo_agent_handler(
@@ -679,53 +860,9 @@ async fn raw_agent_put_handler(
         }
     };
 
-    let resolved_path = if path.starts_with('/') {
-        path
-    } else {
-        match call_t!(
-            &state.router_ref,
-            |reply| actors::router::RouterMsg::ExecuteCommandRest {
-                agent_id: agent.clone(),
-                command: Command::GetAgentDetails,
-                reply,
-            },
-            30000
-        ) {
-            Ok(CommandResult::GetAgentDetails(details)) => {
-                format!(
-                    "{}/{}",
-                    details.cwd.trim_end_matches('/'),
-                    path.trim_start_matches('/')
-                )
-            }
-            Ok(CommandResult::Error { message }) => {
-                let status = if message.contains("not found") {
-                    StatusCode::NOT_FOUND
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-
-                return (status, Json(ErrorResponse { error: message })).into_response();
-            }
-            Ok(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Unexpected result type while resolving upload path".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to resolve upload path: {:?}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        }
+    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+        Ok(path) => path,
+        Err(response) => return response,
     };
 
     let (upload_completion_sender, upload_completion_receiver) =
@@ -944,53 +1081,9 @@ async fn raw_agent_delete_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let resolved_path = if path.starts_with('/') {
-        path
-    } else {
-        match call_t!(
-            &state.router_ref,
-            |reply| actors::router::RouterMsg::ExecuteCommandRest {
-                agent_id: agent.clone(),
-                command: Command::GetAgentDetails,
-                reply,
-            },
-            30000
-        ) {
-            Ok(CommandResult::GetAgentDetails(details)) => {
-                format!(
-                    "{}/{}",
-                    details.cwd.trim_end_matches('/'),
-                    path.trim_start_matches('/')
-                )
-            }
-            Ok(CommandResult::Error { message }) => {
-                let status = if message.contains("not found") {
-                    StatusCode::NOT_FOUND
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-
-                return (status, Json(ErrorResponse { error: message })).into_response();
-            }
-            Ok(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Unexpected result type while resolving delete path".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to resolve delete path: {:?}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        }
+    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+        Ok(path) => path,
+        Err(response) => return response,
     };
 
     match call_t!(

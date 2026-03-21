@@ -1,7 +1,7 @@
 use crate::actors::session::SessionMsg;
 use crate::commands::{
-    Command, CommandResult, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
-    TransferProgressState, UiEvent,
+    Command, CommandResult, CopyEndpoint, TransferDirection, TransferProgressEntry,
+    TransferProgressListResponse, TransferProgressState, UiEvent,
 };
 use crate::log;
 use crate::logging::Level;
@@ -34,16 +34,57 @@ enum TransferRequest {
     },
 }
 
+struct CopyRequest {
+    source_agent_id: String,
+    dest_agent_id: String,
+    source_request_id: u64,
+    dest_request_id: u64,
+    next_chunk_index: u64,
+}
+
 /// Internal state for the [`RouterActor`].
 ///
 /// Tracks all connected agents and maps in-flight request IDs to their
 /// corresponding REST reply ports (for both one-shot and streaming responses).
 pub struct RouterState {
+    /// Connected agents keyed by `agent_id`, used to route commands to the
+    /// correct live session.
+    ///
+    /// A live session is the currently active in-memory connection to that
+    /// agent's `SessionActor`, representing the open WebSocket-backed actor
+    /// that can immediately receive routed commands and send responses back.
     agents: HashMap<String, AgentInfo>,
+
+    /// Pending REST command responses keyed by router-generated `request_id`.
+    ///
+    /// Stores the reply port to complete once the agent responds, together with
+    /// the target `agent_id` for cleanup if that agent disconnects mid-request.
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
+
+    /// Active upload/download transfer requests keyed by public transfer ID.
+    ///
+    /// The entry keeps the transfer-specific state needed to stream chunks or
+    /// complete the transfer when the remote agent finishes.
     transfers: HashMap<u64, TransferRequest>,
+
+    /// Transfer progress snapshots keyed by public transfer ID for REST/UI reads.
     transfer_progress: HashMap<u64, TransferProgressEntry>,
+
+    /// Active copy operations keyed by the public copy request ID exposed outside
+    /// the router.
+    copy_requests_by_public_id: HashMap<u64, CopyRequest>,
+
+    /// Reverse lookup from internal per-agent request IDs to the public copy
+    /// request ID so copy-related responses can be correlated back to one copy job.
+    copy_request_ids_by_internal_request: HashMap<u64, u64>,
+
+    /// Active UI event subscribers keyed by subscriber ID.
+    ///
+    /// Each sender is used to push real-time router events to one connected UI
+    /// consumer.
     ui_subscribers: HashMap<String, tokio::sync::mpsc::UnboundedSender<UiEvent>>,
+
+    /// Monotonically increasing counter used to allocate new router request IDs.
     next_request_id: u64,
 }
 
@@ -153,6 +194,14 @@ pub enum RouterMsg {
         chunk: crate::streaming::StreamChunk,
         reply: RpcReplyPort<Result<(), String>>,
     },
+    StartCopyRest {
+        source_agent_id: String,
+        source_path: String,
+        dest_agent_id: String,
+        dest_path: String,
+        total_bytes: u64,
+        reply: RpcReplyPort<Result<u64, String>>,
+    },
 }
 
 impl RouterActor {
@@ -170,6 +219,8 @@ impl RouterActor {
                 request_id,
                 agent_id: agent_id.clone(),
                 path,
+                source: None,
+                dest: None,
                 direction: TransferDirection::Download,
                 total_bytes,
                 transferred_bytes: 0,
@@ -201,6 +252,8 @@ impl RouterActor {
                 request_id,
                 agent_id: agent_id.clone(),
                 path,
+                source: None,
+                dest: None,
                 direction: TransferDirection::Upload,
                 total_bytes,
                 transferred_bytes: 0,
@@ -219,32 +272,264 @@ impl RouterActor {
     }
 
     fn increment_download_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+        let mut updated = false;
         if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
             progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
             progress.error = None;
+            updated = true;
+        }
+        if updated {
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn increment_upload_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+        let mut updated = false;
         if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
             progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
             progress.error = None;
+            updated = true;
+        }
+        if updated {
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn mark_transfer_completed(state: &mut RouterState, request_id: u64) {
+        let mut updated = false;
         if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
             progress.state = TransferProgressState::Completed;
             progress.transferred_bytes = progress.total_bytes;
             progress.error = None;
+            updated = true;
+        }
+        if updated {
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn mark_transfer_errored(state: &mut RouterState, request_id: u64, error_message: String) {
+        let mut updated = false;
         if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
             progress.state = TransferProgressState::Errored;
             progress.error = Some(error_message);
+            updated = true;
         }
+        if updated {
+            Self::notify_ui_refresh(state);
+        }
+    }
+
+    fn record_copy_start(
+        state: &mut RouterState,
+        request_id: u64,
+        source_agent_id: String,
+        source_path: String,
+        dest_agent_id: String,
+        dest_path: String,
+        total_bytes: u64,
+    ) {
+        state.transfer_progress.insert(
+            request_id,
+            TransferProgressEntry {
+                request_id,
+                agent_id: dest_agent_id.clone(),
+                path: dest_path.clone(),
+                source: Some(CopyEndpoint {
+                    agent: source_agent_id,
+                    path: source_path,
+                }),
+                dest: Some(CopyEndpoint {
+                    agent: dest_agent_id,
+                    path: dest_path,
+                }),
+                direction: TransferDirection::Copy,
+                total_bytes,
+                transferred_bytes: 0,
+                state: TransferProgressState::Active,
+                error: None,
+            },
+        );
+        Self::notify_ui_refresh(state);
+    }
+
+    fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: u64) {
+        if let Some(copy_request) = state.copy_requests_by_public_id.remove(&public_request_id) {
+            state
+                .copy_request_ids_by_internal_request
+                .remove(&copy_request.source_request_id);
+            state
+                .copy_request_ids_by_internal_request
+                .remove(&copy_request.dest_request_id);
+            state.transfers.remove(&copy_request.source_request_id);
+            state.transfers.remove(&copy_request.dest_request_id);
+        }
+    }
+
+    fn abort_copy_upload(
+        state: &mut RouterState,
+        public_request_id: u64,
+        error_message: String,
+    ) -> Result<(), String> {
+        let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
+        else {
+            return Err(format!(
+                "Copy stream not found: request_id={}",
+                public_request_id
+            ));
+        };
+
+        let Some(agent_info) = state.agents.get(&copy_request.dest_agent_id).cloned() else {
+            return Err(format!("Agent not found: {}", copy_request.dest_agent_id));
+        };
+
+        let abort_chunk = crate::streaming::StreamChunk {
+            request_id: copy_request.dest_request_id,
+            chunk_index: copy_request.next_chunk_index,
+            is_last: true,
+            is_error: true,
+            data: error_message.into_bytes(),
+        };
+        copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_add(1);
+        let _ = agent_info
+            .session_ref
+            .cast(SessionMsg::OutgoingBinary(abort_chunk.to_bytes()));
+        Ok(())
+    }
+
+    fn route_copy_chunk(
+        state: &mut RouterState,
+        agent_id: String,
+        chunk: crate::streaming::StreamChunk,
+    ) {
+        let Some(public_request_id) = state
+            .copy_request_ids_by_internal_request
+            .get(&chunk.request_id)
+            .copied()
+        else {
+            return;
+        };
+
+        let (source_agent_id, dest_agent_id, dest_request_id, chunk_index) = {
+            let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
+            else {
+                return;
+            };
+
+            if chunk.request_id != copy_request.source_request_id {
+                return;
+            }
+
+            let chunk_index = copy_request.next_chunk_index;
+            copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_add(1);
+
+            (
+                copy_request.source_agent_id.clone(),
+                copy_request.dest_agent_id.clone(),
+                copy_request.dest_request_id,
+                chunk_index,
+            )
+        };
+
+        if source_agent_id != agent_id {
+            log!(
+                Level::Warning,
+                "Copy source agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                public_request_id,
+                source_agent_id,
+                agent_id
+            );
+            return;
+        }
+
+        let Some(dest_agent_info) = state.agents.get(&dest_agent_id).cloned() else {
+            Self::mark_transfer_errored(
+                state,
+                public_request_id,
+                format!("Agent not found: {}", dest_agent_id),
+            );
+            Self::cleanup_copy_tracking(state, public_request_id);
+            return;
+        };
+
+        if chunk.is_error {
+            let error_message = if chunk.data.is_empty() {
+                "Copy download failed on agent".to_string()
+            } else {
+                String::from_utf8_lossy(&chunk.data).to_string()
+            };
+
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
+            Self::mark_transfer_errored(state, public_request_id, error_message);
+            Self::cleanup_copy_tracking(state, public_request_id);
+            return;
+        }
+
+        let forwarded_chunk = crate::streaming::StreamChunk {
+            request_id: dest_request_id,
+            chunk_index,
+            is_last: chunk.is_last,
+            is_error: false,
+            data: chunk.data,
+        };
+
+        let bytes = forwarded_chunk.data.len() as u64;
+        let _ = dest_agent_info
+            .session_ref
+            .cast(SessionMsg::OutgoingBinary(forwarded_chunk.to_bytes()));
+
+        if bytes > 0 {
+            Self::increment_download_progress(state, public_request_id, bytes);
+        }
+    }
+
+    fn finish_copy_transfer(
+        state: &mut RouterState,
+        agent_id: String,
+        request_id: u64,
+        result: CommandResult,
+    ) -> bool {
+        let Some(public_request_id) = state
+            .copy_request_ids_by_internal_request
+            .get(&request_id)
+            .copied()
+        else {
+            return false;
+        };
+
+        let Some(copy_request) = state.copy_requests_by_public_id.get(&public_request_id) else {
+            return false;
+        };
+
+        if copy_request.dest_request_id != request_id || copy_request.dest_agent_id != agent_id {
+            return false;
+        }
+
+        match result {
+            CommandResult::RawUpload => {
+                Self::mark_transfer_completed(state, public_request_id);
+            }
+            CommandResult::Error { message } => {
+                Self::mark_transfer_errored(state, public_request_id, message);
+            }
+            other => {
+                log!(
+                    Level::Warning,
+                    "Unexpected copy completion response: agent_id={}, request_id={}, result={:?}",
+                    agent_id,
+                    request_id,
+                    other
+                );
+                Self::mark_transfer_errored(
+                    state,
+                    public_request_id,
+                    "Unexpected copy completion response".to_string(),
+                );
+            }
+        }
+
+        Self::cleanup_copy_tracking(state, public_request_id);
+        true
     }
 
     fn list_transfer_progress(state: &RouterState) -> TransferProgressListResponse {
@@ -477,6 +762,29 @@ impl RouterActor {
             }
         }
 
+        let orphaned_copy_ids: Vec<u64> = state
+            .copy_requests_by_public_id
+            .iter()
+            .filter(|(_, copy_request)| {
+                copy_request.source_agent_id == agent_id || copy_request.dest_agent_id == agent_id
+            })
+            .map(|(request_id, _)| *request_id)
+            .collect();
+
+        for request_id in &orphaned_copy_ids {
+            let _ = Self::abort_copy_upload(
+                state,
+                *request_id,
+                format!("Agent disconnected: {}", agent_id),
+            );
+            Self::mark_transfer_errored(
+                state,
+                *request_id,
+                format!("Agent disconnected: {}", agent_id),
+            );
+            Self::cleanup_copy_tracking(state, *request_id);
+        }
+
         let orphaned_transfers: Vec<u64> = state
             .transfers
             .iter()
@@ -515,7 +823,7 @@ impl RouterActor {
             }
         }
 
-        if !orphaned_transfers.is_empty() {
+        if !orphaned_transfers.is_empty() || !orphaned_copy_ids.is_empty() {
             Self::notify_ui_refresh(state);
         }
     }
@@ -537,6 +845,8 @@ impl Actor for RouterActor {
             rest_pending_responses: HashMap::new(),
             transfers: HashMap::new(),
             transfer_progress: HashMap::new(),
+            copy_requests_by_public_id: HashMap::new(),
+            copy_request_ids_by_internal_request: HashMap::new(),
             ui_subscribers: HashMap::new(),
             next_request_id: 1,
         })
@@ -638,6 +948,14 @@ impl Actor for RouterActor {
 
                     let _ = reply.send(result_to_send);
                 } else {
+                    if Self::finish_copy_transfer(
+                        state,
+                        agent_id.clone(),
+                        request_id,
+                        result.clone(),
+                    ) {
+                        return Ok(());
+                    }
                     // RouteResponse is used for any final CommandResult coming back from an agent,
                     // not only for one-shot REST commands. Uploads stream their payload as binary
                     // chunks, but the final success/error still arrives as a CommandResult keyed by
@@ -708,7 +1026,14 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteStreamChunk { agent_id, chunk } => {
-                Self::route_download_chunk(state, agent_id, chunk);
+                if state
+                    .copy_request_ids_by_internal_request
+                    .contains_key(&chunk.request_id)
+                {
+                    Self::route_copy_chunk(state, agent_id, chunk);
+                } else {
+                    Self::route_download_chunk(state, agent_id, chunk);
+                }
             }
             RouterMsg::ExecuteStreamCommandRest {
                 agent_id,
@@ -856,6 +1181,96 @@ impl Actor for RouterActor {
                         request_id
                     );
                     let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
+                }
+            }
+            RouterMsg::StartCopyRest {
+                source_agent_id,
+                source_path,
+                dest_agent_id,
+                dest_path,
+                total_bytes,
+                reply,
+            } => {
+                let source_agent_info = state.agents.get(&source_agent_id).cloned();
+                let dest_agent_info = state.agents.get(&dest_agent_id).cloned();
+
+                match (source_agent_info, dest_agent_info) {
+                    (Some(source_agent_info), Some(dest_agent_info)) => {
+                        let public_request_id = state.next_id();
+                        let dest_request_id = state.next_id();
+                        let source_request_id = state.next_id();
+
+                        Self::record_copy_start(
+                            state,
+                            public_request_id,
+                            source_agent_id.clone(),
+                            source_path.clone(),
+                            dest_agent_id.clone(),
+                            dest_path.clone(),
+                            total_bytes,
+                        );
+
+                        state
+                            .copy_request_ids_by_internal_request
+                            .insert(source_request_id, public_request_id);
+                        state
+                            .copy_request_ids_by_internal_request
+                            .insert(dest_request_id, public_request_id);
+                        state.copy_requests_by_public_id.insert(
+                            public_request_id,
+                            CopyRequest {
+                                source_agent_id: source_agent_id.clone(),
+                                dest_agent_id: dest_agent_id.clone(),
+                                source_request_id,
+                                dest_request_id,
+                                next_chunk_index: 0,
+                            },
+                        );
+
+                        state.transfers.insert(
+                            source_request_id,
+                            TransferRequest::Download {
+                                agent_id: source_agent_id.clone(),
+                                chunk_sender: tokio::sync::mpsc::unbounded_channel().0,
+                            },
+                        );
+                        state.transfers.insert(
+                            dest_request_id,
+                            TransferRequest::Upload {
+                                agent_id: dest_agent_id.clone(),
+                                completion_sender: None,
+                            },
+                        );
+
+                        let _ = dest_agent_info
+                            .session_ref
+                            .cast(SessionMsg::OutgoingMessage(Message::Command {
+                                agent_id: dest_agent_id.clone(),
+                                request_id: dest_request_id,
+                                command: Command::RawUpload {
+                                    path: dest_path.clone(),
+                                },
+                            }));
+                        let _ = source_agent_info
+                            .session_ref
+                            .cast(SessionMsg::OutgoingMessage(Message::Command {
+                                agent_id: source_agent_id.clone(),
+                                request_id: source_request_id,
+                                command: Command::RawDownload {
+                                    path: source_path,
+                                    range_start: None,
+                                    range_end: None,
+                                },
+                            }));
+
+                        let _ = reply.send(Ok(public_request_id));
+                    }
+                    (None, _) => {
+                        let _ = reply.send(Err(format!("Agent not found: {}", source_agent_id)));
+                    }
+                    (_, None) => {
+                        let _ = reply.send(Err(format!("Agent not found: {}", dest_agent_id)));
+                    }
                 }
             }
         }

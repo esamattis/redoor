@@ -58,6 +58,7 @@ pub struct MetadataResponse {
     pub path: String,
     pub mime_type: String,
     pub file_size: u64,
+    pub is_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +193,26 @@ pub struct RawDeleteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct CopyEndpoint {
+    pub agent: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CopyFileRequest {
+    pub source: CopyEndpoint,
+    pub dest: CopyEndpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CopyFileResponse {
+    pub copy_request_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct TransferProgressListResponse {
     pub transfers: Vec<TransferProgressEntry>,
 }
@@ -210,6 +231,8 @@ pub struct TransferProgressEntry {
     pub request_id: u64,
     pub agent_id: String,
     pub path: String,
+    pub source: Option<CopyEndpoint>,
+    pub dest: Option<CopyEndpoint>,
     pub direction: TransferDirection,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
@@ -224,6 +247,7 @@ pub struct TransferProgressEntry {
 pub enum TransferDirection {
     Upload,
     Download,
+    Copy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -494,6 +518,7 @@ impl CommandHandler {
                     path,
                     mime_type,
                     file_size,
+                    is_file: metadata.is_file(),
                 })
             }
             Err(e) => CommandResult::Error {

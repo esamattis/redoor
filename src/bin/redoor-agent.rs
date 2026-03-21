@@ -6,6 +6,7 @@ use redoor::{
     log, streaming,
     types::Message,
 };
+use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env};
 use sysinfo::System;
 use tokio::{
@@ -19,6 +20,7 @@ pub struct AgentActor;
 
 struct UploadSession {
     path: String,
+    temp_path: PathBuf,
     file: File,
     bytes_written: u64,
 }
@@ -47,6 +49,33 @@ pub enum AgentMsg {
 }
 
 impl AgentActor {
+    async fn cleanup_upload_session(session: UploadSession) {
+        let temp_path = session.temp_path;
+        drop(session.file);
+        if let Err(error) = tokio::fs::remove_file(&temp_path).await {
+            log!(
+                Level::Warning,
+                "Failed to remove upload temp file: path={}, error={}",
+                temp_path.display(),
+                error
+            );
+        }
+    }
+
+    fn temp_upload_path(path: &str) -> PathBuf {
+        let destination = Path::new(path);
+        let file_name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("upload");
+        let temp_name = format!(".{}.redoor-upload-{}", file_name, fastrand::u64(..));
+
+        match destination.parent() {
+            Some(parent) => parent.join(temp_name),
+            None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
     async fn handle_incoming_message(
         &self,
         text: String,
@@ -93,18 +122,21 @@ impl AgentActor {
                                 )
                                 .await;
                             } else {
-                                match File::create(&path).await {
+                                let temp_path = Self::temp_upload_path(&path);
+                                match File::create(&temp_path).await {
                                     Ok(file) => {
                                         log!(
                                             Level::Info,
-                                            "Started raw upload: request_id={}, path={}",
+                                            "Started raw upload: request_id={}, path={}, temp_path={}",
                                             request_id,
-                                            path
+                                            path,
+                                            temp_path.display()
                                         );
                                         state.active_uploads.insert(
                                             request_id,
                                             UploadSession {
                                                 path,
+                                                temp_path,
                                                 file,
                                                 bytes_written: 0,
                                             },
@@ -365,7 +397,11 @@ impl AgentActor {
             let path = state
                 .active_uploads
                 .remove(&request_id)
-                .map(|session| session.path)
+                .map(|session| {
+                    let path = session.path.clone();
+                    tokio::spawn(Self::cleanup_upload_session(session));
+                    path
+                })
                 .unwrap_or_else(|| "<unknown>".to_string());
 
             log!(
@@ -414,6 +450,8 @@ impl AgentActor {
             )
             .await;
 
+            tokio::spawn(Self::cleanup_upload_session(session));
+
             return Ok(());
         }
 
@@ -440,6 +478,39 @@ impl AgentActor {
                 )
                 .await;
 
+                tokio::spawn(Self::cleanup_upload_session(session));
+
+                return Ok(());
+            }
+
+            let final_path = session.path.clone();
+            let temp_path = session.temp_path.clone();
+            let bytes_written = session.bytes_written;
+            drop(session.file);
+
+            if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+                let error_message = format!("Failed to finalize uploaded file: {}", error);
+                log!(
+                    Level::Error,
+                    "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
+                    request_id,
+                    final_path,
+                    temp_path.display(),
+                    error_message
+                );
+
+                let _ = tokio::fs::remove_file(&temp_path).await;
+
+                self.send_command_response(
+                    &tx,
+                    &state.agent_id,
+                    request_id,
+                    CommandResult::Error {
+                        message: error_message,
+                    },
+                )
+                .await;
+
                 return Ok(());
             }
 
@@ -447,8 +518,8 @@ impl AgentActor {
                 Level::Info,
                 "Raw upload complete: request_id={}, path={}, bytes_written={}",
                 request_id,
-                session.path,
-                session.bytes_written
+                final_path,
+                bytes_written
             );
 
             self.send_command_response(&tx, &state.agent_id, request_id, CommandResult::RawUpload)
@@ -662,7 +733,10 @@ impl Actor for AgentActor {
                     reason
                 );
                 state.ws_tx = None;
-                state.active_uploads.clear();
+                let abandoned_uploads = std::mem::take(&mut state.active_uploads);
+                for (_, session) in abandoned_uploads {
+                    tokio::spawn(Self::cleanup_upload_session(session));
+                }
                 let agent_ref_clone = myself.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -708,7 +782,10 @@ impl Actor for AgentActor {
                     state.agent_id
                 );
                 state.ws_tx = None;
-                state.active_uploads.clear();
+                let abandoned_uploads = std::mem::take(&mut state.active_uploads);
+                for (_, session) in abandoned_uploads {
+                    tokio::spawn(Self::cleanup_upload_session(session));
+                }
                 myself.stop(None);
             }
 
