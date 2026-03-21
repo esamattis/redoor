@@ -1,5 +1,5 @@
 import React from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import {
     Folder,
     File,
@@ -9,9 +9,11 @@ import {
     ArrowLeft,
     Copy,
     Check,
+    Upload,
 } from "lucide-react";
 import { getParentPath, formatSize } from "../utils/path";
 import {
+    type Agent,
     type LsResponse,
     isLsDirectoryResponse,
     isLsFileResponse,
@@ -35,6 +37,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             : undefined;
 
         return {
+            agent,
             agentId: agent.id,
             agentName: agent.name,
             cwd: details.cwd,
@@ -50,7 +53,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const { agentId, agentName, relativePath, lsResult, cwd } = data;
+    const { agent, agentId, agentName, relativePath, lsResult } = data;
 
     const isAtCwd = relativePath === "";
     const parentPath = getParentPath(relativePath);
@@ -70,11 +73,13 @@ function FileBrowser() {
             <div className="p-6">
                 <div className="max-w-4xl mx-auto">
                     <BrowserHeader
+                        agent={agent}
                         agentId={agentId}
                         agentName={agentName}
                         relativePath={relativePath}
                         isAtCwd={isAtCwd}
                         parentPath={parentPath}
+                        directoryPath={data.fullPath}
                     />
                     <FileList
                         agentId={agentId}
@@ -89,6 +94,15 @@ function FileBrowser() {
 
     if (isLsFileResponse(lsResult)) {
         const fileName = relativePath.split("/").pop() || lsResult.path;
+        const downloadUrl = data.downloadUrl;
+        if (!downloadUrl) {
+            return (
+                <FileBrowserError
+                    error={new Error("Download URL unavailable")}
+                />
+            );
+        }
+
         return (
             <div className="p-6">
                 <div className="max-w-4xl mx-auto">
@@ -98,7 +112,7 @@ function FileBrowser() {
                         relativePath={relativePath}
                         fileName={fileName}
                         lsResult={lsResult}
-                        downloadUrl={data.downloadUrl!}
+                        downloadUrl={downloadUrl}
                     />
                 </div>
             </div>
@@ -108,37 +122,188 @@ function FileBrowser() {
     return null;
 }
 
+type UploadState =
+    | { type: "idle" }
+    | { type: "uploading"; fileCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+function joinBrowserPath(directoryPath: string, fileName: string) {
+    if (directoryPath.endsWith("/")) {
+        return `${directoryPath}${fileName}`;
+    }
+
+    return `${directoryPath}/${fileName}`;
+}
+
+function getErrorMessage(error: unknown) {
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return "Upload failed";
+}
+
+function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
+    const router = useRouter();
+    const inputId = React.useId();
+    const inputRef = React.useRef<HTMLInputElement | null>(null);
+    const [uploadState, setUploadState] = React.useState<UploadState>({
+        type: "idle",
+    });
+
+    const statusMessage =
+        uploadState.type === "uploading"
+            ? `Uploading ${uploadState.fileCount} ${uploadState.fileCount === 1 ? "file" : "files"}...`
+            : uploadState.type === "idle"
+              ? null
+              : uploadState.message;
+    const isUploading = uploadState.type === "uploading";
+
+    const openFilePicker = () => {
+        setUploadState({ type: "idle" });
+        inputRef.current?.click();
+    };
+
+    const handleFileSelection = async (
+        event: React.ChangeEvent<HTMLInputElement>,
+    ) => {
+        const selectedFiles = Array.from(event.target.files ?? []);
+        if (selectedFiles.length === 0) {
+            return;
+        }
+
+        setUploadState({
+            type: "uploading",
+            fileCount: selectedFiles.length,
+        });
+
+        try {
+            const results = await Promise.allSettled(
+                selectedFiles.map((file) =>
+                    props.agent.upload(
+                        joinBrowserPath(props.directoryPath, file.name),
+                        file,
+                    ),
+                ),
+            );
+            const successCount = results.filter(
+                (result) => result.status === "fulfilled",
+            ).length;
+            const failedUploads = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successCount > 0) {
+                await router.invalidate();
+            }
+
+            if (failedUploads.length > 0) {
+                const firstFailedUpload = failedUploads[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedUpload ? firstFailedUpload.reason : undefined,
+                );
+                setUploadState({
+                    type: "error",
+                    message:
+                        successCount > 0
+                            ? `Uploaded ${successCount} of ${selectedFiles.length} files. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+
+            setUploadState({
+                type: "success",
+                message:
+                    selectedFiles.length === 1
+                        ? `Uploaded ${selectedFiles[0] ? selectedFiles[0].name : "file"}`
+                        : `Uploaded ${selectedFiles.length} files`,
+            });
+        } catch (error) {
+            setUploadState({
+                type: "error",
+                message: getErrorMessage(error),
+            });
+        } finally {
+            event.target.value = "";
+        }
+    };
+
+    return (
+        <div className="flex items-center gap-3">
+            <label htmlFor={inputId} className="sr-only">
+                Choose files to upload
+            </label>
+            <input
+                ref={inputRef}
+                id={inputId}
+                type="file"
+                multiple
+                className="sr-only"
+                onChange={handleFileSelection}
+            />
+            <button
+                type="button"
+                onClick={openFilePicker}
+                disabled={isUploading}
+                className="inline-flex items-center gap-2 rounded bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                <Upload className="h-4 w-4" />
+                {isUploading ? "Uploading..." : "Upload files"}
+            </button>
+            {statusMessage ? (
+                <span
+                    role={uploadState.type === "error" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`text-sm ${uploadState.type === "error" ? "text-red-600" : "text-emerald-700"}`}
+                >
+                    {statusMessage}
+                </span>
+            ) : null}
+        </div>
+    );
+}
+
 function BrowserHeader(props: {
+    agent: Agent;
     agentId: string;
     agentName: string;
     relativePath: string;
     isAtCwd: boolean;
     parentPath: string | null;
+    directoryPath: string;
 }) {
-    const { agentId, agentName, relativePath, isAtCwd, parentPath } = props;
-
     return (
         <div className="mb-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <Breadcrumbs
-                    agentId={agentId}
-                    agentName={agentName}
-                    relativePath={relativePath}
+                    agentId={props.agentId}
+                    agentName={props.agentName}
+                    relativePath={props.relativePath}
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                    <UploadFilesAction
+                        agent={props.agent}
+                        directoryPath={props.directoryPath}
+                    />
                     <Link
                         to="/agents/$agentId/browser/$"
-                        params={{ agentId, _splat: parentPath ?? undefined }}
-                        className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                        disabled={isAtCwd}
+                        params={{
+                            agentId: props.agentId,
+                            _splat: props.parentPath ?? undefined,
+                        }}
+                        className="flex items-center gap-2 rounded bg-gray-100 px-4 py-2 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={props.isAtCwd}
                     >
                         <ArrowUp className="h-4 w-4" />
                         Up
                     </Link>
                     <Link
                         to="/agents/$agentId"
-                        params={{ agentId }}
-                        className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                        params={{ agentId: props.agentId }}
+                        className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
                     >
                         Back to Agent
                     </Link>

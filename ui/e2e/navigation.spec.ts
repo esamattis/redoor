@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ApiClient } from "../src/api-client";
@@ -144,7 +145,7 @@ test.describe.serial("File Browser Navigation", () => {
             .getByText("deep")
             .click();
 
-        const upButton = page.getByRole("link", { name: "Up" });
+        const upButton = page.getByRole("link", { name: "Up", exact: true });
         await upButton.click();
 
         await expect(page.getByRole("cell", { name: "deep" })).toBeVisible();
@@ -318,5 +319,46 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("cell", { name: "nested2.txt" }),
         ).toBeVisible();
+    });
+
+    test("should upload files from directory view", async ({ page }) => {
+        const uploadSourceDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "redoor-upload-"),
+        );
+        const firstUploadPath = path.join(uploadSourceDir, "uploaded-a.txt");
+        const secondUploadPath = path.join(uploadSourceDir, "uploaded-b.txt");
+
+        await fs.writeFile(firstUploadPath, "uploaded content a");
+        await fs.writeFile(secondUploadPath, "uploaded content b");
+
+        try {
+            await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+            await page.getByRole("link", { name: ".test" }).click();
+            await page.getByRole("link", { name: "subdir3" }).click();
+
+            await page
+                .getByLabel("Choose files to upload")
+                .setInputFiles([firstUploadPath, secondUploadPath]);
+
+            // This confirms the route refresh completed and both new entries are listed.
+            await expect(
+                page.getByRole("cell", { name: "uploaded-a.txt" }),
+            ).toBeVisible();
+            // This verifies multi-file uploads are handled instead of only the first selection.
+            await expect(
+                page.getByRole("cell", { name: "uploaded-b.txt" }),
+            ).toBeVisible();
+            // This checks the inline status feedback shown next to the upload action.
+            await expect(page.getByText("Uploaded 2 files")).toBeVisible();
+
+            await page.getByRole("link", { name: "uploaded-a.txt" }).click();
+
+            // This ensures uploaded files can be opened immediately after the refresh.
+            await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
+                "uploaded-a.txt",
+            );
+        } finally {
+            await fs.rm(uploadSourceDir, { force: true, recursive: true });
+        }
     });
 });
