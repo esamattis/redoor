@@ -1,5 +1,11 @@
 import { spawn, ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from "node:fs";
+import {
+    mkdtempSync,
+    writeFileSync,
+    unlinkSync,
+    rmSync,
+    mkdirSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,23 +73,40 @@ export class TempFileManager {
     }
 
     /**
+     * Create and track a temporary directory.
+     */
+    tempDirectory(options?: { suffix?: string }): string {
+        if (!this.tempDir) {
+            this.tempDir = mkdtempSync(join(tmpdir(), "redoor-test-"));
+        }
+        const suffix = options?.suffix ?? "";
+        const directoryPath = join(
+            this.tempDir,
+            `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}${suffix}`,
+        );
+        mkdirSync(directoryPath, { recursive: true });
+        this.files.push(directoryPath);
+        return directoryPath;
+    }
+
+    /**
      * Clean up all temporary files created by this manager.
      */
     cleanup(): void {
         for (const filePath of this.files) {
             try {
-                unlinkSync(filePath);
+                rmSync(filePath, { recursive: true, force: true });
             } catch {
-                // File may not exist, ignore
+                // File or directory may not exist, ignore
             }
         }
         this.files = [];
 
         if (this.tempDir) {
             try {
-                rmdirSync(this.tempDir);
+                rmSync(this.tempDir, { recursive: true, force: true });
             } catch {
-                // Directory may not be empty or may not exist, ignore
+                // Directory may not exist, ignore
             }
             this.tempDir = null;
         }

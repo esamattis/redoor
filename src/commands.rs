@@ -417,10 +417,23 @@ impl CommandHandler {
     }
 
     async fn raw_delete(&self, path: String) -> CommandResult {
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => CommandResult::RawDelete,
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => {
+                let delete_result = if metadata.is_dir() {
+                    tokio::fs::remove_dir_all(&path).await
+                } else {
+                    tokio::fs::remove_file(&path).await
+                };
+
+                match delete_result {
+                    Ok(()) => CommandResult::RawDelete,
+                    Err(e) => CommandResult::Error {
+                        message: format!("Failed to delete path: {}", e),
+                    },
+                }
+            }
             Err(e) => CommandResult::Error {
-                message: format!("Failed to delete file: {}", e),
+                message: format!("Failed to access path for deletion: {}", e),
             },
         }
     }
@@ -779,6 +792,45 @@ mod tests {
                         .await
                         .expect("file existence should be queryable"),
                     "file should be removed"
+                );
+            }
+            _ => panic!("Expected RawDelete"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_raw_delete_command_removes_directory_recursively() {
+        let handler = CommandHandler::new();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "redoor-delete-dir-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos()
+        ));
+        let nested_dir = temp_dir.join("nested");
+        let nested_file = nested_dir.join("file.txt");
+
+        tokio::fs::create_dir_all(&nested_dir)
+            .await
+            .expect("temporary directory should be created");
+        tokio::fs::write(&nested_file, "delete me")
+            .await
+            .expect("temporary nested file should be created");
+
+        let result = handler
+            .execute(Command::RawDelete {
+                path: temp_dir.to_string_lossy().to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::RawDelete => {
+                assert!(
+                    !tokio::fs::try_exists(&temp_dir)
+                        .await
+                        .expect("directory existence should be queryable"),
+                    "directory should be removed recursively"
                 );
             }
             _ => panic!("Expected RawDelete"),
