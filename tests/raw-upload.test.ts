@@ -6,11 +6,9 @@ import fs from "node:fs";
 
 import {
     ProcessManager,
-    waitForPort,
-    waitForLogMessage,
     TempFileManager,
     waitForValue,
-    getAvailablePort,
+    startServerAndAgent,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
@@ -32,40 +30,18 @@ describe("Raw Upload API", () => {
     beforeAll(async () => {
         const projectRoot = path.join(__dirname, "..");
 
-        // Get a dynamic port to avoid conflicts.
-        serverPort = await getAvailablePort();
-        apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
-        const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+        const setup = await startServerAndAgent({
+            processManager,
+            serverPath: SERVER_PATH,
+            agentPath: AGENT_PATH,
+            agentName: AGENT_NAME,
+            projectRoot,
+        });
 
-        process.env.REDOOR_PORT = serverPort.toString();
-        serverPid = processManager.spawn(SERVER_PATH, [], projectRoot);
-        await waitForPort(serverPort);
-
-        const serverProcess = processManager.getProcess(serverPid);
-        if (!serverProcess) {
-            throw new Error("Server process not found");
-        }
-
-        // Start waiting for log message BEFORE spawning agent to avoid race condition.
-        const waitForAgentPromise = waitForLogMessage(
-            serverProcess,
-            /Agent registered: agent_id=/,
-            10000,
-        );
-
-        processManager.spawn(AGENT_PATH, [wsUrl, AGENT_NAME], projectRoot);
-
-        await waitForAgentPromise;
-
-        const agents = await apiClient.listAgents();
-        const connectedAgent = agents.find(
-            (agent) => agent.name === AGENT_NAME,
-        );
-        if (!connectedAgent) {
-            throw new Error(`Agent ${AGENT_NAME} was not registered`);
-        }
-
-        testAgent = connectedAgent;
+        serverPort = setup.serverPort;
+        apiClient = setup.apiClient;
+        serverPid = setup.serverPid;
+        testAgent = setup.testAgent;
     }, 30000);
 
     afterAll(() => {

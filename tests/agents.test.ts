@@ -3,8 +3,7 @@ import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
 import path from "node:path";
 import {
     ProcessManager,
-    getAvailablePort,
-    waitForPort,
+    startServerAndAgent,
     waitForLogMessage,
 } from "./test-utils";
 
@@ -14,7 +13,6 @@ const AGENT_NAME = "test-agent";
 
 const processManager = new ProcessManager();
 
-let serverPort: number;
 let serverPid: number;
 let apiClient: ApiClient;
 let wsUrl: string;
@@ -22,32 +20,17 @@ let wsUrl: string;
 beforeAll(async () => {
     const projectRoot = path.join(__dirname, "..");
 
-    // Get a dynamic port to avoid conflicts
-    serverPort = await getAvailablePort();
-    wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
-    apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
+    const started = await startServerAndAgent({
+        processManager,
+        serverPath: SERVER_PATH,
+        agentPath: AGENT_PATH,
+        agentName: AGENT_NAME,
+        projectRoot,
+    });
 
-    process.env.REDOOR_PORT = serverPort.toString();
-    serverPid = processManager.spawn(SERVER_PATH, [], projectRoot);
-
-    await waitForPort(serverPort);
-
-    // Start the agent after we begin listening to server logs
-    const serverProcess = processManager.getProcess(serverPid);
-    if (!serverProcess) {
-        throw new Error("Server process not found");
-    }
-
-    // Start waiting for log message BEFORE spawning agent to avoid race condition
-    const waitForAgentPromise = waitForLogMessage(
-        serverProcess,
-        /Agent registered: agent_id=/,
-        10000,
-    );
-
-    processManager.spawn(AGENT_PATH, [wsUrl, AGENT_NAME], projectRoot);
-
-    await waitForAgentPromise;
+    serverPid = started.serverPid;
+    apiClient = started.apiClient;
+    wsUrl = started.wsUrl;
 }, 30000);
 
 afterAll(() => {

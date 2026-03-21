@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ApiClient, Agent } from "@/api-client";
 
 export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -149,6 +150,66 @@ export class ProcessManager {
             });
         });
     }
+}
+
+export async function startServerAndAgent(options: {
+    processManager: ProcessManager;
+    serverPath: string;
+    agentPath: string;
+    agentName: string;
+    projectRoot: string;
+}): Promise<{
+    serverPort: number;
+    serverPid: number;
+    apiClient: ApiClient;
+    testAgent: Agent;
+    wsUrl: string;
+}> {
+    const serverPort = await getAvailablePort();
+    const apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
+    const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+
+    process.env.REDOOR_PORT = serverPort.toString();
+    const serverPid = options.processManager.spawn(
+        options.serverPath,
+        [],
+        options.projectRoot,
+    );
+
+    await waitForPort(serverPort);
+
+    const serverProcess = options.processManager.getProcess(serverPid);
+    if (!serverProcess) {
+        throw new Error("Server process not found");
+    }
+
+    const waitForAgentPromise = waitForLogMessage(
+        serverProcess,
+        new RegExp(`Agent registered:.*agent_name=${options.agentName}`),
+        10000,
+    );
+
+    options.processManager.spawn(
+        options.agentPath,
+        [wsUrl, options.agentName],
+        options.projectRoot,
+    );
+
+    await waitForAgentPromise;
+
+    const agents = await apiClient.listAgents();
+    const testAgent = agents.find((agent) => agent.name === options.agentName);
+    if (!testAgent) {
+        throw new Error(`Agent ${options.agentName} was not registered`);
+    }
+
+    return {
+        serverPort,
+        serverPid,
+        apiClient,
+        testAgent,
+        wsUrl,
+    };
 }
 
 export async function waitForPort(

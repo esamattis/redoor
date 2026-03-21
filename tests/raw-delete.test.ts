@@ -4,10 +4,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import {
     ProcessManager,
-    waitForPort,
-    waitForLogMessage,
     TempFileManager,
-    getAvailablePort,
+    startServerAndAgent,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
@@ -29,38 +27,18 @@ describe("Raw Delete API", () => {
     beforeAll(async () => {
         const projectRoot = path.join(__dirname, "..");
 
-        serverPort = await getAvailablePort();
-        apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
-        const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+        const setup = await startServerAndAgent({
+            processManager,
+            serverPath: SERVER_PATH,
+            agentPath: AGENT_PATH,
+            agentName: AGENT_NAME,
+            projectRoot,
+        });
 
-        process.env.REDOOR_PORT = serverPort.toString();
-        serverPid = processManager.spawn(SERVER_PATH, [], projectRoot);
-        await waitForPort(serverPort);
-
-        const serverProcess = processManager.getProcess(serverPid);
-        if (!serverProcess) {
-            throw new Error("Server process not found");
-        }
-
-        const waitForAgentPromise = waitForLogMessage(
-            serverProcess,
-            /Agent registered: agent_id=/,
-            10000,
-        );
-
-        processManager.spawn(AGENT_PATH, [wsUrl, AGENT_NAME], projectRoot);
-
-        await waitForAgentPromise;
-
-        const agents = await apiClient.listAgents();
-        const connectedAgent = agents.find(
-            (agent) => agent.name === AGENT_NAME,
-        );
-        if (!connectedAgent) {
-            throw new Error(`Agent ${AGENT_NAME} was not registered`);
-        }
-
-        testAgent = connectedAgent;
+        serverPort = setup.serverPort;
+        apiClient = setup.apiClient;
+        serverPid = setup.serverPid;
+        testAgent = setup.testAgent;
     }, 30000);
 
     afterAll(() => {
