@@ -14,10 +14,12 @@ const WEB_BASE_URL = "http://localhost:4000";
 test.describe.serial("File Browser Navigation", () => {
     let agentId: string;
     let agentName: string;
+    let testDirName: string;
 
     test.beforeAll(async () => {
         await fs.rm(TEST_DIR, { force: true, recursive: true });
         await fs.mkdir(TEST_DIR);
+        testDirName = path.basename(TEST_DIR);
         await fs.mkdir(path.join(TEST_DIR, "subdir1"));
         await fs.mkdir(path.join(TEST_DIR, "subdir2"));
         await fs.mkdir(path.join(TEST_DIR, "subdir2", "deep"));
@@ -56,8 +58,9 @@ test.describe.serial("File Browser Navigation", () => {
     test("should display file list at agent root", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
 
-        const testDirLink = page.getByRole("link", { name: ".test" });
-        await expect(testDirLink).toBeVisible();
+        await expect(
+            page.locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`),
+        ).toBeVisible();
     });
 
     test("should navigate to subdirectory and display files", async ({
@@ -65,8 +68,7 @@ test.describe.serial("File Browser Navigation", () => {
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
         await page
-            .getByRole("cell", { name: ".test" })
-            .getByText(".test")
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
 
         await expect(page.getByText("file1.txt")).toBeVisible();
@@ -82,8 +84,7 @@ test.describe.serial("File Browser Navigation", () => {
     test("should navigate to deep nested directory", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
         await page
-            .getByRole("cell", { name: ".test" })
-            .getByText(".test")
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
         await page
             .getByRole("cell", { name: "subdir2" })
@@ -105,17 +106,19 @@ test.describe.serial("File Browser Navigation", () => {
 
     test("should navigate using breadcrumbs", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
         await page.getByRole("link", { name: "subdir2" }).click();
         await page.getByRole("link", { name: "deep" }).click();
 
         const breadcrumbs = page.locator(".flex.items-center.gap-2.text-sm");
         await expect(breadcrumbs).toContainText(agentName);
-        await expect(breadcrumbs).toContainText(".test");
+        await expect(breadcrumbs).toContainText(testDirName);
         await expect(breadcrumbs).toContainText("subdir2");
         await expect(breadcrumbs).toContainText("deep");
 
-        await breadcrumbs.getByText(".test").click();
+        await breadcrumbs.getByText(testDirName, { exact: true }).click();
         await expect(page.getByText("file1.txt")).toBeVisible();
         await expect(page.getByRole("cell", { name: "subdir1" })).toBeVisible();
         await expect(page.getByRole("cell", { name: "subdir2" })).toBeVisible();
@@ -133,8 +136,7 @@ test.describe.serial("File Browser Navigation", () => {
     test("should navigate using Up button", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
         await page
-            .getByRole("cell", { name: ".test" })
-            .getByText(".test")
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
         await page
             .getByRole("cell", { name: "subdir2" })
@@ -167,8 +169,7 @@ test.describe.serial("File Browser Navigation", () => {
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
         await page
-            .getByRole("cell", { name: ".test" })
-            .getByText(".test")
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
             .click();
 
         const backToAgentButton = page.getByRole("link", {
@@ -181,7 +182,9 @@ test.describe.serial("File Browser Navigation", () => {
 
     test("should display correct icons and sizes", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
 
         const dirLinks = page.getByRole("link", {
             name: /^(subdir1|subdir2|subdir3)$/,
@@ -209,7 +212,9 @@ test.describe.serial("File Browser Navigation", () => {
 
     test("should navigate to file detail view", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
 
         await page
             .getByRole("cell", { name: "file1.txt" })
@@ -237,7 +242,9 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
 
         await page
             .getByRole("cell", { name: "file1.txt" })
@@ -256,7 +263,9 @@ test.describe.serial("File Browser Navigation", () => {
 
     test("should navigate back from file detail view", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
 
         await page
             .getByRole("cell", { name: "file1.txt" })
@@ -279,7 +288,9 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
 
         await page
             .getByRole("cell", { name: "file1.txt" })
@@ -296,7 +307,9 @@ test.describe.serial("File Browser Navigation", () => {
 
     test("should navigate to nested file detail view", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-        await page.getByRole("link", { name: ".test" }).click();
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
         await page.getByRole("link", { name: "subdir1" }).click();
 
         await page
@@ -333,7 +346,9 @@ test.describe.serial("File Browser Navigation", () => {
 
         try {
             await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
-            await page.getByRole("link", { name: ".test" }).click();
+            await page
+                .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+                .click();
             await page.getByRole("link", { name: "subdir3" }).click();
 
             await page
@@ -342,16 +357,24 @@ test.describe.serial("File Browser Navigation", () => {
 
             // This confirms the route refresh completed and both new entries are listed.
             await expect(
-                page.getByRole("cell", { name: "uploaded-a.txt" }),
+                page.locator(
+                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-a.txt"]`,
+                ),
             ).toBeVisible();
             // This verifies multi-file uploads are handled instead of only the first selection.
             await expect(
-                page.getByRole("cell", { name: "uploaded-b.txt" }),
+                page.locator(
+                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-b.txt"]`,
+                ),
             ).toBeVisible();
             // This checks the inline status feedback shown next to the upload action.
             await expect(page.getByText("Uploaded 2 files")).toBeVisible();
 
-            await page.getByRole("link", { name: "uploaded-a.txt" }).click();
+            await page
+                .locator(
+                    `a[href="/agents/${agentId}/browser/${testDirName}/subdir3/uploaded-a.txt"]`,
+                )
+                .click();
 
             // This ensures uploaded files can be opened immediately after the refresh.
             await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
