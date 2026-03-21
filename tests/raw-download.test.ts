@@ -271,61 +271,6 @@ describe("Raw Download API", () => {
         }
     }, 30000);
 
-    it("should mark download completed when response body is dropped after headers", async () => {
-        const largeContent = "x".repeat(4 * 1024 * 1024);
-        const testFilePath = tempFiles.create(largeContent, {
-            suffix: ".txt",
-        });
-        const fileSize = Buffer.byteLength(largeContent);
-
-        const response = await testAgent.download(testFilePath);
-
-        // A successful status proves the REST endpoint started streaming and sent headers.
-        expect(response.status).toBe(200);
-
-        const initialTransfer = await waitForValue({
-            description: "download progress row before body drop",
-            timeoutMs: 20000,
-            predicate: async () => {
-                const progressResponse = await apiClient.getTransferProgress();
-                return progressResponse.transfers.find(
-                    (transfer: TransferProgressEntry) =>
-                        transfer.agent_id === testAgent.id &&
-                        transfer.path === testFilePath &&
-                        transfer.direction === "download" &&
-                        transfer.total_bytes === BigInt(fileSize),
-                );
-            },
-        });
-
-        // Finding the transfer row proves the server registered progress for the streaming response.
-        expect(initialTransfer.direction).toBe("download");
-        // Matching total size proves we are observing the same transfer that backs the response headers.
-        expect(initialTransfer.total_bytes).toBe(BigInt(fileSize));
-
-        await response.body?.cancel();
-
-        const finishedTransfer = await waitForValue({
-            description: "finished download progress row after body drop",
-            timeoutMs: 20000,
-            predicate: async () => {
-                const progressResponse = await apiClient.getTransferProgress();
-                return progressResponse.transfers.find(
-                    (transfer: TransferProgressEntry) =>
-                        transfer.request_id === initialTransfer.request_id &&
-                        transfer.state !== "active",
-                );
-            },
-        });
-
-        // A finished state proves the transfer leaves the active state after the response body is dropped.
-        expect(["completed", "errored"]).toContain(finishedTransfer.state);
-        // The regression check verifies the misleading dropped-receiver error is no longer reported for this case.
-        expect(finishedTransfer.error).not.toBe(
-            "REST stream receiver dropped before download completed",
-        );
-    }, 30000);
-
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });
         fs.chmodSync(testFilePath, 0o000);

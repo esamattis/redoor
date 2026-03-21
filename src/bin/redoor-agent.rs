@@ -190,6 +190,7 @@ impl AgentActor {
                 let chunk_size = streaming::CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
                 let mut bytes_remaining: Option<u64> = None;
+                let mut pending_chunk: Option<Vec<u8>> = None;
 
                 if let Some(start) = range_start {
                     if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
@@ -237,26 +238,28 @@ impl AgentActor {
                                 *remaining = remaining.saturating_sub(n as u64);
                             }
 
-                            let chunk = streaming::StreamChunk {
-                                request_id,
-                                chunk_index,
-                                is_last: false,
-                                is_error: false,
-                                data: buffer[..n].to_vec(),
-                            };
+                            if let Some(data) = pending_chunk.replace(buffer[..n].to_vec()) {
+                                let chunk = streaming::StreamChunk {
+                                    request_id,
+                                    chunk_index,
+                                    is_last: false,
+                                    is_error: false,
+                                    data,
+                                };
 
-                            if write
-                                .send(WsMessage::Binary(chunk.to_bytes().into()))
-                                .await
-                                .is_err()
-                            {
-                                log!(
-                                    Level::Warning,
-                                    "WebSocket channel full or closed, aborting download"
-                                );
-                                return;
+                                if write
+                                    .send(WsMessage::Binary(chunk.to_bytes().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    log!(
+                                        Level::Warning,
+                                        "WebSocket channel full or closed, aborting download"
+                                    );
+                                    return;
+                                }
+                                chunk_index += 1;
                             }
-                            chunk_index += 1;
                         }
                         Err(e) => {
                             log!(Level::Error, "Failed to read file: {}", e);
@@ -281,7 +284,7 @@ impl AgentActor {
                     chunk_index,
                     is_last: true,
                     is_error: false,
-                    data: Vec::new(),
+                    data: pending_chunk.unwrap_or_default(),
                 };
                 let _ = write
                     .send(WsMessage::Binary(final_chunk.to_bytes().into()))
