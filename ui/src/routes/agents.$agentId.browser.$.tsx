@@ -1,7 +1,5 @@
 import React from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-
 import {
     Folder,
     File,
@@ -21,11 +19,15 @@ import {
     isLsFileResponse,
     type LsFileResponse,
 } from "../api-client";
-import { rootDataQueryOptions } from "../queries/root-data";
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
-        const agent = rootMatch.loaderData?.agents.find(
+        const rootLoaderData = rootMatch.loaderData;
+        if (!rootLoaderData) {
+            throw new Error("Agent list unavailable");
+        }
+
+        const agent = rootLoaderData.agents.find(
             (entry) => entry.id === params.agentId,
         );
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
@@ -150,7 +152,6 @@ function getErrorMessage(error: unknown) {
 
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
     const router = useRouter();
-    const queryClient = useQueryClient();
     const inputId = React.useId();
     const inputRef = React.useRef<HTMLInputElement | null>(null);
     const [uploadState, setUploadState] = React.useState<UploadState>({
@@ -201,14 +202,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
             );
 
             if (successCount > 0) {
-                await Promise.all([
-                    await router.invalidate(),
-                    queryClient.invalidateQueries({
-                        queryKey: rootDataQueryOptions(
-                            router.options.context.api,
-                        ).queryKey,
-                    }),
-                ]);
+                await router.invalidate();
             }
 
             if (failedUploads.length > 0) {
