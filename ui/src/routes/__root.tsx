@@ -17,6 +17,8 @@ import {
     AlertCircle,
     X,
     Files,
+    ChevronDown,
+    ChevronUp,
 } from "lucide-react";
 import {
     ApiClient,
@@ -245,6 +247,70 @@ function RootLayout() {
     );
 }
 
+function CollapsibleBottomPanel(props: {
+    title: string;
+    description: string;
+    badge: React.ReactNode;
+    actions?: React.ReactNode;
+    icon?: React.ReactNode;
+    children: React.ReactNode;
+    defaultCollapsed?: boolean;
+}) {
+    const [isCollapsed, setIsCollapsed] = React.useState(
+        props.defaultCollapsed ?? false,
+    );
+
+    return (
+        <section className="sticky bottom-0 border-t bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+            <div className="px-6 py-4">
+                <div className="max-w-full">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-start gap-3">
+                            {props.icon ? (
+                                <div className="rounded-lg bg-blue-50 p-2 text-blue-700">
+                                    {props.icon}
+                                </div>
+                            ) : null}
+                            <div>
+                                <h2 className="text-sm font-semibold text-gray-900">
+                                    {props.title}
+                                </h2>
+                                <p className="text-xs text-gray-500">
+                                    {props.description}
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {props.badge}
+                            {props.actions}
+                            <button
+                                type="button"
+                                aria-label={`${isCollapsed ? "Expand" : "Minimize"} ${props.title}`}
+                                aria-expanded={!isCollapsed}
+                                onClick={() =>
+                                    setIsCollapsed((value) => !value)
+                                }
+                                className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                            >
+                                {isCollapsed ? (
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                ) : (
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                                {isCollapsed ? "Expand" : "Minimize"}
+                            </button>
+                        </div>
+                    </div>
+
+                    {isCollapsed ? null : (
+                        <div className="mt-3">{props.children}</div>
+                    )}
+                </div>
+            </div>
+        </section>
+    );
+}
+
 function SelectedFilesPanel() {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
@@ -255,116 +321,100 @@ function SelectedFilesPanel() {
     }
 
     return (
-        <section className="sticky bottom-0 border-t bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
-            <div className="px-6 py-4">
-                <div className="max-w-full">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                        <div className="flex items-start gap-3">
-                            <div className="rounded-lg bg-blue-50 p-2 text-blue-700">
-                                <Files className="h-4 w-4" />
-                            </div>
-                            <div>
-                                <h2 className="text-sm font-semibold text-gray-900">
-                                    Selected items
-                                </h2>
-                                <p className="text-xs text-gray-500">
-                                    Files and directories selected for copy
-                                    operations
-                                </p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
-                                {selectedFiles.length}{" "}
-                                {selectedFiles.length === 1 ? "item" : "items"}
-                            </span>
-                            <button
-                                type="button"
-                                onClick={() => clearSelectedFiles()}
-                                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+        <CollapsibleBottomPanel
+            title="Selected items"
+            description="Files and directories selected for copy operations"
+            icon={<Files className="h-4 w-4" />}
+            badge={
+                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+                    {selectedFiles.length}{" "}
+                    {selectedFiles.length === 1 ? "item" : "items"}
+                </span>
+            }
+            actions={
+                <button
+                    type="button"
+                    onClick={() => clearSelectedFiles()}
+                    className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                    Clear all
+                </button>
+            }
+        >
+            <div className="max-h-64 overflow-auto rounded-lg border bg-white">
+                <table className="w-full">
+                    <thead className="sticky top-0 bg-gray-50">
+                        <tr className="border-b">
+                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                Agent
+                            </th>
+                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                Item
+                            </th>
+                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                Path
+                            </th>
+                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                                Action
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {selectedFiles.map((file) => (
+                            <tr
+                                key={`${file.agentId}:${file.path}`}
+                                className="border-b last:border-b-0 hover:bg-gray-50 align-top"
                             >
-                                Clear all
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="max-h-64 overflow-auto rounded-lg border bg-white">
-                        <table className="w-full">
-                            <thead className="sticky top-0 bg-gray-50">
-                                <tr className="border-b">
-                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
-                                        Agent
-                                    </th>
-                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
-                                        Item
-                                    </th>
-                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
-                                        Path
-                                    </th>
-                                    <th className="p-3 text-left text-sm font-medium text-gray-600">
-                                        Action
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {selectedFiles.map((file) => (
-                                    <tr
-                                        key={`${file.agentId}:${file.path}`}
-                                        className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                                <td className="p-3">
+                                    <div className="flex flex-col">
+                                        <span className="text-sm font-medium text-gray-900">
+                                            {file.agentName}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                            {file.agentId}
+                                        </span>
+                                    </div>
+                                </td>
+                                <td className="p-3">
+                                    <Link
+                                        to="/agents/$agentId/browser/$"
+                                        params={{
+                                            agentId: file.agentId,
+                                            _splat:
+                                                file.relativePath || undefined,
+                                        }}
+                                        className="text-sm font-medium text-blue-600 hover:underline"
                                     >
-                                        <td className="p-3">
-                                            <div className="flex flex-col">
-                                                <span className="text-sm font-medium text-gray-900">
-                                                    {file.agentName}
-                                                </span>
-                                                <span className="text-xs text-gray-500">
-                                                    {file.agentId}
-                                                </span>
-                                            </div>
-                                        </td>
-                                        <td className="p-3">
-                                            <Link
-                                                to="/agents/$agentId/browser/$"
-                                                params={{
-                                                    agentId: file.agentId,
-                                                    _splat:
-                                                        file.relativePath ||
-                                                        undefined,
-                                                }}
-                                                className="text-sm font-medium text-blue-600 hover:underline"
-                                            >
-                                                {file.fileName}
-                                            </Link>
-                                        </td>
-                                        <td className="p-3">
-                                            <div className="break-all font-mono text-xs text-gray-700">
-                                                {file.path}
-                                            </div>
-                                        </td>
-                                        <td className="p-3">
-                                            <button
-                                                type="button"
-                                                aria-label={`Unselect ${file.fileName}`}
-                                                onClick={() =>
-                                                    unselectFile({
-                                                        agentId: file.agentId,
-                                                        path: file.path,
-                                                    })
-                                                }
-                                                className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                                            >
-                                                <X className="h-3.5 w-3.5" />
-                                                Unselect
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                                        {file.fileName}
+                                    </Link>
+                                </td>
+                                <td className="p-3">
+                                    <div className="break-all font-mono text-xs text-gray-700">
+                                        {file.path}
+                                    </div>
+                                </td>
+                                <td className="p-3">
+                                    <button
+                                        type="button"
+                                        aria-label={`Unselect ${file.fileName}`}
+                                        onClick={() =>
+                                            unselectFile({
+                                                agentId: file.agentId,
+                                                path: file.path,
+                                            })
+                                        }
+                                        className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                    >
+                                        <X className="h-3.5 w-3.5" />
+                                        Unselect
+                                    </button>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
             </div>
-        </section>
+        </CollapsibleBottomPanel>
     );
 }
 
@@ -377,189 +427,159 @@ function TransferProgressPanel(props: {
     }
 
     return (
-        <section className="sticky bottom-0 border-t bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
-            <div className="px-6 py-4">
-                <div className="max-w-full">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                        <div>
-                            <h2 className="text-sm font-semibold text-gray-900">
-                                Transfer progress
-                            </h2>
-                            <p className="text-xs text-gray-500">
-                                Active, completed, and failed transfers
-                            </p>
-                        </div>
-                        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
-                            {props.transfers.length}{" "}
-                            {props.transfers.length === 1
-                                ? "transfer"
-                                : "transfers"}
-                        </span>
-                    </div>
+        <CollapsibleBottomPanel
+            title="Transfer progress"
+            description="Active, completed, and failed transfers"
+            badge={
+                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+                    {props.transfers.length}{" "}
+                    {props.transfers.length === 1 ? "transfer" : "transfers"}
+                </span>
+            }
+        >
+            <div className="max-h-64 overflow-auto rounded-lg border">
+                <table className="w-full bg-white">
+                    <thead className="sticky top-0 bg-gray-50">
+                        <tr className="border-b">
+                            <th className="text-left p-3 text-sm font-medium text-gray-600">
+                                Agent
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-gray-600">
+                                Direction
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-gray-600">
+                                Path
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-gray-600">
+                                Progress
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-gray-600">
+                                Status
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {props.transfers.map((transfer) => {
+                            const agent = props.agents.find(
+                                (entry) => entry.id === transfer.agent_id,
+                            );
+                            const sourceAgent = transfer.source
+                                ? props.agents.find(
+                                      (entry) =>
+                                          entry.id === transfer.source?.agent,
+                                  )
+                                : undefined;
+                            const destAgent = transfer.dest
+                                ? props.agents.find(
+                                      (entry) =>
+                                          entry.id === transfer.dest?.agent,
+                                  )
+                                : undefined;
 
-                    <div className="max-h-64 overflow-auto rounded-lg border">
-                        <table className="w-full bg-white">
-                            <thead className="sticky top-0 bg-gray-50">
-                                <tr className="border-b">
-                                    <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        Agent
-                                    </th>
-                                    <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        Direction
-                                    </th>
-                                    <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        Path
-                                    </th>
-                                    <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        Progress
-                                    </th>
-                                    <th className="text-left p-3 text-sm font-medium text-gray-600">
-                                        Status
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {props.transfers.map((transfer) => {
-                                    const agent = props.agents.find(
-                                        (entry) =>
-                                            entry.id === transfer.agent_id,
-                                    );
-                                    const sourceAgent = transfer.source
-                                        ? props.agents.find(
-                                              (entry) =>
-                                                  entry.id ===
-                                                  transfer.source?.agent,
-                                          )
-                                        : undefined;
-                                    const destAgent = transfer.dest
-                                        ? props.agents.find(
-                                              (entry) =>
-                                                  entry.id ===
-                                                  transfer.dest?.agent,
-                                          )
-                                        : undefined;
-
-                                    return (
-                                        <tr
-                                            key={transfer.request_id.toString()}
-                                            className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                            return (
+                                <tr
+                                    key={transfer.request_id.toString()}
+                                    className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                                >
+                                    <td className="p-3">
+                                        <div className="flex flex-col">
+                                            <span className="text-sm font-medium text-gray-900">
+                                                {transfer.direction === "copy"
+                                                    ? `${sourceAgent?.name ?? transfer.source?.agent} -> ${destAgent?.name ?? transfer.dest?.agent}`
+                                                    : (agent?.name ??
+                                                      transfer.agent_id)}
+                                            </span>
+                                            <span className="text-xs text-gray-500">
+                                                {transfer.direction === "copy"
+                                                    ? `${transfer.source?.agent} -> ${transfer.dest?.agent}`
+                                                    : transfer.agent_id}
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td className="p-3">
+                                        <span
+                                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
+                                                transfer.direction === "upload"
+                                                    ? "bg-blue-50 text-blue-700"
+                                                    : "bg-emerald-50 text-emerald-700"
+                                            }`}
                                         >
-                                            <td className="p-3">
-                                                <div className="flex flex-col">
-                                                    <span className="text-sm font-medium text-gray-900">
-                                                        {transfer.direction ===
-                                                        "copy"
-                                                            ? `${sourceAgent?.name ?? transfer.source?.agent} -> ${destAgent?.name ?? transfer.dest?.agent}`
-                                                            : (agent?.name ??
-                                                              transfer.agent_id)}
-                                                    </span>
-                                                    <span className="text-xs text-gray-500">
-                                                        {transfer.direction ===
-                                                        "copy"
-                                                            ? `${transfer.source?.agent} -> ${transfer.dest?.agent}`
-                                                            : transfer.agent_id}
-                                                    </span>
+                                            {transfer.direction === "upload" ? (
+                                                <ArrowUpFromLine className="h-3.5 w-3.5" />
+                                            ) : transfer.direction ===
+                                              "download" ? (
+                                                <ArrowDownToLine className="h-3.5 w-3.5" />
+                                            ) : (
+                                                <Copy className="h-3.5 w-3.5" />
+                                            )}
+                                            {transfer.direction === "upload"
+                                                ? "Upload"
+                                                : transfer.direction ===
+                                                    "download"
+                                                  ? "Download"
+                                                  : "Copy"}
+                                        </span>
+                                    </td>
+                                    <td className="p-3">
+                                        {transfer.direction === "copy" ? (
+                                            <div className="space-y-1 font-mono text-xs text-gray-700 break-all">
+                                                <div>
+                                                    {transfer.source?.path}
                                                 </div>
-                                            </td>
-                                            <td className="p-3">
-                                                <span
-                                                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
-                                                        transfer.direction ===
-                                                        "upload"
-                                                            ? "bg-blue-50 text-blue-700"
-                                                            : "bg-emerald-50 text-emerald-700"
-                                                    }`}
-                                                >
-                                                    {transfer.direction ===
-                                                    "upload" ? (
-                                                        <ArrowUpFromLine className="h-3.5 w-3.5" />
-                                                    ) : transfer.direction ===
-                                                      "download" ? (
-                                                        <ArrowDownToLine className="h-3.5 w-3.5" />
-                                                    ) : (
-                                                        <Copy className="h-3.5 w-3.5" />
-                                                    )}
-                                                    {transfer.direction ===
-                                                    "upload"
-                                                        ? "Upload"
-                                                        : transfer.direction ===
-                                                            "download"
-                                                          ? "Download"
-                                                          : "Copy"}
-                                                </span>
-                                            </td>
-                                            <td className="p-3">
-                                                {transfer.direction ===
-                                                "copy" ? (
-                                                    <div className="space-y-1 font-mono text-xs text-gray-700 break-all">
-                                                        <div>
-                                                            {
-                                                                transfer.source
-                                                                    ?.path
-                                                            }
-                                                        </div>
-                                                        <div className="text-gray-400">
-                                                            -&gt;
-                                                        </div>
-                                                        <div>
-                                                            {
-                                                                transfer.dest
-                                                                    ?.path
-                                                            }
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <div className="font-mono text-xs text-gray-700 break-all">
-                                                        {transfer.path}
-                                                    </div>
+                                                <div className="text-gray-400">
+                                                    -&gt;
+                                                </div>
+                                                <div>{transfer.dest?.path}</div>
+                                            </div>
+                                        ) : (
+                                            <div className="font-mono text-xs text-gray-700 break-all">
+                                                {transfer.path}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td className="p-3">
+                                        <div className="flex flex-col gap-1 text-sm text-gray-700">
+                                            <span>
+                                                {formatSize(
+                                                    transfer.transferred_bytes,
+                                                )}{" "}
+                                                /{" "}
+                                                {formatSize(
+                                                    transfer.total_bytes,
                                                 )}
-                                            </td>
-                                            <td className="p-3">
-                                                <div className="flex flex-col gap-1 text-sm text-gray-700">
-                                                    <span>
-                                                        {formatSize(
-                                                            transfer.transferred_bytes,
-                                                        )}{" "}
-                                                        /{" "}
-                                                        {formatSize(
-                                                            transfer.total_bytes,
-                                                        )}
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td className="p-3">
+                                        <div className="flex flex-col gap-1">
+                                            <span
+                                                className={`text-sm font-medium ${
+                                                    transfer.state === "errored"
+                                                        ? "text-red-600"
+                                                        : transfer.state ===
+                                                            "completed"
+                                                          ? "text-emerald-700"
+                                                          : "text-gray-900"
+                                                }`}
+                                            >
+                                                {transfer.state}
+                                            </span>
+                                            {transfer.error ? (
+                                                <span className="inline-flex items-start gap-1 text-xs text-red-600">
+                                                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                                    <span className="break-words">
+                                                        {transfer.error}
                                                     </span>
-                                                </div>
-                                            </td>
-                                            <td className="p-3">
-                                                <div className="flex flex-col gap-1">
-                                                    <span
-                                                        className={`text-sm font-medium ${
-                                                            transfer.state ===
-                                                            "errored"
-                                                                ? "text-red-600"
-                                                                : transfer.state ===
-                                                                    "completed"
-                                                                  ? "text-emerald-700"
-                                                                  : "text-gray-900"
-                                                        }`}
-                                                    >
-                                                        {transfer.state}
-                                                    </span>
-                                                    {transfer.error ? (
-                                                        <span className="inline-flex items-start gap-1 text-xs text-red-600">
-                                                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                                            <span className="break-words">
-                                                                {transfer.error}
-                                                            </span>
-                                                        </span>
-                                                    ) : null}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
             </div>
-        </section>
+        </CollapsibleBottomPanel>
     );
 }
