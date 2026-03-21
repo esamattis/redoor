@@ -372,13 +372,11 @@ function SelectedFilesDirectoryActions(props: {
     });
     const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
 
-    const selectedFilesForOtherAgents = React.useMemo(() => {
-        return selectedFiles.filter((file) => file.agentId !== props.agentId);
-    }, [props.agentId, selectedFiles]);
-
     const selectedFilesForCurrentAgent = React.useMemo(() => {
         return selectedFiles.filter((file) => file.agentId === props.agentId);
     }, [props.agentId, selectedFiles]);
+
+    const selectedFilesForCopy = selectedFiles;
 
     const statusMessage =
         copyState.type === "copying"
@@ -394,18 +392,18 @@ function SelectedFilesDirectoryActions(props: {
     };
 
     const handleCopySelectedFiles = async () => {
-        if (selectedFilesForOtherAgents.length === 0) {
+        if (selectedFilesForCopy.length === 0) {
             return;
         }
 
         setCopyState({
             type: "copying",
-            itemCount: selectedFilesForOtherAgents.length,
+            itemCount: selectedFilesForCopy.length,
         });
 
         try {
             const results = await Promise.allSettled(
-                selectedFilesForOtherAgents.map((file) =>
+                selectedFilesForCopy.map((file) =>
                     props.agent.copyTo(
                         {
                             agent: props.agentId,
@@ -419,7 +417,7 @@ function SelectedFilesDirectoryActions(props: {
                 ),
             );
 
-            const successfulCopies = selectedFilesForOtherAgents.filter(
+            const successfulCopies = selectedFilesForCopy.filter(
                 (_file, index) => results[index]?.status === "fulfilled",
             );
 
@@ -449,7 +447,7 @@ function SelectedFilesDirectoryActions(props: {
                     type: "error",
                     message:
                         successfulCopies.length > 0
-                            ? `Copied ${successfulCopies.length} of ${selectedFilesForOtherAgents.length} items. ${failureMessage}`
+                            ? `Copied ${successfulCopies.length} of ${selectedFilesForCopy.length} items. ${failureMessage}`
                             : failureMessage,
                 });
                 return;
@@ -458,9 +456,9 @@ function SelectedFilesDirectoryActions(props: {
             setCopyState({
                 type: "success",
                 message:
-                    selectedFilesForOtherAgents.length === 1
-                        ? `Copied ${selectedFilesForOtherAgents[0]?.fileName ?? "item"}`
-                        : `Copied ${selectedFilesForOtherAgents.length} items`,
+                    selectedFilesForCopy.length === 1
+                        ? `Copied ${selectedFilesForCopy[0]?.fileName ?? "item"}`
+                        : `Copied ${selectedFilesForCopy.length} items`,
             });
         } catch (error) {
             setCopyState({
@@ -548,10 +546,10 @@ function SelectedFilesDirectoryActions(props: {
                             selected
                         </p>
                         <p className="text-xs text-blue-700">
-                            {selectedFilesForOtherAgents.length === 0
-                                ? "Select files or directories from another agent to copy them into this directory."
-                                : `Ready to copy ${selectedFilesForOtherAgents.length} ${
-                                      selectedFilesForOtherAgents.length === 1
+                            {selectedFilesForCopy.length === 0
+                                ? "Select files or directories to copy them into this directory."
+                                : `Ready to copy ${selectedFilesForCopy.length} ${
+                                      selectedFilesForCopy.length === 1
                                           ? "item"
                                           : "items"
                                   } here.`}
@@ -579,8 +577,7 @@ function SelectedFilesDirectoryActions(props: {
                             type="button"
                             onClick={handleCopySelectedFiles}
                             disabled={
-                                isCopying ||
-                                selectedFilesForOtherAgents.length === 0
+                                isCopying || selectedFilesForCopy.length === 0
                             }
                             className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
