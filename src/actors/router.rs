@@ -1,5 +1,8 @@
 use crate::actors::session::SessionMsg;
-use crate::commands::{Command, CommandResult};
+use crate::commands::{
+    Command, CommandResult, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
+    TransferProgressState,
+};
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
@@ -23,7 +26,7 @@ pub struct RouterActor;
 enum TransferRequest {
     Download {
         agent_id: String,
-        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
     },
     Upload {
         agent_id: String,
@@ -39,6 +42,7 @@ pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
     transfers: HashMap<u64, TransferRequest>,
+    transfer_progress: HashMap<u64, TransferProgressEntry>,
     next_request_id: u64,
 }
 
@@ -100,6 +104,9 @@ pub enum RouterMsg {
     GetAgentList {
         reply: RpcReplyPort<HashMap<String, String>>,
     },
+    GetTransferProgress {
+        reply: RpcReplyPort<TransferProgressListResponse>,
+    },
     /// Execute a one-shot command on an agent, initiated from the REST API.
     ExecuteCommandRest {
         agent_id: String,
@@ -115,13 +122,17 @@ pub enum RouterMsg {
     ExecuteStreamCommandRest {
         agent_id: String,
         command: Command,
+        path: String,
+        total_bytes: u64,
         reply: RpcReplyPort<Result<(), String>>,
-        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
     },
     /// Start a streamed upload command on an agent and return the allocated request id.
     StartUploadStreamRest {
         agent_id: String,
         command: Command,
+        path: String,
+        total_bytes: u64,
         completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
         reply: RpcReplyPort<Result<u64, String>>,
     },
@@ -129,18 +140,33 @@ pub enum RouterMsg {
     SendStreamChunkToAgent {
         agent_id: String,
         request_id: u64,
-        bytes: Vec<u8>,
+        chunk: crate::streaming::StreamChunk,
         reply: RpcReplyPort<Result<(), String>>,
     },
 }
 
 impl RouterActor {
-    fn start_download_transfer(
+    fn record_download_start(
         state: &mut RouterState,
         request_id: u64,
         agent_id: String,
-        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+        path: String,
+        total_bytes: u64,
+        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
     ) {
+        state.transfer_progress.insert(
+            request_id,
+            TransferProgressEntry {
+                request_id,
+                agent_id: agent_id.clone(),
+                path,
+                direction: TransferDirection::Download,
+                total_bytes,
+                transferred_bytes: 0,
+                state: TransferProgressState::Active,
+                error: None,
+            },
+        );
         state.transfers.insert(
             request_id,
             TransferRequest::Download {
@@ -150,12 +176,27 @@ impl RouterActor {
         );
     }
 
-    fn start_upload_transfer(
+    fn record_upload_start(
         state: &mut RouterState,
         request_id: u64,
         agent_id: String,
+        path: String,
+        total_bytes: u64,
         completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
     ) {
+        state.transfer_progress.insert(
+            request_id,
+            TransferProgressEntry {
+                request_id,
+                agent_id: agent_id.clone(),
+                path,
+                direction: TransferDirection::Upload,
+                total_bytes,
+                transferred_bytes: 0,
+                state: TransferProgressState::Active,
+                error: None,
+            },
+        );
         state.transfers.insert(
             request_id,
             TransferRequest::Upload {
@@ -165,7 +206,42 @@ impl RouterActor {
         );
     }
 
-    async fn route_download_chunk(
+    fn increment_download_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+            progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
+            progress.error = None;
+        }
+    }
+
+    fn increment_upload_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+            progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
+            progress.error = None;
+        }
+    }
+
+    fn mark_transfer_completed(state: &mut RouterState, request_id: u64) {
+        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+            progress.state = TransferProgressState::Completed;
+            progress.transferred_bytes = progress.total_bytes;
+            progress.error = None;
+        }
+    }
+
+    fn mark_transfer_errored(state: &mut RouterState, request_id: u64, error_message: String) {
+        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+            progress.state = TransferProgressState::Errored;
+            progress.error = Some(error_message);
+        }
+    }
+
+    fn list_transfer_progress(state: &RouterState) -> TransferProgressListResponse {
+        let mut transfers: Vec<_> = state.transfer_progress.values().cloned().collect();
+        transfers.sort_by(|left, right| right.request_id.cmp(&left.request_id));
+        TransferProgressListResponse { transfers }
+    }
+
+    fn route_download_chunk(
         state: &mut RouterState,
         agent_id: String,
         chunk: crate::streaming::StreamChunk,
@@ -207,14 +283,34 @@ impl RouterActor {
             }
         };
 
-        if let Err(_error) = chunk_sender.send(chunk.clone()).await {
+        if !chunk.is_error {
+            Self::increment_download_progress(state, request_id, chunk.data.len() as u64);
+        }
+
+        if let Err(_error) = chunk_sender.send(chunk.clone()) {
             log!(
                 Level::Warning,
                 "Failed to send chunk to REST stream: request_id={}",
                 request_id
             );
             state.transfers.remove(&request_id);
+            Self::mark_transfer_errored(
+                state,
+                request_id,
+                "REST stream receiver dropped before download completed".to_string(),
+            );
             return;
+        }
+
+        if chunk.is_error {
+            let error_message = if chunk.data.is_empty() {
+                "Download failed on agent".to_string()
+            } else {
+                String::from_utf8_lossy(&chunk.data).to_string()
+            };
+            Self::mark_transfer_errored(state, request_id, error_message);
+        } else if chunk.is_last {
+            Self::mark_transfer_completed(state, request_id);
         }
 
         if chunk.is_last || chunk.is_error {
@@ -274,6 +370,7 @@ impl RouterActor {
 
         let completion_result = match &result {
             CommandResult::RawUpload => {
+                Self::mark_transfer_completed(state, request_id);
                 log!(
                     Level::Info,
                     "Routing upload completion response: agent_id={}, request_id={}, result={:?}",
@@ -284,6 +381,7 @@ impl RouterActor {
                 Ok(result)
             }
             CommandResult::Error { message } => {
+                Self::mark_transfer_errored(state, request_id, message.clone());
                 log!(
                     Level::Info,
                     "Routing upload error response: agent_id={}, request_id={}, message={}",
@@ -294,6 +392,11 @@ impl RouterActor {
                 Err(message.clone())
             }
             _ => {
+                Self::mark_transfer_errored(
+                    state,
+                    request_id,
+                    "Unexpected upload response type".to_string(),
+                );
                 log!(
                     Level::Warning,
                     "Unexpected upload response type: agent_id={}, request_id={}, result={:?}",
@@ -316,7 +419,7 @@ impl RouterActor {
         let orphaned_oneshot: Vec<u64> = state
             .rest_pending_responses
             .iter()
-            .filter(|(_, (_, pending_agent_id))| pending_agent_id == &agent_id)
+            .filter(|(_, (_, pending_agent_id))| pending_agent_id == agent_id)
             .map(|(request_id, _)| *request_id)
             .collect();
 
@@ -343,8 +446,10 @@ impl RouterActor {
 
         for request_id in &orphaned_transfers {
             if let Some(transfer) = state.transfers.remove(request_id) {
+                let disconnect_message = format!("Agent disconnected: {}", agent_id);
                 match transfer {
                     TransferRequest::Download { .. } => {
+                        Self::mark_transfer_errored(state, *request_id, disconnect_message.clone());
                         log!(
                             Level::Warning,
                             "Cleaning up orphaned download stream: request_id={}, agent_id={}",
@@ -355,6 +460,7 @@ impl RouterActor {
                     TransferRequest::Upload {
                         completion_sender, ..
                     } => {
+                        Self::mark_transfer_errored(state, *request_id, disconnect_message.clone());
                         log!(
                             Level::Warning,
                             "Cleaning up orphaned upload stream: request_id={}, agent_id={}",
@@ -362,7 +468,7 @@ impl RouterActor {
                             agent_id
                         );
                         if let Some(sender) = completion_sender {
-                            let _ = sender.send(Err(format!("Agent disconnected: {}", agent_id)));
+                            let _ = sender.send(Err(disconnect_message.clone()));
                         }
                     }
                 }
@@ -386,6 +492,7 @@ impl Actor for RouterActor {
             agents: HashMap::new(),
             rest_pending_responses: HashMap::new(),
             transfers: HashMap::new(),
+            transfer_progress: HashMap::new(),
             next_request_id: 1,
         })
     }
@@ -484,6 +591,11 @@ impl Actor for RouterActor {
 
                     let _ = reply.send(result_to_send);
                 } else {
+                    // RouteResponse is used for any final CommandResult coming back from an agent,
+                    // not only for one-shot REST commands. Uploads stream their payload as binary
+                    // chunks, but the final success/error still arrives as a CommandResult keyed by
+                    // the same request_id, so if there is no pending REST reply this may still be
+                    // the completion of an in-flight upload transfer.
                     Self::finish_upload_transfer(state, agent_id, request_id, result);
                 }
             }
@@ -494,6 +606,9 @@ impl Actor for RouterActor {
                     .map(|(id, info)| (id.clone(), info.agent_name.clone()))
                     .collect();
                 let _ = reply.send(agents);
+            }
+            RouterMsg::GetTransferProgress { reply } => {
+                let _ = reply.send(Self::list_transfer_progress(state));
             }
             RouterMsg::ExecuteCommandRest {
                 agent_id,
@@ -527,11 +642,13 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteStreamChunk { agent_id, chunk } => {
-                Self::route_download_chunk(state, agent_id, chunk).await;
+                Self::route_download_chunk(state, agent_id, chunk);
             }
             RouterMsg::ExecuteStreamCommandRest {
                 agent_id,
                 command,
+                path,
+                total_bytes,
                 reply,
                 chunk_sender,
             } => {
@@ -546,10 +663,12 @@ impl Actor for RouterActor {
                 );
 
                 if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
-                    Self::start_download_transfer(
+                    Self::record_download_start(
                         state,
                         request_id,
                         agent_id.clone(),
+                        path,
+                        total_bytes,
                         chunk_sender,
                     );
 
@@ -573,6 +692,8 @@ impl Actor for RouterActor {
             RouterMsg::StartUploadStreamRest {
                 agent_id,
                 command,
+                path,
+                total_bytes,
                 completion_sender,
                 reply,
             } => {
@@ -587,10 +708,12 @@ impl Actor for RouterActor {
                 );
 
                 if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
-                    Self::start_upload_transfer(
+                    Self::record_upload_start(
                         state,
                         request_id,
                         agent_id.clone(),
+                        path,
+                        total_bytes,
                         completion_sender,
                     );
 
@@ -614,7 +737,7 @@ impl Actor for RouterActor {
             RouterMsg::SendStreamChunkToAgent {
                 agent_id,
                 request_id,
-                bytes,
+                chunk,
                 reply,
             } => {
                 let has_matching_upload = matches!(
@@ -637,11 +760,29 @@ impl Actor for RouterActor {
                         agent_id, request_id
                     )));
                 } else if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
+                    if !chunk.is_error {
+                        Self::increment_upload_progress(state, request_id, chunk.data.len() as u64);
+                    }
+
+                    if chunk.is_error {
+                        let error_message = if chunk.data.is_empty() {
+                            "Upload aborted by server".to_string()
+                        } else {
+                            String::from_utf8_lossy(&chunk.data).to_string()
+                        };
+                        Self::mark_transfer_errored(state, request_id, error_message);
+                    }
+
                     let _ = agent_info
                         .session_ref
-                        .cast(SessionMsg::OutgoingBinary(bytes));
+                        .cast(SessionMsg::OutgoingBinary(chunk.to_bytes()));
                     let _ = reply.send(Ok(()));
                 } else {
+                    Self::mark_transfer_errored(
+                        state,
+                        request_id,
+                        format!("Agent not found: {}", agent_id),
+                    );
                     log!(
                         Level::Warning,
                         "Agent not found for forwarded upload chunk: agent_id={}, request_id={}",

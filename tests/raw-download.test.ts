@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
+import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs";
 import { createServer } from "node:net";
@@ -8,6 +9,7 @@ import {
     waitForPort,
     waitForLogMessage,
     TempFileManager,
+    waitForValue,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
@@ -134,6 +136,7 @@ describe("Raw Download API", () => {
         const testFilePath = tempFiles.create(largeContent, {
             suffix: ".txt",
         });
+        const fileSize = Buffer.byteLength(largeContent);
 
         const projectRoot = path.join(__dirname, "..");
         const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
@@ -174,23 +177,52 @@ describe("Raw Download API", () => {
             throw new Error("Ephemeral agent process not found");
         }
 
-        // Start the download in the background
-        const downloadPromise = ephemeralAgent.raw(testFilePath);
-
         // Waiting for the agent's download log ensures we interrupt an active transfer.
+        const downloadPromise = fetch(ephemeralAgent.getRawUrl(testFilePath));
+
         await waitForLogMessage(
             ephemeralAgentProcess,
             /command=RawDownload/,
             10000,
         );
 
+        const activeTransfer = await waitForValue({
+            description: "active download progress row",
+            timeoutMs: 20000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === ephemeralAgent.id &&
+                        transfer.path === testFilePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.total_bytes === BigInt(fileSize) &&
+                        transfer.transferred_bytes > 0n,
+                );
+            },
+        });
+
+        // The download direction check proves the shared endpoint tracks download rows separately from uploads.
+        expect(activeTransfer.direction).toBe("download");
+        // The active state check shows progress is observable before the transfer finishes.
+        expect(activeTransfer.state).toBe("active");
+        // The exact total size check confirms the server reuses the computed content length for progress.
+        expect(activeTransfer.total_bytes).toBe(BigInt(fileSize));
+        // A positive transferred count proves progress advances as chunks are routed back from the agent.
+        expect(activeTransfer.transferred_bytes).toBeGreaterThan(0n);
+
         processManager.kill(ephemeralAgentPid);
 
-        // The download should fail with an error or complete (if data was already sent),
-        // but it must NOT hang forever
+        // The download should fail with an error or complete early if the disconnect races late,
+        // but it must NOT hang forever.
         const result = await Promise.race([
             downloadPromise
-                .then((data) => ({ ok: true, data }))
+                .then(async (response) => ({
+                    ok: response.ok,
+                    status: response.status,
+                    body: await response.text(),
+                }))
                 .catch((e: Error) => ({ ok: false, error: e.message })),
             new Promise((_, reject) =>
                 setTimeout(
@@ -205,11 +237,32 @@ describe("Raw Download API", () => {
             ),
         ]);
 
-        // The download should have either completed (got data before kill)
-        // or failed with an error — but it must NOT hang
-        // Reaching this assertion confirms router cleanup closed the request path.
+        const erroredTransfer = await waitForValue({
+            description: "errored download progress row",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "errored" &&
+                        transfer.transferred_bytes < transfer.total_bytes &&
+                        transfer.error !== null &&
+                        /(disconnect|stream|closed|lost)/i.test(transfer.error),
+                );
+            },
+        });
+
+        // Reaching this assertion confirms router cleanup closed the request path instead of hanging the client.
         expect(result).toBeDefined();
-    }, 15000);
+        // The errored state check ensures disconnect cleanup keeps the transfer row queryable.
+        expect(erroredTransfer.state).toBe("errored");
+        // Partial progress proves the disconnect happened after real download bytes had already moved.
+        expect(erroredTransfer.transferred_bytes).toBeLessThan(
+            erroredTransfer.total_bytes,
+        );
+        // The retained error text gives callers an explicit reason for the failed transfer.
+        expect(erroredTransfer.error).toMatch(/disconnect|stream|closed|lost/i);
+    }, 30000);
 
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });

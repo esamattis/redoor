@@ -6,8 +6,31 @@ import type { AgentDetailsResponse } from "../../bindings/AgentDetailsResponse";
 import type { EchoRequest } from "../../bindings/EchoRequest";
 import type { EchoResponse } from "../../bindings/EchoResponse";
 import type { AgentInfoResponse } from "../../bindings/AgentInfoResponse";
+import type { TransferDirection } from "../../bindings/TransferDirection";
+import type { TransferProgressEntry } from "../../bindings/TransferProgressEntry";
+import type { TransferProgressListResponse } from "../../bindings/TransferProgressListResponse";
+import type { TransferProgressState } from "../../bindings/TransferProgressState";
 
 export type { LsDirectoryResponse, LsFileResponse };
+export type {
+    TransferDirection,
+    TransferProgressEntry,
+    TransferProgressListResponse,
+    TransferProgressState,
+};
+
+type TransferProgressEntryJson = Omit<
+    TransferProgressEntry,
+    "request_id" | "total_bytes" | "transferred_bytes"
+> & {
+    request_id: number | string | bigint;
+    total_bytes: number | string | bigint;
+    transferred_bytes: number | string | bigint;
+};
+
+type TransferProgressListResponseJson = {
+    transfers: Array<TransferProgressEntryJson>;
+};
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
@@ -203,6 +226,22 @@ export class ApiClient {
             "/api/v1/agents",
         );
         return response.agents.map((info) => new Agent(this.baseUrl, info));
+    }
+
+    async getTransferProgress(): Promise<TransferProgressListResponse> {
+        const response = await apiRequest<TransferProgressListResponseJson>(
+            this.baseUrl,
+            "/api/v1/transfers/progress",
+        );
+
+        return {
+            transfers: response.transfers.map((transfer) => ({
+                ...transfer,
+                request_id: BigInt(transfer.request_id),
+                total_bytes: BigInt(transfer.total_bytes),
+                transferred_bytes: BigInt(transfer.transferred_bytes),
+            })),
+        };
     }
 
     async waitForAgentNames(

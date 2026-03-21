@@ -180,6 +180,44 @@ pub struct RawUploadResponse {
     pub bytes_written: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TransferProgressListResponse {
+    pub transfers: Vec<TransferProgressEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TransferProgressEntry {
+    pub request_id: u64,
+    pub agent_id: String,
+    pub path: String,
+    pub direction: TransferDirection,
+    pub total_bytes: u64,
+    pub transferred_bytes: u64,
+    pub state: TransferProgressState,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum TransferDirection {
+    Upload,
+    Download,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum TransferProgressState {
+    Active,
+    Errored,
+    Completed,
+}
+
 pub struct CommandHandler;
 
 impl CommandHandler {

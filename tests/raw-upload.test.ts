@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
+import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs";
 import { createServer } from "node:net";
@@ -8,6 +9,7 @@ import {
     waitForPort,
     waitForLogMessage,
     TempFileManager,
+    waitForValue,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
@@ -155,6 +157,103 @@ describe("Raw Upload API", () => {
 
         // Zero-length content verifies the upload path handles the terminal empty-body case.
         expect(downloadedContent.length).toBe(0);
+    });
+
+    it("should report upload progress while streaming and after completion", async () => {
+        const firstChunk = Buffer.from("first-upload-chunk-");
+        const secondChunk = Buffer.from("second-upload-chunk");
+        const totalBytes = firstChunk.length + secondChunk.length;
+        const uploadedFilePath = tempFiles.tempFile({ suffix: ".txt" });
+
+        let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const uploadBody = new ReadableStream<Uint8Array>({
+            start(streamController) {
+                controller = streamController;
+                streamController.enqueue(firstChunk);
+            },
+        });
+
+        const uploadPromise = fetch(testAgent.getRawUrl(uploadedFilePath), {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": totalBytes.toString(),
+            },
+            body: uploadBody,
+            duplex: "half",
+        } as RequestInit & { duplex: "half" });
+
+        const activeTransfer = await waitForValue({
+            description: "active upload progress row",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === uploadedFilePath &&
+                        transfer.direction === "upload" &&
+                        transfer.state === "active" &&
+                        transfer.total_bytes === BigInt(totalBytes) &&
+                        transfer.transferred_bytes ===
+                            BigInt(firstChunk.length),
+                );
+            },
+        });
+
+        // Matching the agent and path confirms the progress row belongs to this upload.
+        expect(activeTransfer.agent_id).toBe(testAgent.id);
+        // The upload direction check proves the aggregated endpoint distinguishes transfer types.
+        expect(activeTransfer.direction).toBe("upload");
+        // The active state check verifies progress is queryable before the upload finishes.
+        expect(activeTransfer.state).toBe("active");
+        // The total size check ensures the server stored the exact declared upload length.
+        expect(activeTransfer.total_bytes).toBe(BigInt(totalBytes));
+        // The transferred byte count check proves the router tracks forwarded chunks incrementally.
+        expect(activeTransfer.transferred_bytes).toBe(
+            BigInt(firstChunk.length),
+        );
+
+        if (!controller) {
+            throw new Error("Upload stream controller was not initialized");
+        }
+
+        controller.enqueue(secondChunk);
+        controller.close();
+
+        const uploadResponse = await uploadPromise;
+
+        // A successful HTTP response confirms the agent acknowledged the completed upload.
+        expect(uploadResponse.ok).toBe(true);
+
+        const completedTransfer = await waitForValue({
+            description: "completed upload progress row",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
+
+        // Reusing the same request id proves the finished row is the same tracked transfer.
+        expect(completedTransfer.request_id).toBe(activeTransfer.request_id);
+        // The completed state check ensures uploads stay visible after the agent flushes the file.
+        expect(completedTransfer.state).toBe("completed");
+        // Equal transferred and total bytes confirms completed uploads report exact 100% progress.
+        expect(completedTransfer.transferred_bytes).toBe(BigInt(totalBytes));
+        // The total size stays stable so callers can trust the stored transfer metadata.
+        expect(completedTransfer.total_bytes).toBe(BigInt(totalBytes));
+
+        const downloadedContent = Buffer.from(
+            await testAgent.raw(uploadedFilePath),
+        ).toString("utf-8");
+
+        // Reading the file back ties the completed progress row to a real persisted upload.
+        expect(downloadedContent).toBe(
+            Buffer.concat([firstChunk, secondChunk]).toString("utf-8"),
+        );
     });
 
     it("should return error for upload to non-existent agent", async () => {

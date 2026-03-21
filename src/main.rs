@@ -58,6 +58,10 @@ async fn main() {
     let app = Router::new()
         .route("/ws", get(websocket_handler))
         .route("/api/v1/agents", get(list_agents_handler))
+        .route(
+            "/api/v1/transfers/progress",
+            get(list_transfer_progress_handler),
+        )
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
@@ -81,7 +85,7 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect(&format!("Failed to bind to address {}", addr));
+        .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
     println!("Server running on http://{}", addr);
     axum::serve(listener, app).await.unwrap();
 }
@@ -115,6 +119,26 @@ async fn list_agents_handler(AxumState(state): AxumState<ServerState>) -> impl I
         }
         Err(e) => {
             let error_msg = format!("Failed to get agents: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: error_msg }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_transfer_progress_handler(
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::GetTransferProgress { reply },
+        5000
+    ) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            let error_msg = format!("Failed to get transfer progress: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse { error: error_msg }),
@@ -448,7 +472,7 @@ async fn raw_agent_handler(
         };
 
     let (response_sender, mut response_receiver) =
-        tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(32);
+        tokio::sync::mpsc::unbounded_channel::<redoor::streaming::StreamChunk>();
 
     match call_t!(
         &state.router_ref,
@@ -459,6 +483,8 @@ async fn raw_agent_handler(
                 range_start,
                 range_end,
             },
+            path: path.clone(),
+            total_bytes: content_length,
             reply,
             chunk_sender: response_sender,
         },
@@ -528,7 +554,7 @@ async fn raw_agent_handler(
                 } else {
                     String::from_utf8_lossy(&parsed.data).to_string()
                 };
-                yield Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+                yield Err(std::io::Error::other(error_msg));
                 break;
             }
             if !parsed.data.is_empty() {
@@ -550,7 +576,7 @@ async fn raw_agent_handler(
 
     // Add Content-Disposition only if download=1 query parameter is present
     if params.download.as_deref() == Some("1") {
-        let filename = path.split('/').last().unwrap_or("file");
+        let filename = path.split('/').next_back().unwrap_or("file");
         response_builder = response_builder.header(
             "Content-Disposition",
             format!("attachment; filename=\"{}\"", filename),
@@ -566,8 +592,44 @@ async fn raw_agent_handler(
 async fn raw_agent_put_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
+    headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
+    let total_bytes = match headers.get(axum::http::header::CONTENT_LENGTH) {
+        Some(header_value) => match header_value.to_str() {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(total_bytes) => total_bytes,
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "Invalid Content-Length header".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid Content-Length header".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => {
+            return (
+                StatusCode::LENGTH_REQUIRED,
+                Json(ErrorResponse {
+                    error: "Content-Length header is required for uploads".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     let resolved_path = if path.starts_with('/') {
         path
     } else {
@@ -627,6 +689,8 @@ async fn raw_agent_put_handler(
             command: Command::RawUpload {
                 path: resolved_path.clone(),
             },
+            path: resolved_path.clone(),
+            total_bytes,
             completion_sender: upload_completion_sender,
             reply,
         },
@@ -676,7 +740,7 @@ async fn raw_agent_put_handler(
                     |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
                         agent_id: agent.clone(),
                         request_id,
-                        bytes: abort_chunk.to_bytes(),
+                        chunk: abort_chunk,
                         reply,
                     },
                     30000
@@ -707,7 +771,7 @@ async fn raw_agent_put_handler(
             |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
                 agent_id: agent.clone(),
                 request_id,
-                bytes: stream_chunk.to_bytes(),
+                chunk: stream_chunk,
                 reply,
             },
             30000
@@ -751,7 +815,7 @@ async fn raw_agent_put_handler(
         |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
             agent_id: agent.clone(),
             request_id,
-            bytes: final_chunk.to_bytes(),
+            chunk: final_chunk,
             reply,
         },
         30000

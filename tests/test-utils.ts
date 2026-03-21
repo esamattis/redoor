@@ -255,3 +255,33 @@ export async function waitForLogMessage(
 
     return promise;
 }
+
+export async function waitForValue<T>(options: {
+    predicate: () => Promise<T | undefined>;
+    timeoutMs?: number;
+    intervalMs?: number;
+    description: string;
+}): Promise<T> {
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const intervalMs = options.intervalMs ?? 50;
+    const start = Date.now();
+    let lastError: Error | undefined;
+
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const value = await options.predicate();
+            if (value !== undefined) {
+                return value;
+            }
+            lastError = undefined;
+        } catch (error) {
+            lastError =
+                error instanceof Error ? error : new Error(String(error));
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    const errorSuffix = lastError ? `: ${lastError.message}` : "";
+    throw new Error(`Timeout waiting for ${options.description}${errorSuffix}`);
+}
