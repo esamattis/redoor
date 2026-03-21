@@ -16,7 +16,13 @@ pub enum Command {
         range_start: Option<u64>,
         range_end: Option<u64>,
     },
+    TarDownload {
+        path: String,
+    },
     RawUpload {
+        path: String,
+    },
+    TarUpload {
         path: String,
     },
     RawDelete {
@@ -61,6 +67,7 @@ pub struct MetadataResponse {
     #[ts(type = "number")]
     pub file_size: u64,
     pub is_file: bool,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +90,9 @@ pub enum CommandResult {
     LsFile(LsFileResult),
     Cat(CatResult),
     RawDownload { path: String },
+    TarDownload { path: String },
     RawUpload,
+    TarUpload,
     RawDelete,
     Metadata(MetadataResponse),
     Echo(EchoResult),
@@ -284,7 +293,9 @@ impl CommandHandler {
                 range_start,
                 range_end,
             } => self.raw_download(path, range_start, range_end).await,
+            Command::TarDownload { path } => self.tar_download(path).await,
             Command::RawUpload { path } => self.raw_upload(path).await,
+            Command::TarUpload { path } => self.tar_upload(path).await,
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
@@ -393,8 +404,16 @@ impl CommandHandler {
         CommandResult::RawDownload { path }
     }
 
+    async fn tar_download(&self, path: String) -> CommandResult {
+        CommandResult::TarDownload { path }
+    }
+
     async fn raw_upload(&self, _path: String) -> CommandResult {
         CommandResult::RawUpload
+    }
+
+    async fn tar_upload(&self, _path: String) -> CommandResult {
+        CommandResult::TarUpload
     }
 
     async fn raw_delete(&self, path: String) -> CommandResult {
@@ -527,6 +546,7 @@ impl CommandHandler {
                     mime_type,
                     file_size,
                     is_file: metadata.is_file(),
+                    is_dir: metadata.is_dir(),
                 })
             }
             Err(e) => CommandResult::Error {
@@ -681,6 +701,38 @@ mod tests {
                 assert_eq!(path, "test.txt");
             }
             _ => panic!("Expected RawDownload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tar_download_command() {
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::TarDownload {
+                path: "test-dir".to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::TarDownload { path } => {
+                assert_eq!(path, "test-dir");
+            }
+            _ => panic!("Expected TarDownload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tar_upload_command() {
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::TarUpload {
+                path: "test-dir".to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::TarUpload => {}
+            _ => panic!("Expected TarUpload"),
         }
     }
 

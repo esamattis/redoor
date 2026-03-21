@@ -3,25 +3,70 @@ use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{
     Level,
     commands::{Command, CommandHandler, CommandResult},
-    log, streaming,
+    log,
+    streaming::{self, StreamPayloadKind},
     types::{ChunkIndex, Message, RequestId},
 };
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc as std_mpsc;
 use std::{collections::HashMap, env};
 use sysinfo::System;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 pub struct AgentActor;
 
-struct UploadSession {
+/// Bridges synchronous `tar::Builder` writes into the async websocket sender.
+///
+/// The tar crate exposes a blocking `std::io::Write` API, so directory archive
+/// creation runs in a blocking task and pushes produced tar chunks through this
+/// adapter into an async channel.
+struct ChannelTarWriter {
+    sender: mpsc::Sender<Vec<u8>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl std::io::Write for ChannelTarWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.runtime
+            .block_on(self.sender.send(buf.to_vec()))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Tar stream receiver dropped",
+                )
+            })?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Tracks one active upload and how incoming stream chunks should be handled.
+enum UploadSession {
+    RawFile(RawUploadSession),
+    TarDirectory(TarUploadSession),
+}
+
+struct RawUploadSession {
     path: String,
     temp_path: PathBuf,
     file: File,
+    bytes_written: u64,
+}
+
+/// Streams tar bytes into a blocking unpack worker that extracts into a temp directory.
+struct TarUploadSession {
+    path: String,
+    temp_path: PathBuf,
+    chunk_sender: std_mpsc::SyncSender<Vec<u8>>,
+    completion_receiver: oneshot::Receiver<Result<(), String>>,
     bytes_written: u64,
 }
 
@@ -50,15 +95,31 @@ pub enum AgentMsg {
 
 impl AgentActor {
     async fn cleanup_upload_session(session: UploadSession) {
-        let temp_path = session.temp_path;
-        drop(session.file);
-        if let Err(error) = tokio::fs::remove_file(&temp_path).await {
-            log!(
-                Level::Warning,
-                "Failed to remove upload temp file: path={}, error={}",
-                temp_path.display(),
-                error
-            );
+        match session {
+            UploadSession::RawFile(session) => {
+                let temp_path = session.temp_path;
+                drop(session.file);
+                if let Err(error) = tokio::fs::remove_file(&temp_path).await {
+                    log!(
+                        Level::Warning,
+                        "Failed to remove upload temp file: path={}, error={}",
+                        temp_path.display(),
+                        error
+                    );
+                }
+            }
+            UploadSession::TarDirectory(session) => {
+                drop(session.chunk_sender);
+                let temp_path = session.temp_path;
+                if let Err(error) = tokio::fs::remove_dir_all(&temp_path).await {
+                    log!(
+                        Level::Warning,
+                        "Failed to remove upload temp directory: path={}, error={}",
+                        temp_path.display(),
+                        error
+                    );
+                }
+            }
         }
     }
 
@@ -73,6 +134,415 @@ impl AgentActor {
         match destination.parent() {
             Some(parent) => parent.join(temp_name),
             None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
+    fn temp_upload_dir_path(path: &str) -> PathBuf {
+        let destination = Path::new(path);
+        let file_name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("upload-dir");
+        let temp_name = format!(".{}.redoor-upload-dir-{}", file_name, fastrand::u64(..));
+
+        match destination.parent() {
+            Some(parent) => parent.join(temp_name),
+            None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
+    fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf, String> {
+        let mut sanitized = PathBuf::new();
+
+        for component in entry_path.components() {
+            match component {
+                Component::Normal(part) => sanitized.push(part),
+                Component::CurDir => {}
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                    return Err(format!(
+                        "Tar entry path escapes destination: {}",
+                        entry_path.display()
+                    ));
+                }
+            }
+        }
+
+        if sanitized.as_os_str().is_empty() {
+            return Err("Tar entry path cannot be empty".to_string());
+        }
+
+        Ok(sanitized)
+    }
+
+    async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, String> {
+        let destination = PathBuf::from(&path);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| format!("Destination parent not found for {}", path))?
+            .to_path_buf();
+
+        let parent_metadata = tokio::fs::metadata(&parent)
+            .await
+            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+        if !parent_metadata.is_dir() {
+            return Err(format!(
+                "Destination parent is not a directory: {}",
+                parent.display()
+            ));
+        }
+
+        if tokio::fs::try_exists(&destination)
+            .await
+            .map_err(|error| format!("Failed to check destination path: {}", error))?
+        {
+            return Err(format!(
+                "Destination already exists: {}",
+                destination.display()
+            ));
+        }
+
+        let temp_path = Self::temp_upload_dir_path(&path);
+        tokio::fs::create_dir(&temp_path)
+            .await
+            .map_err(|error| format!("Failed to create temp directory: {}", error))?;
+
+        let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
+        let (completion_sender, completion_receiver) = oneshot::channel::<Result<(), String>>();
+        let temp_path_for_worker = temp_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let unpack_result =
+                Self::unpack_tar_stream_into_directory(chunk_receiver, &temp_path_for_worker);
+            let _ = completion_sender.send(unpack_result);
+        });
+
+        Ok(TarUploadSession {
+            path,
+            temp_path,
+            chunk_sender,
+            completion_receiver,
+            bytes_written: 0,
+        })
+    }
+
+    fn unpack_tar_stream_into_directory(
+        chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+        destination_root: &Path,
+    ) -> Result<(), String> {
+        struct ChannelTarReader {
+            chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+            current_chunk: Vec<u8>,
+            offset: usize,
+            finished: bool,
+        }
+
+        impl std::io::Read for ChannelTarReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+
+                loop {
+                    if self.offset < self.current_chunk.len() {
+                        let remaining = self.current_chunk.len() - self.offset;
+                        let bytes_to_copy = remaining.min(buf.len());
+                        buf[..bytes_to_copy].copy_from_slice(
+                            &self.current_chunk[self.offset..self.offset + bytes_to_copy],
+                        );
+                        self.offset += bytes_to_copy;
+                        return Ok(bytes_to_copy);
+                    }
+
+                    if self.finished {
+                        return Ok(0);
+                    }
+
+                    match self.chunk_receiver.recv() {
+                        Ok(chunk) => {
+                            self.current_chunk = chunk;
+                            self.offset = 0;
+                        }
+                        Err(_) => {
+                            self.finished = true;
+                            return Ok(0);
+                        }
+                    }
+                }
+            }
+        }
+
+        let reader = ChannelTarReader {
+            chunk_receiver,
+            current_chunk: Vec::new(),
+            offset: 0,
+            finished: false,
+        };
+        let mut archive = tar::Archive::new(reader);
+        let entries = archive
+            .entries()
+            .map_err(|error| format!("Failed to read tar entries: {}", error))?;
+
+        for entry_result in entries {
+            let mut entry =
+                entry_result.map_err(|error| format!("Failed to read tar entry: {}", error))?;
+
+            let entry_type = entry.header().entry_type();
+            if !(entry_type.is_dir() || entry_type.is_file()) {
+                return Err(format!("Unsupported tar entry type: {:?}", entry_type));
+            }
+
+            let entry_path = entry
+                .path()
+                .map_err(|error| format!("Failed to read tar entry path: {}", error))?;
+            let sanitized_path = Self::sanitize_tar_entry_path(&entry_path)?;
+            let output_path = destination_root.join(&sanitized_path);
+
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    format!("Failed to create destination directory: {}", error)
+                })?;
+            }
+
+            if entry_type.is_dir() {
+                std::fs::create_dir_all(&output_path).map_err(|error| {
+                    format!("Failed to create destination directory: {}", error)
+                })?;
+                continue;
+            }
+
+            entry
+                .unpack(&output_path)
+                .map_err(|error| format!("Failed to unpack tar entry: {}", error))?;
+        }
+
+        Ok(())
+    }
+
+    fn append_directory_entries(
+        builder: &mut tar::Builder<ChannelTarWriter>,
+        source_root: &Path,
+        current_path: &Path,
+    ) -> Result<(), String> {
+        let mut entries = std::fs::read_dir(current_path)
+            .map_err(|error| format!("Failed to read directory: {}", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to read directory entry: {}", error))?;
+
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            let entry_path = entry.path();
+            let relative_path = entry_path
+                .strip_prefix(source_root)
+                .map_err(|error| format!("Failed to strip source prefix: {}", error))?
+                .to_path_buf();
+            let metadata = std::fs::symlink_metadata(&entry_path)
+                .map_err(|error| format!("Failed to read entry metadata: {}", error))?;
+
+            if metadata.is_dir() {
+                builder
+                    .append_dir(&relative_path, &entry_path)
+                    .map_err(|error| format!("Failed to append directory to tar: {}", error))?;
+                Self::append_directory_entries(builder, source_root, &entry_path)?;
+            } else if metadata.is_file() {
+                let mut file = std::fs::File::open(&entry_path)
+                    .map_err(|error| format!("Failed to open file for tar: {}", error))?;
+                builder
+                    .append_file(&relative_path, &mut file)
+                    .map_err(|error| format!("Failed to append file to tar: {}", error))?;
+            } else {
+                return Err(format!(
+                    "Unsupported directory entry type in copy source: {}",
+                    entry_path.display()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn tar_download(
+        &self,
+        path: String,
+        request_id: RequestId,
+        write: &mpsc::Sender<WsMessage>,
+    ) {
+        let source_path = PathBuf::from(&path);
+
+        let metadata = match tokio::fs::metadata(&source_path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let error_chunk = streaming::StreamChunk {
+                    request_id,
+                    chunk_index: ChunkIndex(0),
+                    is_last: true,
+                    is_error: true,
+                    payload_kind: StreamPayloadKind::Tar,
+                    data: format!("Failed to open directory: {}", error).into_bytes(),
+                };
+                let _ = write
+                    .send(WsMessage::Binary(error_chunk.to_bytes().into()))
+                    .await;
+                return;
+            }
+        };
+
+        if !metadata.is_dir() {
+            let error_chunk = streaming::StreamChunk {
+                request_id,
+                chunk_index: ChunkIndex(0),
+                is_last: true,
+                is_error: true,
+                payload_kind: StreamPayloadKind::Tar,
+                data: format!("Source path is not a directory: {}", path).into_bytes(),
+            };
+            let _ = write
+                .send(WsMessage::Binary(error_chunk.to_bytes().into()))
+                .await;
+            return;
+        }
+
+        let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
+        let source_path_for_worker = source_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Handle::current();
+            let writer = ChannelTarWriter {
+                sender: tar_sender,
+                runtime,
+            };
+            let mut builder = tar::Builder::new(writer);
+
+            let result = Self::append_directory_entries(
+                &mut builder,
+                &source_path_for_worker,
+                &source_path_for_worker,
+            )
+            .and_then(|_| {
+                builder
+                    .finish()
+                    .map_err(|error| format!("Failed to finalize tar stream: {}", error))
+            });
+
+            if let Err(error) = result {
+                log!(
+                    Level::Error,
+                    "Tar directory streaming failed: path={}, error={}",
+                    source_path_for_worker.display(),
+                    error
+                );
+            }
+        });
+
+        let mut chunk_index = ChunkIndex(0);
+        let mut pending_chunk: Option<Vec<u8>> = None;
+
+        while let Some(chunk_bytes) = tar_receiver.recv().await {
+            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
+                let chunk = streaming::StreamChunk {
+                    request_id,
+                    chunk_index,
+                    is_last: false,
+                    is_error: false,
+                    payload_kind: StreamPayloadKind::Tar,
+                    data: previous_chunk,
+                };
+
+                if write
+                    .send(WsMessage::Binary(chunk.to_bytes().into()))
+                    .await
+                    .is_err()
+                {
+                    log!(
+                        Level::Warning,
+                        "WebSocket channel full or closed, aborting tar download"
+                    );
+                    return;
+                }
+
+                chunk_index = chunk_index.next_index();
+            }
+        }
+
+        let final_chunk = streaming::StreamChunk {
+            request_id,
+            chunk_index,
+            is_last: true,
+            is_error: false,
+            payload_kind: StreamPayloadKind::Tar,
+            data: pending_chunk.unwrap_or_default(),
+        };
+        let _ = write
+            .send(WsMessage::Binary(final_chunk.to_bytes().into()))
+            .await;
+
+        log!(
+            Level::Info,
+            "Tar directory download complete: path={}, chunks={}",
+            path,
+            chunk_index.display_number()
+        );
+    }
+
+    async fn finalize_tar_upload(
+        &self,
+        session: TarUploadSession,
+        tx: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+        request_id: RequestId,
+    ) {
+        let final_path = session.path.clone();
+        let temp_path = session.temp_path.clone();
+        let bytes_written = session.bytes_written;
+
+        drop(session.chunk_sender);
+
+        let unpack_result = match session.completion_receiver.await {
+            Ok(result) => result,
+            Err(error) => Err(format!("Tar extraction worker failed: {}", error)),
+        };
+
+        match unpack_result {
+            Ok(()) => {
+                if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+                    let error_message = format!("Failed to finalize uploaded directory: {}", error);
+                    let _ = tokio::fs::remove_dir_all(&temp_path).await;
+
+                    self.send_command_response(
+                        tx,
+                        agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+
+                log!(
+                    Level::Info,
+                    "Tar upload complete: request_id={}, path={}, bytes_written={}",
+                    request_id,
+                    final_path,
+                    bytes_written
+                );
+
+                self.send_command_response(tx, agent_id, request_id, CommandResult::TarUpload)
+                    .await;
+            }
+            Err(error_message) => {
+                let _ = tokio::fs::remove_dir_all(&temp_path).await;
+                self.send_command_response(
+                    tx,
+                    agent_id,
+                    request_id,
+                    CommandResult::Error {
+                        message: error_message,
+                    },
+                )
+                .await;
+            }
         }
     }
 
@@ -107,6 +577,9 @@ impl AgentActor {
                             self.raw_download(path, range_start, range_end, request_id, write)
                                 .await;
                         }
+                        Command::TarDownload { path } => {
+                            self.tar_download(path, request_id, write).await;
+                        }
                         Command::RawUpload { path } => {
                             if state.active_uploads.contains_key(&request_id) {
                                 self.send_command_response(
@@ -134,12 +607,12 @@ impl AgentActor {
                                         );
                                         state.active_uploads.insert(
                                             request_id,
-                                            UploadSession {
+                                            UploadSession::RawFile(RawUploadSession {
                                                 path,
                                                 temp_path,
                                                 file,
                                                 bytes_written: 0,
-                                            },
+                                            }),
                                         );
                                     }
                                     Err(error) => {
@@ -153,6 +626,47 @@ impl AgentActor {
                                                     error
                                                 ),
                                             },
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                        }
+                        Command::TarUpload { path } => {
+                            if state.active_uploads.contains_key(&request_id) {
+                                self.send_command_response(
+                                    write,
+                                    &state.agent_id,
+                                    request_id,
+                                    CommandResult::Error {
+                                        message: format!(
+                                            "Upload session already exists for request_id={}",
+                                            request_id
+                                        ),
+                                    },
+                                )
+                                .await;
+                            } else {
+                                match Self::create_tar_upload_session(path.clone()).await {
+                                    Ok(session) => {
+                                        log!(
+                                            Level::Info,
+                                            "Started tar upload: request_id={}, path={}, temp_path={}",
+                                            request_id,
+                                            path,
+                                            session.temp_path.display()
+                                        );
+                                        state.active_uploads.insert(
+                                            request_id,
+                                            UploadSession::TarDirectory(session),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        self.send_command_response(
+                                            write,
+                                            &state.agent_id,
+                                            request_id,
+                                            CommandResult::Error { message: error },
                                         )
                                         .await;
                                     }
@@ -240,6 +754,7 @@ impl AgentActor {
                             chunk_index,
                             is_last: true,
                             is_error: true,
+                            payload_kind: StreamPayloadKind::RawFile,
                             data: error_msg.into_bytes(),
                         };
                         let _ = write
@@ -283,6 +798,7 @@ impl AgentActor {
                                     chunk_index,
                                     is_last: false,
                                     is_error: false,
+                                    payload_kind: StreamPayloadKind::RawFile,
                                     data,
                                 };
 
@@ -308,6 +824,7 @@ impl AgentActor {
                                 chunk_index,
                                 is_last: true,
                                 is_error: true,
+                                payload_kind: StreamPayloadKind::RawFile,
                                 data: error_msg.into_bytes(),
                             };
                             let _ = write
@@ -323,6 +840,7 @@ impl AgentActor {
                     chunk_index,
                     is_last: true,
                     is_error: false,
+                    payload_kind: StreamPayloadKind::RawFile,
                     data: pending_chunk.unwrap_or_default(),
                 };
                 let _ = write
@@ -344,6 +862,7 @@ impl AgentActor {
                     chunk_index: ChunkIndex(0),
                     is_last: true,
                     is_error: true,
+                    payload_kind: StreamPayloadKind::RawFile,
                     data: error_msg.into_bytes(),
                 };
                 let _ = write
@@ -398,7 +917,10 @@ impl AgentActor {
                 .active_uploads
                 .remove(&request_id)
                 .map(|session| {
-                    let path = session.path.clone();
+                    let path = match &session {
+                        UploadSession::RawFile(session) => session.path.clone(),
+                        UploadSession::TarDirectory(session) => session.path.clone(),
+                    };
                     tokio::spawn(Self::cleanup_upload_session(session));
                     path
                 })
@@ -425,107 +947,195 @@ impl AgentActor {
             return Ok(());
         }
 
-        let mut session = match state.active_uploads.remove(&request_id) {
+        let session = match state.active_uploads.remove(&request_id) {
             Some(session) => session,
             None => return Ok(()),
         };
 
-        if let Err(error) = session.file.write_all(&chunk.data).await {
-            let error_message = format!("Failed to write upload chunk: {}", error);
-            log!(
-                Level::Error,
-                "Upload write failed: request_id={}, path={}, error={}",
-                request_id,
-                session.path,
-                error_message
-            );
+        match session {
+            UploadSession::RawFile(mut session) => {
+                if chunk.payload_kind != StreamPayloadKind::RawFile {
+                    let error_message = format!(
+                        "Upload payload kind mismatch: expected {:?}, got {:?}",
+                        StreamPayloadKind::RawFile,
+                        chunk.payload_kind
+                    );
+                    self.send_command_response(
+                        &tx,
+                        &state.agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                    tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
+                        session,
+                    )));
+                    return Ok(());
+                }
 
-            self.send_command_response(
-                &tx,
-                &state.agent_id,
-                request_id,
-                CommandResult::Error {
-                    message: error_message,
-                },
-            )
-            .await;
+                if let Err(error) = session.file.write_all(&chunk.data).await {
+                    let error_message = format!("Failed to write upload chunk: {}", error);
+                    log!(
+                        Level::Error,
+                        "Upload write failed: request_id={}, path={}, error={}",
+                        request_id,
+                        session.path,
+                        error_message
+                    );
 
-            tokio::spawn(Self::cleanup_upload_session(session));
+                    self.send_command_response(
+                        &tx,
+                        &state.agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
 
-            return Ok(());
-        }
+                    tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
+                        session,
+                    )));
 
-        session.bytes_written += chunk.data.len() as u64;
+                    return Ok(());
+                }
 
-        if chunk.is_last {
-            if let Err(error) = session.file.flush().await {
-                let error_message = format!("Failed to flush uploaded file: {}", error);
-                log!(
-                    Level::Error,
-                    "Upload flush failed: request_id={}, path={}, error={}",
-                    request_id,
-                    session.path,
-                    error_message
-                );
+                session.bytes_written += chunk.data.len() as u64;
 
-                self.send_command_response(
-                    &tx,
-                    &state.agent_id,
-                    request_id,
-                    CommandResult::Error {
-                        message: error_message,
-                    },
-                )
-                .await;
+                if chunk.is_last {
+                    if let Err(error) = session.file.flush().await {
+                        let error_message = format!("Failed to flush uploaded file: {}", error);
+                        log!(
+                            Level::Error,
+                            "Upload flush failed: request_id={}, path={}, error={}",
+                            request_id,
+                            session.path,
+                            error_message
+                        );
 
-                tokio::spawn(Self::cleanup_upload_session(session));
+                        self.send_command_response(
+                            &tx,
+                            &state.agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: error_message,
+                            },
+                        )
+                        .await;
 
-                return Ok(());
+                        tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
+                            session,
+                        )));
+
+                        return Ok(());
+                    }
+
+                    let final_path = session.path.clone();
+                    let temp_path = session.temp_path.clone();
+                    let bytes_written = session.bytes_written;
+                    drop(session.file);
+
+                    if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+                        let error_message = format!("Failed to finalize uploaded file: {}", error);
+                        log!(
+                            Level::Error,
+                            "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
+                            request_id,
+                            final_path,
+                            temp_path.display(),
+                            error_message
+                        );
+
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+
+                        self.send_command_response(
+                            &tx,
+                            &state.agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: error_message,
+                            },
+                        )
+                        .await;
+
+                        return Ok(());
+                    }
+
+                    log!(
+                        Level::Info,
+                        "Raw upload complete: request_id={}, path={}, bytes_written={}",
+                        request_id,
+                        final_path,
+                        bytes_written
+                    );
+
+                    self.send_command_response(
+                        &tx,
+                        &state.agent_id,
+                        request_id,
+                        CommandResult::RawUpload,
+                    )
+                    .await;
+                } else {
+                    state
+                        .active_uploads
+                        .insert(request_id, UploadSession::RawFile(session));
+                }
             }
+            UploadSession::TarDirectory(mut session) => {
+                if chunk.payload_kind != StreamPayloadKind::Tar {
+                    let error_message = format!(
+                        "Upload payload kind mismatch: expected {:?}, got {:?}",
+                        StreamPayloadKind::Tar,
+                        chunk.payload_kind
+                    );
+                    self.send_command_response(
+                        &tx,
+                        &state.agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                    tokio::spawn(Self::cleanup_upload_session(UploadSession::TarDirectory(
+                        session,
+                    )));
+                    return Ok(());
+                }
 
-            let final_path = session.path.clone();
-            let temp_path = session.temp_path.clone();
-            let bytes_written = session.bytes_written;
-            drop(session.file);
+                if !chunk.data.is_empty() {
+                    if let Err(error) = session.chunk_sender.send(chunk.data.clone()) {
+                        let error_message =
+                            format!("Failed to forward tar upload chunk to unpacker: {}", error);
+                        self.send_command_response(
+                            &tx,
+                            &state.agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: error_message,
+                            },
+                        )
+                        .await;
+                        tokio::spawn(Self::cleanup_upload_session(UploadSession::TarDirectory(
+                            session,
+                        )));
+                        return Ok(());
+                    }
+                    session.bytes_written += chunk.data.len() as u64;
+                }
 
-            if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
-                let error_message = format!("Failed to finalize uploaded file: {}", error);
-                log!(
-                    Level::Error,
-                    "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
-                    request_id,
-                    final_path,
-                    temp_path.display(),
-                    error_message
-                );
-
-                let _ = tokio::fs::remove_file(&temp_path).await;
-
-                self.send_command_response(
-                    &tx,
-                    &state.agent_id,
-                    request_id,
-                    CommandResult::Error {
-                        message: error_message,
-                    },
-                )
-                .await;
-
-                return Ok(());
+                if chunk.is_last {
+                    self.finalize_tar_upload(session, &tx, &state.agent_id, request_id)
+                        .await;
+                } else {
+                    state
+                        .active_uploads
+                        .insert(request_id, UploadSession::TarDirectory(session));
+                }
             }
-
-            log!(
-                Level::Info,
-                "Raw upload complete: request_id={}, path={}, bytes_written={}",
-                request_id,
-                final_path,
-                bytes_written
-            );
-
-            self.send_command_response(&tx, &state.agent_id, request_id, CommandResult::RawUpload)
-                .await;
-        } else {
-            state.active_uploads.insert(request_id, session);
         }
 
         Ok(())

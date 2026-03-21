@@ -495,15 +495,22 @@ async fn copy_file_handler(
         }
     };
 
-    if !source_metadata.is_file {
+    let (total_bytes, content_kind) = if source_metadata.is_file {
+        (
+            source_metadata.file_size,
+            actors::router::CopyContentKind::RawFile,
+        )
+    } else if source_metadata.is_dir {
+        (0, actors::router::CopyContentKind::TarDirectory)
+    } else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Copy supports regular files only".to_string(),
+                error: "Copy supports regular files and directories only".to_string(),
             }),
         )
             .into_response();
-    }
+    };
 
     let copy_request_id = match call_t!(
         &state.router_ref,
@@ -512,7 +519,8 @@ async fn copy_file_handler(
             source_path: source_path.clone(),
             dest_agent_id: payload.dest.agent.clone(),
             dest_path: dest_path.clone(),
-            total_bytes: source_metadata.file_size,
+            total_bytes,
+            content_kind,
             reply,
         },
         30000
@@ -919,6 +927,7 @@ async fn raw_agent_put_handler(
                     chunk_index,
                     is_last: true,
                     is_error: true,
+                    payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
                     data: format!("Failed to read request body: {}", error).into_bytes(),
                 };
 
@@ -950,6 +959,7 @@ async fn raw_agent_put_handler(
             chunk_index,
             is_last: false,
             is_error: false,
+            payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
             data: data.to_vec(),
         };
 
@@ -994,6 +1004,7 @@ async fn raw_agent_put_handler(
         chunk_index,
         is_last: true,
         is_error: false,
+        payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
         data: Vec::new(),
     };
 

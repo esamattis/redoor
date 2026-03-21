@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
+import fs from "node:fs/promises";
 import {
     ProcessManager,
     TempFileManager,
@@ -204,6 +205,179 @@ describe("Raw Copy API", () => {
         expect(copiedContent).toBe("");
     });
 
+    it("should copy a directory on the same agent and preserve nested contents", async () => {
+        const sourceRoot = tempFiles.tempFile({ suffix: "-source-dir" });
+        const destRoot = tempFiles.tempFile({ suffix: "-dest-dir" });
+
+        await fs.mkdir(path.join(sourceRoot, "nested", "deeper"), {
+            recursive: true,
+        });
+        await fs.mkdir(path.join(sourceRoot, "empty"), {
+            recursive: true,
+        });
+        await fs.writeFile(
+            path.join(sourceRoot, "top.txt"),
+            "copy directory root file",
+            "utf-8",
+        );
+        await fs.writeFile(
+            path.join(sourceRoot, "nested", "deeper", "child.txt"),
+            "copy directory nested file",
+            "utf-8",
+        );
+
+        const response = await testAgent.copyTo(
+            { agent: testAgent.id, path: destRoot },
+            sourceRoot,
+        );
+
+        const completedTransfer = await waitForValue({
+            description: "completed same-agent directory copy transfer",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === response.copy_request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
+
+        // The copy direction check ensures directory copies also stay on the logical copy row.
+        expect(completedTransfer.direction).toBe("copy");
+        // Source endpoint metadata proves the copy row points at the original directory path.
+        expect(completedTransfer.source?.path).toBe(sourceRoot);
+        // Destination endpoint metadata proves the copy row points at the destination directory path.
+        expect(completedTransfer.dest?.path).toBe(destRoot);
+
+        const topFileContent = await fs.readFile(
+            path.join(destRoot, "top.txt"),
+            "utf-8",
+        );
+        const nestedFileContent = await fs.readFile(
+            path.join(destRoot, "nested", "deeper", "child.txt"),
+            "utf-8",
+        );
+        const emptyDirStat = await fs.stat(path.join(destRoot, "empty"));
+
+        // Reading the copied top-level file confirms the tar stream preserved root entries.
+        expect(topFileContent).toBe("copy directory root file");
+        // Reading the copied nested file confirms the tar stream preserved nested entries.
+        expect(nestedFileContent).toBe("copy directory nested file");
+        // The empty directory assertion proves directory-only entries survive the copy.
+        expect(emptyDirStat.isDirectory()).toBe(true);
+    });
+
+    it("should copy a directory across agents", async () => {
+        const sourceRoot = tempFiles.tempFile({ suffix: "-cross-source-dir" });
+        const destRoot = tempFiles.tempFile({ suffix: "-cross-dest-dir" });
+        const projectRoot = path.join(__dirname, "..");
+        const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
+        const secondAgentName = "raw-copy-target-agent-dir";
+
+        await fs.mkdir(path.join(sourceRoot, "nested"), { recursive: true });
+        await fs.writeFile(
+            path.join(sourceRoot, "nested", "file.txt"),
+            "cross-agent-directory-copy",
+            "utf-8",
+        );
+
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+
+        const waitForSecondAgent = waitForLogMessage(
+            serverProcess,
+            new RegExp(`Agent registered:.*agent_name=${secondAgentName}`),
+            10000,
+        );
+
+        const secondAgentPid = processManager.spawn(
+            AGENT_PATH,
+            [wsUrl, secondAgentName],
+            projectRoot,
+        );
+
+        await waitForSecondAgent;
+
+        try {
+            const secondAgent = await waitForValue({
+                description: "second directory copy agent",
+                predicate: async () => {
+                    const agents = await apiClient.listAgents();
+                    return agents.find(
+                        (agent) => agent.name === secondAgentName,
+                    );
+                },
+            });
+
+            const response = await testAgent.copyTo(
+                { agent: secondAgent.id, path: destRoot },
+                sourceRoot,
+            );
+
+            const completedTransfer = await waitForValue({
+                description: "completed cross-agent directory copy transfer",
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "completed",
+                    );
+                },
+            });
+
+            // Recording the destination agent proves cross-agent directory copies keep both endpoints.
+            expect(completedTransfer.dest?.agent).toBe(secondAgent.id);
+
+            const copiedContent = await fs.readFile(
+                path.join(destRoot, "nested", "file.txt"),
+                "utf-8",
+            );
+
+            // Comparing destination contents verifies the streamed tar copy stayed lossless across agents.
+            expect(copiedContent).toBe("cross-agent-directory-copy");
+        } finally {
+            processManager.kill(secondAgentPid);
+        }
+    });
+
+    it("should copy an empty directory", async () => {
+        const sourceRoot = tempFiles.tempFile({ suffix: "-empty-source-dir" });
+        const destRoot = tempFiles.tempFile({ suffix: "-empty-dest-dir" });
+
+        await fs.mkdir(sourceRoot, { recursive: true });
+
+        const response = await testAgent.copyTo(
+            { agent: testAgent.id, path: destRoot },
+            sourceRoot,
+        );
+
+        const completedTransfer = await waitForValue({
+            description: "completed empty directory copy transfer",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === response.copy_request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
+
+        const copiedDirStat = await fs.stat(destRoot);
+        const copiedDirEntries = await fs.readdir(destRoot);
+
+        // The logical copy row must complete even when the tar stream contains no file payloads.
+        expect(completedTransfer.state).toBe("completed");
+        // The destination stat confirms the operation creates the target directory itself.
+        expect(copiedDirStat.isDirectory()).toBe(true);
+        // An empty entry list proves empty source directories stay empty after copy.
+        expect(copiedDirEntries).toHaveLength(0);
+    });
+
     it("should reject missing source files", async () => {
         await expect(
             testAgent.copyTo(
@@ -227,6 +401,58 @@ describe("Raw Copy API", () => {
                 sourcePath,
             ),
         ).rejects.toThrow(/different/i);
+    });
+
+    it("should reject the same source and destination directory", async () => {
+        const sourceRoot = tempFiles.tempFile({ suffix: "-same-dir" });
+        await fs.mkdir(sourceRoot, { recursive: true });
+
+        await expect(
+            testAgent.copyTo(
+                { agent: testAgent.id, path: sourceRoot },
+                sourceRoot,
+            ),
+        ).rejects.toThrow(/different/i);
+    });
+
+    it("should reject copying a directory onto an existing destination", async () => {
+        const sourceRoot = tempFiles.tempFile({
+            suffix: "-existing-dest-source",
+        });
+        const destRoot = tempFiles.tempFile({
+            suffix: "-existing-dest-target",
+        });
+
+        await fs.mkdir(sourceRoot, { recursive: true });
+        await fs.mkdir(destRoot, { recursive: true });
+        await fs.writeFile(
+            path.join(sourceRoot, "file.txt"),
+            "payload",
+            "utf-8",
+        );
+
+        const response = await testAgent.copyTo(
+            { agent: testAgent.id, path: destRoot },
+            sourceRoot,
+        );
+
+        const erroredTransfer = await waitForValue({
+            description:
+                "errored directory copy transfer with existing destination",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === response.copy_request_id &&
+                        transfer.state === "errored",
+                );
+            },
+        });
+
+        // Surfacing an errored row proves destination conflicts fail through the logical copy transfer.
+        expect(erroredTransfer.state).toBe("errored");
+        // Keeping the original destination directory untouched proves directory copies do not merge into existing targets.
+        expect(await fs.readdir(destRoot)).toHaveLength(0);
     });
 
     it("should return quickly while a large copy is still in progress", async () => {

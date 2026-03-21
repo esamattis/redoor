@@ -5,6 +5,7 @@ use crate::commands::{
 };
 use crate::log;
 use crate::logging::Level;
+use crate::streaming::StreamPayloadKind;
 use crate::types::{ChunkIndex, Message, RequestId, TransferId, UnixTimestampSeconds};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::HashMap;
@@ -34,12 +35,55 @@ enum TransferRequest {
     },
 }
 
+/// Describes which streaming mode a logical copy transfer is using.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyContentKind {
+    RawFile,
+    TarDirectory,
+}
+
+impl CopyContentKind {
+    fn upload_command(self, path: String) -> Command {
+        match self {
+            Self::RawFile => Command::RawUpload { path },
+            Self::TarDirectory => Command::TarUpload { path },
+        }
+    }
+
+    fn download_command(self, path: String) -> Command {
+        match self {
+            Self::RawFile => Command::RawDownload {
+                path,
+                range_start: None,
+                range_end: None,
+            },
+            Self::TarDirectory => Command::TarDownload { path },
+        }
+    }
+
+    fn payload_kind(self) -> StreamPayloadKind {
+        match self {
+            Self::RawFile => StreamPayloadKind::RawFile,
+            Self::TarDirectory => StreamPayloadKind::Tar,
+        }
+    }
+
+    fn completion_matches(self, result: &CommandResult) -> bool {
+        match self {
+            Self::RawFile => matches!(result, CommandResult::RawUpload),
+            Self::TarDirectory => matches!(result, CommandResult::TarUpload),
+        }
+    }
+}
+
 struct CopyRequest {
     source_agent_id: String,
     dest_agent_id: String,
     source_request_id: RequestId,
     dest_request_id: RequestId,
     next_chunk_index: ChunkIndex,
+    /// Tracks whether the copy forwards raw file bytes or tar stream bytes.
+    content_kind: CopyContentKind,
 }
 
 /// Internal state for the [`RouterActor`].
@@ -200,6 +244,7 @@ pub enum RouterMsg {
         dest_agent_id: String,
         dest_path: String,
         total_bytes: u64,
+        content_kind: CopyContentKind,
         reply: RpcReplyPort<Result<TransferId, String>>,
     },
 }
@@ -394,6 +439,7 @@ impl RouterActor {
             chunk_index: copy_request.next_chunk_index,
             is_last: true,
             is_error: true,
+            payload_kind: copy_request.content_kind.payload_kind(),
             data: error_message.into_bytes(),
         };
         copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_next_index();
@@ -416,7 +462,7 @@ impl RouterActor {
             return;
         };
 
-        let (source_agent_id, dest_agent_id, dest_request_id, chunk_index) = {
+        let (source_agent_id, dest_agent_id, dest_request_id, chunk_index, content_kind) = {
             let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
             else {
                 return;
@@ -434,6 +480,7 @@ impl RouterActor {
                 copy_request.dest_agent_id.clone(),
                 copy_request.dest_request_id,
                 chunk_index,
+                copy_request.content_kind,
             )
         };
 
@@ -471,11 +518,24 @@ impl RouterActor {
             return;
         }
 
+        if chunk.payload_kind != content_kind.payload_kind() {
+            let error_message = format!(
+                "Copy payload kind mismatch: expected {:?}, got {:?}",
+                content_kind.payload_kind(),
+                chunk.payload_kind
+            );
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
+            Self::mark_transfer_errored(state, public_request_id, error_message);
+            Self::cleanup_copy_tracking(state, public_request_id);
+            return;
+        }
+
         let forwarded_chunk = crate::streaming::StreamChunk {
             request_id: dest_request_id,
             chunk_index,
             is_last: chunk.is_last,
             is_error: false,
+            payload_kind: chunk.payload_kind,
             data: chunk.data,
         };
 
@@ -512,11 +572,11 @@ impl RouterActor {
         }
 
         match result {
-            CommandResult::RawUpload => {
-                Self::mark_transfer_completed(state, public_request_id);
-            }
             CommandResult::Error { message } => {
                 Self::mark_transfer_errored(state, public_request_id, message);
+            }
+            other if copy_request.content_kind.completion_matches(&other) => {
+                Self::mark_transfer_completed(state, public_request_id);
             }
             other => {
                 log!(
@@ -1212,6 +1272,7 @@ impl Actor for RouterActor {
                 dest_agent_id,
                 dest_path,
                 total_bytes,
+                content_kind,
                 reply,
             } => {
                 let source_agent_info = state.agents.get(&source_agent_id).cloned();
@@ -1247,6 +1308,7 @@ impl Actor for RouterActor {
                                 source_request_id,
                                 dest_request_id,
                                 next_chunk_index: ChunkIndex::new(0),
+                                content_kind,
                             },
                         );
 
@@ -1270,20 +1332,14 @@ impl Actor for RouterActor {
                             .cast(SessionMsg::OutgoingMessage(Message::Command {
                                 agent_id: dest_agent_id.clone(),
                                 request_id: dest_request_id,
-                                command: Command::RawUpload {
-                                    path: dest_path.clone(),
-                                },
+                                command: content_kind.upload_command(dest_path.clone()),
                             }));
                         let _ = source_agent_info
                             .session_ref
                             .cast(SessionMsg::OutgoingMessage(Message::Command {
                                 agent_id: source_agent_id.clone(),
                                 request_id: source_request_id,
-                                command: Command::RawDownload {
-                                    path: source_path,
-                                    range_start: None,
-                                    range_end: None,
-                                },
+                                command: content_kind.download_command(source_path),
                             }));
 
                         let _ = reply.send(Ok(public_request_id));

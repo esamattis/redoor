@@ -4,12 +4,31 @@ pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 
+/// Identifies how the chunk payload bytes should be interpreted by the receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPayloadKind {
+    RawFile = 0,
+    Tar = 1,
+}
+
+impl StreamPayloadKind {
+    fn from_byte(byte: u8) -> Result<Self, String> {
+        match byte {
+            0 => Ok(Self::RawFile),
+            1 => Ok(Self::Tar),
+            _ => Err(format!("Invalid payload kind byte: {}", byte)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StreamChunk {
     pub request_id: RequestId,
     pub chunk_index: ChunkIndex,
     pub is_last: bool,
     pub is_error: bool,
+    /// Marks whether `data` contains raw file bytes or a tar stream chunk.
+    pub payload_kind: StreamPayloadKind,
     pub data: Vec<u8>,
 }
 
@@ -22,7 +41,7 @@ impl StreamChunk {
         bytes.extend_from_slice(&self.chunk_index.to_le_bytes());
         bytes.push(if self.is_last { 1 } else { 0 });
         bytes.push(if self.is_error { 1 } else { 0 });
-        bytes.push(0);
+        bytes.push(self.payload_kind as u8);
         bytes.extend_from_slice(&self.data);
 
         bytes
@@ -59,10 +78,7 @@ impl StreamChunk {
 
         let is_last = bytes[20] == 1;
         let is_error = bytes[21] == 1;
-
-        if bytes[22] != 0 {
-            return Err(format!("Invalid reserved byte: {} (must be 0)", bytes[22]));
-        }
+        let payload_kind = StreamPayloadKind::from_byte(bytes[22])?;
 
         let data = bytes[HEADER_SIZE..].to_vec();
 
@@ -71,6 +87,7 @@ impl StreamChunk {
             chunk_index,
             is_last,
             is_error,
+            payload_kind,
             data,
         })
     }
@@ -87,16 +104,18 @@ mod tests {
             chunk_index: ChunkIndex::new(0),
             is_last: false,
             is_error: false,
+            payload_kind: StreamPayloadKind::RawFile,
             data: vec![1u8, 2u8, 3u8, 4u8],
         };
         let bytes = chunk.to_bytes();
         let decoded = StreamChunk::from_bytes(&bytes).unwrap();
         println!(
-            "Decoded: request_id={}, chunk_index={}, is_last={}, is_error={}, data.len={}, data={:?}",
+            "Decoded: request_id={}, chunk_index={}, is_last={}, is_error={}, payload_kind={:?}, data.len={}, data={:?}",
             decoded.request_id,
             decoded.chunk_index,
             decoded.is_last,
             decoded.is_error,
+            decoded.payload_kind,
             decoded.data.len(),
             decoded.data
         );
@@ -104,6 +123,7 @@ mod tests {
         assert_eq!(decoded.chunk_index, ChunkIndex::new(0));
         assert!(!decoded.is_last);
         assert!(!decoded.is_error);
+        assert_eq!(decoded.payload_kind, StreamPayloadKind::RawFile);
         assert_eq!(decoded.data, vec![1u8, 2u8, 3u8, 4u8]);
     }
 
@@ -114,6 +134,7 @@ mod tests {
             chunk_index: ChunkIndex::new(10),
             is_last: true,
             is_error: false,
+            payload_kind: StreamPayloadKind::RawFile,
             data: Vec::<u8>::new(),
         };
         let bytes = chunk.to_bytes();
@@ -122,13 +143,42 @@ mod tests {
         assert_eq!(decoded.chunk_index, ChunkIndex::new(10));
         assert!(decoded.is_last);
         assert!(!decoded.is_error);
+        assert_eq!(decoded.payload_kind, StreamPayloadKind::RawFile);
         assert_eq!(decoded.data, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_stream_chunk_tar_serialization() {
+        let chunk = StreamChunk {
+            request_id: RequestId::new(789),
+            chunk_index: ChunkIndex::new(2),
+            is_last: false,
+            is_error: false,
+            payload_kind: StreamPayloadKind::Tar,
+            data: vec![9u8, 8u8, 7u8],
+        };
+        let bytes = chunk.to_bytes();
+        let decoded = StreamChunk::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.request_id, RequestId::new(789));
+        assert_eq!(decoded.chunk_index, ChunkIndex::new(2));
+        assert_eq!(decoded.payload_kind, StreamPayloadKind::Tar);
+        assert_eq!(decoded.data, vec![9u8, 8u8, 7u8]);
     }
 
     #[test]
     fn test_stream_chunk_invalid_magic() {
         let mut bytes = vec![0u8; 24];
         bytes[0..4].copy_from_slice(&[0, 0, 0, 0]);
+        assert!(StreamChunk::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn test_stream_chunk_invalid_payload_kind() {
+        let mut bytes = vec![0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(&PROTOCOL_MAGIC.to_le_bytes());
+        bytes[22] = 2;
+
         assert!(StreamChunk::from_bytes(&bytes).is_err());
     }
 
