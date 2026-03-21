@@ -149,9 +149,9 @@ pub struct RouterState {
     /// needs to be delivered as a trailing refresh event.
     ui_refresh_pending: bool,
 
-    /// Whether a delayed flush task has already been scheduled for the current
-    /// throttle window.
-    ui_refresh_flush_scheduled: bool,
+    /// Background task that periodically checks whether a throttled trailing UI
+    /// refresh can now be delivered.
+    ui_refresh_check_task: tokio::task::JoinHandle<()>,
 }
 
 /// Metadata about a connected agent, cached at registration time.
@@ -275,14 +275,15 @@ pub enum RouterMsg {
         transferred_bytes: u64,
         total_bytes: Option<u64>,
     },
-    /// Internal message used to flush a throttled trailing UI refresh event.
-    FlushUiRefresh,
+    /// Internal message used by the scheduler loop to check whether a
+    /// throttled trailing UI refresh event is now due.
+    CheckPendingUiRefresh,
 }
 
 impl RouterActor {
     fn record_download_start(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         request_id: RequestId,
         agent_id: String,
         path: String,
@@ -312,12 +313,12 @@ impl RouterActor {
                 chunk_sender,
             },
         );
-        Self::notify_ui_refresh(state, myself);
+        Self::notify_ui_refresh(state);
     }
 
     fn record_upload_start(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         request_id: RequestId,
         agent_id: String,
         path: String,
@@ -347,12 +348,12 @@ impl RouterActor {
                 completion_sender: Some(completion_sender),
             },
         );
-        Self::notify_ui_refresh(state, myself);
+        Self::notify_ui_refresh(state);
     }
 
     fn increment_download_progress(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         transfer_id: TransferId,
         bytes: u64,
     ) {
@@ -363,13 +364,13 @@ impl RouterActor {
             updated = true;
         }
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn increment_upload_progress(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         transfer_id: TransferId,
         bytes: u64,
     ) {
@@ -380,13 +381,13 @@ impl RouterActor {
             updated = true;
         }
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn mark_transfer_completed(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         transfer_id: TransferId,
     ) {
         let mut updated = false;
@@ -397,13 +398,13 @@ impl RouterActor {
             updated = true;
         }
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn mark_copy_transfer_completed(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         transfer_id: TransferId,
         total_bytes: Option<u64>,
     ) {
@@ -418,13 +419,13 @@ impl RouterActor {
             updated = true;
         }
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn mark_transfer_errored(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         transfer_id: TransferId,
         error_message: String,
     ) {
@@ -435,13 +436,13 @@ impl RouterActor {
             updated = true;
         }
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
     fn record_copy_start(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         request_id: TransferId,
         source_agent_id: String,
         source_path: String,
@@ -470,7 +471,7 @@ impl RouterActor {
                 error: None,
             },
         );
-        Self::notify_ui_refresh(state, myself);
+        Self::notify_ui_refresh(state);
     }
 
     fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: TransferId) {
@@ -729,7 +730,7 @@ impl RouterActor {
 
     fn update_copy_progress(
         state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
+        _myself: &ActorRef<RouterMsg>,
         agent_id: String,
         request_id: RequestId,
         transferred_bytes: u64,
@@ -777,7 +778,7 @@ impl RouterActor {
         }
 
         if updated {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 
@@ -788,8 +789,9 @@ impl RouterActor {
     }
 
     const UI_REFRESH_THROTTLE_WINDOW: Duration = Duration::from_secs(5);
+    const UI_REFRESH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
-    fn notify_ui_refresh(state: &mut RouterState, myself: &ActorRef<RouterMsg>) {
+    fn notify_ui_refresh(state: &mut RouterState) {
         let now = Instant::now();
 
         match state.last_ui_refresh_sent_at {
@@ -797,7 +799,6 @@ impl RouterActor {
                 Self::broadcast_ui_event(state, UiEvent::Refresh);
                 state.last_ui_refresh_sent_at = Some(now);
                 state.ui_refresh_pending = false;
-                state.ui_refresh_flush_scheduled = false;
             }
             Some(last_sent_at) => {
                 let elapsed = now.saturating_duration_since(last_sent_at);
@@ -806,39 +807,14 @@ impl RouterActor {
                     Self::broadcast_ui_event(state, UiEvent::Refresh);
                     state.last_ui_refresh_sent_at = Some(now);
                     state.ui_refresh_pending = false;
-                    state.ui_refresh_flush_scheduled = false;
                 } else {
                     state.ui_refresh_pending = true;
-                    Self::schedule_ui_refresh_flush(
-                        state,
-                        myself,
-                        Self::UI_REFRESH_THROTTLE_WINDOW - elapsed,
-                    );
                 }
             }
         }
     }
 
-    fn schedule_ui_refresh_flush(
-        state: &mut RouterState,
-        myself: &ActorRef<RouterMsg>,
-        delay: Duration,
-    ) {
-        if state.ui_refresh_flush_scheduled {
-            return;
-        }
-
-        state.ui_refresh_flush_scheduled = true;
-        let router_ref = myself.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let _ = router_ref.cast(RouterMsg::FlushUiRefresh);
-        });
-    }
-
-    fn flush_ui_refresh(state: &mut RouterState, myself: &ActorRef<RouterMsg>) {
-        state.ui_refresh_flush_scheduled = false;
-
+    fn check_pending_ui_refresh(state: &mut RouterState) {
         if !state.ui_refresh_pending {
             return;
         }
@@ -856,12 +832,6 @@ impl RouterActor {
             Self::broadcast_ui_event(state, UiEvent::Refresh);
             state.last_ui_refresh_sent_at = Some(now);
             state.ui_refresh_pending = false;
-        } else {
-            Self::schedule_ui_refresh_flush(
-                state,
-                myself,
-                Self::UI_REFRESH_THROTTLE_WINDOW - elapsed,
-            );
         }
     }
 
@@ -947,7 +917,7 @@ impl RouterActor {
                 "REST stream receiver dropped before download completed".to_string(),
             );
             state.transfers.remove(&request_id);
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
             return;
         }
 
@@ -964,7 +934,7 @@ impl RouterActor {
 
         if chunk.is_last || chunk.is_error {
             state.transfers.remove(&request_id);
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
             log!(
                 Level::Info,
                 "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
@@ -1066,7 +1036,7 @@ impl RouterActor {
         };
 
         state.transfers.remove(&request_id);
-        Self::notify_ui_refresh(state, myself);
+        Self::notify_ui_refresh(state);
 
         if let Some(sender) = completion_sender {
             let _ = sender.send(completion_result);
@@ -1179,7 +1149,7 @@ impl RouterActor {
         }
 
         if !orphaned_transfers.is_empty() || !orphaned_copy_ids.is_empty() {
-            Self::notify_ui_refresh(state, myself);
+            Self::notify_ui_refresh(state);
         }
     }
 }
@@ -1191,10 +1161,23 @@ impl Actor for RouterActor {
 
     async fn pre_start(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         _args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         log!(Level::Info, "RouterActor started");
+        let router_ref = myself.clone();
+        let ui_refresh_check_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Self::UI_REFRESH_CHECK_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+                if router_ref.cast(RouterMsg::CheckPendingUiRefresh).is_err() {
+                    break;
+                }
+            }
+        });
+
         Ok(RouterState {
             agents: HashMap::new(),
             rest_pending_responses: HashMap::new(),
@@ -1206,8 +1189,17 @@ impl Actor for RouterActor {
             next_request_id: RequestId::new(1),
             last_ui_refresh_sent_at: None,
             ui_refresh_pending: false,
-            ui_refresh_flush_scheduled: false,
+            ui_refresh_check_task,
         })
+    }
+
+    async fn post_stop(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        state.ui_refresh_check_task.abort();
+        Ok(())
     }
 
     async fn handle(
@@ -1265,12 +1257,12 @@ impl Actor for RouterActor {
                         username,
                     },
                 );
-                Self::notify_ui_refresh(state, &myself);
+                Self::notify_ui_refresh(state);
             }
             RouterMsg::UnregisterAgent { agent_id } => {
                 log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                 state.agents.remove(&agent_id);
-                Self::notify_ui_refresh(state, &myself);
+                Self::notify_ui_refresh(state);
 
                 Self::cleanup_agent_requests(state, &myself, &agent_id);
             }
@@ -1360,8 +1352,8 @@ impl Actor for RouterActor {
                 );
                 state.ui_subscribers.remove(&subscriber_id);
             }
-            RouterMsg::FlushUiRefresh => {
-                Self::flush_ui_refresh(state, &myself);
+            RouterMsg::CheckPendingUiRefresh => {
+                Self::check_pending_ui_refresh(state);
             }
             RouterMsg::ExecuteCommandRest {
                 agent_id,
