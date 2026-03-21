@@ -156,9 +156,8 @@ describe("Raw Upload API", () => {
                         transfer.path === uploadedFilePath &&
                         transfer.direction === "upload" &&
                         transfer.state === "active" &&
-                        transfer.total_bytes === BigInt(totalBytes) &&
-                        transfer.transferred_bytes ===
-                            BigInt(firstChunk.length),
+                        transfer.total_bytes === totalBytes &&
+                        transfer.transferred_bytes === firstChunk.length,
                 );
             },
         });
@@ -170,11 +169,9 @@ describe("Raw Upload API", () => {
         // The active state check verifies progress is queryable before the upload finishes.
         expect(activeTransfer.state).toBe("active");
         // The total size check ensures the server stored the exact declared upload length.
-        expect(activeTransfer.total_bytes).toBe(BigInt(totalBytes));
+        expect(activeTransfer.total_bytes).toBe(totalBytes);
         // The transferred byte count check proves the router tracks forwarded chunks incrementally.
-        expect(activeTransfer.transferred_bytes).toBe(
-            BigInt(firstChunk.length),
-        );
+        expect(activeTransfer.transferred_bytes).toBe(firstChunk.length);
 
         if (!controller) {
             throw new Error("Upload stream controller was not initialized");
@@ -205,9 +202,9 @@ describe("Raw Upload API", () => {
         // The completed state check ensures uploads stay visible after the agent flushes the file.
         expect(completedTransfer.state).toBe("completed");
         // Equal transferred and total bytes confirms completed uploads report exact 100% progress.
-        expect(completedTransfer.transferred_bytes).toBe(BigInt(totalBytes));
+        expect(completedTransfer.transferred_bytes).toBe(totalBytes);
         // The total size stays stable so callers can trust the stored transfer metadata.
-        expect(completedTransfer.total_bytes).toBe(BigInt(totalBytes));
+        expect(completedTransfer.total_bytes).toBe(totalBytes);
 
         const downloadedContent = Buffer.from(
             await testAgent.raw(uploadedFilePath),

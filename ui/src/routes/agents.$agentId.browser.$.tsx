@@ -383,7 +383,7 @@ function FileList(props: {
     files: Array<{
         name: string;
         type: string;
-        size: bigint;
+        size: number;
         owner: string | null;
         group: string | null;
         uid: number;
@@ -435,7 +435,7 @@ function FileEntry(props: {
     entry: {
         name: string;
         type: string;
-        size: bigint;
+        size: number;
         owner: string | null;
         group: string | null;
         uid: number;
@@ -603,12 +603,7 @@ function FileDetailView(props: {
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Size</p>
                             <p className="text-gray-900 font-medium">
-                                {formatSize(
-                                    BigInt(
-                                        props.lsResult
-                                            .size as unknown as number,
-                                    ),
-                                )}
+                                {formatSize(props.lsResult.size)}
                             </p>
                         </div>
                         <div>

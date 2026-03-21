@@ -161,7 +161,7 @@ describe("Raw Download API", () => {
                         transfer.agent_id === ephemeralAgent.id &&
                         transfer.path === testFilePath &&
                         transfer.direction === "download" &&
-                        transfer.total_bytes === BigInt(fileSize),
+                        transfer.total_bytes === fileSize,
                 );
             },
         });
@@ -169,7 +169,7 @@ describe("Raw Download API", () => {
         // The download direction check proves the shared endpoint tracks download rows separately from uploads.
         expect(observedTransfer.direction).toBe("download");
         // The total size check confirms the server reuses the computed content length for progress.
-        expect(observedTransfer.total_bytes).toBe(BigInt(fileSize));
+        expect(observedTransfer.total_bytes).toBe(fileSize);
         // A tracked row proves the router registered this transfer even if it completed before polling observed the active state.
         expect(["active", "completed", "errored"]).toContain(
             observedTransfer.state,

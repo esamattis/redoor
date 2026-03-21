@@ -186,8 +186,8 @@ function DetailItem({
     );
 }
 
-function formatUptime(seconds: bigint): string {
-    const sec = Number(seconds);
+function formatUptime(seconds: number): string {
+    const sec = seconds;
     const days = Math.floor(sec / 86400);
     const hours = Math.floor((sec % 86400) / 3600);
     const minutes = Math.floor((sec % 3600) / 60);
@@ -201,6 +201,6 @@ function formatUptime(seconds: bigint): string {
     return `${minutes}m`;
 }
 
-function formatTimestamp(timestamp: bigint): string {
-    return new Date(Number(timestamp) * 1000).toLocaleString();
+function formatTimestamp(timestamp: number): string {
+    return new Date(timestamp * 1000).toLocaleString();
 }

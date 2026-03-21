@@ -58,7 +58,7 @@ describe("Raw Copy API", () => {
         );
 
         // Returning a public request id immediately gives callers a stable progress handle.
-        expect(response.copy_request_id).toBeTypeOf("bigint");
+        expect(response.copy_request_id).toBeTypeOf("number");
 
         const completedTransfer = await waitForValue({
             description: "completed copy transfer",
@@ -194,7 +194,7 @@ describe("Raw Copy API", () => {
         });
 
         // Zero transferred bytes confirm the coordinator handles the empty final-chunk path.
-        expect(completedTransfer.transferred_bytes).toBe(BigInt(0));
+        expect(completedTransfer.transferred_bytes).toBe(0);
 
         const copiedContent = Buffer.from(
             await testAgent.raw(destPath),

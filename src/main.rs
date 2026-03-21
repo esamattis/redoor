@@ -4,6 +4,7 @@ use redoor::commands::{
     CommandResult, CopyFileRequest, CopyFileResponse, EchoRequest, EchoResponse, ErrorResponse,
     LsDirectoryResponse, LsFileResponse, RawDeleteResponse, RawUploadResponse, UiEvent,
 };
+use redoor::types::ChunkIndex;
 
 use serde::Deserialize;
 
@@ -906,7 +907,7 @@ async fn raw_agent_put_handler(
     };
 
     let mut body_stream = body.into_data_stream();
-    let mut chunk_index = 0u64;
+    let mut chunk_index = ChunkIndex::new(0);
     let mut bytes_written = 0u64;
 
     while let Some(next_chunk) = body_stream.next().await {
@@ -985,7 +986,7 @@ async fn raw_agent_put_handler(
             }
         }
 
-        chunk_index += 1;
+        chunk_index = chunk_index.next_index();
     }
 
     let final_chunk = redoor::streaming::StreamChunk {

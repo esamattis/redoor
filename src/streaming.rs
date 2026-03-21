@@ -1,11 +1,13 @@
+use crate::types::{ChunkIndex, RequestId};
+
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct StreamChunk {
-    pub request_id: u64,
-    pub chunk_index: u64,
+    pub request_id: RequestId,
+    pub chunk_index: ChunkIndex,
     pub is_last: bool,
     pub is_error: bool,
     pub data: Vec<u8>,
@@ -47,11 +49,11 @@ impl StreamChunk {
             ));
         }
 
-        let request_id = u64::from_le_bytes([
+        let request_id = RequestId::from_le_bytes([
             bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
         ]);
 
-        let chunk_index = u64::from_le_bytes([
+        let chunk_index = ChunkIndex::from_le_bytes([
             bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
         ]);
 
@@ -81,8 +83,8 @@ mod tests {
     #[test]
     fn test_stream_chunk_serialization() {
         let chunk = StreamChunk {
-            request_id: 123,
-            chunk_index: 0,
+            request_id: RequestId::new(123),
+            chunk_index: ChunkIndex::new(0),
             is_last: false,
             is_error: false,
             data: vec![1u8, 2u8, 3u8, 4u8],
@@ -98,8 +100,8 @@ mod tests {
             decoded.data.len(),
             decoded.data
         );
-        assert_eq!(decoded.request_id, 123);
-        assert_eq!(decoded.chunk_index, 0);
+        assert_eq!(decoded.request_id, RequestId::new(123));
+        assert_eq!(decoded.chunk_index, ChunkIndex::new(0));
         assert!(!decoded.is_last);
         assert!(!decoded.is_error);
         assert_eq!(decoded.data, vec![1u8, 2u8, 3u8, 4u8]);
@@ -108,16 +110,16 @@ mod tests {
     #[test]
     fn test_stream_chunk_last_chunk() {
         let chunk = StreamChunk {
-            request_id: 456,
-            chunk_index: 10,
+            request_id: RequestId::new(456),
+            chunk_index: ChunkIndex::new(10),
             is_last: true,
             is_error: false,
             data: Vec::<u8>::new(),
         };
         let bytes = chunk.to_bytes();
         let decoded = StreamChunk::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.request_id, 456);
-        assert_eq!(decoded.chunk_index, 10);
+        assert_eq!(decoded.request_id, RequestId::new(456));
+        assert_eq!(decoded.chunk_index, ChunkIndex::new(10));
         assert!(decoded.is_last);
         assert!(!decoded.is_error);
         assert_eq!(decoded.data, Vec::<u8>::new());

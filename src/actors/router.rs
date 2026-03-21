@@ -5,7 +5,7 @@ use crate::commands::{
 };
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{ChunkIndex, Message, RequestId, TransferId, UnixTimestampSeconds};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::HashMap;
 
@@ -37,9 +37,9 @@ enum TransferRequest {
 struct CopyRequest {
     source_agent_id: String,
     dest_agent_id: String,
-    source_request_id: u64,
-    dest_request_id: u64,
-    next_chunk_index: u64,
+    source_request_id: RequestId,
+    dest_request_id: RequestId,
+    next_chunk_index: ChunkIndex,
 }
 
 /// Internal state for the [`RouterActor`].
@@ -59,24 +59,24 @@ pub struct RouterState {
     ///
     /// Stores the reply port to complete once the agent responds, together with
     /// the target `agent_id` for cleanup if that agent disconnects mid-request.
-    rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
+    rest_pending_responses: HashMap<RequestId, (RpcReplyPort<CommandResult>, String)>,
 
-    /// Active upload/download transfer requests keyed by public transfer ID.
+    /// Active upload/download transfer requests keyed by internal router request ID.
     ///
     /// The entry keeps the transfer-specific state needed to stream chunks or
     /// complete the transfer when the remote agent finishes.
-    transfers: HashMap<u64, TransferRequest>,
+    transfers: HashMap<RequestId, TransferRequest>,
 
     /// Transfer progress snapshots keyed by public transfer ID for REST/UI reads.
-    transfer_progress: HashMap<u64, TransferProgressEntry>,
+    transfer_progress: HashMap<TransferId, TransferProgressEntry>,
 
     /// Active copy operations keyed by the public copy request ID exposed outside
     /// the router.
-    copy_requests_by_public_id: HashMap<u64, CopyRequest>,
+    copy_requests_by_public_id: HashMap<TransferId, CopyRequest>,
 
     /// Reverse lookup from internal per-agent request IDs to the public copy
     /// request ID so copy-related responses can be correlated back to one copy job.
-    copy_request_ids_by_internal_request: HashMap<u64, u64>,
+    copy_request_ids_by_internal_request: HashMap<RequestId, TransferId>,
 
     /// Active UI event subscribers keyed by subscriber ID.
     ///
@@ -85,7 +85,7 @@ pub struct RouterState {
     ui_subscribers: HashMap<String, tokio::sync::mpsc::UnboundedSender<UiEvent>>,
 
     /// Monotonically increasing counter used to allocate new router request IDs.
-    next_request_id: u64,
+    next_request_id: RequestId,
 }
 
 /// Metadata about a connected agent, cached at registration time.
@@ -98,7 +98,7 @@ pub struct AgentInfo {
     pub agent_name: String,
     pub socket_id: String,
     pub session_ref: ActorRef<SessionMsg>,
-    pub connected_at: i64,
+    pub connected_at: UnixTimestampSeconds,
     pub os: String,
     pub arch: String,
     pub hostname: String,
@@ -106,9 +106,9 @@ pub struct AgentInfo {
 }
 
 impl RouterState {
-    fn next_id(&mut self) -> u64 {
+    fn next_id(&mut self) -> RequestId {
         let id = self.next_request_id;
-        self.next_request_id += 1;
+        self.next_request_id = self.next_request_id.next();
         id
     }
 }
@@ -141,7 +141,7 @@ pub enum RouterMsg {
     /// An agent sent a command response; match it to the pending REST reply port.
     RouteResponse {
         agent_id: String,
-        request_id: u64,
+        request_id: RequestId,
         result: CommandResult,
     },
     /// Request the list of currently connected agents (used by the REST API).
@@ -185,12 +185,12 @@ pub enum RouterMsg {
         path: String,
         total_bytes: u64,
         completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
-        reply: RpcReplyPort<Result<u64, String>>,
+        reply: RpcReplyPort<Result<RequestId, String>>,
     },
     /// Forward a binary upload chunk from the REST API to the target agent session.
     SendStreamChunkToAgent {
         agent_id: String,
-        request_id: u64,
+        request_id: RequestId,
         chunk: crate::streaming::StreamChunk,
         reply: RpcReplyPort<Result<(), String>>,
     },
@@ -200,23 +200,24 @@ pub enum RouterMsg {
         dest_agent_id: String,
         dest_path: String,
         total_bytes: u64,
-        reply: RpcReplyPort<Result<u64, String>>,
+        reply: RpcReplyPort<Result<TransferId, String>>,
     },
 }
 
 impl RouterActor {
     fn record_download_start(
         state: &mut RouterState,
-        request_id: u64,
+        request_id: RequestId,
         agent_id: String,
         path: String,
         total_bytes: u64,
         chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
     ) {
+        let transfer_id = request_id.as_transfer_id();
         state.transfer_progress.insert(
-            request_id,
+            transfer_id,
             TransferProgressEntry {
-                request_id,
+                request_id: transfer_id,
                 agent_id: agent_id.clone(),
                 path,
                 source: None,
@@ -240,16 +241,17 @@ impl RouterActor {
 
     fn record_upload_start(
         state: &mut RouterState,
-        request_id: u64,
+        request_id: RequestId,
         agent_id: String,
         path: String,
         total_bytes: u64,
         completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
     ) {
+        let transfer_id = request_id.as_transfer_id();
         state.transfer_progress.insert(
-            request_id,
+            transfer_id,
             TransferProgressEntry {
-                request_id,
+                request_id: transfer_id,
                 agent_id: agent_id.clone(),
                 path,
                 source: None,
@@ -271,9 +273,9 @@ impl RouterActor {
         Self::notify_ui_refresh(state);
     }
 
-    fn increment_download_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+    fn increment_download_progress(state: &mut RouterState, transfer_id: TransferId, bytes: u64) {
         let mut updated = false;
-        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+        if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
             progress.error = None;
             updated = true;
@@ -283,9 +285,9 @@ impl RouterActor {
         }
     }
 
-    fn increment_upload_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
+    fn increment_upload_progress(state: &mut RouterState, transfer_id: TransferId, bytes: u64) {
         let mut updated = false;
-        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+        if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
             progress.error = None;
             updated = true;
@@ -295,9 +297,9 @@ impl RouterActor {
         }
     }
 
-    fn mark_transfer_completed(state: &mut RouterState, request_id: u64) {
+    fn mark_transfer_completed(state: &mut RouterState, transfer_id: TransferId) {
         let mut updated = false;
-        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+        if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Completed;
             progress.transferred_bytes = progress.total_bytes;
             progress.error = None;
@@ -308,9 +310,13 @@ impl RouterActor {
         }
     }
 
-    fn mark_transfer_errored(state: &mut RouterState, request_id: u64, error_message: String) {
+    fn mark_transfer_errored(
+        state: &mut RouterState,
+        transfer_id: TransferId,
+        error_message: String,
+    ) {
         let mut updated = false;
-        if let Some(progress) = state.transfer_progress.get_mut(&request_id) {
+        if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Errored;
             progress.error = Some(error_message);
             updated = true;
@@ -322,7 +328,7 @@ impl RouterActor {
 
     fn record_copy_start(
         state: &mut RouterState,
-        request_id: u64,
+        request_id: TransferId,
         source_agent_id: String,
         source_path: String,
         dest_agent_id: String,
@@ -353,7 +359,7 @@ impl RouterActor {
         Self::notify_ui_refresh(state);
     }
 
-    fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: u64) {
+    fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: TransferId) {
         if let Some(copy_request) = state.copy_requests_by_public_id.remove(&public_request_id) {
             state
                 .copy_request_ids_by_internal_request
@@ -368,7 +374,7 @@ impl RouterActor {
 
     fn abort_copy_upload(
         state: &mut RouterState,
-        public_request_id: u64,
+        public_request_id: TransferId,
         error_message: String,
     ) -> Result<(), String> {
         let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
@@ -390,7 +396,7 @@ impl RouterActor {
             is_error: true,
             data: error_message.into_bytes(),
         };
-        copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_add(1);
+        copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_next_index();
         let _ = agent_info
             .session_ref
             .cast(SessionMsg::OutgoingBinary(abort_chunk.to_bytes()));
@@ -421,7 +427,7 @@ impl RouterActor {
             }
 
             let chunk_index = copy_request.next_chunk_index;
-            copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_add(1);
+            copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_next_index();
 
             (
                 copy_request.source_agent_id.clone(),
@@ -486,7 +492,7 @@ impl RouterActor {
     fn finish_copy_transfer(
         state: &mut RouterState,
         agent_id: String,
-        request_id: u64,
+        request_id: RequestId,
         result: CommandResult,
     ) -> bool {
         let Some(public_request_id) = state
@@ -563,6 +569,7 @@ impl RouterActor {
         chunk: crate::streaming::StreamChunk,
     ) {
         let request_id = chunk.request_id;
+        let transfer_id = request_id.as_transfer_id();
 
         let chunk_sender = match state.transfers.get(&request_id) {
             Some(TransferRequest::Download {
@@ -600,7 +607,7 @@ impl RouterActor {
         };
 
         if !chunk.is_error {
-            Self::increment_download_progress(state, request_id, chunk.data.len() as u64);
+            Self::increment_download_progress(state, transfer_id, chunk.data.len() as u64);
         }
 
         // This send only forwards an already-received agent chunk into the REST
@@ -617,7 +624,7 @@ impl RouterActor {
             );
             Self::mark_transfer_errored(
                 state,
-                request_id,
+                transfer_id,
                 "REST stream receiver dropped before download completed".to_string(),
             );
             state.transfers.remove(&request_id);
@@ -631,9 +638,9 @@ impl RouterActor {
             } else {
                 String::from_utf8_lossy(&chunk.data).to_string()
             };
-            Self::mark_transfer_errored(state, request_id, error_message);
+            Self::mark_transfer_errored(state, transfer_id, error_message);
         } else if chunk.is_last {
-            Self::mark_transfer_completed(state, request_id);
+            Self::mark_transfer_completed(state, transfer_id);
         }
 
         if chunk.is_last || chunk.is_error {
@@ -644,7 +651,7 @@ impl RouterActor {
                 "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
                 agent_id,
                 request_id,
-                chunk.chunk_index + 1,
+                chunk.chunk_index.display_number(),
                 chunk.is_error
             );
         }
@@ -653,7 +660,7 @@ impl RouterActor {
     fn finish_upload_transfer(
         state: &mut RouterState,
         agent_id: String,
-        request_id: u64,
+        request_id: RequestId,
         result: CommandResult,
     ) {
         let completion_sender = match state.transfers.get_mut(&request_id) {
@@ -694,7 +701,7 @@ impl RouterActor {
 
         let completion_result = match &result {
             CommandResult::RawUpload => {
-                Self::mark_transfer_completed(state, request_id);
+                Self::mark_transfer_completed(state, request_id.as_transfer_id());
                 log!(
                     Level::Info,
                     "Routing upload completion response: agent_id={}, request_id={}, result={:?}",
@@ -705,7 +712,7 @@ impl RouterActor {
                 Ok(result)
             }
             CommandResult::Error { message } => {
-                Self::mark_transfer_errored(state, request_id, message.clone());
+                Self::mark_transfer_errored(state, request_id.as_transfer_id(), message.clone());
                 log!(
                     Level::Info,
                     "Routing upload error response: agent_id={}, request_id={}, message={}",
@@ -718,7 +725,7 @@ impl RouterActor {
             _ => {
                 Self::mark_transfer_errored(
                     state,
-                    request_id,
+                    request_id.as_transfer_id(),
                     "Unexpected upload response type".to_string(),
                 );
                 log!(
@@ -741,7 +748,7 @@ impl RouterActor {
     }
 
     fn cleanup_agent_requests(state: &mut RouterState, agent_id: &str) {
-        let orphaned_oneshot: Vec<u64> = state
+        let orphaned_oneshot: Vec<RequestId> = state
             .rest_pending_responses
             .iter()
             .filter(|(_, (_, pending_agent_id))| pending_agent_id == agent_id)
@@ -762,7 +769,7 @@ impl RouterActor {
             }
         }
 
-        let orphaned_copy_ids: Vec<u64> = state
+        let orphaned_copy_ids: Vec<TransferId> = state
             .copy_requests_by_public_id
             .iter()
             .filter(|(_, copy_request)| {
@@ -785,7 +792,7 @@ impl RouterActor {
             Self::cleanup_copy_tracking(state, *request_id);
         }
 
-        let orphaned_transfers: Vec<u64> = state
+        let orphaned_transfers: Vec<RequestId> = state
             .transfers
             .iter()
             .filter(|(_, transfer)| transfer.agent_id() == agent_id)
@@ -797,7 +804,11 @@ impl RouterActor {
                 let disconnect_message = format!("Agent disconnected: {}", agent_id);
                 match transfer {
                     TransferRequest::Download { .. } => {
-                        Self::mark_transfer_errored(state, *request_id, disconnect_message.clone());
+                        Self::mark_transfer_errored(
+                            state,
+                            request_id.as_transfer_id(),
+                            disconnect_message.clone(),
+                        );
                         log!(
                             Level::Warning,
                             "Cleaning up orphaned download stream: request_id={}, agent_id={}",
@@ -808,7 +819,11 @@ impl RouterActor {
                     TransferRequest::Upload {
                         completion_sender, ..
                     } => {
-                        Self::mark_transfer_errored(state, *request_id, disconnect_message.clone());
+                        Self::mark_transfer_errored(
+                            state,
+                            request_id.as_transfer_id(),
+                            disconnect_message.clone(),
+                        );
                         log!(
                             Level::Warning,
                             "Cleaning up orphaned upload stream: request_id={}, agent_id={}",
@@ -848,7 +863,7 @@ impl Actor for RouterActor {
             copy_requests_by_public_id: HashMap::new(),
             copy_request_ids_by_internal_request: HashMap::new(),
             ui_subscribers: HashMap::new(),
-            next_request_id: 1,
+            next_request_id: RequestId::new(1),
         })
     }
 
@@ -893,7 +908,7 @@ impl Actor for RouterActor {
                     agent_name,
                     socket_id
                 );
-                let connected_at = chrono::Utc::now().timestamp();
+                let connected_at = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
                 state.agents.insert(
                     agent_id.clone(),
                     AgentInfo {
@@ -1152,7 +1167,11 @@ impl Actor for RouterActor {
                     )));
                 } else if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
                     if !chunk.is_error {
-                        Self::increment_upload_progress(state, request_id, chunk.data.len() as u64);
+                        Self::increment_upload_progress(
+                            state,
+                            request_id.as_transfer_id(),
+                            chunk.data.len() as u64,
+                        );
                     }
 
                     if chunk.is_error {
@@ -1161,7 +1180,11 @@ impl Actor for RouterActor {
                         } else {
                             String::from_utf8_lossy(&chunk.data).to_string()
                         };
-                        Self::mark_transfer_errored(state, request_id, error_message);
+                        Self::mark_transfer_errored(
+                            state,
+                            request_id.as_transfer_id(),
+                            error_message,
+                        );
                     }
 
                     let _ = agent_info
@@ -1171,7 +1194,7 @@ impl Actor for RouterActor {
                 } else {
                     Self::mark_transfer_errored(
                         state,
-                        request_id,
+                        request_id.as_transfer_id(),
                         format!("Agent not found: {}", agent_id),
                     );
                     log!(
@@ -1196,7 +1219,7 @@ impl Actor for RouterActor {
 
                 match (source_agent_info, dest_agent_info) {
                     (Some(source_agent_info), Some(dest_agent_info)) => {
-                        let public_request_id = state.next_id();
+                        let public_request_id = state.next_id().as_transfer_id();
                         let dest_request_id = state.next_id();
                         let source_request_id = state.next_id();
 
@@ -1223,7 +1246,7 @@ impl Actor for RouterActor {
                                 dest_agent_id: dest_agent_id.clone(),
                                 source_request_id,
                                 dest_request_id,
-                                next_chunk_index: 0,
+                                next_chunk_index: ChunkIndex::new(0),
                             },
                         );
 

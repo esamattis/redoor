@@ -1,3 +1,4 @@
+use crate::types::{TransferId, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -57,6 +58,7 @@ pub struct CatResult {
 pub struct MetadataResponse {
     pub path: String,
     pub mime_type: String,
+    #[ts(type = "number")]
     pub file_size: u64,
     pub is_file: bool,
 }
@@ -109,6 +111,7 @@ pub struct LsEntry {
     pub name: String,
     #[serde(rename = "type")]
     pub file_type: String,
+    #[ts(type = "number")]
     pub size: u64,
     pub owner: Option<String>,
     pub group: Option<String>,
@@ -125,6 +128,7 @@ pub struct LsDirectoryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LsFileResponse {
+    #[ts(type = "number")]
     pub size: u64,
     pub path: String,
     pub owner: Option<String>,
@@ -164,12 +168,13 @@ pub struct AgentDetailsResponse {
     pub load_average_one: f64,
     pub load_average_five: f64,
     pub load_average_fifteen: f64,
+    #[ts(type = "number")]
     pub system_uptime: u64,
     pub os: String,
     pub arch: String,
     pub hostname: String,
     pub username: String,
-    pub connected_at: i64,
+    pub connected_at: UnixTimestampSeconds,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -182,6 +187,7 @@ pub struct ErrorResponse {
 #[ts(export)]
 pub struct RawUploadResponse {
     pub path: String,
+    #[ts(type = "number")]
     pub bytes_written: u64,
 }
 
@@ -208,7 +214,7 @@ pub struct CopyFileRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CopyFileResponse {
-    pub copy_request_id: u64,
+    pub copy_request_id: TransferId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -228,13 +234,15 @@ pub enum UiEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TransferProgressEntry {
-    pub request_id: u64,
+    pub request_id: TransferId,
     pub agent_id: String,
     pub path: String,
     pub source: Option<CopyEndpoint>,
     pub dest: Option<CopyEndpoint>,
     pub direction: TransferDirection,
+    #[ts(type = "number")]
     pub total_bytes: u64,
+    #[ts(type = "number")]
     pub transferred_bytes: u64,
     pub state: TransferProgressState,
     pub error: Option<String>,
@@ -593,7 +601,7 @@ impl CommandHandler {
             arch,
             hostname,
             username,
-            connected_at: 0,
+            connected_at: UnixTimestampSeconds::new(0),
         })
     }
 }

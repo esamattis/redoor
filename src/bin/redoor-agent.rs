@@ -4,7 +4,7 @@ use redoor::{
     Level,
     commands::{Command, CommandHandler, CommandResult},
     log, streaming,
-    types::Message,
+    types::{ChunkIndex, Message, RequestId},
 };
 use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env};
@@ -30,7 +30,7 @@ pub struct AgentState {
     agent_name: String,
     server_url: String,
     ws_tx: Option<mpsc::Sender<WsMessage>>,
-    active_uploads: HashMap<u64, UploadSession>,
+    active_uploads: HashMap<RequestId, UploadSession>,
 }
 
 #[derive(Clone)]
@@ -201,7 +201,7 @@ impl AgentActor {
         &self,
         write: &mpsc::Sender<WsMessage>,
         agent_id: &str,
-        request_id: u64,
+        request_id: RequestId,
         result: CommandResult,
     ) {
         let response = Message::CommandResponse {
@@ -220,12 +220,12 @@ impl AgentActor {
         path: String,
         range_start: Option<u64>,
         range_end: Option<u64>,
-        request_id: u64,
+        request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
     ) {
         match File::open(&path).await {
             Ok(mut file) => {
-                let mut chunk_index = 0u64;
+                let mut chunk_index = ChunkIndex(0);
                 let chunk_size = streaming::CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
                 let mut bytes_remaining: Option<u64> = None;
@@ -297,7 +297,7 @@ impl AgentActor {
                                     );
                                     return;
                                 }
-                                chunk_index += 1;
+                                chunk_index = chunk_index.next_index();
                             }
                         }
                         Err(e) => {
@@ -333,7 +333,7 @@ impl AgentActor {
                     Level::Info,
                     "Raw download complete: path={}, chunks={}",
                     path,
-                    chunk_index + 1
+                    chunk_index.display_number()
                 );
             }
             Err(e) => {
@@ -341,7 +341,7 @@ impl AgentActor {
                 let error_msg = format!("Failed to open file: {}", e);
                 let error_chunk = streaming::StreamChunk {
                     request_id,
-                    chunk_index: 0,
+                    chunk_index: ChunkIndex(0),
                     is_last: true,
                     is_error: true,
                     data: error_msg.into_bytes(),

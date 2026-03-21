@@ -33,9 +33,9 @@ type TransferProgressEntryJson = Omit<
     TransferProgressEntry,
     "request_id" | "total_bytes" | "transferred_bytes"
 > & {
-    request_id: number | string | bigint;
-    total_bytes: number | string | bigint;
-    transferred_bytes: number | string | bigint;
+    request_id: number;
+    total_bytes: number;
+    transferred_bytes: number;
 };
 
 type TransferProgressListResponseJson = {
@@ -43,7 +43,7 @@ type TransferProgressListResponseJson = {
 };
 
 type CopyFileResponseJson = {
-    copy_request_id: number | string | bigint;
+    copy_request_id: number;
 };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
@@ -201,7 +201,7 @@ export class Agent {
         );
 
         return {
-            copy_request_id: BigInt(response.copy_request_id),
+            copy_request_id: response.copy_request_id,
         };
     }
 
@@ -305,9 +305,6 @@ export class ApiClient {
         return {
             transfers: response.transfers.map((transfer) => ({
                 ...transfer,
-                request_id: BigInt(transfer.request_id),
-                total_bytes: BigInt(transfer.total_bytes),
-                transferred_bytes: BigInt(transfer.transferred_bytes),
             })),
         };
     }
