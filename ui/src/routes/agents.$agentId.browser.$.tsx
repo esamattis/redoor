@@ -453,10 +453,6 @@ function SelectedFilesDirectoryActions(props: {
         }
     };
 
-    if (selectedFiles.length === 0) {
-        return null;
-    }
-
     return (
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
