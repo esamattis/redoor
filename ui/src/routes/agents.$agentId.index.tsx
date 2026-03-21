@@ -11,10 +11,13 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/agents/$agentId/")({
-    loader: async ({ params, context }) => {
-        const agents = await context.api.listAgents();
-        const agent = agents.find((a) => a.id === params.agentId);
+    loader: async ({ params, parentMatchPromise }) => {
+        const rootMatch = await parentMatchPromise;
+        const agents = rootMatch.loaderData?.agents ?? [];
+        const agent = agents.find((entry) => entry.id === params.agentId);
+
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
+
         return agent.getDetails();
     },
     component: AgentDetails,

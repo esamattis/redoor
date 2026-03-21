@@ -287,18 +287,28 @@ impl RouterActor {
             Self::increment_download_progress(state, request_id, chunk.data.len() as u64);
         }
 
+        // This send only forwards an already-received agent chunk into the REST
+        // response body stream. An error here does not mean the agent-side file
+        // read failed. It means the HTTP response body receiver was already
+        // dropped on the server side, typically because the client stopped
+        // consuming the response or disconnected while the download was in
+        // flight.
         if let Err(_error) = chunk_sender.send(chunk.clone()) {
-            log!(
-                Level::Warning,
-                "Failed to send chunk to REST stream: request_id={}",
-                request_id
-            );
+            if chunk.is_last && !chunk.is_error && chunk.data.is_empty() {
+                Self::mark_transfer_completed(state, request_id);
+            } else {
+                log!(
+                    Level::Warning,
+                    "Failed to send chunk to REST stream: request_id={}",
+                    request_id
+                );
+                Self::mark_transfer_errored(
+                    state,
+                    request_id,
+                    "REST stream receiver dropped before download completed".to_string(),
+                );
+            }
             state.transfers.remove(&request_id);
-            Self::mark_transfer_errored(
-                state,
-                request_id,
-                "REST stream receiver dropped before download completed".to_string(),
-            );
             return;
         }
 

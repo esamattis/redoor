@@ -19,11 +19,17 @@ import {
     isLsFileResponse,
     type LsFileResponse,
 } from "../api-client";
-
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
-    loader: async ({ params, context }) => {
-        const agents = await context.api.listAgents();
-        const agent = agents.find((a) => a.id === params.agentId);
+    loader: async ({ params, parentMatchPromise }) => {
+        const rootMatch = await parentMatchPromise;
+        const rootLoaderData = rootMatch.loaderData;
+        if (!rootLoaderData) {
+            throw new Error("Agent list unavailable");
+        }
+
+        const agent = rootLoaderData.agents.find(
+            (entry) => entry.id === params.agentId,
+        );
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
         const details = await agent.getDetails();
