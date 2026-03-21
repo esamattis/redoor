@@ -1,7 +1,24 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+export async function getAvailablePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const server = createServer();
+        server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            if (!address || typeof address === "string") {
+                reject(new Error("Failed to get ephemeral port"));
+                return;
+            }
+
+            server.close(() => resolve(address.port));
+        });
+        server.on("error", reject);
+    });
+}
 
 /**
  * Manages temporary files for tests. Files are automatically cleaned up

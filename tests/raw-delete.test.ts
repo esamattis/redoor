@@ -2,28 +2,17 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { createServer } from "node:net";
 import {
     ProcessManager,
     waitForPort,
     waitForLogMessage,
     TempFileManager,
+    getAvailablePort,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
 const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "raw-delete-test-agent";
-
-async function getAvailablePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = createServer();
-        server.listen(0, "127.0.0.1", () => {
-            const port = (server.address() as { port: number }).port;
-            server.close(() => resolve(port));
-        });
-        server.on("error", reject);
-    });
-}
 
 describe("Raw Delete API", () => {
     const processManager = new ProcessManager();

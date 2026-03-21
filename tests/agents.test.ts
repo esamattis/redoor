@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
 import path from "node:path";
-import { createServer } from "node:net";
-import { ProcessManager, waitForPort, waitForLogMessage } from "./test-utils";
+import {
+    ProcessManager,
+    getAvailablePort,
+    waitForPort,
+    waitForLogMessage,
+} from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
 const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
@@ -14,20 +18,6 @@ let serverPort: number;
 let serverPid: number;
 let apiClient: ApiClient;
 let wsUrl: string;
-
-/**
- * Finds an available ephemeral port to avoid conflicts with other tests.
- */
-async function getAvailablePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = createServer();
-        server.listen(0, "127.0.0.1", () => {
-            const port = (server.address() as { port: number }).port;
-            server.close(() => resolve(port));
-        });
-        server.on("error", reject);
-    });
-}
 
 beforeAll(async () => {
     const projectRoot = path.join(__dirname, "..");

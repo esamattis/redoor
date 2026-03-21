@@ -1,31 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import path from "node:path";
-import { createServer } from "node:net";
+
 import {
     ProcessManager,
     waitForPort,
     waitForLogMessage,
     TempFileManager,
+    getAvailablePort,
 } from "./test-utils";
 
 const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
 const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "test-agent-metadata";
-
-/**
- * Finds an available ephemeral port to avoid conflicts with other tests.
- */
-async function getAvailablePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = createServer();
-        server.listen(0, "127.0.0.1", () => {
-            const port = (server.address() as { port: number }).port;
-            server.close(() => resolve(port));
-        });
-        server.on("error", reject);
-    });
-}
 
 describe("Metadata Content-Type Detection", () => {
     const processManager = new ProcessManager();
