@@ -3,6 +3,7 @@ import {
     Outlet,
     Link,
     useLocation,
+    useRouter,
     createRootRouteWithContext,
 } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -19,11 +20,13 @@ import {
     Files,
     ChevronDown,
     ChevronUp,
+    Trash2,
 } from "lucide-react";
 import {
     ApiClient,
     type TransferProgressEntry,
     type UiEvent,
+    type Agent,
 } from "../api-client";
 import type { AnyRouter } from "@tanstack/react-router";
 
@@ -33,6 +36,7 @@ import {
     unselectFileAtom,
     clearSelectedFilesAtom,
 } from "../selected-files";
+import { Tooltip } from "../components/tooltip";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -226,7 +230,7 @@ function RootLayout() {
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
-                <SelectedFilesPanel />
+                <SelectedFilesPanel agents={agents} />
                 <TransferProgressPanel
                     agents={agents}
                     transfers={transferProgress.transfers}
@@ -311,14 +315,320 @@ function CollapsibleBottomPanel(props: {
     );
 }
 
-function SelectedFilesPanel() {
+type CopySelectedFilesState =
+    | { type: "idle" }
+    | { type: "copying"; itemCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+type DeleteState =
+    | { type: "idle" }
+    | { type: "deleting" }
+    | { type: "error"; message: string };
+
+type BrowserContext = {
+    agentId: string | null;
+    relativePath: string;
+    isDirectoryView: boolean;
+};
+
+function joinBrowserPath(directoryPath: string, fileName: string) {
+    if (directoryPath.endsWith("/")) {
+        return `${directoryPath}${fileName}`;
+    }
+
+    return `${directoryPath}/${fileName}`;
+}
+
+function getErrorMessage(error: unknown) {
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return "Upload failed";
+}
+
+function getBrowserContextFromPathname(pathname: string): BrowserContext {
+    const browserPathMatch = pathname.match(
+        /^\/agents\/([^/]+)\/browser(?:\/(.*))?$/,
+    );
+
+    if (!browserPathMatch) {
+        return {
+            agentId: null,
+            relativePath: "",
+            isDirectoryView: false,
+        };
+    }
+
+    const encodedAgentId = browserPathMatch[1];
+    const relativePath = browserPathMatch[2] ?? "";
+
+    if (relativePath === "") {
+        return {
+            agentId: encodedAgentId ? decodeURIComponent(encodedAgentId) : null,
+            relativePath,
+            isDirectoryView: true,
+        };
+    }
+
+    const lastPathSegment = relativePath.split("/").pop() ?? "";
+    const isDirectoryView = !lastPathSegment.includes(".");
+
+    return {
+        agentId: encodedAgentId ? decodeURIComponent(encodedAgentId) : null,
+        relativePath,
+        isDirectoryView,
+    };
+}
+
+async function getCurrentDirectoryPath(
+    agent: Agent | null,
+    browserContext: BrowserContext,
+): Promise<string | null> {
+    if (!agent || !browserContext.isDirectoryView) {
+        return null;
+    }
+
+    const details = await agent.getDetails();
+
+    return browserContext.relativePath
+        ? `${details.cwd}/${browserContext.relativePath}`
+        : details.cwd;
+}
+
+/**
+ * Shows the globally selected items and lets you copy or delete them from the
+ * current browser context.
+ */
+function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
+    const router = useRouter();
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
     const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
+    const location = useLocation();
+    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
+        type: "idle",
+    });
+    const [deleteState, setDeleteState] = React.useState<DeleteState>({
+        type: "idle",
+    });
+    const [currentDirectoryPath, setCurrentDirectoryPath] = React.useState<
+        string | null
+    >(null);
+
+    const browserContext = React.useMemo(
+        () => getBrowserContextFromPathname(location.pathname),
+        [location.pathname],
+    );
+
+    const currentAgent = React.useMemo(() => {
+        if (!browserContext.agentId) {
+            return null;
+        }
+
+        return (
+            props.agents.find((agent) => agent.id === browserContext.agentId) ??
+            null
+        );
+    }, [browserContext.agentId, props.agents]);
+
+    React.useEffect(() => {
+        let isMounted = true;
+
+        async function loadCurrentDirectoryPath() {
+            const directoryPath = await getCurrentDirectoryPath(
+                currentAgent,
+                browserContext,
+            );
+
+            if (isMounted) {
+                setCurrentDirectoryPath(directoryPath);
+            }
+        }
+
+        void loadCurrentDirectoryPath();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [browserContext, currentAgent]);
 
     if (selectedFiles.length === 0) {
         return null;
     }
+
+    const selectedFilesForCurrentAgent = browserContext.agentId
+        ? selectedFiles.filter(
+              (file) => file.agentId === browserContext.agentId,
+          )
+        : [];
+    const statusMessage =
+        copyState.type === "copying"
+            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
+            : copyState.type === "idle"
+              ? null
+              : copyState.message;
+    const isCopying = copyState.type === "copying";
+
+    const handleCopySelectedFiles = async () => {
+        if (
+            !currentAgent ||
+            !currentDirectoryPath ||
+            selectedFiles.length === 0
+        ) {
+            return;
+        }
+
+        setCopyState({
+            type: "copying",
+            itemCount: selectedFiles.length,
+        });
+
+        try {
+            const results = await Promise.allSettled(
+                selectedFiles.map((file) =>
+                    currentAgent.copyTo(
+                        {
+                            agent: currentAgent.id,
+                            path: joinBrowserPath(
+                                currentDirectoryPath,
+                                file.fileName,
+                            ),
+                        },
+                        file.path,
+                    ),
+                ),
+            );
+
+            const successfulCopies = selectedFiles.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+
+            setCopyState({ type: "idle" });
+
+            const failedCopies = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successfulCopies.length > 0) {
+                successfulCopies.forEach((file) => {
+                    unselectFile({
+                        agentId: file.agentId,
+                        path: file.path,
+                    });
+                });
+            }
+
+            if (failedCopies.length > 0) {
+                const firstFailedCopy = failedCopies[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedCopy ? firstFailedCopy.reason : undefined,
+                ).replace(/^Upload failed$/, "Copy failed");
+
+                setCopyState({
+                    type: "error",
+                    message:
+                        successfulCopies.length > 0
+                            ? `Copied ${successfulCopies.length} of ${selectedFiles.length} items. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+
+            setCopyState({
+                type: "success",
+                message:
+                    selectedFiles.length === 1
+                        ? `Copied ${selectedFiles[0]?.fileName ?? "item"}`
+                        : `Copied ${selectedFiles.length} items`,
+            });
+        } catch (error) {
+            setCopyState({
+                type: "error",
+                message: getErrorMessage(error).replace(
+                    /^Upload failed$/,
+                    "Copy failed",
+                ),
+            });
+        }
+    };
+
+    const handleDeleteSelectedFiles = async () => {
+        if (selectedFiles.length === 0) {
+            return;
+        }
+
+        setDeleteState({ type: "deleting" });
+
+        try {
+            const agentsById = new Map(
+                props.agents.map((agent) => [agent.id, agent]),
+            );
+
+            const results = await Promise.allSettled(
+                selectedFiles.map((file) => {
+                    const agent = agentsById.get(file.agentId);
+
+                    if (!agent) {
+                        return Promise.reject(
+                            new Error(
+                                `Agent unavailable for selected item: ${file.agentId}`,
+                            ),
+                        );
+                    }
+
+                    return agent.deleteFile(file.path);
+                }),
+            );
+
+            const successfulDeletes = selectedFiles.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+            const failedDeletes = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successfulDeletes.length > 0) {
+                successfulDeletes.forEach((file) => {
+                    unselectFile({
+                        agentId: file.agentId,
+                        path: file.path,
+                    });
+                });
+
+                await router.invalidate();
+            }
+
+            if (failedDeletes.length > 0) {
+                const firstFailedDelete = failedDeletes[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedDelete ? firstFailedDelete.reason : undefined,
+                ).replace(/^Upload failed$/, "Delete failed");
+
+                setDeleteState({
+                    type: "error",
+                    message:
+                        successfulDeletes.length > 0
+                            ? `Deleted ${successfulDeletes.length} of ${selectedFiles.length} items. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+
+            setDeleteState({ type: "idle" });
+        } catch (error) {
+            setDeleteState({
+                type: "error",
+                message: getErrorMessage(error).replace(
+                    /^Upload failed$/,
+                    "Delete failed",
+                ),
+            });
+        }
+    };
 
     return (
         <CollapsibleBottomPanel
@@ -332,15 +642,73 @@ function SelectedFilesPanel() {
                 </span>
             }
             actions={
-                <button
-                    type="button"
-                    onClick={() => clearSelectedFiles()}
-                    className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
-                >
-                    Clear all
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={handleDeleteSelectedFiles}
+                        disabled={
+                            deleteState.type === "deleting" ||
+                            selectedFiles.length === 0
+                        }
+                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <Trash2 className="h-4 w-4" />
+                        {deleteState.type === "deleting"
+                            ? "Deleting..."
+                            : "Delete selected items"}
+                    </button>
+                    <Tooltip content="Copy selected items is only available while browsing a directory.">
+                        <span className="inline-flex">
+                            <button
+                                type="button"
+                                onClick={handleCopySelectedFiles}
+                                disabled={
+                                    !browserContext.isDirectoryView ||
+                                    !currentAgent ||
+                                    !currentDirectoryPath ||
+                                    isCopying ||
+                                    selectedFiles.length === 0
+                                }
+                                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <Copy className="h-4 w-4" />
+                                {isCopying
+                                    ? "Copying..."
+                                    : "Copy selected items"}
+                            </button>
+                        </span>
+                    </Tooltip>
+                    <button
+                        type="button"
+                        onClick={() => clearSelectedFiles()}
+                        className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
+                    >
+                        Clear all
+                    </button>
+                </div>
             }
         >
+            {statusMessage ? (
+                <p
+                    role={copyState.type === "error" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`mb-3 text-sm ${
+                        copyState.type === "error"
+                            ? "text-red-600"
+                            : "text-blue-800"
+                    }`}
+                >
+                    {statusMessage}
+                </p>
+            ) : null}
+            {deleteState.type === "error" ? (
+                <p
+                    role="alert"
+                    className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                >
+                    {deleteState.message}
+                </p>
+            ) : null}
             <div className="max-h-64 overflow-auto bg-white">
                 <table className="w-full">
                     <thead className="sticky top-0 bg-gray-50">

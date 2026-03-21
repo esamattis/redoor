@@ -86,7 +86,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
-        const fileEntries = page.locator("tbody tr");
+        const fileEntries = page.locator("main tbody tr");
         await expect(fileEntries).toHaveCount(5);
     });
 
@@ -105,7 +105,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         await expect(page.getByText("nested3.txt")).toBeVisible();
 
-        const fileEntries = page.locator("tbody tr");
+        const fileEntries = page.locator("main tbody tr");
         await expect(fileEntries).toHaveCount(1);
     });
 
@@ -386,69 +386,26 @@ test.describe.serial("File Browser Navigation", () => {
                 page
                     .getByRole("row")
                     .filter({ hasText: "uploaded-a.txt" })
-                    .getByText("completed", { exact: true }),
+                    .filter({ hasText: "completed" })
+                    .last(),
             ).toBeVisible();
-            // This verifies the first uploaded file name is rendered in transfer progress even if the directory list has not refreshed yet.
+            // This verifies the first uploaded file name is rendered in transfer progress even if multiple matching rows exist during refreshes.
             await expect(
-                page.getByRole("row").filter({ hasText: "uploaded-a.txt" }),
+                page
+                    .getByRole("row")
+                    .filter({ hasText: "uploaded-a.txt" })
+                    .last(),
             ).toBeVisible();
-            // This verifies multi-file uploads are tracked independently in transfer progress.
+            // This verifies multi-file uploads are tracked independently in transfer progress even if multiple matching rows exist during refreshes.
             await expect(
-                page.getByRole("row").filter({ hasText: "uploaded-b.txt" }),
+                page
+                    .getByRole("row")
+                    .filter({ hasText: "uploaded-b.txt" })
+                    .last(),
             ).toBeVisible();
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
-    });
-
-    test("should gate copy action to cross-agent selections in directory view", async ({
-        page,
-    }) => {
-        const sourceDir = path.join(TEST_DIR, "copy-source");
-        const destinationDir = path.join(TEST_DIR, "copy-destination");
-        const sourceFilePath = path.join(sourceDir, "copy-me.txt");
-        const sourceFileContents = "copied through directory selection";
-
-        await fs.mkdir(sourceDir, { recursive: true });
-        await fs.mkdir(destinationDir, { recursive: true });
-        await fs.writeFile(sourceFilePath, sourceFileContents);
-
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/copy-source`,
-        );
-
-        // This waits for the source file entry to be visible before trying to select it.
-        await expect(
-            page.getByRole("button", { name: "Select file copy-me.txt" }),
-        ).toBeVisible();
-        await page
-            .getByRole("button", { name: "Select file copy-me.txt" })
-            .click();
-
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/copy-destination`,
-        );
-
-        const copyButton = page.getByRole("button", {
-            name: "Copy selected items here",
-        });
-
-        // This verifies the in-page selection state is reset when navigating between directory views on the same agent.
-        await expect(
-            page.getByText("0 items are selected", { exact: true }),
-        ).toBeVisible();
-        // This verifies same-agent selections are intentionally unavailable for the destination directory view.
-        await expect(copyButton).toBeDisabled();
-        // This checks the inline helper text explains that only cross-agent selections can be copied here.
-        await expect(
-            page.getByText(
-                "Select files or directories from another agent to copy them into this directory.",
-            ),
-        ).toBeVisible();
-        // This confirms the page does not render the global selected-items panel after the in-page selection state has been cleared.
-        await expect(
-            page.getByRole("heading", { name: "Selected items" }),
-        ).toHaveCount(0);
     });
 
     test("should delete file from detail view after confirmation", async ({
@@ -517,29 +474,22 @@ test.describe.serial("File Browser Navigation", () => {
             .getByRole("button", { name: "Select file delete-selected.txt" })
             .click();
 
-        await page
-            .getByRole("button", { name: "Delete selected items" })
-            .click();
+        const deleteSelectedItemsButton = page.getByRole("button", {
+            name: "Delete selected items",
+        });
 
-        // This verifies the directory action reuses the same confirmation flow before deleting the selected file.
+        // This verifies the selected-items delete action is available after selecting a file.
+        await expect(deleteSelectedItemsButton).toBeEnabled();
+
+        await deleteSelectedItemsButton.click();
+
+        // This waits for the selected row itself to disappear before checking the remaining directory entries.
         await expect(
-            page.getByRole("dialog", { name: "Delete these items?" }),
-        ).toBeVisible();
-        // This ensures cancel still protects against accidental deletes from the directory view.
-        await page.getByRole("button", { name: "Cancel" }).click();
-        await expect(
-            page.getByRole("dialog", { name: "Delete these items?" }),
-        ).toBeHidden();
-
-        await page
-            .getByRole("button", { name: "Delete selected items" })
-            .click();
-        await page
-            .getByRole("dialog", { name: "Delete these items?" })
-            .getByRole("button", { name: "Delete selected items" })
-            .click();
-
-        // The deleted file disappearing confirms the directory bulk delete removes selected files after confirmation.
+            page.getByRole("row", {
+                name: /File entry delete-selected\.txt/,
+            }),
+        ).toHaveCount(0);
+        // This verifies the directory action deletes the selected file through the shared selected-items action.
         await expect(
             page.getByRole("link", { name: "delete-selected.txt" }),
         ).toHaveCount(0);
