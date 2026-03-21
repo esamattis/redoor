@@ -72,7 +72,7 @@ export default defineConfig({
 
     /* Run your local dev server before starting the tests */
     webServer: {
-        command: "../scripts/dev",
+        command: "../scripts/test/playwright-dev",
         url: "http://localhost:4000/",
         reuseExistingServer: !process.env.CI,
     },

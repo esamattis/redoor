@@ -1,0 +1,33 @@
+#!/bin/sh
+
+set -eu
+
+cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
+
+pnpm run build
+cargo build --bin redoor --bin redoor-agent
+
+cleanup() {
+    kill "$vite_pid" "$server_pid" "$agent1_pid" "$agent2_pid" 2>/dev/null || true
+    wait "$vite_pid" "$server_pid" "$agent1_pid" "$agent2_pid" 2>/dev/null || true
+}
+
+trap cleanup INT TERM EXIT
+
+pnpm exec vite preview ./ui --host 127.0.0.1 --port 4000 &
+vite_pid=$!
+
+./target/debug/redoor &
+server_pid=$!
+
+./target/debug/redoor-agent ws://127.0.0.1:3000/ws agent1_src &
+agent1_pid=$!
+
+(
+    mkdir -p dev_agents/agent2
+    cd dev_agents/agent2
+    ../../target/debug/redoor-agent ws://127.0.0.1:3000/ws agent2_custom
+) &
+agent2_pid=$!
+
+wait
