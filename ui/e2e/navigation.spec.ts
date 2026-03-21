@@ -43,9 +43,9 @@ test.describe.serial("File Browser Navigation", () => {
         const apiClient = new ApiClient(API_BASE_URL);
         await apiClient.waitForAgentNames(["agent1", "agent2"], 30000);
         const agents = await apiClient.listAgents();
-        const agent = agents[0];
+        const agent = agents.find((entry) => entry.name === "agent1");
         if (!agent) {
-            throw new Error("No agent available for testing");
+            throw new Error("Agent agent1 not available for testing");
         }
         agentId = agent.id;
         agentName = agent.name;
