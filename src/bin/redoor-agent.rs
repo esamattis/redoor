@@ -127,6 +127,13 @@ impl AgentActor {
                                 }
                             }
                         }
+                        Command::RawDelete { path } => {
+                            let result = CommandHandler::new()
+                                .execute(Command::RawDelete { path })
+                                .await;
+                            self.send_command_response(write, &state.agent_id, request_id, result)
+                                .await;
+                        }
                         other => {
                             let result = CommandHandler::new().execute(other).await;
                             let result_clone = result.clone();

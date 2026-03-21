@@ -18,6 +18,9 @@ pub enum Command {
     RawUpload {
         path: String,
     },
+    RawDelete {
+        path: String,
+    },
     Metadata {
         path: String,
     },
@@ -78,6 +81,7 @@ pub enum CommandResult {
     Cat(CatResult),
     RawDownload { path: String },
     RawUpload,
+    RawDelete,
     Metadata(MetadataResponse),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
@@ -182,6 +186,12 @@ pub struct RawUploadResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct RawDeleteResponse {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct TransferProgressListResponse {
     pub transfers: Vec<TransferProgressEntry>,
 }
@@ -243,6 +253,7 @@ impl CommandHandler {
                 range_end,
             } => self.raw_download(path, range_start, range_end).await,
             Command::RawUpload { path } => self.raw_upload(path).await,
+            Command::RawDelete { path } => self.raw_delete(path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
@@ -352,6 +363,15 @@ impl CommandHandler {
 
     async fn raw_upload(&self, _path: String) -> CommandResult {
         CommandResult::RawUpload
+    }
+
+    async fn raw_delete(&self, path: String) -> CommandResult {
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => CommandResult::RawDelete,
+            Err(e) => CommandResult::Error {
+                message: format!("Failed to delete file: {}", e),
+            },
+        }
     }
 
     async fn detect_mime_type_from_content(path: &str) -> Option<String> {
@@ -643,6 +663,40 @@ mod tests {
         match result {
             CommandResult::RawUpload => {}
             _ => panic!("Expected RawUpload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_raw_delete_command() {
+        let handler = CommandHandler::new();
+        let temp_path = std::env::temp_dir().join(format!(
+            "redoor-delete-test-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos()
+        ));
+
+        tokio::fs::write(&temp_path, "delete me")
+            .await
+            .expect("temporary file should be created");
+
+        let result = handler
+            .execute(Command::RawDelete {
+                path: temp_path.to_string_lossy().to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::RawDelete => {
+                assert!(
+                    !tokio::fs::try_exists(&temp_path)
+                        .await
+                        .expect("file existence should be queryable"),
+                    "file should be removed"
+                );
+            }
+            _ => panic!("Expected RawDelete"),
         }
     }
 

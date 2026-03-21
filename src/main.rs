@@ -1,7 +1,8 @@
 use redoor::actors;
 use redoor::commands::{
     AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawUploadResponse, UiEvent,
+    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawDeleteResponse,
+    RawUploadResponse, UiEvent,
 };
 
 use serde::Deserialize;
@@ -68,7 +69,9 @@ async fn main() {
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
         .route(
             "/api/v1/agents/{agent}/raw/{*path}",
-            get(raw_agent_handler).put(raw_agent_put_handler),
+            get(raw_agent_handler)
+                .put(raw_agent_put_handler)
+                .delete(raw_agent_delete_handler),
         )
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
         .layer(
@@ -931,6 +934,107 @@ async fn raw_agent_put_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Failed waiting for upload completion: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn raw_agent_delete_handler(
+    Path((agent, path)): Path<(String, String)>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let resolved_path = if path.starts_with('/') {
+        path
+    } else {
+        match call_t!(
+            &state.router_ref,
+            |reply| actors::router::RouterMsg::ExecuteCommandRest {
+                agent_id: agent.clone(),
+                command: Command::GetAgentDetails,
+                reply,
+            },
+            30000
+        ) {
+            Ok(CommandResult::GetAgentDetails(details)) => {
+                format!(
+                    "{}/{}",
+                    details.cwd.trim_end_matches('/'),
+                    path.trim_start_matches('/')
+                )
+            }
+            Ok(CommandResult::Error { message }) => {
+                let status = if message.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+
+                return (status, Json(ErrorResponse { error: message })).into_response();
+            }
+            Ok(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Unexpected result type while resolving delete path".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to resolve delete path: {:?}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: agent.clone(),
+            command: Command::RawDelete {
+                path: resolved_path.clone(),
+            },
+            reply,
+        },
+        30000
+    ) {
+        Ok(CommandResult::RawDelete) => (
+            StatusCode::OK,
+            Json(RawDeleteResponse {
+                path: resolved_path,
+            }),
+        )
+            .into_response(),
+        Ok(CommandResult::Error { message }) => {
+            let status = if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else if message.contains("Is a directory") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            (status, Json(ErrorResponse { error: message })).into_response()
+        }
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected delete response".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to delete file: {:?}", e),
             }),
         )
             .into_response(),

@@ -1,5 +1,10 @@
 import React from "react";
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import {
+    createFileRoute,
+    Link,
+    useNavigate,
+    useRouter,
+} from "@tanstack/react-router";
 import {
     Folder,
     File,
@@ -10,6 +15,8 @@ import {
     Copy,
     Check,
     Upload,
+    Trash2,
+    X,
 } from "lucide-react";
 import { getParentPath, formatSize } from "../utils/path";
 import {
@@ -113,6 +120,7 @@ function FileBrowser() {
             <div className="p-6">
                 <div className="max-w-4xl mx-auto">
                     <FileDetailView
+                        agent={agent}
                         agentId={agentId}
                         agentName={agentName}
                         relativePath={relativePath}
@@ -485,6 +493,7 @@ function FileEntry(props: {
 }
 
 function FileDetailView(props: {
+    agent: Agent;
     agentId: string;
     agentName: string;
     relativePath: string;
@@ -492,19 +501,18 @@ function FileDetailView(props: {
     lsResult: LsFileResponse;
     downloadUrl: string;
 }) {
-    const {
-        agentId,
-        agentName,
-        relativePath,
-        fileName,
-        lsResult,
-        downloadUrl,
-    } = props;
-    const parentPath = getParentPath(relativePath);
+    const navigate = useNavigate();
+    const parentPath = getParentPath(props.relativePath);
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
     );
+    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
+    const [deleteState, setDeleteState] = React.useState<
+        | { type: "idle" }
+        | { type: "deleting" }
+        | { type: "error"; message: string }
+    >({ type: "idle" });
 
     const copyToClipboard = async (text: string, commandType: string) => {
         try {
@@ -516,20 +524,52 @@ function FileDetailView(props: {
         }
     };
 
+    const closeDeleteDialog = () => {
+        if (deleteState.type === "deleting") {
+            return;
+        }
+
+        setIsConfirmDeleteOpen(false);
+        setDeleteState({ type: "idle" });
+    };
+
+    const handleDelete = async () => {
+        setDeleteState({ type: "deleting" });
+
+        try {
+            await props.agent.deleteFile(props.lsResult.path);
+            await navigate({
+                to: "/agents/$agentId/browser/$",
+                params: {
+                    agentId: props.agentId,
+                    _splat: parentPath ?? undefined,
+                },
+            });
+        } catch (error) {
+            setDeleteState({
+                type: "error",
+                message: getErrorMessage(error).replace(
+                    /^Upload failed$/,
+                    "Delete failed",
+                ),
+            });
+        }
+    };
+
     return (
         <div>
             <div className="mb-6">
                 <div className="flex items-center justify-between mb-4">
                     <Breadcrumbs
-                        agentId={agentId}
-                        agentName={agentName}
-                        relativePath={relativePath}
+                        agentId={props.agentId}
+                        agentName={props.agentName}
+                        relativePath={props.relativePath}
                     />
                     <div className="flex gap-2">
                         <Link
                             to="/agents/$agentId/browser/$"
                             params={{
-                                agentId,
+                                agentId: props.agentId,
                                 _splat: parentPath ?? undefined,
                             }}
                             className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
@@ -539,7 +579,7 @@ function FileDetailView(props: {
                         </Link>
                         <Link
                             to="/agents/$agentId"
-                            params={{ agentId }}
+                            params={{ agentId: props.agentId }}
                             className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
                         >
                             Back to Agent
@@ -554,7 +594,7 @@ function FileDetailView(props: {
                         <File className="h-8 w-8 text-blue-600" />
                     </div>
                     <h1 className="text-2xl font-bold text-gray-900">
-                        {fileName}
+                        {props.fileName}
                     </h1>
                 </div>
 
@@ -564,20 +604,23 @@ function FileDetailView(props: {
                             <p className="text-sm text-gray-500 mb-1">Size</p>
                             <p className="text-gray-900 font-medium">
                                 {formatSize(
-                                    BigInt(lsResult.size as unknown as number),
+                                    BigInt(
+                                        props.lsResult
+                                            .size as unknown as number,
+                                    ),
                                 )}
                             </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Owner</p>
                             <p className="text-gray-900 font-medium">
-                                {lsResult.owner || "-"}
+                                {props.lsResult.owner || "-"}
                             </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">Group</p>
                             <p className="text-gray-900 font-medium">
-                                {lsResult.group || "-"}
+                                {props.lsResult.group || "-"}
                             </p>
                         </div>
                     </div>
@@ -586,13 +629,13 @@ function FileDetailView(props: {
                         <div>
                             <p className="text-sm text-gray-500 mb-1">UID</p>
                             <p className="text-gray-900 font-medium">
-                                {lsResult.uid}
+                                {props.lsResult.uid}
                             </p>
                         </div>
                         <div>
                             <p className="text-sm text-gray-500 mb-1">GID</p>
                             <p className="text-gray-900 font-medium">
-                                {lsResult.gid}
+                                {props.lsResult.gid}
                             </p>
                         </div>
                     </div>
@@ -600,20 +643,39 @@ function FileDetailView(props: {
                     <div>
                         <p className="text-sm text-gray-500 mb-1">Full Path</p>
                         <p className="text-gray-900 font-mono text-sm bg-gray-50 p-2 rounded">
-                            {lsResult.path}
+                            {props.lsResult.path}
                         </p>
                     </div>
 
-                    <div>
-                        <p className="text-sm text-gray-500 mb-1">Download</p>
-                        <a
-                            href={downloadUrl}
-                            download={fileName}
-                            className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
-                        >
-                            <Download className="h-4 w-4" />
-                            Download File
-                        </a>
+                    <div className="flex flex-wrap gap-3">
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">
+                                Download
+                            </p>
+                            <a
+                                href={props.downloadUrl}
+                                download={props.fileName}
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                            >
+                                <Download className="h-4 w-4" />
+                                Download File
+                            </a>
+                        </div>
+                        <div>
+                            <p className="text-sm text-gray-500 mb-1">Delete</p>
+                            <button
+                                type="button"
+                                aria-label="Delete file"
+                                onClick={() => {
+                                    setDeleteState({ type: "idle" });
+                                    setIsConfirmDeleteOpen(true);
+                                }}
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                                Delete File
+                            </button>
+                        </div>
                     </div>
 
                     <div>
@@ -624,12 +686,12 @@ function FileDetailView(props: {
                         {/* wget row */}
                         <div className="flex items-center gap-2 mb-2">
                             <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
-                                wget "{downloadUrl}"
+                                wget "{props.downloadUrl}"
                             </code>
                             <button
                                 onClick={() =>
                                     copyToClipboard(
-                                        `wget "${downloadUrl}"`,
+                                        `wget "${props.downloadUrl}"`,
                                         "wget",
                                     )
                                 }
@@ -647,12 +709,12 @@ function FileDetailView(props: {
                         {/* curl row */}
                         <div className="flex items-center gap-2">
                             <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
-                                curl -O "{downloadUrl}"
+                                curl -O "{props.downloadUrl}"
                             </code>
                             <button
                                 onClick={() =>
                                     copyToClipboard(
-                                        `curl -O "${downloadUrl}"`,
+                                        `curl -O "${props.downloadUrl}"`,
                                         "curl",
                                     )
                                 }
@@ -669,6 +731,83 @@ function FileDetailView(props: {
                     </div>
                 </div>
             </div>
+
+            {isConfirmDeleteOpen ? (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="delete-file-title"
+                    aria-describedby="delete-file-description"
+                >
+                    <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+                        <div className="mb-4 flex items-start justify-between gap-4">
+                            <div>
+                                <h2
+                                    id="delete-file-title"
+                                    className="text-lg font-semibold text-gray-900"
+                                >
+                                    Delete this file?
+                                </h2>
+                                <p
+                                    id="delete-file-description"
+                                    className="mt-2 text-sm text-gray-600"
+                                >
+                                    This permanently deletes
+                                    <span className="mx-1 break-all font-medium text-gray-900">
+                                        {props.fileName}
+                                    </span>
+                                    from the agent filesystem.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                aria-label="Close delete confirmation"
+                                onClick={closeDeleteDialog}
+                                disabled={deleteState.type === "deleting"}
+                                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+
+                        <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                            {props.lsResult.path}
+                        </p>
+
+                        {deleteState.type === "error" ? (
+                            <p
+                                role="alert"
+                                className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                            >
+                                {deleteState.message}
+                            </p>
+                        ) : null}
+
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={closeDeleteDialog}
+                                disabled={deleteState.type === "deleting"}
+                                className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleDelete}
+                                disabled={deleteState.type === "deleting"}
+                                className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                                {deleteState.type === "deleting"
+                                    ? "Deleting..."
+                                    : "Delete file"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
         </div>
     );
 }

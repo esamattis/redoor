@@ -384,4 +384,49 @@ test.describe.serial("File Browser Navigation", () => {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
     });
+
+    test("should delete file from detail view after confirmation", async ({
+        page,
+    }) => {
+        const deletableFilePath = path.join(
+            TEST_DIR,
+            "subdir3",
+            "delete-me.txt",
+        );
+        await fs.writeFile(deletableFilePath, "temporary content");
+
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
+        await page.getByRole("link", { name: "subdir3" }).click();
+        await page.getByRole("link", { name: "delete-me.txt" }).click();
+
+        await page.getByRole("button", { name: "Delete file" }).click();
+
+        // This verifies the UI uses a custom confirmation dialog instead of deleting immediately.
+        await expect(
+            page.getByRole("dialog", { name: "Delete this file?" }),
+        ).toBeVisible();
+        // This keeps accidental-delete protection intact by ensuring the cancel action closes the dialog.
+        await page.getByRole("button", { name: "Cancel" }).click();
+        await expect(
+            page.getByRole("dialog", { name: "Delete this file?" }),
+        ).toBeHidden();
+
+        await page.getByRole("button", { name: "Delete file" }).click();
+        await page
+            .getByRole("dialog", { name: "Delete this file?" })
+            .getByRole("button", { name: "Delete file" })
+            .click();
+
+        // Redirecting back to the parent directory confirms the delete request completed successfully.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${agentId}/browser/${testDirName}/subdir3$`),
+        );
+        // The deleted entry disappearing from the listing proves the route refreshed with the new filesystem state.
+        await expect(
+            page.getByRole("link", { name: "delete-me.txt" }),
+        ).toHaveCount(0);
+    });
 });

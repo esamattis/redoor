@@ -11,9 +11,11 @@ import type { TransferProgressEntry } from "../../bindings/TransferProgressEntry
 import type { TransferProgressListResponse } from "../../bindings/TransferProgressListResponse";
 import type { TransferProgressState } from "../../bindings/TransferProgressState";
 import type { UiEvent } from "../../bindings/UiEvent";
+import type { RawDeleteResponse } from "../../bindings/RawDeleteResponse";
 
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
+    RawDeleteResponse,
     TransferDirection,
     TransferProgressEntry,
     TransferProgressListResponse,
@@ -143,6 +145,25 @@ export class Agent {
         }
 
         return response;
+    }
+
+    async deleteFile(path: string): Promise<RawDeleteResponse> {
+        const response = await fetch(this.getRawUrl(path), {
+            method: "DELETE",
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            if (text) {
+                const error: ErrorResponse = JSON.parse(text);
+                throw new Error(error.error);
+            }
+            throw new Error(
+                `Request failed: ${response.status} ${response.statusText}`,
+            );
+        }
+
+        return response.json();
     }
 
     async download(
