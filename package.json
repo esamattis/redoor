@@ -14,7 +14,7 @@
         "dev": "run-p -l vite redoor:*",
         "redoor:server": "./scripts/redoor",
         "redoor:agent1": "./scripts/redoor-agent agent1",
-        "redoor:agent2": "./scripts/redoor-agent agent2",
+        "redoor:agent2": "mkdir -p dev_agents/agent2 && cd dev_agents/agent2 && ../../scripts/redoor-agent agent2",
         "lint:fix": "oxlint --fix",
         "preview": "vite preview",
         "test": "vitest run --config vitest.config.ts tests"

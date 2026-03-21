@@ -2,6 +2,6 @@
 
 set -eu
 
-cd "$(dirname $(dirname "$(readlink -f "$0")"))"
+# cd "$(dirname $(dirname "$(readlink -f "$0")"))"
 
 cargo run --bin redoor-agent -- ws://127.0.0.1:3000/ws "${1:-default_agent}"
