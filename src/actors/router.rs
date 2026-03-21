@@ -999,14 +999,6 @@ impl Actor for RouterActor {
                 if let Some((reply, stored_agent_id)) =
                     state.rest_pending_responses.remove(&request_id)
                 {
-                    log!(
-                        Level::Info,
-                        "Routing REST response: agent_id={}, request_id={}, result={:?}",
-                        agent_id,
-                        request_id,
-                        result
-                    );
-
                     let result_to_send = match (&result, state.agents.get(&stored_agent_id)) {
                         (CommandResult::GetAgentDetails(details), Some(agent_info)) => {
                             // Agent returns runtime data (pid, cwd, load averages, system uptime, os, arch, hostname, username)
