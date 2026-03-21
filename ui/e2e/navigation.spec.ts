@@ -483,4 +483,53 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "delete-me.txt" }),
         ).toHaveCount(0);
     });
+
+    test("should delete selected file from directory view after confirmation", async ({
+        page,
+    }) => {
+        const deletableFilePath = path.join(
+            TEST_DIR,
+            "subdir3",
+            "delete-selected.txt",
+        );
+
+        await fs.writeFile(deletableFilePath, "temporary content");
+
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
+        await page.getByRole("link", { name: "subdir3" }).click();
+
+        await page
+            .getByRole("button", { name: "Select file delete-selected.txt" })
+            .click();
+
+        await page
+            .getByRole("button", { name: "Delete selected items" })
+            .click();
+
+        // This verifies the directory action reuses the same confirmation flow before deleting the selected file.
+        await expect(
+            page.getByRole("dialog", { name: "Delete these items?" }),
+        ).toBeVisible();
+        // This ensures cancel still protects against accidental deletes from the directory view.
+        await page.getByRole("button", { name: "Cancel" }).click();
+        await expect(
+            page.getByRole("dialog", { name: "Delete these items?" }),
+        ).toBeHidden();
+
+        await page
+            .getByRole("button", { name: "Delete selected items" })
+            .click();
+        await page
+            .getByRole("dialog", { name: "Delete these items?" })
+            .getByRole("button", { name: "Delete selected items" })
+            .click();
+
+        // The deleted file disappearing confirms the directory bulk delete removes selected files after confirmation.
+        await expect(
+            page.getByRole("link", { name: "delete-selected.txt" }),
+        ).toHaveCount(0);
+    });
 });

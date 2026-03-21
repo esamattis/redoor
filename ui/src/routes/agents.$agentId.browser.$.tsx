@@ -35,6 +35,11 @@ import {
     toggleSelectedFileAtom,
     unselectFileAtom,
 } from "../selected-files";
+
+type DeleteState =
+    | { type: "idle" }
+    | { type: "deleting" }
+    | { type: "error"; message: string };
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -362,9 +367,17 @@ function SelectedFilesDirectoryActions(props: {
     const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
         type: "idle",
     });
+    const [deleteState, setDeleteState] = React.useState<DeleteState>({
+        type: "idle",
+    });
+    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
 
     const selectedFilesForOtherAgents = React.useMemo(() => {
         return selectedFiles.filter((file) => file.agentId !== props.agentId);
+    }, [props.agentId, selectedFiles]);
+
+    const selectedFilesForCurrentAgent = React.useMemo(() => {
+        return selectedFiles.filter((file) => file.agentId === props.agentId);
     }, [props.agentId, selectedFiles]);
 
     const statusMessage =
@@ -374,6 +387,11 @@ function SelectedFilesDirectoryActions(props: {
               ? null
               : copyState.message;
     const isCopying = copyState.type === "copying";
+
+    const closeDeleteDialog = () => {
+        setIsConfirmDeleteOpen(false);
+        setDeleteState({ type: "idle" });
+    };
 
     const handleCopySelectedFiles = async () => {
         if (selectedFilesForOtherAgents.length === 0) {
@@ -404,6 +422,8 @@ function SelectedFilesDirectoryActions(props: {
             const successfulCopies = selectedFilesForOtherAgents.filter(
                 (_file, index) => results[index]?.status === "fulfilled",
             );
+
+            setCopyState({ type: "idle" });
             const failedCopies = results.filter(
                 (result): result is PromiseRejectedResult =>
                     result.status === "rejected",
@@ -453,51 +473,160 @@ function SelectedFilesDirectoryActions(props: {
         }
     };
 
+    const handleDeleteSelectedFiles = async () => {
+        if (selectedFilesForCurrentAgent.length === 0) {
+            return;
+        }
+
+        setDeleteState({ type: "deleting" });
+
+        try {
+            const results = await Promise.allSettled(
+                selectedFilesForCurrentAgent.map((file) =>
+                    props.agent.deleteFile(file.path),
+                ),
+            );
+
+            const successfulDeletes = selectedFilesForCurrentAgent.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+            const failedDeletes = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (failedDeletes.length === 0) {
+                closeDeleteDialog();
+            }
+
+            if (successfulDeletes.length > 0) {
+                successfulDeletes.forEach((file) => {
+                    unselectFile({
+                        agentId: file.agentId,
+                        path: file.path,
+                    });
+                });
+                await router.invalidate();
+            }
+
+            if (failedDeletes.length > 0) {
+                const firstFailedDelete = failedDeletes[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedDelete ? firstFailedDelete.reason : undefined,
+                ).replace(/^Upload failed$/, "Delete failed");
+
+                setDeleteState({
+                    type: "error",
+                    message:
+                        successfulDeletes.length > 0
+                            ? `Deleted ${successfulDeletes.length} of ${selectedFilesForCurrentAgent.length} items. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+        } catch (error) {
+            setDeleteState({
+                type: "error",
+                message: getErrorMessage(error).replace(
+                    /^Upload failed$/,
+                    "Delete failed",
+                ),
+            });
+        }
+    };
+
     return (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                    <p className="text-sm font-medium text-blue-900">
-                        {selectedFiles.length}{" "}
-                        {selectedFiles.length === 1 ? "item is" : "items are"}{" "}
-                        selected
-                    </p>
-                    <p className="text-xs text-blue-700">
-                        {selectedFilesForOtherAgents.length === 0
-                            ? "Select files or directories from another agent to copy them into this directory."
-                            : `Ready to copy ${selectedFilesForOtherAgents.length} ${
-                                  selectedFilesForOtherAgents.length === 1
-                                      ? "item"
-                                      : "items"
-                              } here.`}
-                    </p>
+        <>
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                        <p className="text-sm font-medium text-blue-900">
+                            {selectedFiles.length}{" "}
+                            {selectedFiles.length === 1
+                                ? "item is"
+                                : "items are"}{" "}
+                            selected
+                        </p>
+                        <p className="text-xs text-blue-700">
+                            {selectedFilesForOtherAgents.length === 0
+                                ? "Select files or directories from another agent to copy them into this directory."
+                                : `Ready to copy ${selectedFilesForOtherAgents.length} ${
+                                      selectedFilesForOtherAgents.length === 1
+                                          ? "item"
+                                          : "items"
+                                  } here.`}
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setDeleteState({ type: "idle" });
+                                setIsConfirmDeleteOpen(true);
+                            }}
+                            disabled={
+                                deleteState.type === "deleting" ||
+                                selectedFilesForCurrentAgent.length === 0
+                            }
+                            className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Trash2 className="h-4 w-4" />
+                            {deleteState.type === "deleting"
+                                ? "Deleting..."
+                                : "Delete selected items"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleCopySelectedFiles}
+                            disabled={
+                                isCopying ||
+                                selectedFilesForOtherAgents.length === 0
+                            }
+                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Copy className="h-4 w-4" />
+                            {isCopying
+                                ? "Copying..."
+                                : "Copy selected items here"}
+                        </button>
+                    </div>
                 </div>
-                <button
-                    type="button"
-                    onClick={handleCopySelectedFiles}
-                    disabled={
-                        isCopying || selectedFilesForOtherAgents.length === 0
-                    }
-                    className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    <Copy className="h-4 w-4" />
-                    {isCopying ? "Copying..." : "Copy selected items here"}
-                </button>
+                {statusMessage ? (
+                    <p
+                        role={copyState.type === "error" ? "alert" : "status"}
+                        aria-live="polite"
+                        className={`mt-3 text-sm ${
+                            copyState.type === "error"
+                                ? "text-red-600"
+                                : "text-blue-800"
+                        }`}
+                    >
+                        {statusMessage}
+                    </p>
+                ) : null}
             </div>
-            {statusMessage ? (
-                <p
-                    role={copyState.type === "error" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`mt-3 text-sm ${
-                        copyState.type === "error"
-                            ? "text-red-600"
-                            : "text-blue-800"
-                    }`}
-                >
-                    {statusMessage}
-                </p>
-            ) : null}
-        </div>
+
+            <DeleteConfirmationDialog
+                isOpen={isConfirmDeleteOpen}
+                title="Delete these items?"
+                description={
+                    selectedFilesForCurrentAgent.length === 1
+                        ? "This permanently deletes the selected item from the agent filesystem."
+                        : "This permanently deletes the selected items from the agent filesystem."
+                }
+                pathDisplay={
+                    selectedFilesForCurrentAgent.length === 1
+                        ? (selectedFilesForCurrentAgent[0]?.path ?? "")
+                        : `${selectedFilesForCurrentAgent.length} selected items`
+                }
+                confirmLabel="Delete selected items"
+                deleteState={deleteState}
+                dialogTitleId="delete-selected-items-title"
+                dialogDescriptionId="delete-selected-items-description"
+                onClose={closeDeleteDialog}
+                onConfirm={handleDeleteSelectedFiles}
+            />
+        </>
     );
 }
 
@@ -718,11 +847,9 @@ function FileDetailView(props: {
         null,
     );
     const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
-    const [deleteState, setDeleteState] = React.useState<
-        | { type: "idle" }
-        | { type: "deleting" }
-        | { type: "error"; message: string }
-    >({ type: "idle" });
+    const [deleteState, setDeleteState] = React.useState<DeleteState>({
+        type: "idle",
+    });
 
     const copyToClipboard = async (text: string, commandType: string) => {
         try {
@@ -937,82 +1064,116 @@ function FileDetailView(props: {
                 </div>
             </div>
 
-            {isConfirmDeleteOpen ? (
-                <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="delete-file-title"
-                    aria-describedby="delete-file-description"
-                >
-                    <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
-                        <div className="mb-4 flex items-start justify-between gap-4">
-                            <div>
-                                <h2
-                                    id="delete-file-title"
-                                    className="text-lg font-semibold text-gray-900"
-                                >
-                                    Delete this file?
-                                </h2>
-                                <p
-                                    id="delete-file-description"
-                                    className="mt-2 text-sm text-gray-600"
-                                >
-                                    This permanently deletes
-                                    <span className="mx-1 break-all font-medium text-gray-900">
-                                        {props.fileName}
-                                    </span>
-                                    from the agent filesystem.
-                                </p>
-                            </div>
-                            <button
-                                type="button"
-                                aria-label="Close delete confirmation"
-                                onClick={closeDeleteDialog}
-                                disabled={deleteState.type === "deleting"}
-                                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                <X className="h-4 w-4" />
-                            </button>
-                        </div>
+            <DeleteConfirmationDialog
+                isOpen={isConfirmDeleteOpen}
+                title="Delete this file?"
+                description={
+                    <>
+                        This permanently deletes
+                        <span className="mx-1 break-all font-medium text-gray-900">
+                            {props.fileName}
+                        </span>
+                        from the agent filesystem.
+                    </>
+                }
+                pathDisplay={props.lsResult.path}
+                confirmLabel="Delete file"
+                deleteState={deleteState}
+                dialogTitleId="delete-file-title"
+                dialogDescriptionId="delete-file-description"
+                onClose={closeDeleteDialog}
+                onConfirm={handleDelete}
+            />
+        </div>
+    );
+}
 
-                        <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-                            {props.lsResult.path}
-                        </p>
+function DeleteConfirmationDialog(props: {
+    isOpen: boolean;
+    title: string;
+    description: React.ReactNode;
+    pathDisplay: string;
+    confirmLabel: string;
+    deleteState: DeleteState;
+    dialogTitleId: string;
+    dialogDescriptionId: string;
+    onClose: () => void;
+    onConfirm: () => void;
+}) {
+    if (!props.isOpen) {
+        return null;
+    }
 
-                        {deleteState.type === "error" ? (
-                            <p
-                                role="alert"
-                                className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
-                            >
-                                {deleteState.message}
-                            </p>
-                        ) : null}
-
-                        <div className="mt-6 flex justify-end gap-3">
-                            <button
-                                type="button"
-                                onClick={closeDeleteDialog}
-                                disabled={deleteState.type === "deleting"}
-                                className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleDelete}
-                                disabled={deleteState.type === "deleting"}
-                                className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                <Trash2 className="h-4 w-4" />
-                                {deleteState.type === "deleting"
-                                    ? "Deleting..."
-                                    : "Delete file"}
-                            </button>
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={props.dialogTitleId}
+            aria-describedby={props.dialogDescriptionId}
+        >
+            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+                <div className="mb-4 flex items-start justify-between gap-4">
+                    <div>
+                        <h2
+                            id={props.dialogTitleId}
+                            className="text-lg font-semibold text-gray-900"
+                        >
+                            {props.title}
+                        </h2>
+                        <div
+                            id={props.dialogDescriptionId}
+                            className="mt-2 text-sm text-gray-600"
+                        >
+                            {props.description}
                         </div>
                     </div>
+                    <button
+                        type="button"
+                        aria-label="Close delete confirmation"
+                        onClick={props.onClose}
+                        disabled={props.deleteState.type === "deleting"}
+                        className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
                 </div>
-            ) : null}
+
+                <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                    {props.pathDisplay}
+                </p>
+
+                {props.deleteState.type === "error" ? (
+                    <p
+                        role="alert"
+                        className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                    >
+                        {props.deleteState.message}
+                    </p>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={props.onClose}
+                        disabled={props.deleteState.type === "deleting"}
+                        className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        onClick={props.onConfirm}
+                        disabled={props.deleteState.type === "deleting"}
+                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <Trash2 className="h-4 w-4" />
+                        {props.deleteState.type === "deleting"
+                            ? "Deleting..."
+                            : props.confirmLabel}
+                    </button>
+                </div>
+            </div>
         </div>
     );
 }
