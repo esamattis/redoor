@@ -159,6 +159,13 @@ pub enum Message {
         request_id: RequestId,
         result: crate::commands::CommandResult,
     },
+    #[serde(rename = "transfer_progress_update")]
+    TransferProgressUpdate {
+        agent_id: String,
+        request_id: RequestId,
+        transferred_bytes: u64,
+        total_bytes: Option<u64>,
+    },
     #[serde(rename = "error")]
     Error { message: String },
 }

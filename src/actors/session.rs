@@ -117,6 +117,19 @@ impl Actor for SessionActor {
                         result,
                     });
                 }
+                Message::TransferProgressUpdate {
+                    agent_id,
+                    request_id,
+                    transferred_bytes,
+                    total_bytes,
+                } => {
+                    let _ = state.router_ref.cast(RouterMsg::TransferProgressUpdate {
+                        agent_id,
+                        request_id,
+                        transferred_bytes,
+                        total_bytes,
+                    });
+                }
                 _ => {}
             },
             SessionMsg::OutgoingMessage(msg) => {

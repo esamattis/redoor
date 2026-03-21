@@ -25,6 +25,14 @@ pub enum Command {
     TarUpload {
         path: String,
     },
+    LocalCopyFile {
+        source_path: String,
+        dest_path: String,
+    },
+    LocalCopyDirectory {
+        source_path: String,
+        dest_path: String,
+    },
     RawDelete {
         path: String,
     },
@@ -93,6 +101,8 @@ pub enum CommandResult {
     TarDownload { path: String },
     RawUpload,
     TarUpload,
+    LocalCopyFile,
+    LocalCopyDirectory,
     RawDelete,
     Metadata(MetadataResponse),
     Echo(EchoResult),
@@ -234,6 +244,17 @@ pub struct TransferProgressListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct TransferProgressUpdate {
+    pub agent_id: String,
+    pub request_id: TransferId,
+    #[ts(type = "number")]
+    pub transferred_bytes: u64,
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[ts(rename_all = "snake_case")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
@@ -296,6 +317,12 @@ impl CommandHandler {
             Command::TarDownload { path } => self.tar_download(path).await,
             Command::RawUpload { path } => self.raw_upload(path).await,
             Command::TarUpload { path } => self.tar_upload(path).await,
+            Command::LocalCopyFile { .. } => CommandResult::Error {
+                message: "LocalCopyFile is handled by the agent runtime".to_string(),
+            },
+            Command::LocalCopyDirectory { .. } => CommandResult::Error {
+                message: "LocalCopyDirectory is handled by the agent runtime".to_string(),
+            },
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,

@@ -77,12 +77,22 @@ impl CopyContentKind {
     }
 }
 
+enum CopyExecution {
+    RemoteStream {
+        source_request_id: RequestId,
+        dest_request_id: RequestId,
+        next_chunk_index: ChunkIndex,
+    },
+    LocalAgent {
+        agent_id: String,
+        request_id: RequestId,
+    },
+}
+
 struct CopyRequest {
     source_agent_id: String,
     dest_agent_id: String,
-    source_request_id: RequestId,
-    dest_request_id: RequestId,
-    next_chunk_index: ChunkIndex,
+    execution: CopyExecution,
     /// Tracks whether the copy forwards raw file bytes or tar stream bytes.
     content_kind: CopyContentKind,
 }
@@ -259,6 +269,12 @@ pub enum RouterMsg {
         content_kind: CopyContentKind,
         reply: RpcReplyPort<Result<TransferId, String>>,
     },
+    TransferProgressUpdate {
+        agent_id: String,
+        request_id: RequestId,
+        transferred_bytes: u64,
+        total_bytes: Option<u64>,
+    },
     /// Internal message used to flush a throttled trailing UI refresh event.
     FlushUiRefresh,
 }
@@ -385,6 +401,27 @@ impl RouterActor {
         }
     }
 
+    fn mark_copy_transfer_completed(
+        state: &mut RouterState,
+        myself: &ActorRef<RouterMsg>,
+        transfer_id: TransferId,
+        total_bytes: Option<u64>,
+    ) {
+        let mut updated = false;
+        if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
+            if let Some(total_bytes) = total_bytes {
+                progress.total_bytes = total_bytes;
+            }
+            progress.state = TransferProgressState::Completed;
+            progress.transferred_bytes = progress.total_bytes;
+            progress.error = None;
+            updated = true;
+        }
+        if updated {
+            Self::notify_ui_refresh(state, myself);
+        }
+    }
+
     fn mark_transfer_errored(
         state: &mut RouterState,
         myself: &ActorRef<RouterMsg>,
@@ -438,14 +475,28 @@ impl RouterActor {
 
     fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: TransferId) {
         if let Some(copy_request) = state.copy_requests_by_public_id.remove(&public_request_id) {
-            state
-                .copy_request_ids_by_internal_request
-                .remove(&copy_request.source_request_id);
-            state
-                .copy_request_ids_by_internal_request
-                .remove(&copy_request.dest_request_id);
-            state.transfers.remove(&copy_request.source_request_id);
-            state.transfers.remove(&copy_request.dest_request_id);
+            match copy_request.execution {
+                CopyExecution::RemoteStream {
+                    source_request_id,
+                    dest_request_id,
+                    ..
+                } => {
+                    state
+                        .copy_request_ids_by_internal_request
+                        .remove(&source_request_id);
+                    state
+                        .copy_request_ids_by_internal_request
+                        .remove(&dest_request_id);
+                    state.transfers.remove(&source_request_id);
+                    state.transfers.remove(&dest_request_id);
+                }
+                CopyExecution::LocalAgent { request_id, .. } => {
+                    state
+                        .copy_request_ids_by_internal_request
+                        .remove(&request_id);
+                    state.transfers.remove(&request_id);
+                }
+            }
         }
     }
 
@@ -462,19 +513,28 @@ impl RouterActor {
             ));
         };
 
+        let CopyExecution::RemoteStream {
+            dest_request_id,
+            next_chunk_index,
+            ..
+        } = &mut copy_request.execution
+        else {
+            return Ok(());
+        };
+
         let Some(agent_info) = state.agents.get(&copy_request.dest_agent_id).cloned() else {
             return Err(format!("Agent not found: {}", copy_request.dest_agent_id));
         };
 
         let abort_chunk = crate::streaming::StreamChunk {
-            request_id: copy_request.dest_request_id,
-            chunk_index: copy_request.next_chunk_index,
+            request_id: *dest_request_id,
+            chunk_index: *next_chunk_index,
             is_last: true,
             is_error: true,
             payload_kind: copy_request.content_kind.payload_kind(),
             data: error_message.into_bytes(),
         };
-        copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_next_index();
+        *next_chunk_index = next_chunk_index.saturating_next_index();
         let _ = agent_info
             .session_ref
             .cast(SessionMsg::OutgoingBinary(abort_chunk.to_bytes()));
@@ -501,17 +561,26 @@ impl RouterActor {
                 return;
             };
 
-            if chunk.request_id != copy_request.source_request_id {
+            let CopyExecution::RemoteStream {
+                source_request_id,
+                dest_request_id,
+                next_chunk_index,
+            } = &mut copy_request.execution
+            else {
+                return;
+            };
+
+            if chunk.request_id != *source_request_id {
                 return;
             }
 
-            let chunk_index = copy_request.next_chunk_index;
-            copy_request.next_chunk_index = copy_request.next_chunk_index.saturating_next_index();
+            let chunk_index = *next_chunk_index;
+            *next_chunk_index = next_chunk_index.saturating_next_index();
 
             (
                 copy_request.source_agent_id.clone(),
                 copy_request.dest_agent_id.clone(),
-                copy_request.dest_request_id,
+                *dest_request_id,
                 chunk_index,
                 copy_request.content_kind,
             )
@@ -602,7 +671,17 @@ impl RouterActor {
             return false;
         };
 
-        if copy_request.dest_request_id != request_id || copy_request.dest_agent_id != agent_id {
+        let is_expected_completion = match &copy_request.execution {
+            CopyExecution::RemoteStream {
+                dest_request_id, ..
+            } => *dest_request_id == request_id && copy_request.dest_agent_id == agent_id,
+            CopyExecution::LocalAgent {
+                agent_id: expected_agent_id,
+                request_id: expected_request_id,
+            } => *expected_request_id == request_id && expected_agent_id == &agent_id,
+        };
+
+        if !is_expected_completion {
             return false;
         }
 
@@ -610,8 +689,22 @@ impl RouterActor {
             CommandResult::Error { message } => {
                 Self::mark_transfer_errored(state, myself, public_request_id, message);
             }
+            CommandResult::LocalCopyFile
+                if copy_request.content_kind == CopyContentKind::RawFile =>
+            {
+                Self::mark_copy_transfer_completed(state, myself, public_request_id, None);
+            }
+            CommandResult::LocalCopyDirectory
+                if copy_request.content_kind == CopyContentKind::TarDirectory =>
+            {
+                let total_bytes = state
+                    .transfer_progress
+                    .get(&public_request_id)
+                    .map(|progress| progress.transferred_bytes);
+                Self::mark_copy_transfer_completed(state, myself, public_request_id, total_bytes);
+            }
             other if copy_request.content_kind.completion_matches(&other) => {
-                Self::mark_transfer_completed(state, myself, public_request_id);
+                Self::mark_copy_transfer_completed(state, myself, public_request_id, None);
             }
             other => {
                 log!(
@@ -632,6 +725,60 @@ impl RouterActor {
 
         Self::cleanup_copy_tracking(state, public_request_id);
         true
+    }
+
+    fn update_copy_progress(
+        state: &mut RouterState,
+        myself: &ActorRef<RouterMsg>,
+        agent_id: String,
+        request_id: RequestId,
+        transferred_bytes: u64,
+        total_bytes: Option<u64>,
+    ) {
+        let Some(public_request_id) = state
+            .copy_request_ids_by_internal_request
+            .get(&request_id)
+            .copied()
+        else {
+            return;
+        };
+
+        let Some(copy_request) = state.copy_requests_by_public_id.get(&public_request_id) else {
+            return;
+        };
+
+        let CopyExecution::LocalAgent {
+            agent_id: expected_agent_id,
+            request_id: expected_request_id,
+        } = &copy_request.execution
+        else {
+            return;
+        };
+
+        if expected_agent_id != &agent_id || *expected_request_id != request_id {
+            log!(
+                Level::Warning,
+                "Copy progress update agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                public_request_id,
+                expected_agent_id,
+                agent_id
+            );
+            return;
+        }
+
+        let mut updated = false;
+        if let Some(progress) = state.transfer_progress.get_mut(&public_request_id) {
+            progress.transferred_bytes = transferred_bytes;
+            if let Some(total_bytes) = total_bytes {
+                progress.total_bytes = total_bytes;
+            }
+            progress.error = None;
+            updated = true;
+        }
+
+        if updated {
+            Self::notify_ui_refresh(state, myself);
+        }
     }
 
     fn list_transfer_progress(state: &RouterState) -> TransferProgressListResponse {
@@ -955,8 +1102,15 @@ impl RouterActor {
         let orphaned_copy_ids: Vec<TransferId> = state
             .copy_requests_by_public_id
             .iter()
-            .filter(|(_, copy_request)| {
-                copy_request.source_agent_id == agent_id || copy_request.dest_agent_id == agent_id
+            .filter(|(_, copy_request)| match &copy_request.execution {
+                CopyExecution::RemoteStream { .. } => {
+                    copy_request.source_agent_id == agent_id
+                        || copy_request.dest_agent_id == agent_id
+                }
+                CopyExecution::LocalAgent {
+                    agent_id: local_agent_id,
+                    ..
+                } => local_agent_id == agent_id,
             })
             .map(|(request_id, _)| *request_id)
             .collect();
@@ -1172,6 +1326,21 @@ impl Actor for RouterActor {
             RouterMsg::GetTransferProgress { reply } => {
                 let _ = reply.send(Self::list_transfer_progress(state));
             }
+            RouterMsg::TransferProgressUpdate {
+                agent_id,
+                request_id,
+                transferred_bytes,
+                total_bytes,
+            } => {
+                Self::update_copy_progress(
+                    state,
+                    &myself,
+                    agent_id,
+                    request_id,
+                    transferred_bytes,
+                    total_bytes,
+                );
+            }
             RouterMsg::RegisterUiSubscriber {
                 subscriber_id,
                 sender,
@@ -1226,10 +1395,18 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteStreamChunk { agent_id, chunk } => {
-                if state
+                let is_remote_copy_stream = state
                     .copy_request_ids_by_internal_request
-                    .contains_key(&chunk.request_id)
-                {
+                    .get(&chunk.request_id)
+                    .and_then(|public_request_id| {
+                        state.copy_requests_by_public_id.get(public_request_id)
+                    })
+                    .map(|copy_request| {
+                        matches!(copy_request.execution, CopyExecution::RemoteStream { .. })
+                    })
+                    .unwrap_or(false);
+
+                if is_remote_copy_stream {
                     Self::route_copy_chunk(state, &myself, agent_id, chunk);
                 } else {
                     Self::route_download_chunk(state, &myself, agent_id, chunk);
@@ -1411,8 +1588,6 @@ impl Actor for RouterActor {
                 match (source_agent_info, dest_agent_info) {
                     (Some(source_agent_info), Some(dest_agent_info)) => {
                         let public_request_id = state.next_id().as_transfer_id();
-                        let dest_request_id = state.next_id();
-                        let source_request_id = state.next_id();
 
                         Self::record_copy_start(
                             state,
@@ -1425,6 +1600,59 @@ impl Actor for RouterActor {
                             total_bytes,
                         );
 
+                        if source_agent_id == dest_agent_id {
+                            let local_request_id = state.next_id();
+
+                            state
+                                .copy_request_ids_by_internal_request
+                                .insert(local_request_id, public_request_id);
+                            state.copy_requests_by_public_id.insert(
+                                public_request_id,
+                                CopyRequest {
+                                    source_agent_id: source_agent_id.clone(),
+                                    dest_agent_id: dest_agent_id.clone(),
+                                    execution: CopyExecution::LocalAgent {
+                                        agent_id: source_agent_id.clone(),
+                                        request_id: local_request_id,
+                                    },
+                                    content_kind,
+                                },
+                            );
+                            state.transfers.insert(
+                                local_request_id,
+                                TransferRequest::Upload {
+                                    agent_id: source_agent_id.clone(),
+                                    completion_sender: None,
+                                },
+                            );
+
+                            let command = match content_kind {
+                                CopyContentKind::RawFile => Command::LocalCopyFile {
+                                    source_path: source_path.clone(),
+                                    dest_path: dest_path.clone(),
+                                },
+                                CopyContentKind::TarDirectory => Command::LocalCopyDirectory {
+                                    source_path: source_path.clone(),
+                                    dest_path: dest_path.clone(),
+                                },
+                            };
+
+                            let _ =
+                                source_agent_info
+                                    .session_ref
+                                    .cast(SessionMsg::OutgoingMessage(Message::Command {
+                                        agent_id: source_agent_id.clone(),
+                                        request_id: local_request_id,
+                                        command,
+                                    }));
+
+                            let _ = reply.send(Ok(public_request_id));
+                            return Ok(());
+                        }
+
+                        let dest_request_id = state.next_id();
+                        let source_request_id = state.next_id();
+
                         state
                             .copy_request_ids_by_internal_request
                             .insert(source_request_id, public_request_id);
@@ -1436,9 +1664,11 @@ impl Actor for RouterActor {
                             CopyRequest {
                                 source_agent_id: source_agent_id.clone(),
                                 dest_agent_id: dest_agent_id.clone(),
-                                source_request_id,
-                                dest_request_id,
-                                next_chunk_index: ChunkIndex::new(0),
+                                execution: CopyExecution::RemoteStream {
+                                    source_request_id,
+                                    dest_request_id,
+                                    next_chunk_index: ChunkIndex::new(0),
+                                },
                                 content_kind,
                             },
                         );

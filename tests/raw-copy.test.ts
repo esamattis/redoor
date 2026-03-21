@@ -30,6 +30,11 @@ describe("Raw Copy API", () => {
     beforeAll(async () => {
         const projectRoot = path.join(__dirname, "..");
 
+        (await import("node:child_process")).execFileSync("cargo", ["build"], {
+            cwd: projectRoot,
+            stdio: "inherit",
+        });
+
         const setup = await startServerAndAgent({
             processManager,
             serverPath: SERVER_PATH,
@@ -194,6 +199,8 @@ describe("Raw Copy API", () => {
             },
         });
 
+        // Empty directory copies should report zero total bytes.
+        expect(completedTransfer.total_bytes).toBe(0);
         // Zero transferred bytes confirm the coordinator handles the empty final-chunk path.
         expect(completedTransfer.transferred_bytes).toBe(0);
 
@@ -231,6 +238,10 @@ describe("Raw Copy API", () => {
             sourceRoot,
         );
 
+        const expectedDirectoryBytes =
+            Buffer.byteLength("copy directory root file", "utf-8") +
+            Buffer.byteLength("copy directory nested file", "utf-8");
+
         const completedTransfer = await waitForValue({
             description: "completed same-agent directory copy transfer",
             predicate: async () => {
@@ -249,6 +260,12 @@ describe("Raw Copy API", () => {
         expect(completedTransfer.source?.path).toBe(sourceRoot);
         // Destination endpoint metadata proves the copy row points at the destination directory path.
         expect(completedTransfer.dest?.path).toBe(destRoot);
+        // Directory copy progress should account for the summed size of all regular files.
+        expect(completedTransfer.total_bytes).toBe(expectedDirectoryBytes);
+        // Completed directory copies should report all planned bytes as transferred.
+        expect(completedTransfer.transferred_bytes).toBe(
+            completedTransfer.total_bytes,
+        );
 
         const topFileContent = await fs.readFile(
             path.join(destRoot, "top.txt"),
@@ -470,37 +487,43 @@ describe("Raw Copy API", () => {
         // A fast response shows the API only starts background work instead of waiting for copy completion.
         expect(elapsedMs).toBeLessThan(1000);
 
-        const activeTransfer = await waitForValue({
-            description: "active large copy transfer",
+        const observedTransfer = await waitForValue({
+            description: "large copy transfer progress or completion",
             timeoutMs: 30000,
             predicate: async () => {
                 const progress = await apiClient.getTransferProgress();
                 return progress.transfers.find(
                     (transfer: TransferProgressEntry) =>
                         transfer.request_id === response.copy_request_id &&
-                        transfer.state === "active" &&
-                        transfer.transferred_bytes > BigInt(0),
+                        ((transfer.state === "active" &&
+                            transfer.transferred_bytes > BigInt(0)) ||
+                            transfer.state === "completed"),
                 );
             },
         });
 
-        // Observing an active row after the HTTP response proves the copy continues in the background.
-        expect(activeTransfer.direction).toBe("copy");
+        // Very fast same-agent local copies may complete before the test observes an active row.
+        expect(observedTransfer.direction).toBe("copy");
 
-        const completedTransfer = await waitForValue({
-            description: "completed large copy transfer",
-            timeoutMs: 30000,
-            predicate: async () => {
-                const progress = await apiClient.getTransferProgress();
-                return progress.transfers.find(
-                    (transfer: TransferProgressEntry) =>
-                        transfer.request_id === response.copy_request_id &&
-                        transfer.state === "completed",
-                );
-            },
-        });
+        const completedTransfer =
+            observedTransfer.state === "completed"
+                ? observedTransfer
+                : await waitForValue({
+                      description: "completed large copy transfer",
+                      timeoutMs: 30000,
+                      predicate: async () => {
+                          const progress =
+                              await apiClient.getTransferProgress();
+                          return progress.transfers.find(
+                              (transfer: TransferProgressEntry) =>
+                                  transfer.request_id ===
+                                      response.copy_request_id &&
+                                  transfer.state === "completed",
+                          );
+                      },
+                  });
 
-        // Completion after the active observation confirms the same logical row spans the whole lifecycle.
+        // The same logical row should represent the copy until completion, even if local copies finish very quickly.
         expect(completedTransfer.request_id).toBe(response.copy_request_id);
     }, 40000);
 });

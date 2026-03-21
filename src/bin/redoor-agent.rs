@@ -9,6 +9,7 @@ use redoor::{
 };
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, env};
 use sysinfo::System;
 use tokio::{
@@ -172,6 +173,508 @@ impl AgentActor {
         }
 
         Ok(sanitized)
+    }
+
+    fn temp_local_copy_path(path: &str) -> PathBuf {
+        let destination = Path::new(path);
+        let file_name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("copy");
+        let temp_name = format!(".{}.redoor-local-copy-{}", file_name, fastrand::u64(..));
+
+        match destination.parent() {
+            Some(parent) => parent.join(temp_name),
+            None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
+    fn temp_local_copy_dir_path(path: &str) -> PathBuf {
+        let destination = Path::new(path);
+        let file_name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("copy-dir");
+        let temp_name = format!(".{}.redoor-local-copy-dir-{}", file_name, fastrand::u64(..));
+
+        match destination.parent() {
+            Some(parent) => parent.join(temp_name),
+            None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
+    async fn send_local_copy_error(
+        &self,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+        request_id: RequestId,
+        message: String,
+    ) {
+        self.send_command_response(
+            write,
+            agent_id,
+            request_id,
+            CommandResult::Error { message },
+        )
+        .await;
+    }
+
+    fn validate_local_copy_destination(
+        source_path: &Path,
+        dest_path: &Path,
+        source_is_dir: bool,
+    ) -> Result<(), String> {
+        let source_parent = source_path
+            .parent()
+            .ok_or_else(|| format!("Source parent not found for {}", source_path.display()))?;
+        let dest_parent = dest_path
+            .parent()
+            .ok_or_else(|| format!("Destination parent not found for {}", dest_path.display()))?;
+
+        let canonical_source_parent = std::fs::canonicalize(source_parent)
+            .map_err(|error| format!("Failed to access source parent: {}", error))?;
+        let canonical_dest_parent = std::fs::canonicalize(dest_parent)
+            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+
+        let source_canonical = if source_path.is_absolute() {
+            std::fs::canonicalize(source_path)
+                .map_err(|error| format!("Failed to access source path: {}", error))?
+        } else {
+            canonical_source_parent.join(
+                source_path
+                    .file_name()
+                    .ok_or_else(|| format!("Invalid source path: {}", source_path.display()))?,
+            )
+        };
+
+        let dest_effective = canonical_dest_parent.join(
+            dest_path
+                .file_name()
+                .ok_or_else(|| format!("Invalid destination path: {}", dest_path.display()))?,
+        );
+
+        if source_canonical == dest_effective {
+            return Err("Source and destination must be different".to_string());
+        }
+
+        if source_is_dir && dest_effective.starts_with(&source_canonical) {
+            return Err("Destination directory cannot be inside the source directory".to_string());
+        }
+
+        Ok(())
+    }
+
+    async fn validate_local_copy_parent(dest_path: &Path) -> Result<(), String> {
+        let parent = dest_path
+            .parent()
+            .ok_or_else(|| format!("Destination parent not found for {}", dest_path.display()))?;
+        let parent_metadata = tokio::fs::metadata(parent)
+            .await
+            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+        if !parent_metadata.is_dir() {
+            return Err(format!(
+                "Destination parent is not a directory: {}",
+                parent.display()
+            ));
+        }
+        Ok(())
+    }
+
+    async fn copy_file_streaming(
+        source_path: &Path,
+        dest_path: &Path,
+        reporter: &mut LocalCopyProgressReporter,
+    ) -> Result<(), String> {
+        let mut source = File::open(source_path)
+            .await
+            .map_err(|error| format!("Failed to open source file: {}", error))?;
+        let temp_path = Self::temp_local_copy_path(
+            dest_path
+                .to_str()
+                .ok_or_else(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
+        );
+
+        let mut destination = File::create(&temp_path)
+            .await
+            .map_err(|error| format!("Failed to create destination file: {}", error))?;
+
+        let mut buffer = vec![0u8; 1024 * 1024];
+
+        loop {
+            let bytes_read = source
+                .read(&mut buffer)
+                .await
+                .map_err(|error| format!("Failed to read source file: {}", error))?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            destination
+                .write_all(&buffer[..bytes_read])
+                .await
+                .map_err(|error| format!("Failed to write destination file: {}", error))?;
+
+            reporter.advance(bytes_read as u64).await;
+        }
+
+        destination
+            .flush()
+            .await
+            .map_err(|error| format!("Failed to flush destination file: {}", error))?;
+        drop(destination);
+
+        tokio::fs::rename(&temp_path, dest_path)
+            .await
+            .map_err(|error| format!("Failed to finalize copied file: {}", error))?;
+
+        Ok(())
+    }
+
+    fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan, String> {
+        fn walk(
+            source_root: &Path,
+            current_path: &Path,
+            plan: &mut DirectoryCopyPlan,
+        ) -> Result<(), String> {
+            let mut entries = std::fs::read_dir(current_path)
+                .map_err(|error| format!("Failed to read directory: {}", error))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Failed to read directory entry: {}", error))?;
+
+            entries.sort_by_key(|entry| entry.file_name());
+
+            for entry in entries {
+                let entry_path = entry.path();
+                let relative_path = entry_path
+                    .strip_prefix(source_root)
+                    .map_err(|error| format!("Failed to strip source prefix: {}", error))?
+                    .to_path_buf();
+                let metadata = std::fs::symlink_metadata(&entry_path)
+                    .map_err(|error| format!("Failed to read entry metadata: {}", error))?;
+
+                if metadata.is_dir() {
+                    plan.directories.push(relative_path.clone());
+                    walk(source_root, &entry_path, plan)?;
+                } else if metadata.is_file() {
+                    plan.total_bytes = plan.total_bytes.saturating_add(metadata.len());
+                    plan.files.push(relative_path);
+                } else {
+                    return Err(format!(
+                        "Unsupported directory entry type in copy source: {}",
+                        entry_path.display()
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+
+        let source_metadata = std::fs::symlink_metadata(source_root)
+            .map_err(|error| format!("Failed to read source metadata: {}", error))?;
+        if !source_metadata.is_dir() {
+            return Err(format!(
+                "Source path is not a directory: {}",
+                source_root.display()
+            ));
+        }
+
+        let mut plan = DirectoryCopyPlan {
+            total_bytes: 0,
+            directories: Vec::new(),
+            files: Vec::new(),
+        };
+        walk(source_root, source_root, &mut plan)?;
+        Ok(plan)
+    }
+
+    async fn copy_directory_from_plan(
+        source_root: &Path,
+        temp_dest_root: &Path,
+        plan: &DirectoryCopyPlan,
+        reporter: &mut LocalCopyProgressReporter,
+    ) -> Result<(), String> {
+        for directory in &plan.directories {
+            tokio::fs::create_dir_all(temp_dest_root.join(directory))
+                .await
+                .map_err(|error| format!("Failed to create destination directory: {}", error))?;
+        }
+
+        for relative_path in &plan.files {
+            let source_path = source_root.join(relative_path);
+            let dest_path = temp_dest_root.join(relative_path);
+
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                    format!("Failed to create destination directory: {}", error)
+                })?;
+            }
+
+            Self::copy_file_streaming(&source_path, &dest_path, reporter).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn local_copy_file(
+        &self,
+        source_path: String,
+        dest_path: String,
+        request_id: RequestId,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+    ) {
+        let source_path_buf = PathBuf::from(&source_path);
+        let dest_path_buf = PathBuf::from(&dest_path);
+
+        let source_metadata = match tokio::fs::metadata(&source_path_buf).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Failed to access source file: {}", error),
+                )
+                .await;
+                return;
+            }
+        };
+
+        if !source_metadata.is_file() {
+            self.send_local_copy_error(
+                write,
+                agent_id,
+                request_id,
+                format!("Source path is not a file: {}", source_path),
+            )
+            .await;
+            return;
+        }
+
+        if let Err(error) =
+            Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
+        {
+            self.send_local_copy_error(write, agent_id, request_id, error)
+                .await;
+            return;
+        }
+
+        if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
+            self.send_local_copy_error(write, agent_id, request_id, error)
+                .await;
+            return;
+        }
+
+        match tokio::fs::try_exists(&dest_path_buf).await {
+            Ok(true) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Destination already exists: {}", dest_path),
+                )
+                .await;
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Failed to check destination path: {}", error),
+                )
+                .await;
+                return;
+            }
+        }
+
+        let mut reporter = LocalCopyProgressReporter::new(
+            write.clone(),
+            agent_id.to_string(),
+            request_id,
+            source_metadata.len(),
+        );
+
+        reporter.report(true).await;
+
+        match Self::copy_file_streaming(&source_path_buf, &dest_path_buf, &mut reporter).await {
+            Ok(()) => {
+                reporter.finish().await;
+                self.send_command_response(
+                    write,
+                    agent_id,
+                    request_id,
+                    CommandResult::LocalCopyFile,
+                )
+                .await;
+            }
+            Err(error) => {
+                let temp_path = Self::temp_local_copy_path(&dest_path);
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                self.send_local_copy_error(write, agent_id, request_id, error)
+                    .await;
+            }
+        }
+    }
+
+    async fn local_copy_directory(
+        &self,
+        source_path: String,
+        dest_path: String,
+        request_id: RequestId,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+    ) {
+        let source_path_buf = PathBuf::from(&source_path);
+        let dest_path_buf = PathBuf::from(&dest_path);
+
+        let source_metadata = match tokio::fs::metadata(&source_path_buf).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Failed to access source directory: {}", error),
+                )
+                .await;
+                return;
+            }
+        };
+
+        if !source_metadata.is_dir() {
+            self.send_local_copy_error(
+                write,
+                agent_id,
+                request_id,
+                format!("Source path is not a directory: {}", source_path),
+            )
+            .await;
+            return;
+        }
+
+        if let Err(error) =
+            Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
+        {
+            self.send_local_copy_error(write, agent_id, request_id, error)
+                .await;
+            return;
+        }
+
+        if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
+            self.send_local_copy_error(write, agent_id, request_id, error)
+                .await;
+            return;
+        }
+
+        match tokio::fs::try_exists(&dest_path_buf).await {
+            Ok(true) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Destination already exists: {}", dest_path),
+                )
+                .await;
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Failed to check destination path: {}", error),
+                )
+                .await;
+                return;
+            }
+        }
+
+        let plan = match tokio::task::spawn_blocking({
+            let source_path_buf = source_path_buf.clone();
+            move || Self::build_directory_copy_plan(&source_path_buf)
+        })
+        .await
+        {
+            Ok(Ok(plan)) => plan,
+            Ok(Err(error)) => {
+                self.send_local_copy_error(write, agent_id, request_id, error)
+                    .await;
+                return;
+            }
+            Err(error) => {
+                self.send_local_copy_error(
+                    write,
+                    agent_id,
+                    request_id,
+                    format!("Directory copy planner failed: {}", error),
+                )
+                .await;
+                return;
+            }
+        };
+
+        let temp_dest_root = Self::temp_local_copy_dir_path(&dest_path);
+
+        if let Err(error) = tokio::fs::create_dir(&temp_dest_root).await {
+            self.send_local_copy_error(
+                write,
+                agent_id,
+                request_id,
+                format!("Failed to create temp directory: {}", error),
+            )
+            .await;
+            return;
+        }
+
+        let mut reporter = LocalCopyProgressReporter::new(
+            write.clone(),
+            agent_id.to_string(),
+            request_id,
+            plan.total_bytes,
+        );
+
+        reporter.report(true).await;
+
+        match Self::copy_directory_from_plan(
+            &source_path_buf,
+            &temp_dest_root,
+            &plan,
+            &mut reporter,
+        )
+        .await
+        {
+            Ok(()) => {
+                if let Err(error) = tokio::fs::rename(&temp_dest_root, &dest_path_buf).await {
+                    let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
+                    self.send_local_copy_error(
+                        write,
+                        agent_id,
+                        request_id,
+                        format!("Failed to finalize copied directory: {}", error),
+                    )
+                    .await;
+                    return;
+                }
+
+                reporter.finish().await;
+                self.send_command_response(
+                    write,
+                    agent_id,
+                    request_id,
+                    CommandResult::LocalCopyDirectory,
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
+                self.send_local_copy_error(write, agent_id, request_id, error)
+                    .await;
+            }
+        }
     }
 
     async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, String> {
@@ -579,6 +1082,32 @@ impl AgentActor {
                         }
                         Command::TarDownload { path } => {
                             self.tar_download(path, request_id, write).await;
+                        }
+                        Command::LocalCopyFile {
+                            source_path,
+                            dest_path,
+                        } => {
+                            self.local_copy_file(
+                                source_path,
+                                dest_path,
+                                request_id,
+                                write,
+                                &state.agent_id,
+                            )
+                            .await;
+                        }
+                        Command::LocalCopyDirectory {
+                            source_path,
+                            dest_path,
+                        } => {
+                            self.local_copy_directory(
+                                source_path,
+                                dest_path,
+                                request_id,
+                                write,
+                                &state.agent_id,
+                            )
+                            .await;
                         }
                         Command::RawUpload { path } => {
                             if state.active_uploads.contains_key(&request_id) {
@@ -1201,6 +1730,82 @@ impl AgentActor {
                 line.clear();
             }
         });
+    }
+}
+
+struct DirectoryCopyPlan {
+    total_bytes: u64,
+    directories: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+struct LocalCopyProgressReporter {
+    write: mpsc::Sender<WsMessage>,
+    agent_id: String,
+    request_id: RequestId,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    last_reported_bytes: u64,
+    last_reported_at: Instant,
+}
+
+impl LocalCopyProgressReporter {
+    const REPORT_EVERY_BYTES: u64 = 1024 * 1024;
+    const REPORT_EVERY_DURATION: Duration = Duration::from_millis(250);
+
+    fn new(
+        write: mpsc::Sender<WsMessage>,
+        agent_id: String,
+        request_id: RequestId,
+        total_bytes: u64,
+    ) -> Self {
+        Self {
+            write,
+            agent_id,
+            request_id,
+            total_bytes,
+            transferred_bytes: 0,
+            last_reported_bytes: 0,
+            last_reported_at: Instant::now() - Self::REPORT_EVERY_DURATION,
+        }
+    }
+
+    async fn report(&mut self, force: bool) {
+        let now = Instant::now();
+        let should_report = force
+            || self
+                .transferred_bytes
+                .saturating_sub(self.last_reported_bytes)
+                >= Self::REPORT_EVERY_BYTES
+            || now.saturating_duration_since(self.last_reported_at) >= Self::REPORT_EVERY_DURATION;
+
+        if !should_report {
+            return;
+        }
+
+        let message = Message::TransferProgressUpdate {
+            agent_id: self.agent_id.clone(),
+            request_id: self.request_id,
+            transferred_bytes: self.transferred_bytes,
+            total_bytes: Some(self.total_bytes),
+        };
+
+        if let Ok(json) = serde_json::to_string(&message) {
+            let _ = self.write.send(WsMessage::text(json)).await;
+        }
+
+        self.last_reported_bytes = self.transferred_bytes;
+        self.last_reported_at = now;
+    }
+
+    async fn advance(&mut self, bytes: u64) {
+        self.transferred_bytes = self.transferred_bytes.saturating_add(bytes);
+        self.report(false).await;
+    }
+
+    async fn finish(&mut self) {
+        self.transferred_bytes = self.total_bytes;
+        self.report(true).await;
     }
 }
 
