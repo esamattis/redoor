@@ -21,6 +21,7 @@ import {
     ChevronDown,
     ChevronUp,
     Trash2,
+    LoaderCircle,
 } from "lucide-react";
 import {
     ApiClient,
@@ -643,41 +644,57 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             }
             actions={
                 <div className="flex items-center gap-2">
-                    <button
-                        type="button"
-                        onClick={handleDeleteSelectedFiles}
-                        disabled={
-                            deleteState.type === "deleting" ||
-                            selectedFiles.length === 0
-                        }
-                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                        {deleteState.type === "deleting"
-                            ? "Deleting..."
-                            : "Delete selected items"}
-                    </button>
-                    <Tooltip content="Copy selected items is only available while browsing a directory.">
-                        <span className="inline-flex">
-                            <button
-                                type="button"
-                                onClick={handleCopySelectedFiles}
-                                disabled={
-                                    !browserContext.isDirectoryView ||
-                                    !currentAgent ||
-                                    !currentDirectoryPath ||
-                                    isCopying ||
-                                    selectedFiles.length === 0
-                                }
-                                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                <Copy className="h-4 w-4" />
-                                {isCopying
-                                    ? "Copying..."
-                                    : "Copy selected items"}
-                            </button>
+                    {deleteState.type === "deleting" ? (
+                        <span
+                            className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white"
+                            aria-label="Deleting selected items"
+                            role="status"
+                        >
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
                         </span>
-                    </Tooltip>
+                    ) : (
+                        <Tooltip content="Delete selected items">
+                            <span className="inline-flex">
+                                <button
+                                    type="button"
+                                    onClick={handleDeleteSelectedFiles}
+                                    disabled={selectedFiles.length === 0}
+                                    aria-label="Delete selected items"
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    <Trash2 className="h-4 w-4" />
+                                </button>
+                            </span>
+                        </Tooltip>
+                    )}
+                    {isCopying ? (
+                        <span
+                            className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white"
+                            aria-label="Copying selected items"
+                            role="status"
+                        >
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                        </span>
+                    ) : (
+                        <Tooltip content="Copy selected items is only available while browsing a directory.">
+                            <span className="inline-flex">
+                                <button
+                                    type="button"
+                                    onClick={handleCopySelectedFiles}
+                                    disabled={
+                                        !browserContext.isDirectoryView ||
+                                        !currentAgent ||
+                                        !currentDirectoryPath ||
+                                        selectedFiles.length === 0
+                                    }
+                                    aria-label="Copy selected items"
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    <Copy className="h-4 w-4" />
+                                </button>
+                            </span>
+                        </Tooltip>
+                    )}
                     <button
                         type="button"
                         onClick={() => clearSelectedFiles()}
