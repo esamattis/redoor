@@ -31,7 +31,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             : details.cwd;
         const lsResult: LsResponse = await agent.ls(fullPath);
         const downloadUrl = isLsFileResponse(lsResult)
-            ? agent.getDownloadUrl(lsResult.path, { cwd: details.cwd })
+            ? agent.getRawUrl(lsResult.path, { cwd: details.cwd })
             : undefined;
 
         return {

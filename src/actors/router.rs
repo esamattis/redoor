@@ -20,6 +20,17 @@ use std::collections::HashMap;
 /// to the waiting REST reply port and completes the round-trip.
 pub struct RouterActor;
 
+enum TransferRequest {
+    Download {
+        agent_id: String,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+    },
+    Upload {
+        agent_id: String,
+        completion_sender: Option<tokio::sync::oneshot::Sender<Result<CommandResult, String>>>,
+    },
+}
+
 /// Internal state for the [`RouterActor`].
 ///
 /// Tracks all connected agents and maps in-flight request IDs to their
@@ -27,13 +38,7 @@ pub struct RouterActor;
 pub struct RouterState {
     agents: HashMap<String, AgentInfo>,
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
-    rest_streaming_responses: HashMap<
-        u64,
-        (
-            String,
-            tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
-        ),
-    >,
+    transfers: HashMap<u64, TransferRequest>,
     next_request_id: u64,
 }
 
@@ -59,6 +64,14 @@ impl RouterState {
         let id = self.next_request_id;
         self.next_request_id += 1;
         id
+    }
+}
+
+impl TransferRequest {
+    fn agent_id(&self) -> &str {
+        match self {
+            Self::Download { agent_id, .. } | Self::Upload { agent_id, .. } => agent_id,
+        }
     }
 }
 
@@ -105,6 +118,257 @@ pub enum RouterMsg {
         reply: RpcReplyPort<Result<(), String>>,
         chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
     },
+    /// Start a streamed upload command on an agent and return the allocated request id.
+    StartUploadStreamRest {
+        agent_id: String,
+        command: Command,
+        completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
+        reply: RpcReplyPort<Result<u64, String>>,
+    },
+    /// Forward a binary upload chunk from the REST API to the target agent session.
+    SendStreamChunkToAgent {
+        agent_id: String,
+        request_id: u64,
+        bytes: Vec<u8>,
+        reply: RpcReplyPort<Result<(), String>>,
+    },
+}
+
+impl RouterActor {
+    fn start_download_transfer(
+        state: &mut RouterState,
+        request_id: u64,
+        agent_id: String,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+    ) {
+        state.transfers.insert(
+            request_id,
+            TransferRequest::Download {
+                agent_id,
+                chunk_sender,
+            },
+        );
+    }
+
+    fn start_upload_transfer(
+        state: &mut RouterState,
+        request_id: u64,
+        agent_id: String,
+        completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
+    ) {
+        state.transfers.insert(
+            request_id,
+            TransferRequest::Upload {
+                agent_id,
+                completion_sender: Some(completion_sender),
+            },
+        );
+    }
+
+    async fn route_download_chunk(
+        state: &mut RouterState,
+        agent_id: String,
+        chunk: crate::streaming::StreamChunk,
+    ) {
+        let request_id = chunk.request_id;
+
+        let chunk_sender = match state.transfers.get(&request_id) {
+            Some(TransferRequest::Download {
+                agent_id: stored_agent_id,
+                chunk_sender,
+            }) => {
+                if stored_agent_id != &agent_id {
+                    log!(
+                        Level::Warning,
+                        "Streaming agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                        request_id,
+                        stored_agent_id,
+                        agent_id
+                    );
+                    return;
+                }
+                chunk_sender.clone()
+            }
+            Some(TransferRequest::Upload { .. }) => {
+                log!(
+                    Level::Warning,
+                    "Received stream chunk for upload transfer: request_id={}",
+                    request_id
+                );
+                return;
+            }
+            None => {
+                log!(
+                    Level::Warning,
+                    "No streaming response found for request_id={}",
+                    request_id
+                );
+                return;
+            }
+        };
+
+        if let Err(_error) = chunk_sender.send(chunk.clone()).await {
+            log!(
+                Level::Warning,
+                "Failed to send chunk to REST stream: request_id={}",
+                request_id
+            );
+            state.transfers.remove(&request_id);
+            return;
+        }
+
+        if chunk.is_last || chunk.is_error {
+            state.transfers.remove(&request_id);
+            log!(
+                Level::Info,
+                "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
+                agent_id,
+                request_id,
+                chunk.chunk_index + 1,
+                chunk.is_error
+            );
+        }
+    }
+
+    fn finish_upload_transfer(
+        state: &mut RouterState,
+        agent_id: String,
+        request_id: u64,
+        result: CommandResult,
+    ) {
+        let completion_sender = match state.transfers.get_mut(&request_id) {
+            Some(TransferRequest::Upload {
+                agent_id: stored_agent_id,
+                completion_sender,
+            }) => {
+                if stored_agent_id != &agent_id {
+                    log!(
+                        Level::Warning,
+                        "Upload response agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                        request_id,
+                        stored_agent_id,
+                        agent_id
+                    );
+                    return;
+                }
+                completion_sender.take()
+            }
+            Some(TransferRequest::Download { .. }) => {
+                log!(
+                    Level::Warning,
+                    "Received command response for download transfer: request_id={}, result={:?}",
+                    request_id,
+                    result
+                );
+                return;
+            }
+            None => {
+                log!(
+                    Level::Warning,
+                    "No pending response found for request_id={}",
+                    request_id
+                );
+                return;
+            }
+        };
+
+        let completion_result = match &result {
+            CommandResult::RawUpload => {
+                log!(
+                    Level::Info,
+                    "Routing upload completion response: agent_id={}, request_id={}, result={:?}",
+                    agent_id,
+                    request_id,
+                    result
+                );
+                Ok(result)
+            }
+            CommandResult::Error { message } => {
+                log!(
+                    Level::Info,
+                    "Routing upload error response: agent_id={}, request_id={}, message={}",
+                    agent_id,
+                    request_id,
+                    message
+                );
+                Err(message.clone())
+            }
+            _ => {
+                log!(
+                    Level::Warning,
+                    "Unexpected upload response type: agent_id={}, request_id={}, result={:?}",
+                    agent_id,
+                    request_id,
+                    result
+                );
+                Err("Unexpected upload response type".to_string())
+            }
+        };
+
+        state.transfers.remove(&request_id);
+
+        if let Some(sender) = completion_sender {
+            let _ = sender.send(completion_result);
+        }
+    }
+
+    fn cleanup_agent_requests(state: &mut RouterState, agent_id: &str) {
+        let orphaned_oneshot: Vec<u64> = state
+            .rest_pending_responses
+            .iter()
+            .filter(|(_, (_, pending_agent_id))| pending_agent_id == &agent_id)
+            .map(|(request_id, _)| *request_id)
+            .collect();
+
+        for request_id in &orphaned_oneshot {
+            if let Some((reply, _)) = state.rest_pending_responses.remove(request_id) {
+                log!(
+                    Level::Warning,
+                    "Cleaning up orphaned pending response: request_id={}, agent_id={}",
+                    request_id,
+                    agent_id
+                );
+                let _ = reply.send(CommandResult::Error {
+                    message: format!("Agent disconnected: {}", agent_id),
+                });
+            }
+        }
+
+        let orphaned_transfers: Vec<u64> = state
+            .transfers
+            .iter()
+            .filter(|(_, transfer)| transfer.agent_id() == agent_id)
+            .map(|(request_id, _)| *request_id)
+            .collect();
+
+        for request_id in &orphaned_transfers {
+            if let Some(transfer) = state.transfers.remove(request_id) {
+                match transfer {
+                    TransferRequest::Download { .. } => {
+                        log!(
+                            Level::Warning,
+                            "Cleaning up orphaned download stream: request_id={}, agent_id={}",
+                            request_id,
+                            agent_id
+                        );
+                    }
+                    TransferRequest::Upload {
+                        completion_sender, ..
+                    } => {
+                        log!(
+                            Level::Warning,
+                            "Cleaning up orphaned upload stream: request_id={}, agent_id={}",
+                            request_id,
+                            agent_id
+                        );
+                        if let Some(sender) = completion_sender {
+                            let _ = sender.send(Err(format!("Agent disconnected: {}", agent_id)));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Actor for RouterActor {
@@ -121,7 +385,7 @@ impl Actor for RouterActor {
         Ok(RouterState {
             agents: HashMap::new(),
             rest_pending_responses: HashMap::new(),
-            rest_streaming_responses: HashMap::new(),
+            transfers: HashMap::new(),
             next_request_id: 1,
         })
     }
@@ -186,47 +450,7 @@ impl Actor for RouterActor {
                 log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                 state.agents.remove(&agent_id);
 
-                // Clean up any in-flight streaming responses for this agent.
-                // Dropping the Sender closes the channel, which causes the REST handler's
-                // recv() to return None, unblocking it.
-                let orphaned_requests: Vec<u64> = state
-                    .rest_streaming_responses
-                    .iter()
-                    .filter(|(_, (aid, _))| aid == &agent_id)
-                    .map(|(request_id, _)| *request_id)
-                    .collect();
-
-                for request_id in &orphaned_requests {
-                    log!(
-                        Level::Warning,
-                        "Cleaning up orphaned streaming response: request_id={}, agent_id={}",
-                        request_id,
-                        agent_id
-                    );
-                    state.rest_streaming_responses.remove(request_id);
-                }
-
-                // Also clean up any pending one-shot REST responses for this agent
-                let orphaned_oneshot: Vec<u64> = state
-                    .rest_pending_responses
-                    .iter()
-                    .filter(|(_, (_, aid))| aid == &agent_id)
-                    .map(|(request_id, _)| *request_id)
-                    .collect();
-
-                for request_id in &orphaned_oneshot {
-                    if let Some((reply, _)) = state.rest_pending_responses.remove(request_id) {
-                        log!(
-                            Level::Warning,
-                            "Cleaning up orphaned pending response: request_id={}, agent_id={}",
-                            request_id,
-                            agent_id
-                        );
-                        let _ = reply.send(CommandResult::Error {
-                            message: format!("Agent disconnected: {}", agent_id),
-                        });
-                    }
-                }
+                Self::cleanup_agent_requests(state, &agent_id);
             }
             RouterMsg::RouteResponse {
                 agent_id,
@@ -260,11 +484,7 @@ impl Actor for RouterActor {
 
                     let _ = reply.send(result_to_send);
                 } else {
-                    log!(
-                        Level::Warning,
-                        "No pending response found for request_id={}",
-                        request_id
-                    );
+                    Self::finish_upload_transfer(state, agent_id, request_id, result);
                 }
             }
             RouterMsg::GetAgentList { reply } => {
@@ -307,34 +527,7 @@ impl Actor for RouterActor {
                 }
             }
             RouterMsg::RouteStreamChunk { agent_id, chunk } => {
-                let request_id = chunk.request_id;
-
-                if let Some((_, chunk_sender)) = state.rest_streaming_responses.get(&request_id) {
-                    if let Err(_e) = chunk_sender.send(chunk.clone()).await {
-                        log!(
-                            Level::Warning,
-                            "Failed to send chunk to REST stream: request_id={}",
-                            request_id
-                        );
-                        state.rest_streaming_responses.remove(&request_id);
-                    } else if chunk.is_last || chunk.is_error {
-                        state.rest_streaming_responses.remove(&request_id);
-                        log!(
-                            Level::Info,
-                            "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
-                            agent_id,
-                            request_id,
-                            chunk.chunk_index + 1,
-                            chunk.is_error
-                        );
-                    }
-                } else {
-                    log!(
-                        Level::Warning,
-                        "No streaming response found for request_id={}",
-                        request_id
-                    );
-                }
+                Self::route_download_chunk(state, agent_id, chunk).await;
             }
             RouterMsg::ExecuteStreamCommandRest {
                 agent_id,
@@ -352,10 +545,13 @@ impl Actor for RouterActor {
                     command
                 );
 
-                if let Some(agent_info) = state.agents.get(&agent_id) {
-                    state
-                        .rest_streaming_responses
-                        .insert(request_id, (agent_id.clone(), chunk_sender));
+                if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
+                    Self::start_download_transfer(
+                        state,
+                        request_id,
+                        agent_id.clone(),
+                        chunk_sender,
+                    );
 
                     let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
                         Message::Command {
@@ -370,6 +566,87 @@ impl Actor for RouterActor {
                         Level::Warning,
                         "Agent not found for streaming command: agent_id={}",
                         agent_id
+                    );
+                    let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
+                }
+            }
+            RouterMsg::StartUploadStreamRest {
+                agent_id,
+                command,
+                completion_sender,
+                reply,
+            } => {
+                let request_id = state.next_id();
+
+                log!(
+                    Level::Info,
+                    "Routing REST upload command: agent_id={}, request_id={}, command={:?}",
+                    agent_id,
+                    request_id,
+                    command
+                );
+
+                if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
+                    Self::start_upload_transfer(
+                        state,
+                        request_id,
+                        agent_id.clone(),
+                        completion_sender,
+                    );
+
+                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                        Message::Command {
+                            agent_id: agent_id.clone(),
+                            request_id,
+                            command,
+                        },
+                    ));
+                    let _ = reply.send(Ok(request_id));
+                } else {
+                    log!(
+                        Level::Warning,
+                        "Agent not found for upload command: agent_id={}",
+                        agent_id
+                    );
+                    let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
+                }
+            }
+            RouterMsg::SendStreamChunkToAgent {
+                agent_id,
+                request_id,
+                bytes,
+                reply,
+            } => {
+                let has_matching_upload = matches!(
+                    state.transfers.get(&request_id),
+                    Some(TransferRequest::Upload {
+                        agent_id: stored_agent_id,
+                        ..
+                    }) if stored_agent_id == &agent_id
+                );
+
+                if !has_matching_upload {
+                    log!(
+                        Level::Warning,
+                        "Upload stream not found for forwarded chunk: agent_id={}, request_id={}",
+                        agent_id,
+                        request_id
+                    );
+                    let _ = reply.send(Err(format!(
+                        "Upload stream not found: agent_id={}, request_id={}",
+                        agent_id, request_id
+                    )));
+                } else if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
+                    let _ = agent_info
+                        .session_ref
+                        .cast(SessionMsg::OutgoingBinary(bytes));
+                    let _ = reply.send(Ok(()));
+                } else {
+                    log!(
+                        Level::Warning,
+                        "Agent not found for forwarded upload chunk: agent_id={}, request_id={}",
+                        agent_id,
+                        request_id
                     );
                     let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
                 }

@@ -69,7 +69,12 @@ describe("Raw Download API", () => {
         await waitForAgentPromise;
 
         const agents = await apiClient.listAgents();
-        testAgent = agents.find((a) => a.name === AGENT_NAME)!;
+        const connectedAgent = agents.find((a) => a.name === AGENT_NAME);
+        if (!connectedAgent) {
+            throw new Error(`Agent ${AGENT_NAME} was not registered`);
+        }
+
+        testAgent = connectedAgent;
         expect(testAgent).toBeDefined();
     }, 30000);
 
@@ -125,12 +130,12 @@ describe("Raw Download API", () => {
 
     it("should handle agent disconnect during download", async () => {
         // Create a large file that takes multiple chunks to transfer
-        const largeContent = "x".repeat(1024 * 1024); // 1MB, spans ~16 chunks at 64KB each
+        const largeContent = "x".repeat(32 * 1024 * 1024);
         const testFilePath = tempFiles.create(largeContent, {
             suffix: ".txt",
         });
 
-        const projectRoot = path.join(__dirname, "../..");
+        const projectRoot = path.join(__dirname, "..");
         const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
         const ephemeralAgentName = "ephemeral-raw-agent";
 
@@ -157,14 +162,28 @@ describe("Raw Download API", () => {
         const agents = await apiClient.listAgents();
         const ephemeralAgent = agents.find(
             (a) => a.name === ephemeralAgentName,
-        )!;
+        );
+        if (!ephemeralAgent) {
+            throw new Error(`Agent ${ephemeralAgentName} was not registered`);
+        }
         expect(ephemeralAgent).toBeDefined();
+
+        const ephemeralAgentProcess =
+            processManager.getProcess(ephemeralAgentPid);
+        if (!ephemeralAgentProcess) {
+            throw new Error("Ephemeral agent process not found");
+        }
 
         // Start the download in the background
         const downloadPromise = ephemeralAgent.raw(testFilePath);
 
-        // Give a moment for download to start, then kill the agent
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Waiting for the agent's download log ensures we interrupt an active transfer.
+        await waitForLogMessage(
+            ephemeralAgentProcess,
+            /command=RawDownload/,
+            10000,
+        );
+
         processManager.kill(ephemeralAgentPid);
 
         // The download should fail with an error or complete (if data was already sent),
@@ -188,6 +207,7 @@ describe("Raw Download API", () => {
 
         // The download should have either completed (got data before kill)
         // or failed with an error — but it must NOT hang
+        // Reaching this assertion confirms router cleanup closed the request path.
         expect(result).toBeDefined();
     }, 15000);
 

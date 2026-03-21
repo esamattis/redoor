@@ -31,12 +31,8 @@ pub struct SessionState {
     /// The agent ID assigned after the agent sends an `AgentRegister` message.
     /// `None` until registration completes.
     pub agent_id: Option<String>,
-    /// Channel for sending serialized JSON messages back to the agent over the
-    /// WebSocket.
-    pub outgoing: mpsc::UnboundedSender<Message>,
-    /// Channel for sending raw binary frames (e.g. stream chunks) back to the
-    /// agent over the WebSocket.
-    pub outgoing_binary: mpsc::UnboundedSender<Vec<u8>>,
+    /// Channel for sending serialized WebSocket frames back to the agent.
+    pub outgoing: mpsc::UnboundedSender<WsMessage>,
 }
 
 /// Messages that can be sent to a [`SessionActor`].
@@ -58,8 +54,7 @@ impl Actor for SessionActor {
     type Arguments = (
         String,
         ActorRef<RouterMsg>,
-        mpsc::UnboundedSender<Message>,
-        mpsc::UnboundedSender<Vec<u8>>,
+        mpsc::UnboundedSender<WsMessage>,
     );
 
     async fn pre_start(
@@ -67,7 +62,7 @@ impl Actor for SessionActor {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let (socket_id, router_ref, outgoing, outgoing_binary) = args;
+        let (socket_id, router_ref, outgoing) = args;
         log!(Level::Info, "SessionActor started: socket_id={}", socket_id);
 
         Ok(SessionState {
@@ -75,7 +70,6 @@ impl Actor for SessionActor {
             router_ref,
             agent_id: None,
             outgoing,
-            outgoing_binary,
         })
     }
 
@@ -141,7 +135,9 @@ impl Actor for SessionActor {
                         result
                     );
                 }
-                let _ = state.outgoing.send(msg);
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = state.outgoing.send(WsMessage::Text(json.into()));
+                }
             }
             SessionMsg::IncomingBinary(bytes) => {
                 if let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) {
@@ -155,7 +151,7 @@ impl Actor for SessionActor {
                 }
             }
             SessionMsg::OutgoingBinary(bytes) => {
-                let _ = state.outgoing_binary.send(bytes);
+                let _ = state.outgoing.send(WsMessage::Binary(bytes.into()));
             }
         }
         Ok(())
@@ -193,14 +189,12 @@ pub async fn handle_websocket(
     router_ref: ActorRef<RouterMsg>,
 ) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    let (tx_binary, mut rx_binary) = mpsc::unbounded_channel::<Vec<u8>>();
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<WsMessage>();
 
     let (session_ref, _handle) = SessionActor::spawn(
         None,
         SessionActor,
-        (socket_id.clone(), router_ref.clone(), tx, tx_binary),
+        (socket_id.clone(), router_ref.clone(), tx_out.clone()),
     )
     .await
     .expect("Failed to spawn SessionActor");
@@ -231,22 +225,6 @@ pub async fn handle_websocket(
             }
         }
         let _ = session_ref_stop.stop(None);
-    });
-
-    let tx_out_clone = tx_out.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = tx_out_clone.send(WsMessage::Text(json.into()));
-            }
-        }
-    });
-
-    let tx_out_clone2 = tx_out.clone();
-    tokio::spawn(async move {
-        while let Some(bytes) = rx_binary.recv().await {
-            let _ = tx_out_clone2.send(WsMessage::Binary(bytes.into()));
-        }
     });
 
     tokio::spawn(async move {

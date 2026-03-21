@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
     AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse,
+    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawUploadResponse,
 };
 
 use serde::Deserialize;
@@ -17,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::StreamExt;
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 
 use ractor::{ActorRef, call_t};
@@ -60,7 +61,10 @@ async fn main() {
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
-        .route("/api/v1/agents/{agent}/raw/{*path}", get(raw_agent_handler))
+        .route(
+            "/api/v1/agents/{agent}/raw/{*path}",
+            get(raw_agent_handler).put(raw_agent_put_handler),
+        )
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
         .layer(
             CorsLayer::new()
@@ -557,4 +561,268 @@ async fn raw_agent_handler(
         .body(Body::from_stream(stream))
         .unwrap()
         .into_response()
+}
+
+async fn raw_agent_put_handler(
+    Path((agent, path)): Path<(String, String)>,
+    AxumState(state): AxumState<ServerState>,
+    body: Body,
+) -> impl IntoResponse {
+    let resolved_path = if path.starts_with('/') {
+        path
+    } else {
+        match call_t!(
+            &state.router_ref,
+            |reply| actors::router::RouterMsg::ExecuteCommandRest {
+                agent_id: agent.clone(),
+                command: Command::GetAgentDetails,
+                reply,
+            },
+            30000
+        ) {
+            Ok(CommandResult::GetAgentDetails(details)) => {
+                format!(
+                    "{}/{}",
+                    details.cwd.trim_end_matches('/'),
+                    path.trim_start_matches('/')
+                )
+            }
+            Ok(CommandResult::Error { message }) => {
+                let status = if message.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+
+                return (status, Json(ErrorResponse { error: message })).into_response();
+            }
+            Ok(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Unexpected result type while resolving upload path".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to resolve upload path: {:?}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    let (upload_completion_sender, upload_completion_receiver) =
+        tokio::sync::oneshot::channel::<Result<CommandResult, String>>();
+
+    let request_id = match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::StartUploadStreamRest {
+            agent_id: agent.clone(),
+            command: Command::RawUpload {
+                path: resolved_path.clone(),
+            },
+            completion_sender: upload_completion_sender,
+            reply,
+        },
+        30000
+    ) {
+        Ok(Ok(request_id)) => request_id,
+        Ok(Err(error_msg)) => {
+            let status = if error_msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if error_msg.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to start upload: {:?}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let mut body_stream = body.into_data_stream();
+    let mut chunk_index = 0u64;
+    let mut bytes_written = 0u64;
+
+    while let Some(next_chunk) = body_stream.next().await {
+        let data = match next_chunk {
+            Ok(data) => data,
+            Err(error) => {
+                let abort_chunk = redoor::streaming::StreamChunk {
+                    request_id,
+                    chunk_index,
+                    is_last: true,
+                    is_error: true,
+                    data: format!("Failed to read request body: {}", error).into_bytes(),
+                };
+
+                let _ = call_t!(
+                    &state.router_ref,
+                    |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
+                        agent_id: agent.clone(),
+                        request_id,
+                        bytes: abort_chunk.to_bytes(),
+                        reply,
+                    },
+                    30000
+                );
+
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Failed to read request body: {}", error),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        bytes_written += data.len() as u64;
+
+        let stream_chunk = redoor::streaming::StreamChunk {
+            request_id,
+            chunk_index,
+            is_last: false,
+            is_error: false,
+            data: data.to_vec(),
+        };
+
+        match call_t!(
+            &state.router_ref,
+            |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
+                agent_id: agent.clone(),
+                request_id,
+                bytes: stream_chunk.to_bytes(),
+                reply,
+            },
+            30000
+        ) {
+            Ok(Ok(())) => {}
+            Ok(Err(error_msg)) => {
+                let status = if error_msg.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else if error_msg.contains("Permission denied") {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+
+                return (status, Json(ErrorResponse { error: error_msg })).into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to forward upload chunk: {:?}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        chunk_index += 1;
+    }
+
+    let final_chunk = redoor::streaming::StreamChunk {
+        request_id,
+        chunk_index,
+        is_last: true,
+        is_error: false,
+        data: Vec::new(),
+    };
+
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
+            agent_id: agent.clone(),
+            request_id,
+            bytes: final_chunk.to_bytes(),
+            reply,
+        },
+        30000
+    ) {
+        Ok(Ok(())) => {}
+        Ok(Err(error_msg)) => {
+            let status = if error_msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if error_msg.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to forward final upload chunk: {:?}", e),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    match upload_completion_receiver.await {
+        Ok(Ok(CommandResult::RawUpload)) => (
+            StatusCode::OK,
+            Json(RawUploadResponse {
+                path: resolved_path,
+                bytes_written,
+            }),
+        )
+            .into_response(),
+        Ok(Ok(CommandResult::Error { message })) => {
+            let status = if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            (status, Json(ErrorResponse { error: message })).into_response()
+        }
+        Ok(Ok(_)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected upload completion response".to_string(),
+            }),
+        )
+            .into_response(),
+        Ok(Err(error_msg)) => {
+            let status = if error_msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if error_msg.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            (status, Json(ErrorResponse { error: error_msg })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed waiting for upload completion: {}", e),
+            }),
+        )
+            .into_response(),
+    }
 }

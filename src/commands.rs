@@ -15,6 +15,9 @@ pub enum Command {
         range_start: Option<u64>,
         range_end: Option<u64>,
     },
+    RawUpload {
+        path: String,
+    },
     Metadata {
         path: String,
     },
@@ -74,6 +77,7 @@ pub enum CommandResult {
     LsFile(LsFileResult),
     Cat(CatResult),
     RawDownload { path: String },
+    RawUpload,
     Metadata(MetadataResponse),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
@@ -169,6 +173,13 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RawUploadResponse {
+    pub path: String,
+    pub bytes_written: u64,
+}
+
 pub struct CommandHandler;
 
 impl CommandHandler {
@@ -185,6 +196,7 @@ impl CommandHandler {
                 range_start,
                 range_end,
             } => self.raw_download(path, range_start, range_end).await,
+            Command::RawUpload { path } => self.raw_upload(path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
@@ -290,6 +302,10 @@ impl CommandHandler {
         _range_end: Option<u64>,
     ) -> CommandResult {
         CommandResult::RawDownload { path }
+    }
+
+    async fn raw_upload(&self, _path: String) -> CommandResult {
+        CommandResult::RawUpload
     }
 
     async fn detect_mime_type_from_content(path: &str) -> Option<String> {
@@ -566,6 +582,21 @@ mod tests {
                 assert_eq!(path, "test.txt");
             }
             _ => panic!("Expected RawDownload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_raw_upload_command() {
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::RawUpload {
+                path: "upload.txt".to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::RawUpload => {}
+            _ => panic!("Expected RawUpload"),
         }
     }
 

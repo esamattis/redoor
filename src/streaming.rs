@@ -100,8 +100,8 @@ mod tests {
         );
         assert_eq!(decoded.request_id, 123);
         assert_eq!(decoded.chunk_index, 0);
-        assert_eq!(decoded.is_last, false);
-        assert_eq!(decoded.is_error, false);
+        assert!(!decoded.is_last);
+        assert!(!decoded.is_error);
         assert_eq!(decoded.data, vec![1u8, 2u8, 3u8, 4u8]);
     }
 
@@ -118,8 +118,8 @@ mod tests {
         let decoded = StreamChunk::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.request_id, 456);
         assert_eq!(decoded.chunk_index, 10);
-        assert_eq!(decoded.is_last, true);
-        assert_eq!(decoded.is_error, false);
+        assert!(decoded.is_last);
+        assert!(!decoded.is_error);
         assert_eq!(decoded.data, Vec::<u8>::new());
     }
 

@@ -77,7 +77,7 @@ export class Agent {
         return response.arrayBuffer();
     }
 
-    getDownloadUrl(
+    getRawUrl(
         path: string,
         options?: { cwd?: string; download?: boolean },
     ): string {
@@ -97,6 +97,29 @@ export class Agent {
         return url;
     }
 
+    async upload(path: string, file: File): Promise<Response> {
+        const response = await fetch(this.getRawUrl(path), {
+            method: "PUT",
+            headers: {
+                "Content-Type": file.type || "application/octet-stream",
+            },
+            body: file,
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            if (text) {
+                const error: ErrorResponse = JSON.parse(text);
+                throw new Error(error.error);
+            }
+            throw new Error(
+                `Request failed: ${response.status} ${response.statusText}`,
+            );
+        }
+
+        return response;
+    }
+
     async download(
         path: string,
         options?: {
@@ -105,7 +128,7 @@ export class Agent {
             download?: boolean;
         },
     ): Promise<Response> {
-        const url = this.getDownloadUrl(path, {
+        const url = this.getRawUrl(path, {
             download: options?.download,
         });
 

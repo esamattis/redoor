@@ -2,24 +2,33 @@ use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{
     Level,
-    commands::{Command, CommandHandler},
+    commands::{Command, CommandHandler, CommandResult},
     log, streaming,
     types::Message,
 };
-use std::env;
+use std::{collections::HashMap, env};
 use sysinfo::System;
-use tokio::sync::mpsc;
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc,
+};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 pub struct AgentActor;
 
-#[derive(Clone)]
+struct UploadSession {
+    path: String,
+    file: File,
+    bytes_written: u64,
+}
+
 pub struct AgentState {
     agent_id: String,
     agent_name: String,
     server_url: String,
     ws_tx: Option<mpsc::Sender<WsMessage>>,
-    active_request_id: Option<u64>,
+    active_uploads: HashMap<u64, UploadSession>,
 }
 
 #[derive(Clone)]
@@ -41,7 +50,7 @@ impl AgentActor {
     async fn handle_incoming_message(
         &self,
         text: String,
-        agent_id: &str,
+        state: &mut AgentState,
         write: &mpsc::Sender<WsMessage>,
         agent_ref: ActorRef<AgentMsg>,
     ) {
@@ -55,41 +64,90 @@ impl AgentActor {
                     log!(
                         Level::Info,
                         "Command received: agent_id={}, request_id={}, command={:?}",
-                        agent_id,
+                        state.agent_id,
                         request_id,
                         command
                     );
 
-                    if let Command::RawDownload {
-                        path,
-                        range_start,
-                        range_end,
-                    } = command
-                    {
-                        let _ = self
-                            .raw_download(path, range_start, range_end, request_id, write)
-                            .await;
-                        return;
-                    }
+                    match command {
+                        Command::RawDownload {
+                            path,
+                            range_start,
+                            range_end,
+                        } => {
+                            self.raw_download(path, range_start, range_end, request_id, write)
+                                .await;
+                        }
+                        Command::RawUpload { path } => {
+                            if state.active_uploads.contains_key(&request_id) {
+                                self.send_command_response(
+                                    write,
+                                    &state.agent_id,
+                                    request_id,
+                                    CommandResult::Error {
+                                        message: format!(
+                                            "Upload session already exists for request_id={}",
+                                            request_id
+                                        ),
+                                    },
+                                )
+                                .await;
+                            } else {
+                                match File::create(&path).await {
+                                    Ok(file) => {
+                                        log!(
+                                            Level::Info,
+                                            "Started raw upload: request_id={}, path={}",
+                                            request_id,
+                                            path
+                                        );
+                                        state.active_uploads.insert(
+                                            request_id,
+                                            UploadSession {
+                                                path,
+                                                file,
+                                                bytes_written: 0,
+                                            },
+                                        );
+                                    }
+                                    Err(error) => {
+                                        self.send_command_response(
+                                            write,
+                                            &state.agent_id,
+                                            request_id,
+                                            CommandResult::Error {
+                                                message: format!(
+                                                    "Failed to create file: {}",
+                                                    error
+                                                ),
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                        }
+                        other => {
+                            let result = CommandHandler::new().execute(other).await;
+                            let result_clone = result.clone();
+                            let response = Message::CommandResponse {
+                                agent_id: state.agent_id.clone(),
+                                request_id,
+                                result,
+                            };
 
-                    let result = CommandHandler::new().execute(command).await;
-                    let result_clone = result.clone();
-                    let response = Message::CommandResponse {
-                        agent_id: agent_id.to_string(),
-                        request_id,
-                        result,
-                    };
-
-                    if let Ok(json) = serde_json::to_string(&response) {
-                        let _ = write.send(WsMessage::text(json)).await;
+                            if let Ok(json) = serde_json::to_string(&response) {
+                                let _ = write.send(WsMessage::text(json)).await;
+                            }
+                            log!(
+                                Level::Info,
+                                "Command response sent: agent_id={}, request_id={}, result={:?}",
+                                state.agent_id,
+                                request_id,
+                                result_clone
+                            );
+                        }
                     }
-                    log!(
-                        Level::Info,
-                        "Command response sent: agent_id={}, request_id={}, result={:?}",
-                        agent_id,
-                        request_id,
-                        result_clone
-                    );
                 }
                 Message::Error { message } => {
                     log!(Level::Error, "Server error: {}", message);
@@ -97,6 +155,24 @@ impl AgentActor {
                 }
                 _ => {}
             }
+        }
+    }
+
+    async fn send_command_response(
+        &self,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+        request_id: u64,
+        result: CommandResult,
+    ) {
+        let response = Message::CommandResponse {
+            agent_id: agent_id.to_string(),
+            request_id,
+            result,
+        };
+
+        if let Ok(json) = serde_json::to_string(&response) {
+            let _ = write.send(WsMessage::text(json)).await;
         }
     }
 
@@ -108,18 +184,13 @@ impl AgentActor {
         request_id: u64,
         write: &mpsc::Sender<WsMessage>,
     ) {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-        match tokio::fs::File::open(&path).await {
+        match File::open(&path).await {
             Ok(mut file) => {
                 let mut chunk_index = 0u64;
                 let chunk_size = streaming::CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
-
-                // Handle range request
                 let mut bytes_remaining: Option<u64> = None;
 
-                // Seek to start position if range is specified
                 if let Some(start) = range_start {
                     if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
                         log!(Level::Error, "Failed to seek file: {}", e);
@@ -137,34 +208,31 @@ impl AgentActor {
                         return;
                     }
 
-                    // Calculate bytes remaining to read
                     if let Some(end) = range_end {
-                        // range_end is exclusive, so we read up to but not including end
                         bytes_remaining = Some(end.saturating_sub(start));
                     }
                 }
 
                 loop {
-                    // Determine how much to read in this iteration
                     let read_size = match bytes_remaining {
                         Some(remaining) => {
                             if remaining == 0 {
-                                break; // We've read all the requested bytes
+                                break;
                             }
                             std::cmp::min(chunk_size, remaining as usize)
                         }
                         None => chunk_size,
                     };
 
-                    // Resize buffer if needed for the last partial chunk
                     if read_size < buffer.len() {
+                        buffer.resize(read_size, 0);
+                    } else if read_size > buffer.len() {
                         buffer.resize(read_size, 0);
                     }
 
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => {
-                            // Update bytes remaining
                             if let Some(ref mut remaining) = bytes_remaining {
                                 *remaining = remaining.saturating_sub(n as u64);
                             }
@@ -176,6 +244,7 @@ impl AgentActor {
                                 is_error: false,
                                 data: buffer[..n].to_vec(),
                             };
+
                             if write
                                 .send(WsMessage::Binary(chunk.to_bytes().into()))
                                 .await
@@ -240,6 +309,145 @@ impl AgentActor {
                     .await;
             }
         }
+    }
+
+    async fn handle_upload_chunk(
+        &self,
+        state: &mut AgentState,
+        bytes: Vec<u8>,
+    ) -> Result<(), ActorProcessingErr> {
+        let chunk = match streaming::StreamChunk::from_bytes(&bytes) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                log!(
+                    Level::Warning,
+                    "Failed to parse binary stream chunk: {}",
+                    error
+                );
+                return Ok(());
+            }
+        };
+
+        let request_id = chunk.request_id;
+        let is_known_upload = state.active_uploads.contains_key(&request_id);
+
+        if !is_known_upload {
+            return Ok(());
+        }
+
+        let Some(tx) = state.ws_tx.as_ref().cloned() else {
+            log!(
+                Level::Warning,
+                "Upload chunk received without active websocket sender: request_id={}",
+                request_id
+            );
+            state.active_uploads.remove(&request_id);
+            return Ok(());
+        };
+
+        if chunk.is_error {
+            let error_message = if chunk.data.is_empty() {
+                "Upload aborted by server".to_string()
+            } else {
+                String::from_utf8_lossy(&chunk.data).to_string()
+            };
+
+            let path = state
+                .active_uploads
+                .remove(&request_id)
+                .map(|session| session.path)
+                .unwrap_or_else(|| "<unknown>".to_string());
+
+            log!(
+                Level::Warning,
+                "Upload aborted: request_id={}, path={}, error={}",
+                request_id,
+                path,
+                error_message
+            );
+
+            self.send_command_response(
+                &tx,
+                &state.agent_id,
+                request_id,
+                CommandResult::Error {
+                    message: error_message,
+                },
+            )
+            .await;
+
+            return Ok(());
+        }
+
+        let mut session = match state.active_uploads.remove(&request_id) {
+            Some(session) => session,
+            None => return Ok(()),
+        };
+
+        if let Err(error) = session.file.write_all(&chunk.data).await {
+            let error_message = format!("Failed to write upload chunk: {}", error);
+            log!(
+                Level::Error,
+                "Upload write failed: request_id={}, path={}, error={}",
+                request_id,
+                session.path,
+                error_message
+            );
+
+            self.send_command_response(
+                &tx,
+                &state.agent_id,
+                request_id,
+                CommandResult::Error {
+                    message: error_message,
+                },
+            )
+            .await;
+
+            return Ok(());
+        }
+
+        session.bytes_written += chunk.data.len() as u64;
+
+        if chunk.is_last {
+            if let Err(error) = session.file.flush().await {
+                let error_message = format!("Failed to flush uploaded file: {}", error);
+                log!(
+                    Level::Error,
+                    "Upload flush failed: request_id={}, path={}, error={}",
+                    request_id,
+                    session.path,
+                    error_message
+                );
+
+                self.send_command_response(
+                    &tx,
+                    &state.agent_id,
+                    request_id,
+                    CommandResult::Error {
+                        message: error_message,
+                    },
+                )
+                .await;
+
+                return Ok(());
+            }
+
+            log!(
+                Level::Info,
+                "Raw upload complete: request_id={}, path={}, bytes_written={}",
+                request_id,
+                session.path,
+                session.bytes_written
+            );
+
+            self.send_command_response(&tx, &state.agent_id, request_id, CommandResult::RawUpload)
+                .await;
+        } else {
+            state.active_uploads.insert(request_id, session);
+        }
+
+        Ok(())
     }
 
     async fn spawn_read_task(
@@ -333,7 +541,7 @@ impl Actor for AgentActor {
             agent_name,
             server_url,
             ws_tx: None,
-            active_request_id: None,
+            active_uploads: HashMap::new(),
         })
     }
 
@@ -431,8 +639,8 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::WebSocketMessage { text } => {
-                if let Some(tx) = &state.ws_tx {
-                    self.handle_incoming_message(text, &state.agent_id, tx, myself.clone())
+                if let Some(tx) = state.ws_tx.as_ref().cloned() {
+                    self.handle_incoming_message(text, state, &tx, myself.clone())
                         .await;
                 }
             }
@@ -444,6 +652,7 @@ impl Actor for AgentActor {
                     reason
                 );
                 state.ws_tx = None;
+                state.active_uploads.clear();
                 let agent_ref_clone = myself.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -479,11 +688,7 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::WebSocketBinaryMessage { bytes } => {
-                if let Ok(chunk) = streaming::StreamChunk::from_bytes(&bytes) {
-                    if chunk.is_last {
-                        state.active_request_id = None;
-                    }
-                }
+                self.handle_upload_chunk(state, bytes).await?;
             }
 
             AgentMsg::Shutdown => {
@@ -493,6 +698,7 @@ impl Actor for AgentActor {
                     state.agent_id
                 );
                 state.ws_tx = None;
+                state.active_uploads.clear();
                 myself.stop(None);
             }
 
