@@ -10,6 +10,7 @@ import type { TransferDirection } from "../../bindings/TransferDirection";
 import type { TransferProgressEntry } from "../../bindings/TransferProgressEntry";
 import type { TransferProgressListResponse } from "../../bindings/TransferProgressListResponse";
 import type { TransferProgressState } from "../../bindings/TransferProgressState";
+import type { UiEvent } from "../../bindings/UiEvent";
 
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
@@ -17,6 +18,7 @@ export type {
     TransferProgressEntry,
     TransferProgressListResponse,
     TransferProgressState,
+    UiEvent,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -218,6 +220,12 @@ export class ApiClient {
 
     constructor(baseUrl: string) {
         this.baseUrl = baseUrl;
+    }
+
+    getUiWebSocketUrl(): string {
+        const url = new URL("/api/v1/ui/ws", this.baseUrl);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        return url.toString();
     }
 
     async listAgents(): Promise<Agent[]> {

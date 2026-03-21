@@ -4,7 +4,6 @@ import {
     Link,
     useLocation,
     createRootRouteWithContext,
-    useRouter,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
@@ -15,7 +14,13 @@ import {
     ArrowUpFromLine,
     AlertCircle,
 } from "lucide-react";
-import { ApiClient, type TransferProgressEntry } from "../api-client";
+import {
+    ApiClient,
+    type TransferProgressEntry,
+    type UiEvent,
+} from "../api-client";
+import type { AnyRouter } from "@tanstack/react-router";
+
 import { formatSize } from "../utils/path";
 
 interface AppRouterContext {
@@ -32,6 +37,113 @@ export function getAgentFromRootLoaderData(
     agentId: string,
 ) {
     return loaderData.agents.find((agent) => agent.id === agentId);
+}
+
+export class RefreshListener {
+    private api: ApiClient;
+    private router: AnyRouter;
+
+    constructor(api: ApiClient, router: AnyRouter) {
+        this.api = api;
+        this.router = router;
+    }
+    private reconnectTimer: number | null = null;
+    private websocket: WebSocket | null = null;
+    private invalidateInFlight: Promise<void> | null = null;
+    private invalidateQueued = false;
+    private started = false;
+
+    start() {
+        if (this.started) {
+            return;
+        }
+
+        this.started = true;
+        this.connect();
+    }
+
+    stop() {
+        this.started = false;
+
+        if (this.reconnectTimer !== null) {
+            window.clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+
+        this.websocket?.close();
+        this.websocket = null;
+        this.invalidateInFlight = null;
+        this.invalidateQueued = false;
+    }
+
+    private runInvalidate() {
+        if (!this.started) {
+            return;
+        }
+
+        if (this.invalidateInFlight) {
+            this.invalidateQueued = true;
+            return;
+        }
+
+        this.invalidateInFlight = this.router
+            .invalidate()
+            .catch(() => {})
+            .then(
+                () => new Promise<void>((resolve) => setTimeout(resolve, 200)),
+            )
+            .finally(() => {
+                this.invalidateInFlight = null;
+
+                if (this.invalidateQueued && this.started) {
+                    // A refresh arrived while the previous invalidation was still running,
+                    // so immediately drain the queued follow-up pass once the current one settles.
+                    this.invalidateQueued = false;
+                    this.runInvalidate();
+                }
+            });
+    }
+
+    private connect() {
+        if (!this.started) {
+            return;
+        }
+
+        this.websocket = new WebSocket(this.api.getUiWebSocketUrl());
+
+        this.websocket.addEventListener("message", (event) => {
+            if (typeof event.data !== "string") {
+                return;
+            }
+
+            let message: UiEvent;
+
+            try {
+                message = JSON.parse(event.data) as UiEvent;
+            } catch {
+                return;
+            }
+
+            if (message.type === "refresh") {
+                this.runInvalidate();
+            }
+        });
+
+        this.websocket.addEventListener("error", () => {
+            this.websocket?.close();
+        });
+
+        this.websocket.addEventListener("close", () => {
+            this.websocket = null;
+
+            if (this.started) {
+                this.reconnectTimer = window.setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, 1000);
+            }
+        });
+    }
 }
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
@@ -52,17 +164,6 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
 function RootLayout() {
     const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
-    const router = useRouter();
-
-    React.useEffect(() => {
-        const intervalId = window.setInterval(() => {
-            void router.invalidate();
-        }, 5000);
-
-        return () => {
-            window.clearInterval(intervalId);
-        };
-    }, [router]);
 
     return (
         <div className="flex h-screen">

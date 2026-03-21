@@ -188,6 +188,14 @@ pub struct TransferProgressListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UiEvent {
+    Refresh,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct TransferProgressEntry {
     pub request_id: u64,
     pub agent_id: String,

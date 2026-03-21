@@ -7,6 +7,7 @@ import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
 import { ApiClient } from "@/api-client";
+import { RefreshListener } from "@/routes/__root";
 
 export const api = new ApiClient(
     `${window.location.protocol}//${window.location.hostname}:3000`,
@@ -23,6 +24,9 @@ const router = createRouter({
     defaultStructuralSharing: true,
     defaultPreloadStaleTime: 0,
 });
+
+export const refreshListener = new RefreshListener(api, router);
+refreshListener.start();
 
 // Register the router instance for type safety
 declare module "@tanstack/react-router" {

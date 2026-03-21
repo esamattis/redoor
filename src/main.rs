@@ -1,7 +1,7 @@
 use redoor::actors;
 use redoor::commands::{
     AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawUploadResponse,
+    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawUploadResponse, UiEvent,
 };
 
 use serde::Deserialize;
@@ -11,13 +11,13 @@ use axum::{
     body::Body,
     extract::{
         Path, Query, State as AxumState,
-        ws::{WebSocket, WebSocketUpgrade},
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 
 use ractor::{ActorRef, call_t};
@@ -57,6 +57,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws", get(websocket_handler))
+        .route("/api/v1/ui/ws", get(ui_websocket_handler))
         .route("/api/v1/agents", get(list_agents_handler))
         .route(
             "/api/v1/transfers/progress",
@@ -97,9 +98,54 @@ async fn websocket_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state.router_ref))
 }
 
+async fn ui_websocket_handler(
+    ws: WebSocketUpgrade,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_ui_socket(socket, state.router_ref))
+}
+
 async fn handle_socket(socket: WebSocket, router_ref: ActorRef<actors::router::RouterMsg>) {
     let socket_id = Uuid::new_v4().to_string();
     actors::session::handle_websocket(socket, socket_id, router_ref).await;
+}
+
+async fn handle_ui_socket(socket: WebSocket, router_ref: ActorRef<actors::router::RouterMsg>) {
+    let subscriber_id = Uuid::new_v4().to_string();
+    let (mut sender, mut receiver) = socket.split();
+    let (tx_out, mut rx_out) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+
+    let _ = router_ref.cast(actors::router::RouterMsg::RegisterUiSubscriber {
+        subscriber_id: subscriber_id.clone(),
+        sender: tx_out,
+    });
+
+    tokio::select! {
+        _ = async {
+            while let Some(event) = rx_out.recv().await {
+                let json = match serde_json::to_string(&event) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        eprintln!("Failed to serialize UI websocket event: {}", error);
+                        continue;
+                    }
+                };
+
+                if sender.send(WsMessage::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
+        } => {}
+        _ = async {
+            while let Some(message_result) = receiver.next().await {
+                if message_result.is_err() {
+                    break;
+                }
+            }
+        } => {}
+    }
+
+    let _ = router_ref.cast(actors::router::RouterMsg::UnregisterUiSubscriber { subscriber_id });
 }
 
 async fn list_agents_handler(AxumState(state): AxumState<ServerState>) -> impl IntoResponse {

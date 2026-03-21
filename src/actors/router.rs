@@ -1,7 +1,7 @@
 use crate::actors::session::SessionMsg;
 use crate::commands::{
     Command, CommandResult, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
-    TransferProgressState,
+    TransferProgressState, UiEvent,
 };
 use crate::log;
 use crate::logging::Level;
@@ -43,6 +43,7 @@ pub struct RouterState {
     rest_pending_responses: HashMap<u64, (RpcReplyPort<CommandResult>, String)>,
     transfers: HashMap<u64, TransferRequest>,
     transfer_progress: HashMap<u64, TransferProgressEntry>,
+    ui_subscribers: HashMap<String, tokio::sync::mpsc::UnboundedSender<UiEvent>>,
     next_request_id: u64,
 }
 
@@ -93,7 +94,9 @@ pub enum RouterMsg {
         username: String,
     },
     /// An agent has disconnected; remove it from the registry.
-    UnregisterAgent { agent_id: String },
+    UnregisterAgent {
+        agent_id: String,
+    },
     /// An agent sent a command response; match it to the pending REST reply port.
     RouteResponse {
         agent_id: String,
@@ -106,6 +109,13 @@ pub enum RouterMsg {
     },
     GetTransferProgress {
         reply: RpcReplyPort<TransferProgressListResponse>,
+    },
+    RegisterUiSubscriber {
+        subscriber_id: String,
+        sender: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    },
+    UnregisterUiSubscriber {
+        subscriber_id: String,
     },
     /// Execute a one-shot command on an agent, initiated from the REST API.
     ExecuteCommandRest {
@@ -174,6 +184,7 @@ impl RouterActor {
                 chunk_sender,
             },
         );
+        Self::notify_ui_refresh(state);
     }
 
     fn record_upload_start(
@@ -204,6 +215,7 @@ impl RouterActor {
                 completion_sender: Some(completion_sender),
             },
         );
+        Self::notify_ui_refresh(state);
     }
 
     fn increment_download_progress(state: &mut RouterState, request_id: u64, bytes: u64) {
@@ -239,6 +251,25 @@ impl RouterActor {
         let mut transfers: Vec<_> = state.transfer_progress.values().cloned().collect();
         transfers.sort_by(|left, right| right.request_id.cmp(&left.request_id));
         TransferProgressListResponse { transfers }
+    }
+
+    fn notify_ui_refresh(state: &mut RouterState) {
+        Self::broadcast_ui_event(state, UiEvent::Refresh);
+    }
+
+    fn broadcast_ui_event(state: &mut RouterState, event: UiEvent) {
+        state.ui_subscribers.retain(|subscriber_id, sender| {
+            if sender.send(event.clone()).is_ok() {
+                true
+            } else {
+                log!(
+                    Level::Warning,
+                    "Removing closed UI subscriber: subscriber_id={}",
+                    subscriber_id
+                );
+                false
+            }
+        });
     }
 
     fn route_download_chunk(
@@ -305,6 +336,7 @@ impl RouterActor {
                 "REST stream receiver dropped before download completed".to_string(),
             );
             state.transfers.remove(&request_id);
+            Self::notify_ui_refresh(state);
             return;
         }
 
@@ -321,6 +353,7 @@ impl RouterActor {
 
         if chunk.is_last || chunk.is_error {
             state.transfers.remove(&request_id);
+            Self::notify_ui_refresh(state);
             log!(
                 Level::Info,
                 "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
@@ -415,6 +448,7 @@ impl RouterActor {
         };
 
         state.transfers.remove(&request_id);
+        Self::notify_ui_refresh(state);
 
         if let Some(sender) = completion_sender {
             let _ = sender.send(completion_result);
@@ -480,6 +514,10 @@ impl RouterActor {
                 }
             }
         }
+
+        if !orphaned_transfers.is_empty() {
+            Self::notify_ui_refresh(state);
+        }
     }
 }
 
@@ -499,6 +537,7 @@ impl Actor for RouterActor {
             rest_pending_responses: HashMap::new(),
             transfers: HashMap::new(),
             transfer_progress: HashMap::new(),
+            ui_subscribers: HashMap::new(),
             next_request_id: 1,
         })
     }
@@ -558,10 +597,12 @@ impl Actor for RouterActor {
                         username,
                     },
                 );
+                Self::notify_ui_refresh(state);
             }
             RouterMsg::UnregisterAgent { agent_id } => {
                 log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                 state.agents.remove(&agent_id);
+                Self::notify_ui_refresh(state);
 
                 Self::cleanup_agent_requests(state, &agent_id);
             }
@@ -615,6 +656,25 @@ impl Actor for RouterActor {
             }
             RouterMsg::GetTransferProgress { reply } => {
                 let _ = reply.send(Self::list_transfer_progress(state));
+            }
+            RouterMsg::RegisterUiSubscriber {
+                subscriber_id,
+                sender,
+            } => {
+                log!(
+                    Level::Info,
+                    "UI subscriber registered: subscriber_id={}",
+                    subscriber_id
+                );
+                state.ui_subscribers.insert(subscriber_id, sender);
+            }
+            RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
+                log!(
+                    Level::Info,
+                    "UI subscriber unregistered: subscriber_id={}",
+                    subscriber_id
+                );
+                state.ui_subscribers.remove(&subscriber_id);
             }
             RouterMsg::ExecuteCommandRest {
                 agent_id,
