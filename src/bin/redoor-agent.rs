@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
@@ -78,7 +79,7 @@ struct TarUploadSession {
     path: String,
     temp_path: PathBuf,
     chunk_sender: std_mpsc::SyncSender<Vec<u8>>,
-    completion_receiver: oneshot::Receiver<Result<(), String>>,
+    completion_receiver: oneshot::Receiver<Result<()>>,
     bytes_written: u64,
 }
 
@@ -163,7 +164,7 @@ impl AgentActor {
         }
     }
 
-    fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf, String> {
+    fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf> {
         let mut sanitized = PathBuf::new();
 
         for component in entry_path.components() {
@@ -171,16 +172,16 @@ impl AgentActor {
                 Component::Normal(part) => sanitized.push(part),
                 Component::CurDir => {}
                 Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                    return Err(format!(
+                    bail!(
                         "Tar entry path escapes destination: {}",
                         entry_path.display()
-                    ));
+                    );
                 }
             }
         }
 
         if sanitized.as_os_str().is_empty() {
-            return Err("Tar entry path cannot be empty".to_string());
+            bail!("Tar entry path cannot be empty");
         }
 
         Ok(sanitized)
@@ -234,59 +235,68 @@ impl AgentActor {
         source_path: &Path,
         dest_path: &Path,
         source_is_dir: bool,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let source_parent = source_path
             .parent()
-            .ok_or_else(|| format!("Source parent not found for {}", source_path.display()))?;
+            .with_context(|| format!("Source parent not found for {}", source_path.display()))?;
         let dest_parent = dest_path
             .parent()
-            .ok_or_else(|| format!("Destination parent not found for {}", dest_path.display()))?;
+            .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
 
-        let canonical_source_parent = std::fs::canonicalize(source_parent)
-            .map_err(|error| format!("Failed to access source parent: {}", error))?;
-        let canonical_dest_parent = std::fs::canonicalize(dest_parent)
-            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+        let canonical_source_parent = std::fs::canonicalize(source_parent).with_context(|| {
+            format!(
+                "Failed to access source parent: {}",
+                source_parent.display()
+            )
+        })?;
+        let canonical_dest_parent = std::fs::canonicalize(dest_parent).with_context(|| {
+            format!(
+                "Failed to access destination parent: {}",
+                dest_parent.display()
+            )
+        })?;
 
         let source_canonical = if source_path.is_absolute() {
-            std::fs::canonicalize(source_path)
-                .map_err(|error| format!("Failed to access source path: {}", error))?
+            std::fs::canonicalize(source_path).with_context(|| {
+                format!("Failed to access source path: {}", source_path.display())
+            })?
         } else {
             canonical_source_parent.join(
                 source_path
                     .file_name()
-                    .ok_or_else(|| format!("Invalid source path: {}", source_path.display()))?,
+                    .with_context(|| format!("Invalid source path: {}", source_path.display()))?,
             )
         };
 
         let dest_effective = canonical_dest_parent.join(
             dest_path
                 .file_name()
-                .ok_or_else(|| format!("Invalid destination path: {}", dest_path.display()))?,
+                .with_context(|| format!("Invalid destination path: {}", dest_path.display()))?,
         );
 
         if source_canonical == dest_effective {
-            return Err("Source and destination must be different".to_string());
+            bail!("Source and destination must be different");
         }
 
         if source_is_dir && dest_effective.starts_with(&source_canonical) {
-            return Err("Destination directory cannot be inside the source directory".to_string());
+            bail!("Destination directory cannot be inside the source directory");
         }
 
         Ok(())
     }
 
-    async fn validate_local_copy_parent(dest_path: &Path) -> Result<(), String> {
+    async fn validate_local_copy_parent(dest_path: &Path) -> Result<()> {
         let parent = dest_path
             .parent()
-            .ok_or_else(|| format!("Destination parent not found for {}", dest_path.display()))?;
-        let parent_metadata = tokio::fs::metadata(parent)
-            .await
-            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+            .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
+        let parent_metadata = tokio::fs::metadata(parent).await.with_context(|| {
+            format!("Failed to access destination parent: {}", parent.display())
+        })?;
         if !parent_metadata.is_dir() {
-            return Err(format!(
+            bail!(
                 "Destination parent is not a directory: {}",
                 parent.display()
-            ));
+            );
         }
         Ok(())
     }
@@ -295,27 +305,26 @@ impl AgentActor {
         source_path: &Path,
         dest_path: &Path,
         reporter: &mut LocalCopyProgressReporter,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let mut source = File::open(source_path)
             .await
-            .map_err(|error| format!("Failed to open source file: {}", error))?;
+            .with_context(|| format!("Failed to open source file: {}", source_path.display()))?;
         let temp_path = Self::temp_local_copy_path(
             dest_path
                 .to_str()
-                .ok_or_else(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
+                .with_context(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
         );
 
-        let mut destination = File::create(&temp_path)
-            .await
-            .map_err(|error| format!("Failed to create destination file: {}", error))?;
+        let mut destination = File::create(&temp_path).await.with_context(|| {
+            format!("Failed to create destination file: {}", temp_path.display())
+        })?;
 
         let mut buffer = vec![0u8; 1024 * 1024];
 
         loop {
-            let bytes_read = source
-                .read(&mut buffer)
-                .await
-                .map_err(|error| format!("Failed to read source file: {}", error))?;
+            let bytes_read = source.read(&mut buffer).await.with_context(|| {
+                format!("Failed to read source file: {}", source_path.display())
+            })?;
 
             if bytes_read == 0 {
                 break;
@@ -324,34 +333,43 @@ impl AgentActor {
             destination
                 .write_all(&buffer[..bytes_read])
                 .await
-                .map_err(|error| format!("Failed to write destination file: {}", error))?;
+                .with_context(|| {
+                    format!("Failed to write destination file: {}", temp_path.display())
+                })?;
 
             reporter.advance(bytes_read as u64).await;
         }
 
-        destination
-            .flush()
-            .await
-            .map_err(|error| format!("Failed to flush destination file: {}", error))?;
+        destination.flush().await.with_context(|| {
+            format!("Failed to flush destination file: {}", temp_path.display())
+        })?;
         drop(destination);
 
         tokio::fs::rename(&temp_path, dest_path)
             .await
-            .map_err(|error| format!("Failed to finalize copied file: {}", error))?;
+            .with_context(|| {
+                format!(
+                    "Failed to finalize copied file from {} to {}",
+                    temp_path.display(),
+                    dest_path.display()
+                )
+            })?;
 
         Ok(())
     }
 
-    fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan, String> {
+    fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
         fn walk(
             source_root: &Path,
             current_path: &Path,
             plan: &mut DirectoryCopyPlan,
-        ) -> Result<(), String> {
+        ) -> Result<()> {
             let mut entries = std::fs::read_dir(current_path)
-                .map_err(|error| format!("Failed to read directory: {}", error))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| format!("Failed to read directory entry: {}", error))?;
+                .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .with_context(|| {
+                    format!("Failed to read directory entry: {}", current_path.display())
+                })?;
 
             entries.sort_by_key(|entry| entry.file_name());
 
@@ -359,10 +377,17 @@ impl AgentActor {
                 let entry_path = entry.path();
                 let relative_path = entry_path
                     .strip_prefix(source_root)
-                    .map_err(|error| format!("Failed to strip source prefix: {}", error))?
+                    .with_context(|| {
+                        format!(
+                            "Failed to strip source prefix {} from {}",
+                            source_root.display(),
+                            entry_path.display()
+                        )
+                    })?
                     .to_path_buf();
-                let metadata = std::fs::symlink_metadata(&entry_path)
-                    .map_err(|error| format!("Failed to read entry metadata: {}", error))?;
+                let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
+                    format!("Failed to read entry metadata: {}", entry_path.display())
+                })?;
 
                 if metadata.is_dir() {
                     plan.directories.push(relative_path.clone());
@@ -371,23 +396,21 @@ impl AgentActor {
                     plan.total_bytes = plan.total_bytes.saturating_add(metadata.len());
                     plan.files.push(relative_path);
                 } else {
-                    return Err(format!(
+                    bail!(
                         "Unsupported directory entry type in copy source: {}",
                         entry_path.display()
-                    ));
+                    );
                 }
             }
 
             Ok(())
         }
 
-        let source_metadata = std::fs::symlink_metadata(source_root)
-            .map_err(|error| format!("Failed to read source metadata: {}", error))?;
+        let source_metadata = std::fs::symlink_metadata(source_root).with_context(|| {
+            format!("Failed to read source metadata: {}", source_root.display())
+        })?;
         if !source_metadata.is_dir() {
-            return Err(format!(
-                "Source path is not a directory: {}",
-                source_root.display()
-            ));
+            bail!("Source path is not a directory: {}", source_root.display());
         }
 
         let mut plan = DirectoryCopyPlan {
@@ -404,11 +427,17 @@ impl AgentActor {
         temp_dest_root: &Path,
         plan: &DirectoryCopyPlan,
         reporter: &mut LocalCopyProgressReporter,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         for directory in &plan.directories {
-            tokio::fs::create_dir_all(temp_dest_root.join(directory))
+            let destination_directory = temp_dest_root.join(directory);
+            tokio::fs::create_dir_all(&destination_directory)
                 .await
-                .map_err(|error| format!("Failed to create destination directory: {}", error))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to create destination directory: {}",
+                        destination_directory.display()
+                    )
+                })?;
         }
 
         for relative_path in &plan.files {
@@ -416,8 +445,11 @@ impl AgentActor {
             let dest_path = temp_dest_root.join(relative_path);
 
             if let Some(parent) = dest_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                    format!("Failed to create destination directory: {}", error)
+                tokio::fs::create_dir_all(parent).await.with_context(|| {
+                    format!(
+                        "Failed to create destination directory: {}",
+                        parent.display()
+                    )
                 })?;
             }
 
@@ -466,13 +498,13 @@ impl AgentActor {
         if let Err(error) =
             Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
         {
-            self.send_local_copy_error(write, agent_id, request_id, error)
+            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
 
         if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error)
+            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
@@ -524,7 +556,7 @@ impl AgentActor {
             Err(error) => {
                 let temp_path = Self::temp_local_copy_path(&dest_path);
                 let _ = tokio::fs::remove_file(&temp_path).await;
-                self.send_local_copy_error(write, agent_id, request_id, error)
+                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                     .await;
             }
         }
@@ -569,13 +601,13 @@ impl AgentActor {
         if let Err(error) =
             Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
         {
-            self.send_local_copy_error(write, agent_id, request_id, error)
+            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
 
         if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error)
+            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
@@ -612,7 +644,7 @@ impl AgentActor {
         {
             Ok(Ok(plan)) => plan,
             Ok(Err(error)) => {
-                self.send_local_copy_error(write, agent_id, request_id, error)
+                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                     .await;
                 return;
             }
@@ -682,46 +714,45 @@ impl AgentActor {
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                self.send_local_copy_error(write, agent_id, request_id, error)
+                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                     .await;
             }
         }
     }
 
-    async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, String> {
+    async fn create_tar_upload_session(path: String) -> Result<TarUploadSession> {
         let destination = PathBuf::from(&path);
         let parent = destination
             .parent()
-            .ok_or_else(|| format!("Destination parent not found for {}", path))?
+            .with_context(|| format!("Destination parent not found for {}", path))?
             .to_path_buf();
 
-        let parent_metadata = tokio::fs::metadata(&parent)
-            .await
-            .map_err(|error| format!("Failed to access destination parent: {}", error))?;
+        let parent_metadata = tokio::fs::metadata(&parent).await.with_context(|| {
+            format!("Failed to access destination parent: {}", parent.display())
+        })?;
         if !parent_metadata.is_dir() {
-            return Err(format!(
+            bail!(
                 "Destination parent is not a directory: {}",
                 parent.display()
-            ));
+            );
         }
 
-        if tokio::fs::try_exists(&destination)
-            .await
-            .map_err(|error| format!("Failed to check destination path: {}", error))?
-        {
-            return Err(format!(
-                "Destination already exists: {}",
+        if tokio::fs::try_exists(&destination).await.with_context(|| {
+            format!(
+                "Failed to check destination path: {}",
                 destination.display()
-            ));
+            )
+        })? {
+            bail!("Destination already exists: {}", destination.display());
         }
 
         let temp_path = Self::temp_upload_dir_path(&path);
         tokio::fs::create_dir(&temp_path)
             .await
-            .map_err(|error| format!("Failed to create temp directory: {}", error))?;
+            .with_context(|| format!("Failed to create temp directory: {}", temp_path.display()))?;
 
         let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
-        let (completion_sender, completion_receiver) = oneshot::channel::<Result<(), String>>();
+        let (completion_sender, completion_receiver) = oneshot::channel::<Result<()>>();
         let temp_path_for_worker = temp_path.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -742,7 +773,7 @@ impl AgentActor {
     fn unpack_tar_stream_into_directory(
         chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
         destination_root: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         struct ChannelTarReader {
             chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
             current_chunk: Vec<u8>,
@@ -792,41 +823,42 @@ impl AgentActor {
             finished: false,
         };
         let mut archive = tar::Archive::new(reader);
-        let entries = archive
-            .entries()
-            .map_err(|error| format!("Failed to read tar entries: {}", error))?;
+        let entries = archive.entries().context("Failed to read tar entries")?;
 
         for entry_result in entries {
-            let mut entry =
-                entry_result.map_err(|error| format!("Failed to read tar entry: {}", error))?;
+            let mut entry = entry_result.context("Failed to read tar entry")?;
 
             let entry_type = entry.header().entry_type();
             if !(entry_type.is_dir() || entry_type.is_file()) {
-                return Err(format!("Unsupported tar entry type: {:?}", entry_type));
+                bail!("Unsupported tar entry type: {:?}", entry_type);
             }
 
-            let entry_path = entry
-                .path()
-                .map_err(|error| format!("Failed to read tar entry path: {}", error))?;
+            let entry_path = entry.path().context("Failed to read tar entry path")?;
             let sanitized_path = Self::sanitize_tar_entry_path(&entry_path)?;
             let output_path = destination_root.join(&sanitized_path);
 
             if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    format!("Failed to create destination directory: {}", error)
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Failed to create destination directory: {}",
+                        parent.display()
+                    )
                 })?;
             }
 
             if entry_type.is_dir() {
-                std::fs::create_dir_all(&output_path).map_err(|error| {
-                    format!("Failed to create destination directory: {}", error)
+                std::fs::create_dir_all(&output_path).with_context(|| {
+                    format!(
+                        "Failed to create destination directory: {}",
+                        output_path.display()
+                    )
                 })?;
                 continue;
             }
 
-            entry
-                .unpack(&output_path)
-                .map_err(|error| format!("Failed to unpack tar entry: {}", error))?;
+            entry.unpack(&output_path).with_context(|| {
+                format!("Failed to unpack tar entry to {}", output_path.display())
+            })?;
         }
 
         Ok(())
@@ -836,11 +868,13 @@ impl AgentActor {
         builder: &mut tar::Builder<ChannelTarWriter>,
         source_root: &Path,
         current_path: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let mut entries = std::fs::read_dir(current_path)
-            .map_err(|error| format!("Failed to read directory: {}", error))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Failed to read directory entry: {}", error))?;
+            .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .with_context(|| {
+                format!("Failed to read directory entry: {}", current_path.display())
+            })?;
 
         entries.sort_by_key(|entry| entry.file_name());
 
@@ -848,27 +882,42 @@ impl AgentActor {
             let entry_path = entry.path();
             let relative_path = entry_path
                 .strip_prefix(source_root)
-                .map_err(|error| format!("Failed to strip source prefix: {}", error))?
+                .with_context(|| {
+                    format!(
+                        "Failed to strip source prefix {} from {}",
+                        source_root.display(),
+                        entry_path.display()
+                    )
+                })?
                 .to_path_buf();
-            let metadata = std::fs::symlink_metadata(&entry_path)
-                .map_err(|error| format!("Failed to read entry metadata: {}", error))?;
+            let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
+                format!("Failed to read entry metadata: {}", entry_path.display())
+            })?;
 
             if metadata.is_dir() {
                 builder
                     .append_dir(&relative_path, &entry_path)
-                    .map_err(|error| format!("Failed to append directory to tar: {}", error))?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to append directory to tar: {}",
+                            entry_path.display()
+                        )
+                    })?;
                 Self::append_directory_entries(builder, source_root, &entry_path)?;
             } else if metadata.is_file() {
-                let mut file = std::fs::File::open(&entry_path)
-                    .map_err(|error| format!("Failed to open file for tar: {}", error))?;
+                let mut file = std::fs::File::open(&entry_path).with_context(|| {
+                    format!("Failed to open file for tar: {}", entry_path.display())
+                })?;
                 builder
                     .append_file(&relative_path, &mut file)
-                    .map_err(|error| format!("Failed to append file to tar: {}", error))?;
+                    .with_context(|| {
+                        format!("Failed to append file to tar: {}", entry_path.display())
+                    })?;
             } else {
-                return Err(format!(
+                bail!(
                     "Unsupported directory entry type in copy source: {}",
                     entry_path.display()
-                ));
+                );
             }
         }
 
@@ -932,11 +981,7 @@ impl AgentActor {
                 &source_path_for_worker,
                 &source_path_for_worker,
             )
-            .and_then(|_| {
-                builder
-                    .finish()
-                    .map_err(|error| format!("Failed to finalize tar stream: {}", error))
-            });
+            .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
 
             if let Err(error) = result {
                 log!(
@@ -1013,7 +1058,7 @@ impl AgentActor {
 
         let unpack_result = match session.completion_receiver.await {
             Ok(result) => result,
-            Err(error) => Err(format!("Tar extraction worker failed: {}", error)),
+            Err(error) => Err(anyhow!("Tar extraction worker failed: {}", error)),
         };
 
         match unpack_result {
@@ -1052,7 +1097,7 @@ impl AgentActor {
                     agent_id,
                     request_id,
                     CommandResult::Error {
-                        message: error_message,
+                        message: error_message.to_string(),
                     },
                 )
                 .await;
@@ -1206,7 +1251,9 @@ impl AgentActor {
                                             write,
                                             &state.agent_id,
                                             request_id,
-                                            CommandResult::Error { message: error },
+                                            CommandResult::Error {
+                                                message: error.to_string(),
+                                            },
                                         )
                                         .await;
                                     }

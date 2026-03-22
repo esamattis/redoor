@@ -1,4 +1,5 @@
 use crate::types::{ChunkIndex, RequestId};
+use anyhow::{Result, bail};
 
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
@@ -12,11 +13,11 @@ pub enum StreamPayloadKind {
 }
 
 impl StreamPayloadKind {
-    fn from_byte(byte: u8) -> Result<Self, String> {
+    fn from_byte(byte: u8) -> Result<Self> {
         match byte {
             0 => Ok(Self::RawFile),
             1 => Ok(Self::Tar),
-            _ => Err(format!("Invalid payload kind byte: {}", byte)),
+            _ => bail!("Invalid payload kind byte: {}", byte),
         }
     }
 }
@@ -47,25 +48,26 @@ impl StreamChunk {
         bytes
     }
 
-    pub fn parse_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    pub fn parse_data(bytes: &[u8]) -> Result<Vec<u8>> {
         Self::from_bytes(bytes).map(|chunk| chunk.data)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < HEADER_SIZE {
-            return Err(format!(
+            bail!(
                 "Chunk too short: {} bytes (minimum {})",
                 bytes.len(),
                 HEADER_SIZE
-            ));
+            );
         }
 
         let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         if magic != PROTOCOL_MAGIC {
-            return Err(format!(
+            bail!(
                 "Invalid magic: 0x{:08x} (expected 0x{:08x})",
-                magic, PROTOCOL_MAGIC
-            ));
+                magic,
+                PROTOCOL_MAGIC
+            );
         }
 
         let request_id = RequestId::from_le_bytes([
