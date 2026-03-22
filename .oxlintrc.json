@@ -89,6 +89,12 @@
         "typescript/no-unsafe-unary-minus": "warn",
         "typescript/no-useless-empty-export": "warn",
         "typescript/no-wrapper-object-types": "warn",
+        "typescript/consistent-type-assertions": [
+            "warn",
+            {
+                "assertionStyle": "never"
+            }
+        ],
         "typescript/prefer-as-const": "warn",
         "typescript/require-array-sort-compare": "warn",
         "typescript/restrict-template-expressions": "warn",
