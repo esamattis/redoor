@@ -144,8 +144,12 @@ export class ProcessManager {
     spawn(command: string, args: string[], cwd = PROJECT_ROOT): number {
         const proc = spawn(command, args, {
             detached: true,
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: ["ignore", "pipe", "inherit"],
             cwd,
+            env: {
+                ...process.env,
+                RUST_BACKTRACE: "1",
+            },
         });
 
         const pid = proc.pid;
@@ -337,17 +341,13 @@ export async function waitForLogMessage(
     pattern: RegExp,
     timeoutMs: number = 10000,
 ): Promise<void> {
-    // Get both stdout and stderr streams
     const stdout = process.stdout;
-    const stderr = process.stderr;
 
-    if (!stdout && !stderr) {
-        throw new Error("No stdout/stderr stream available");
+    if (!stdout) {
+        throw new Error("No stdout stream available");
     }
 
-    // Use output buffers to track all output from both streams
     const stdoutBuffer = new OutputBuffer();
-    const stderrBuffer = new OutputBuffer();
 
     let resolve: () => void;
     let reject: (error: Error) => void;
@@ -358,7 +358,7 @@ export async function waitForLogMessage(
     });
 
     const checkPattern = () => {
-        if (stdoutBuffer.matches(pattern) || stderrBuffer.matches(pattern)) {
+        if (stdoutBuffer.matches(pattern)) {
             clearTimeout(timeout);
             cleanup();
             resolve();
@@ -370,18 +370,11 @@ export async function waitForLogMessage(
         checkPattern();
     };
 
-    const onStderrData = (chunk: Buffer) => {
-        stderrBuffer.add(chunk.toString());
-        checkPattern();
-    };
-
     const cleanup = () => {
-        if (stdout) stdout.off("data", onStdoutData);
-        if (stderr) stderr.off("data", onStderrData);
+        stdout.off("data", onStdoutData);
     };
 
-    if (stdout) stdout.on("data", onStdoutData);
-    if (stderr) stderr.on("data", onStderrData);
+    stdout.on("data", onStdoutData);
 
     // Check immediately in case the pattern was already emitted
     checkPattern();
@@ -389,12 +382,10 @@ export async function waitForLogMessage(
     const timeout = setTimeout(() => {
         cleanup();
         const stdoutContent = stdoutBuffer.getContent().slice(-2000);
-        const stderrContent = stderrBuffer.getContent().slice(-2000);
         reject(
             new Error(
                 `Timeout waiting for log pattern: ${pattern}\n\n` +
-                    `Last stdout (up to 2000 chars):\n${stdoutContent}\n\n` +
-                    `Last stderr (up to 2000 chars):\n${stderrContent}`,
+                    `Last stdout (up to 2000 chars):\n${stdoutContent}`,
             ),
         );
     }, timeoutMs);
