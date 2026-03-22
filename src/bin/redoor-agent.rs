@@ -1916,7 +1916,7 @@ impl Actor for AgentActor {
 
                 match connect_async(&state.server_url).await {
                     Ok((ws_stream, _response)) => {
-                        log!(Level::Info, "Connected!");
+                        log!(Level::Info, "Connected to {}", state.server_url);
                         log!(
                             Level::Info,
                             "Agent connected: agent_id={}, agent_name={}, server={}",

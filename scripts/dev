@@ -2,6 +2,8 @@
 
 set -eu
 
+cargo build --bin redoor --bin redoor-agent
+
 cd "$(dirname $(dirname "$(readlink -f "$0")"))"
 
-pnpm run dev
+pnpm run --parallel --stream "/^dev:/"
