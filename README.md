@@ -51,12 +51,12 @@ The server uses the [Ractor](https://github.com/slawlor/ractor) actor framework 
 
 ### Actors
 
-| Actor | Cardinality | Responsibility |
-|---|---|---|
-| **RouterActor** | Singleton | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs. |
-| **SessionActor** | One per WebSocket connection | Bridges a single WebSocket connection to the actor system. Deserializes inbound frames, serializes outbound messages. |
-| **CommandExecutorActor** | Singleton | Executes commands locally on the server side. |
-| **AgentActor** *(agent binary)* | One per agent process | Manages the agent's WebSocket connection, executes commands locally, and streams results back. |
+| Actor                           | Cardinality                  | Responsibility                                                                                                        |
+| ------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **RouterActor**                 | Singleton                    | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs.                  |
+| **SessionActor**                | One per WebSocket connection | Bridges a single WebSocket connection to the actor system. Deserializes inbound frames, serializes outbound messages. |
+| **CommandExecutorActor**        | Singleton                    | Executes commands locally on the server side.                                                                         |
+| **AgentActor** _(agent binary)_ | One per agent process        | Manages the agent's WebSocket connection, executes commands locally, and streams results back.                        |
 
 ### Message Flow: REST Command Execution
 
@@ -138,29 +138,29 @@ stateDiagram-v2
 
 ### REST API
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/ws` | WebSocket upgrade endpoint for agents |
-| `GET` | `/api/v1/agents` | List all connected agents |
-| `GET` | `/api/v1/agents/{agent}` | Get agent details (PID, OS, hostname, uptime, etc.) |
-| `GET` | `/api/v1/agents/{agent}/ls/{path}` | List directory or get file info on the agent |
-| `GET` | `/api/v1/agents/{agent}/cat/{path}` | Read file contents as text from the agent |
-| `GET` | `/api/v1/agents/{agent}/raw/{path}` | Stream raw file bytes from the agent |
-| `POST` | `/api/v1/agents/{agent}/echo` | Echo a message through the agent (for testing) |
+| Method | Endpoint                            | Description                                         |
+| ------ | ----------------------------------- | --------------------------------------------------- |
+| `GET`  | `/ws`                               | WebSocket upgrade endpoint for agents               |
+| `GET`  | `/api/v1/agents`                    | List all connected agents                           |
+| `GET`  | `/api/v1/agents/{agent}`            | Get agent details (PID, OS, hostname, uptime, etc.) |
+| `GET`  | `/api/v1/agents/{agent}/ls/{path}`  | List directory or get file info on the agent        |
+| `GET`  | `/api/v1/agents/{agent}/cat/{path}` | Read file contents as text from the agent           |
+| `GET`  | `/api/v1/agents/{agent}/raw/{path}` | Stream raw file bytes from the agent                |
+| `POST` | `/api/v1/agents/{agent}/echo`       | Echo a message through the agent (for testing)      |
 
 ### Commands
 
 Commands are sent to agents as JSON messages over WebSocket and executed locally on the agent machine:
 
-| Command | Description |
-|---|---|
-| `Ls` | List directory entries or get file metadata (owner, group, uid, gid, size) |
-| `Cat` | Read a file as UTF-8 text |
-| `RawDownload` | Stream file contents as binary chunks |
-| `Metadata` | Get file MIME type and size |
-| `Echo` | Echo a message back (with optional random delay for testing) |
-| `AgentInfo` | Get agent runtime info (PID, CWD, load averages) |
-| `GetAgentDetails` | Full agent details including OS, arch, hostname, username |
+| Command           | Description                                                                |
+| ----------------- | -------------------------------------------------------------------------- |
+| `Ls`              | List directory entries or get file metadata (owner, group, uid, gid, size) |
+| `Cat`             | Read a file as UTF-8 text                                                  |
+| `RawDownload`     | Stream file contents as binary chunks                                      |
+| `Metadata`        | Get file MIME type and size                                                |
+| `Echo`            | Echo a message back (with optional random delay for testing)               |
+| `AgentInfo`       | Get agent runtime info (PID, CWD, load averages)                           |
+| `GetAgentDetails` | Full agent details including OS, arch, hostname, username                  |
 
 ### Binary Streaming Protocol
 
@@ -214,24 +214,24 @@ Generated bindings include: `AgentListResponse`, `AgentDetailsResponse`, `AgentI
 
 ### Configuration
 
-| Environment Variable | Default | Description |
-|---|---|---|
-| `REDOOR_PORT` | `3000` | Port for the server to listen on |
+| Environment Variable | Default | Description                      |
+| -------------------- | ------- | -------------------------------- |
+| `REDOOR_PORT`        | `3000`  | Port for the server to listen on |
 
 ### Running the Server
 
 ```sh
 cargo run --bin redoor
+
+# Override the listen port
+cargo run --bin redoor -- --port 4000
 ```
 
 ### Running an Agent
 
 ```sh
-# Connect to default server (ws://127.0.0.1:3000/ws) with a custom name
-cargo run --bin redoor-agent -- ws://127.0.0.1:3000/ws my-agent
-
-# Or rely on defaults
-cargo run --bin redoor-agent
+# Connect to a server with a custom name
+cargo run --bin redoor-agent -- ws://127.0.0.1:3000/ws --name my-agent
 ```
 
 ### Running the UI
@@ -256,13 +256,13 @@ pnpm run dev
 
 ## Tech Stack
 
-| Component | Technology |
-|---|---|
-| Runtime | [Tokio](https://tokio.rs/) |
-| HTTP / WebSocket Server | [Axum](https://github.com/tokio-rs/axum) |
-| Actor Framework | [Ractor](https://github.com/slawlor/ractor) |
-| WebSocket Client (Agent) | [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) |
-| Serialization | [serde](https://serde.rs/) + serde_json |
-| TypeScript Codegen | [ts-rs](https://github.com/Aleph-Alpha/ts-rs) |
-| Frontend | [TanStack Router](https://tanstack.com/router) + [Tailwind CSS](https://tailwindcss.com/) |
-| E2E Tests | [Playwright](https://playwright.dev/) |
+| Component                | Technology                                                                                |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| Runtime                  | [Tokio](https://tokio.rs/)                                                                |
+| HTTP / WebSocket Server  | [Axum](https://github.com/tokio-rs/axum)                                                  |
+| Actor Framework          | [Ractor](https://github.com/slawlor/ractor)                                               |
+| WebSocket Client (Agent) | [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)                        |
+| Serialization            | [serde](https://serde.rs/) + serde_json                                                   |
+| TypeScript Codegen       | [ts-rs](https://github.com/Aleph-Alpha/ts-rs)                                             |
+| Frontend                 | [TanStack Router](https://tanstack.com/router) + [Tailwind CSS](https://tailwindcss.com/) |
+| E2E Tests                | [Playwright](https://playwright.dev/)                                                     |

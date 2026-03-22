@@ -130,7 +130,7 @@ describe("Raw Copy API", () => {
 
         const secondAgentPid = processManager.spawn(
             AGENT_PATH,
-            [wsUrl, secondAgentName],
+            [wsUrl, "--name", secondAgentName],
             projectRoot,
         );
 
@@ -312,7 +312,7 @@ describe("Raw Copy API", () => {
 
         const secondAgentPid = processManager.spawn(
             AGENT_PATH,
-            [wsUrl, secondAgentName],
+            [wsUrl, "--name", secondAgentName],
             projectRoot,
         );
 

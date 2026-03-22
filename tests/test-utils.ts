@@ -214,7 +214,7 @@ export async function startServerAndAgent(options: {
 
     options.processManager.spawn(
         options.agentPath,
-        [wsUrl, options.agentName],
+        [wsUrl, "--name", options.agentName],
         options.projectRoot,
     );
 

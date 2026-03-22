@@ -121,7 +121,7 @@ describe("Raw Download API", () => {
 
         const ephemeralAgentPid = processManager.spawn(
             AGENT_PATH,
-            [wsUrl, ephemeralAgentName],
+            [wsUrl, "--name", ephemeralAgentName],
             projectRoot,
         );
 

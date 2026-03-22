@@ -1,3 +1,4 @@
+use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{
@@ -10,7 +11,7 @@ use redoor::{
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, env};
+use std::collections::HashMap;
 use sysinfo::System;
 use tokio::{
     fs::File,
@@ -20,6 +21,14 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 pub struct AgentActor;
+
+#[derive(Parser)]
+#[command(author, version, about)]
+struct AgentArgs {
+    ws_address: String,
+    #[arg(long)]
+    name: String,
+}
 
 /// Bridges synchronous `tar::Builder` writes into the async websocket sender.
 ///
@@ -2025,24 +2034,9 @@ impl Actor for AgentActor {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    let port = env::var("REDOOR_PORT")
-        .unwrap_or_else(|_| "3000".to_string())
-        .parse::<u16>()
-        .unwrap_or(3000);
-
-    let server_url = if args.len() > 1 {
-        args[1].clone()
-    } else {
-        format!("ws://127.0.0.1:{}/ws", port)
-    };
-
-    let agent_name = if args.len() > 2 {
-        args[2].clone()
-    } else {
-        "default-agent".to_string()
-    };
+    let args = AgentArgs::parse();
+    let server_url = args.ws_address;
+    let agent_name = args.name;
 
     let agent_id = agent_name.clone();
 

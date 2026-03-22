@@ -132,7 +132,7 @@ describe("Agents API", () => {
 
         const firstAgentPid = processManager.spawn(
             AGENT_PATH,
-            [wsUrl, DUPLICATE_AGENT_NAME],
+            [wsUrl, "--name", DUPLICATE_AGENT_NAME],
             projectRoot,
         );
         const firstAgent = processManager.getProcess(firstAgentPid);
@@ -157,7 +157,7 @@ describe("Agents API", () => {
 
         const secondAgentPid = processManager.spawn(
             AGENT_PATH,
-            [wsUrl, DUPLICATE_AGENT_NAME],
+            [wsUrl, "--name", DUPLICATE_AGENT_NAME],
             projectRoot,
         );
         const secondAgent = processManager.getProcess(secondAgentPid);

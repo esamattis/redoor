@@ -20,13 +20,13 @@ vite_pid=$!
 ./target/debug/redoor &
 server_pid=$!
 
-./target/debug/redoor-agent ws://127.0.0.1:3000/ws agent1_src &
+./target/debug/redoor-agent ws://127.0.0.1:3000/ws --name agent1_src &
 agent1_pid=$!
 
 (
     mkdir -p dev_agents/agent2
     cd dev_agents/agent2
-    ../../target/debug/redoor-agent ws://127.0.0.1:3000/ws agent2_custom
+    ../../target/debug/redoor-agent ws://127.0.0.1:3000/ws --name agent2_custom
 ) &
 agent2_pid=$!
 

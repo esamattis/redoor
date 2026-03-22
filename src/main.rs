@@ -6,6 +6,7 @@ use redoor::commands::{
 };
 use redoor::types::ChunkIndex;
 
+use clap::Parser;
 use serde::Deserialize;
 
 use axum::{
@@ -34,6 +35,13 @@ struct ServerState {
 #[derive(Deserialize)]
 struct RawQueryParams {
     download: Option<String>,
+}
+
+#[derive(Parser)]
+#[command(author, version, about)]
+struct CoordinatorArgs {
+    #[arg(long, env = "REDOOR_PORT", default_value_t = 3000)]
+    port: u16,
 }
 
 fn join_agent_path(cwd: &str, path: &str) -> String {
@@ -99,7 +107,8 @@ async fn resolve_agent_path(
 #[tokio::main]
 async fn main() {
     use ractor::Actor;
-    use std::env;
+
+    let args = CoordinatorArgs::parse();
 
     let (router_ref, _) = actors::router::RouterActor::spawn(None, actors::router::RouterActor, ())
         .await
@@ -144,11 +153,7 @@ async fn main() {
         )
         .with_state(server_state);
 
-    let port = env::var("REDOOR_PORT")
-        .unwrap_or_else(|_| "3000".to_string())
-        .parse::<u16>()
-        .unwrap_or(3000);
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
