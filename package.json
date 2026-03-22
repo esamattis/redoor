@@ -10,7 +10,7 @@
         "format": "cd ui && prettier --write .",
         "format:check": "cd ui && prettier --check .",
         "playwright": "playwright test --reporter=line --config ui/playwright.config.ts",
-        "lint": "oxlint -c .oxlintrc.json ui",
+        "lint": "oxlint -c .oxlintrc.json",
         "dev": "pnpm run --parallel --stream \"/^dev:/\"",
         "dev:vite": "vite ./ui",
         "dev:server": "./scripts/redoor --log log/dev-server.log",

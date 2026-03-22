@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
+import { Agent } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
 import {
     ProcessManager,
-    SERVER_PATH,
     TempFileManager,
     startServerAndAgent,
 } from "./test-utils";
@@ -15,9 +14,6 @@ const AGENT_NAME = "raw-delete-test-agent";
 describe("Raw Delete API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
-    let serverPort: number;
-    let apiClient: ApiClient;
-    let serverPid: number;
     let testAgent: Agent;
 
     afterEach(() => {
@@ -31,9 +27,6 @@ describe("Raw Delete API", () => {
             agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
-        serverPort = setup.serverPort;
-        apiClient = setup.apiClient;
-        serverPid = setup.serverPid;
         testAgent = setup.testAgent;
     }, 30000);
 

@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import type { TransferProgressEntry } from "@/api-client";
-import path from "node:path";
+
 import fs from "node:fs";
 import {
     ProcessManager,
-    SERVER_PATH,
     TempFileManager,
     waitForLogMessage,
     waitForValue,

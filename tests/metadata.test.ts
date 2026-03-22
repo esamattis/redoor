@@ -1,11 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
-import path from "node:path";
+import { Agent } from "@/api-client";
 
 import {
-    AGENT_PATH,
     ProcessManager,
-    SERVER_PATH,
     TempFileManager,
     startServerAndAgent,
 } from "./test-utils";
@@ -15,9 +12,6 @@ const AGENT_NAME = "test-agent-metadata";
 describe("Metadata Content-Type Detection", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
-    let serverPort: number;
-    let apiClient: ApiClient;
-    let serverPid: number;
     let testAgent: Agent;
 
     afterEach(() => {
@@ -31,9 +25,6 @@ describe("Metadata Content-Type Detection", () => {
             agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
-        serverPort = setup.serverPort;
-        apiClient = setup.apiClient;
-        serverPid = setup.serverPid;
         testAgent = setup.testAgent;
         expect(testAgent).toBeDefined();
     }, 30000);

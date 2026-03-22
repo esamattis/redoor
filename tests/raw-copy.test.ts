@@ -12,8 +12,6 @@ import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs/promises";
 import {
-    AGENT_PATH,
-    SERVER_PATH,
     ProcessManager,
     TempFileManager,
     waitForLogMessage,

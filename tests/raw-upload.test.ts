@@ -5,9 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 import {
-    AGENT_PATH,
     ProcessManager,
-    SERVER_PATH,
     TempFileManager,
     waitForValue,
     startServerAndAgent,
@@ -18,9 +16,7 @@ const AGENT_NAME = "raw-upload-test-agent";
 describe("Raw Upload API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
-    let serverPort: number;
     let apiClient: ApiClient;
-    let serverPid: number;
     let testAgent: Agent;
 
     afterEach(() => {
@@ -34,9 +30,7 @@ describe("Raw Upload API", () => {
             agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
-        serverPort = setup.serverPort;
         apiClient = setup.apiClient;
-        serverPid = setup.serverPid;
         testAgent = setup.testAgent;
     }, 30000);
 
@@ -237,8 +231,6 @@ describe("Raw Upload API", () => {
         fs.mkdirSync(protectedDir, 0o555);
 
         const uploadedFilePath = path.join(protectedDir, "blocked.txt");
-        const uploadUrl = testAgent.getRawUrl(uploadedFilePath);
-
         try {
             const uploadFile = new File(["secret"], "blocked.txt", {
                 type: "text/plain",
