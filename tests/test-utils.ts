@@ -4,6 +4,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { ApiClient, Agent } from "@/api-client";
+import { Toxiproxy } from "toxiproxy-node-client";
+import type Proxy from "toxiproxy-node-client/dist/Proxy";
 
 export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -19,6 +21,35 @@ export async function getAvailablePort(): Promise<number> {
         });
         server.on("error", reject);
     });
+}
+
+export async function createToxiproxyAgent(options: {
+    serverPort: number;
+    agent: Agent;
+    proxyNamePrefix: string;
+}): Promise<{
+    toxiproxy: Toxiproxy;
+    proxy: Proxy;
+    proxiedAgent: Agent;
+}> {
+    const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
+    const proxyPort = await getAvailablePort();
+    const proxy = await toxiproxy.createProxy({
+        name: `${options.proxyNamePrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        listen: `127.0.0.1:${proxyPort}`,
+        upstream: `127.0.0.1:${options.serverPort}`,
+    });
+
+    const proxiedAgent = new Agent(`http://${proxy.listen}`, {
+        id: options.agent.id,
+        name: options.agent.name,
+    });
+
+    return {
+        toxiproxy,
+        proxy,
+        proxiedAgent,
+    };
 }
 
 /**

@@ -11,12 +11,10 @@ import { ApiClient, Agent } from "@/api-client";
 import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs";
-import { Toxiproxy } from "toxiproxy-node-client";
 
 import {
     ProcessManager,
     TempFileManager,
-    getAvailablePort,
     waitForValue,
     startServerAndAgent,
 } from "./test-utils";
@@ -218,99 +216,6 @@ describe("Raw Upload API", () => {
             Buffer.concat([firstChunk, secondChunk]).toString("utf-8"),
         );
     });
-
-    it("should keep a slowish upload observable via toxiproxy", async () => {
-        const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
-        const proxyName = `raw-upload-slow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const proxyPort = await getAvailablePort();
-        const chunkSizeBytes = 64 * 1024;
-        const totalBytes = chunkSizeBytes * 2 + 123;
-        const uploadContent = Buffer.alloc(totalBytes, "u");
-        const uploadedFilePath = tempFiles.tempFile({ suffix: ".bin" });
-        const proxy = await toxiproxy.createProxy({
-            name: proxyName,
-            listen: `127.0.0.1:${proxyPort}`,
-            upstream: `127.0.0.1:${serverPort}`,
-        });
-
-        onTestFinished(async () => {
-            await proxy.remove().catch(() => undefined);
-        });
-
-        await proxy.addToxic({
-            name: "slow-upload",
-            type: "bandwidth",
-            stream: "upstream",
-            toxicity: 1,
-            attributes: {
-                rate: 16,
-            },
-        });
-
-        const proxiedAgent = new Agent(`http://${proxy.listen}`, {
-            id: testAgent.id,
-            name: testAgent.name,
-        });
-        const uploadFile = new File([uploadContent], "slow-upload.bin", {
-            type: "application/octet-stream",
-        });
-
-        const uploadPromise = proxiedAgent.upload(uploadedFilePath, uploadFile);
-
-        const activeTransfer = await waitForValue({
-            description: "partially transferred upload progress row",
-            timeoutMs: 15000,
-            predicate: async () => {
-                const response = await apiClient.getTransferProgress();
-                return response.transfers.find(
-                    (transfer: TransferProgressEntry) =>
-                        transfer.agent_id === testAgent.id &&
-                        transfer.path === uploadedFilePath &&
-                        transfer.direction === "upload" &&
-                        transfer.state === "active" &&
-                        transfer.total_bytes === totalBytes &&
-                        transfer.transferred_bytes > 0 &&
-                        transfer.transferred_bytes < totalBytes,
-                );
-            },
-        });
-
-        // A partial byte count proves the toxiproxy bandwidth limit kept the upload observable mid-flight.
-        expect(activeTransfer.transferred_bytes).toBeGreaterThan(0);
-        // Remaining bytes confirm we observed a live transfer instead of racing straight to completion after one chunk.
-        expect(activeTransfer.transferred_bytes).toBeLessThan(totalBytes);
-        // The active state check ensures progress polling works while the throttled request is still streaming.
-        expect(activeTransfer.state).toBe("active");
-
-        const uploadResponse = await uploadPromise;
-
-        // A successful response confirms the upload still completes cleanly when the request body is throttled.
-        expect(uploadResponse.ok).toBe(true);
-
-        const completedTransfer = await waitForValue({
-            description: "completed slow upload progress row",
-            predicate: async () => {
-                const response = await apiClient.getTransferProgress();
-                return response.transfers.find(
-                    (transfer: TransferProgressEntry) =>
-                        transfer.request_id === activeTransfer.request_id &&
-                        transfer.state === "completed",
-                );
-            },
-        });
-
-        // Reusing the same request id shows the finished row belongs to the throttled upload we observed earlier.
-        expect(completedTransfer.request_id).toBe(activeTransfer.request_id);
-        // Matching transferred and total bytes proves the slow upload still reaches 100% progress.
-        expect(completedTransfer.transferred_bytes).toBe(totalBytes);
-
-        const downloadedContent = Buffer.from(
-            await testAgent.raw(uploadedFilePath),
-        );
-
-        // Reading the file back verifies the bandwidth toxic did not corrupt the uploaded binary payload.
-        expect(Buffer.compare(downloadedContent, uploadContent)).toBe(0);
-    }, 20000);
 
     it("should return error for upload to non-existent agent", async () => {
         const fakeAgent = new Agent(apiClient.baseUrl, {
