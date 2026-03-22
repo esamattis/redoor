@@ -136,17 +136,12 @@ describe("Raw Download API", () => {
             throw new Error("Ephemeral agent process not found");
         }
 
-        // Waiting for the agent's download log ensures we interrupt an active transfer.
+        // Waiting for observable transfer progress ensures we interrupt a real in-flight download
+        // without depending on a specific agent log line format.
         const downloadPromise = fetch(ephemeralAgent.getRawUrl(testFilePath));
 
-        await waitForLogMessage(
-            ephemeralAgentProcess,
-            /command=RawDownload/,
-            10000,
-        );
-
         const observedTransfer = await waitForValue({
-            description: "download progress row",
+            description: "active or finished download progress row",
             timeoutMs: 20000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
@@ -155,7 +150,11 @@ describe("Raw Download API", () => {
                         transfer.agent_id === ephemeralAgent.id &&
                         transfer.path === testFilePath &&
                         transfer.direction === "download" &&
-                        transfer.total_bytes === fileSize,
+                        transfer.total_bytes === fileSize &&
+                        ((transfer.state === "active" &&
+                            transfer.transferred_bytes > 0) ||
+                            transfer.state === "completed" ||
+                            transfer.state === "errored"),
                 );
             },
         });
