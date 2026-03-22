@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import {
+    describe,
+    it,
+    expect,
+    beforeAll,
+    afterAll,
+    afterEach,
+    onTestFinished,
+} from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
@@ -125,48 +133,46 @@ describe("Raw Copy API", () => {
             cwd: tempFiles.tempDirectory({ suffix: "-copy-target-agent-cwd" }),
         });
 
+        onTestFinished(() => {
+            processManager.kill(secondAgentPid);
+        });
+
         await waitForSecondAgent;
 
-        try {
-            const secondAgent = await waitForValue({
-                description: "second copy agent",
-                predicate: async () => {
-                    const agents = await apiClient.listAgents();
-                    return agents.find(
-                        (agent) => agent.name === secondAgentName,
-                    );
-                },
-            });
+        const secondAgent = await waitForValue({
+            description: "second copy agent",
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((agent) => agent.name === secondAgentName);
+            },
+        });
 
-            const response = await testAgent.copyTo(
-                { agent: secondAgent.id, path: destPath },
-                sourcePath,
-            );
+        const response = await testAgent.copyTo(
+            { agent: secondAgent.id, path: destPath },
+            sourcePath,
+        );
 
-            const completedTransfer = await waitForValue({
-                description: "completed cross-agent copy transfer",
-                predicate: async () => {
-                    const progress = await apiClient.getTransferProgress();
-                    return progress.transfers.find(
-                        (transfer: TransferProgressEntry) =>
-                            transfer.request_id === response.copy_request_id &&
-                            transfer.state === "completed",
-                    );
-                },
-            });
+        const completedTransfer = await waitForValue({
+            description: "completed cross-agent copy transfer",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === response.copy_request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
 
-            // Recording the destination agent proves the logical copy row keeps both endpoints.
-            expect(completedTransfer.dest?.agent).toBe(secondAgent.id);
+        // Recording the destination agent proves the logical copy row keeps both endpoints.
+        expect(completedTransfer.dest?.agent).toBe(secondAgent.id);
 
-            const copiedContent = Buffer.from(
-                await secondAgent.raw(destPath),
-            ).toString("utf-8");
+        const copiedContent = Buffer.from(
+            await secondAgent.raw(destPath),
+        ).toString("utf-8");
 
-            // Comparing destination contents verifies the streamed cross-agent copy stayed lossless.
-            expect(copiedContent).toBe(sourceContent);
-        } finally {
-            processManager.kill(secondAgentPid);
-        }
+        // Comparing destination contents verifies the streamed cross-agent copy stayed lossless.
+        expect(copiedContent).toBe(sourceContent);
     });
 
     it("should copy an empty file", async () => {
@@ -308,49 +314,47 @@ describe("Raw Copy API", () => {
             }),
         });
 
+        onTestFinished(() => {
+            processManager.kill(secondAgentPid);
+        });
+
         await waitForSecondAgent;
 
-        try {
-            const secondAgent = await waitForValue({
-                description: "second directory copy agent",
-                predicate: async () => {
-                    const agents = await apiClient.listAgents();
-                    return agents.find(
-                        (agent) => agent.name === secondAgentName,
-                    );
-                },
-            });
+        const secondAgent = await waitForValue({
+            description: "second directory copy agent",
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((agent) => agent.name === secondAgentName);
+            },
+        });
 
-            const response = await testAgent.copyTo(
-                { agent: secondAgent.id, path: destRoot },
-                sourceRoot,
-            );
+        const response = await testAgent.copyTo(
+            { agent: secondAgent.id, path: destRoot },
+            sourceRoot,
+        );
 
-            const completedTransfer = await waitForValue({
-                description: "completed cross-agent directory copy transfer",
-                predicate: async () => {
-                    const progress = await apiClient.getTransferProgress();
-                    return progress.transfers.find(
-                        (transfer: TransferProgressEntry) =>
-                            transfer.request_id === response.copy_request_id &&
-                            transfer.state === "completed",
-                    );
-                },
-            });
+        const completedTransfer = await waitForValue({
+            description: "completed cross-agent directory copy transfer",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === response.copy_request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
 
-            // Recording the destination agent proves cross-agent directory copies keep both endpoints.
-            expect(completedTransfer.dest?.agent).toBe(secondAgent.id);
+        // Recording the destination agent proves cross-agent directory copies keep both endpoints.
+        expect(completedTransfer.dest?.agent).toBe(secondAgent.id);
 
-            const copiedContent = await fs.readFile(
-                path.join(destRoot, "nested", "file.txt"),
-                "utf-8",
-            );
+        const copiedContent = await fs.readFile(
+            path.join(destRoot, "nested", "file.txt"),
+            "utf-8",
+        );
 
-            // Comparing destination contents verifies the streamed tar copy stayed lossless across agents.
-            expect(copiedContent).toBe("cross-agent-directory-copy");
-        } finally {
-            processManager.kill(secondAgentPid);
-        }
+        // Comparing destination contents verifies the streamed tar copy stayed lossless across agents.
+        expect(copiedContent).toBe("cross-agent-directory-copy");
     });
 
     it("should copy an empty directory", async () => {
