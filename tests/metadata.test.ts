@@ -3,13 +3,13 @@ import { ApiClient, Agent } from "@/api-client";
 import path from "node:path";
 
 import {
+    AGENT_PATH,
     ProcessManager,
+    SERVER_PATH,
     TempFileManager,
     startServerAndAgent,
 } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "test-agent-metadata";
 
 describe("Metadata Content-Type Detection", () => {
@@ -21,18 +21,14 @@ describe("Metadata Content-Type Detection", () => {
     let testAgent: Agent;
 
     afterEach(() => {
-        tempFiles.cleanup();
+        tempFiles.emptyDirs();
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "..");
-
         const setup = await startServerAndAgent({
             processManager,
-            serverPath: SERVER_PATH,
-            agentPath: AGENT_PATH,
             agentName: AGENT_NAME,
-            projectRoot,
+            agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
         serverPort = setup.serverPort;
@@ -43,6 +39,7 @@ describe("Metadata Content-Type Detection", () => {
     }, 30000);
 
     afterAll(() => {
+        tempFiles.cleanup();
         processManager.killAll();
     });
 

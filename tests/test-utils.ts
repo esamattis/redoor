@@ -1,14 +1,8 @@
 import { spawn, ChildProcess } from "node:child_process";
-import {
-    mkdtempSync,
-    writeFileSync,
-    unlinkSync,
-    rmSync,
-    mkdirSync,
-} from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { ApiClient, Agent } from "@/api-client";
 
 export async function getAvailablePort(): Promise<number> {
@@ -33,6 +27,7 @@ export async function getAvailablePort(): Promise<number> {
  */
 export class TempFileManager {
     private files: string[] = [];
+    private dirs: string[] = [];
     private tempDir: string | null = null;
 
     /**
@@ -85,7 +80,7 @@ export class TempFileManager {
             `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}${suffix}`,
         );
         mkdirSync(directoryPath, { recursive: true });
-        this.files.push(directoryPath);
+        this.dirs.push(directoryPath);
         return directoryPath;
     }
 
@@ -93,7 +88,7 @@ export class TempFileManager {
      * Clean up all temporary files created by this manager.
      */
     cleanup(): void {
-        for (const filePath of this.files) {
+        for (const filePath of this.dirs) {
             try {
                 rmSync(filePath, { recursive: true, force: true });
             } catch {
@@ -111,12 +106,42 @@ export class TempFileManager {
             this.tempDir = null;
         }
     }
+
+    /**
+     * Empty the directory of all files and subdirectories, but keep the directory itself.
+     */
+    emptyDirs(): void {
+        for (const filePath of this.files) {
+            try {
+                rmSync(filePath, { recursive: true, force: true });
+                mkdirSync(filePath, { recursive: true });
+            } catch {
+                // Directory may not exist, ignore
+            }
+        }
+    }
 }
+
+const TESTS_DIRECTORY = dirname(import.meta.filename);
+const PROJECT_ROOT = join(TESTS_DIRECTORY, "..");
+export const SERVER_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor");
+export const AGENT_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor-agent");
+
+export type SpawnAgentArgs = {
+    wsAddress: string;
+    name: string;
+    cwd: string;
+    log?: string;
+};
+
+export type SpawnServerArgs = {
+    log?: string;
+};
 
 export class ProcessManager {
     private processes: Map<number, ChildProcess> = new Map();
 
-    spawn(command: string, args: string[], cwd?: string): number {
+    spawn(command: string, args: string[], cwd = PROJECT_ROOT): number {
         const proc = spawn(command, args, {
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
@@ -130,6 +155,32 @@ export class ProcessManager {
 
         this.processes.set(pid, proc);
         return pid;
+    }
+
+    spawnAgent(args: SpawnAgentArgs): number {
+        const cliArgs = [args.wsAddress, "--name", args.name];
+
+        if (args.log !== undefined) {
+            rmSync(args.log, { force: true });
+            cliArgs.push("--log", args.log);
+        } else {
+            const logPath = join(PROJECT_ROOT, "log", `${args.name}.log`);
+            rmSync(logPath, { force: true });
+            cliArgs.push("--log", logPath);
+        }
+
+        return this.spawn(AGENT_PATH, cliArgs, args.cwd);
+    }
+
+    spawnServer(args: SpawnServerArgs): number {
+        const cliArgs: string[] = [];
+
+        if (args.log !== undefined) {
+            rmSync(args.log, { force: true });
+            cliArgs.push("--log", args.log);
+        }
+
+        return this.spawn(SERVER_PATH, cliArgs);
     }
 
     kill(pid: number): void {
@@ -177,10 +228,8 @@ export class ProcessManager {
 
 export async function startServerAndAgent(options: {
     processManager: ProcessManager;
-    serverPath: string;
-    agentPath: string;
     agentName: string;
-    projectRoot: string;
+    agentCwd: string;
 }): Promise<{
     serverPort: number;
     serverPid: number;
@@ -193,11 +242,7 @@ export async function startServerAndAgent(options: {
     const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
 
     process.env.REDOOR_PORT = serverPort.toString();
-    const serverPid = options.processManager.spawn(
-        options.serverPath,
-        [],
-        options.projectRoot,
-    );
+    const serverPid = options.processManager.spawnServer({});
 
     await waitForPort(serverPort);
 
@@ -212,11 +257,11 @@ export async function startServerAndAgent(options: {
         10000,
     );
 
-    options.processManager.spawn(
-        options.agentPath,
-        [wsUrl, "--name", options.agentName],
-        options.projectRoot,
-    );
+    options.processManager.spawnAgent({
+        wsAddress: wsUrl,
+        name: options.agentName,
+        cwd: options.agentCwd,
+    });
 
     await waitForAgentPromise;
 

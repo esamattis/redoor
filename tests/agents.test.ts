@@ -1,31 +1,28 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
     ProcessManager,
+    TempFileManager,
     startServerAndAgent,
     waitForLogMessage,
 } from "./test-utils";
-
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "test-agent";
 
 const processManager = new ProcessManager();
+const tempFiles = new TempFileManager();
+const agentCwd = tempFiles.tempDirectory({ suffix: "-agent-cwd" });
 
 let serverPid: number;
 let apiClient: ApiClient;
 let wsUrl: string;
 
 beforeAll(async () => {
-    const projectRoot = path.join(__dirname, "..");
-
     const started = await startServerAndAgent({
         processManager,
-        serverPath: SERVER_PATH,
-        agentPath: AGENT_PATH,
         agentName: AGENT_NAME,
-        projectRoot,
+        agentCwd,
     });
 
     serverPid = started.serverPid;
@@ -33,7 +30,12 @@ beforeAll(async () => {
     wsUrl = started.wsUrl;
 }, 30000);
 
+afterEach(() => {
+    tempFiles.emptyDirs();
+});
+
 afterAll(() => {
+    tempFiles.cleanup();
     processManager.killAll();
 });
 
@@ -90,16 +92,37 @@ describe("Agents API", () => {
         // Verify test agent is present
         expect(testAgent).toBeDefined();
 
-        const result = await testAgent!.ls("ui/src");
+        const agentDetails = await testAgent!.getDetails();
+        const listedFileName = "directory-listing-test-file.txt";
+        const listedFilePath = path.join(agentDetails.cwd, listedFileName);
+
+        await fs.writeFile(
+            listedFilePath,
+            "directory listing test content",
+            "utf-8",
+        );
+
+        const result = await testAgent!.ls(agentDetails.cwd);
         // Verify result is a directory response
         expect(isLsDirectoryResponse(result)).toBe(true);
         // Verify result contains an array of files
         if (isLsDirectoryResponse(result)) {
             expect(result.files).toBeInstanceOf(Array);
-            // Verify directory listing returns files
+            // Creating a file in the isolated agent cwd ensures the listing has a deterministic entry.
             expect(result.files.length).toBeGreaterThan(0);
+            const firstFile = result.files.find(
+                (file) => file.name === listedFileName,
+            );
+
+            if (!firstFile) {
+                throw new Error(
+                    `Test file ${listedFileName} not found in agent directory listing`,
+                );
+            }
+
+            // Looking up the created file proves the agent listed the cwd we prepared for this test.
+            expect(firstFile).toBeDefined();
             // Verify file entries contain metadata
-            const firstFile = result.files[0]!;
             expect(firstFile.name).toBeDefined();
             expect(typeof firstFile.name).toBe("string");
             expect(firstFile.type).toBeDefined();
@@ -128,13 +151,15 @@ describe("Agents API", () => {
     it("should reject duplicate agent names", async () => {
         const DUPLICATE_AGENT_NAME = "duplicate-test-agent";
 
-        const projectRoot = path.join(__dirname, "../..");
+        const firstAgentCwd = tempFiles.tempDirectory({
+            suffix: "-duplicate-agent-first-cwd",
+        });
 
-        const firstAgentPid = processManager.spawn(
-            AGENT_PATH,
-            [wsUrl, "--name", DUPLICATE_AGENT_NAME],
-            projectRoot,
-        );
+        const firstAgentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: DUPLICATE_AGENT_NAME,
+            cwd: firstAgentCwd,
+        });
         const firstAgent = processManager.getProcess(firstAgentPid);
         // Verify first agent was spawned successfully
         expect(firstAgent).toBeDefined();
@@ -155,11 +180,15 @@ describe("Agents API", () => {
             agentsAfterFirst.some((a) => a.name === DUPLICATE_AGENT_NAME),
         ).toBe(true);
 
-        const secondAgentPid = processManager.spawn(
-            AGENT_PATH,
-            [wsUrl, "--name", DUPLICATE_AGENT_NAME],
-            projectRoot,
-        );
+        const secondAgentCwd = tempFiles.tempDirectory({
+            suffix: "-duplicate-agent-second-cwd",
+        });
+
+        const secondAgentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: DUPLICATE_AGENT_NAME,
+            cwd: secondAgentCwd,
+        });
         const secondAgent = processManager.getProcess(secondAgentPid);
         // Verify second agent was spawned successfully
         expect(secondAgent).toBeDefined();

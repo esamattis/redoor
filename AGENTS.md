@@ -19,6 +19,7 @@ Guidelines
 - Always after changes run `./scripts/build-and-test`
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
 - Never make git commit unless asked to!
+- On test failures see the ./log dir for related logs
 
 
 # UI

@@ -5,12 +5,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import {
     ProcessManager,
+    SERVER_PATH,
     TempFileManager,
     startServerAndAgent,
 } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "raw-delete-test-agent";
 
 describe("Raw Delete API", () => {
@@ -22,18 +21,14 @@ describe("Raw Delete API", () => {
     let testAgent: Agent;
 
     afterEach(() => {
-        tempFiles.cleanup();
+        tempFiles.emptyDirs();
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "..");
-
         const setup = await startServerAndAgent({
             processManager,
-            serverPath: SERVER_PATH,
-            agentPath: AGENT_PATH,
             agentName: AGENT_NAME,
-            projectRoot,
+            agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
         serverPort = setup.serverPort;
@@ -43,6 +38,7 @@ describe("Raw Delete API", () => {
     }, 30000);
 
     afterAll(() => {
+        tempFiles.cleanup();
         processManager.killAll();
     });
 

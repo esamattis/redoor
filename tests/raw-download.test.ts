@@ -5,14 +5,12 @@ import path from "node:path";
 import fs from "node:fs";
 import {
     ProcessManager,
+    SERVER_PATH,
     TempFileManager,
     waitForLogMessage,
     waitForValue,
     startServerAndAgent,
 } from "./test-utils";
-
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "raw-test-agent";
 
 describe("Raw Download API", () => {
@@ -24,18 +22,14 @@ describe("Raw Download API", () => {
     let testAgent: Agent;
 
     afterEach(() => {
-        tempFiles.cleanup();
+        tempFiles.emptyDirs();
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "..");
-
         const setup = await startServerAndAgent({
             processManager,
-            serverPath: SERVER_PATH,
-            agentPath: AGENT_PATH,
             agentName: AGENT_NAME,
-            projectRoot,
+            agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
         serverPort = setup.serverPort;
@@ -46,6 +40,7 @@ describe("Raw Download API", () => {
     }, 30000);
 
     afterAll(() => {
+        tempFiles.cleanup();
         processManager.killAll();
     });
 
@@ -103,7 +98,6 @@ describe("Raw Download API", () => {
         });
         const fileSize = Buffer.byteLength(largeContent);
 
-        const projectRoot = path.join(__dirname, "..");
         const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
         const ephemeralAgentName = "ephemeral-raw-agent";
 
@@ -119,11 +113,11 @@ describe("Raw Download API", () => {
             10000,
         );
 
-        const ephemeralAgentPid = processManager.spawn(
-            AGENT_PATH,
-            [wsUrl, "--name", ephemeralAgentName],
-            projectRoot,
-        );
+        const ephemeralAgentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: ephemeralAgentName,
+            cwd: tempFiles.tempDirectory({ suffix: "-ephemeral-agent-cwd" }),
+        });
 
         await waitForEphemeralAgent;
 

@@ -5,14 +5,14 @@ import path from "node:path";
 import fs from "node:fs";
 
 import {
+    AGENT_PATH,
     ProcessManager,
+    SERVER_PATH,
     TempFileManager,
     waitForValue,
     startServerAndAgent,
 } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "raw-upload-test-agent";
 
 describe("Raw Upload API", () => {
@@ -24,18 +24,14 @@ describe("Raw Upload API", () => {
     let testAgent: Agent;
 
     afterEach(() => {
-        tempFiles.cleanup();
+        tempFiles.emptyDirs();
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "..");
-
         const setup = await startServerAndAgent({
             processManager,
-            serverPath: SERVER_PATH,
-            agentPath: AGENT_PATH,
             agentName: AGENT_NAME,
-            projectRoot,
+            agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
         serverPort = setup.serverPort;
@@ -45,6 +41,7 @@ describe("Raw Upload API", () => {
     }, 30000);
 
     afterAll(() => {
+        tempFiles.cleanup();
         processManager.killAll();
     });
 

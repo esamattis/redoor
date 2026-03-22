@@ -4,6 +4,8 @@ import type { TransferProgressEntry } from "@/api-client";
 import path from "node:path";
 import fs from "node:fs/promises";
 import {
+    AGENT_PATH,
+    SERVER_PATH,
     ProcessManager,
     TempFileManager,
     waitForLogMessage,
@@ -11,8 +13,6 @@ import {
     startServerAndAgent,
 } from "./test-utils";
 
-const SERVER_PATH = path.join(__dirname, "../target/debug/redoor");
-const AGENT_PATH = path.join(__dirname, "../target/debug/redoor-agent");
 const AGENT_NAME = "raw-copy-test-agent";
 
 describe("Raw Copy API", () => {
@@ -24,23 +24,14 @@ describe("Raw Copy API", () => {
     let testAgent: Agent;
 
     afterEach(() => {
-        tempFiles.cleanup();
+        tempFiles.emptyDirs();
     });
 
     beforeAll(async () => {
-        const projectRoot = path.join(__dirname, "..");
-
-        (await import("node:child_process")).execFileSync("cargo", ["build"], {
-            cwd: projectRoot,
-            stdio: "inherit",
-        });
-
         const setup = await startServerAndAgent({
             processManager,
-            serverPath: SERVER_PATH,
-            agentPath: AGENT_PATH,
             agentName: AGENT_NAME,
-            projectRoot,
+            agentCwd: tempFiles.tempDirectory({ suffix: "-agent-cwd" }),
         });
 
         serverPort = setup.serverPort;
@@ -50,6 +41,7 @@ describe("Raw Copy API", () => {
     }, 30000);
 
     afterAll(() => {
+        tempFiles.cleanup();
         processManager.killAll();
     });
 
@@ -113,7 +105,6 @@ describe("Raw Copy API", () => {
         const sourceContent = "cross-agent-copy".repeat(4096);
         const sourcePath = tempFiles.create(sourceContent, { suffix: ".txt" });
         const destPath = tempFiles.tempFile({ suffix: ".txt" });
-        const projectRoot = path.join(__dirname, "..");
         const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
         const secondAgentName = "raw-copy-target-agent";
 
@@ -128,11 +119,11 @@ describe("Raw Copy API", () => {
             10000,
         );
 
-        const secondAgentPid = processManager.spawn(
-            AGENT_PATH,
-            [wsUrl, "--name", secondAgentName],
-            projectRoot,
-        );
+        const secondAgentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: secondAgentName,
+            cwd: tempFiles.tempDirectory({ suffix: "-copy-target-agent-cwd" }),
+        });
 
         await waitForSecondAgent;
 
@@ -288,7 +279,6 @@ describe("Raw Copy API", () => {
     it("should copy a directory across agents", async () => {
         const sourceRoot = tempFiles.tempFile({ suffix: "-cross-source-dir" });
         const destRoot = tempFiles.tempFile({ suffix: "-cross-dest-dir" });
-        const projectRoot = path.join(__dirname, "..");
         const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
         const secondAgentName = "raw-copy-target-agent-dir";
 
@@ -310,11 +300,13 @@ describe("Raw Copy API", () => {
             10000,
         );
 
-        const secondAgentPid = processManager.spawn(
-            AGENT_PATH,
-            [wsUrl, "--name", secondAgentName],
-            projectRoot,
-        );
+        const secondAgentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: secondAgentName,
+            cwd: tempFiles.tempDirectory({
+                suffix: "-copy-target-agent-dir-cwd",
+            }),
+        });
 
         await waitForSecondAgent;
 

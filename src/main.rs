@@ -7,6 +7,7 @@ use redoor::commands::{
 use redoor::types::ChunkIndex;
 
 use clap::Parser;
+use redoor::{Level, log, logging};
 use serde::Deserialize;
 
 use axum::{
@@ -42,6 +43,8 @@ struct RawQueryParams {
 struct CoordinatorArgs {
     #[arg(long, env = "REDOOR_PORT", default_value_t = 3000)]
     port: u16,
+    #[arg(long)]
+    log: Option<String>,
 }
 
 fn join_agent_path(cwd: &str, path: &str) -> String {
@@ -109,6 +112,7 @@ async fn main() {
     use ractor::Actor;
 
     let args = CoordinatorArgs::parse();
+    logging::init(args.log.clone());
 
     let (router_ref, _) = actors::router::RouterActor::spawn(None, actors::router::RouterActor, ())
         .await
@@ -196,7 +200,7 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: ActorRef<actors::router
                 let json = match serde_json::to_string(&event) {
                     Ok(json) => json,
                     Err(error) => {
-                        eprintln!("Failed to serialize UI websocket event: {}", error);
+                        log!(Level::Error, "Failed to serialize UI websocket event: {}", error);
                         continue;
                     }
                 };

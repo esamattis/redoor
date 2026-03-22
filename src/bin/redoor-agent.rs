@@ -28,6 +28,8 @@ struct AgentArgs {
     ws_address: String,
     #[arg(long)]
     name: String,
+    #[arg(long)]
+    log: Option<String>,
 }
 
 /// Bridges synchronous `tar::Builder` writes into the async websocket sender.
@@ -2037,10 +2039,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = AgentArgs::parse();
     let server_url = args.ws_address;
     let agent_name = args.name;
+    let log_file = args.log;
 
     let agent_id = agent_name.clone();
 
-    println!("Starting agent '{}'", agent_name);
+    redoor::logging::init(log_file);
+    log!(Level::Info, "Starting agent '{}'", agent_name);
 
     let (_, agent_handle) =
         AgentActor::spawn(None, AgentActor, (agent_id, agent_name, server_url)).await?;
