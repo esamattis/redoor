@@ -7,8 +7,9 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 static LOGGER: OnceLock<UnboundedSender<LogMessage>> = OnceLock::new();
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
+    Trace,
     Debug,
     Info,
     Warning,
@@ -18,6 +19,7 @@ pub enum Level {
 impl Level {
     fn as_str(&self) -> &str {
         match self {
+            Level::Trace => "TRACE",
             Level::Debug => "DEBUG",
             Level::Info => "INFO",
             Level::Warning => "WARN",
@@ -36,16 +38,13 @@ struct LogMessage {
 pub struct Logger {
     log_file_path: Option<String>,
     log_file: Option<File>,
+    level: Level,
 }
 
 impl Logger {
     /// Creates a task-local logger and opens the optional log file eagerly so
     /// subsequent log writes can reuse the same file handle.
     pub fn new(log_file_path: Option<String>) -> Self {
-        eprintln!(
-            "######## LOGS to {}",
-            log_file_path.as_deref().unwrap_or("<unknown>")
-        );
         let log_file = match &log_file_path {
             Some(path) => match std::fs::OpenOptions::new()
                 .create(true)
@@ -65,13 +64,26 @@ impl Logger {
             None => None,
         };
 
+        let level = match std::env::var("REDOOR_LOGLEVEL").as_deref() {
+            Ok("trace") => Level::Trace,
+            Ok("debug") => Level::Debug,
+            Ok("warn") => Level::Warning,
+            Ok("error") => Level::Error,
+            _ => Level::Info,
+        };
+
         Self {
             log_file_path,
             log_file,
+            level,
         }
     }
 
     fn write(&mut self, level: Level, message: String) {
+        if level < self.level {
+            return;
+        }
+
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let formatted = format!("[{}] [{}] {}", timestamp, level.as_str(), message);
 

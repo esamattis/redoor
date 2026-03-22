@@ -1120,7 +1120,7 @@ impl AgentActor {
                     ..
                 } => {
                     log!(
-                        Level::Info,
+                        Level::Trace,
                         "Command received: agent_id={}, request_id={}, command={:?}",
                         state.agent_id,
                         request_id,
@@ -1280,7 +1280,7 @@ impl AgentActor {
                                 let _ = write.send(WsMessage::text(json)).await;
                             }
                             log!(
-                                Level::Info,
+                                Level::Trace,
                                 "Command response sent: agent_id={}, request_id={}, result={:?}",
                                 state.agent_id,
                                 request_id,

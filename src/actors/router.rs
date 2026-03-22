@@ -1363,7 +1363,7 @@ impl Actor for RouterActor {
                 let request_id = state.next_id();
 
                 log!(
-                    Level::Info,
+                    Level::Trace,
                     "Routing REST command: agent_id={}, request_id={}, command={:?}",
                     agent_id,
                     request_id,
