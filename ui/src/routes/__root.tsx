@@ -43,6 +43,8 @@ interface AppRouterContext {
     api: ApiClient;
 }
 
+export const ding = () => {};
+
 export type RootLoaderData = {
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transferProgress: Awaited<ReturnType<ApiClient["getTransferProgress"]>>;
@@ -462,11 +464,6 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
         return null;
     }
 
-    const selectedFilesForCurrentAgent = browserContext.agentId
-        ? selectedFiles.filter(
-              (file) => file.agentId === browserContext.agentId,
-          )
-        : [];
     const statusMessage =
         copyState.type === "copying"
             ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`

@@ -30,10 +30,8 @@ import {
     type LsFileResponse,
 } from "../api-client";
 import {
-    selectedFilesAtom,
     selectedFileKeysAtom,
     toggleSelectedFileAtom,
-    unselectFileAtom,
 } from "../selected-files";
 
 type DeleteState =
@@ -342,12 +340,6 @@ function BrowserHeader(props: {
         </div>
     );
 }
-
-type CopySelectedFilesState =
-    | { type: "idle" }
-    | { type: "copying"; itemCount: number }
-    | { type: "success"; message: string }
-    | { type: "error"; message: string };
 
 function Breadcrumbs(props: {
     agentId: string;
