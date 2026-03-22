@@ -14,3 +14,27 @@ code {
     font-family:
         source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
+
+.route-loading-progress-bar {
+    position: relative;
+}
+
+.route-loading-progress-bar__indicator {
+    width: 35%;
+    animation: route-loading-progress-slide 1.2s ease-in-out infinite;
+    will-change: transform;
+}
+
+@keyframes route-loading-progress-slide {
+    0% {
+        transform: translateX(-120%);
+    }
+
+    50% {
+        transform: translateX(140%);
+    }
+
+    100% {
+        transform: translateX(320%);
+    }
+}

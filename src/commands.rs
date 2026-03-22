@@ -274,6 +274,8 @@ pub struct TransferProgressEntry {
     pub total_bytes: u64,
     #[ts(type = "number")]
     pub transferred_bytes: u64,
+    pub started_at: UnixTimestampSeconds,
+    pub ended_at: Option<UnixTimestampSeconds>,
     pub state: TransferProgressState,
     pub error: Option<String>,
 }

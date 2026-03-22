@@ -23,3 +23,15 @@ export function formatSize(bytes: number): string {
     }
     return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
+
+export function formatSpeed(bytesPerSecond: number | null): string {
+    if (
+        bytesPerSecond === null ||
+        !Number.isFinite(bytesPerSecond) ||
+        bytesPerSecond < 0
+    ) {
+        return "—";
+    }
+
+    return `${formatSize(bytesPerSecond)}/s`;
+}

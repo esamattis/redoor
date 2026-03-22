@@ -291,6 +291,7 @@ impl RouterActor {
         chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
     ) {
         let transfer_id = request_id.as_transfer_id();
+        let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
         state.transfer_progress.insert(
             transfer_id,
             TransferProgressEntry {
@@ -302,6 +303,8 @@ impl RouterActor {
                 direction: TransferDirection::Download,
                 total_bytes,
                 transferred_bytes: 0,
+                started_at: now,
+                ended_at: None,
                 state: TransferProgressState::Active,
                 error: None,
             },
@@ -326,6 +329,7 @@ impl RouterActor {
         completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
     ) {
         let transfer_id = request_id.as_transfer_id();
+        let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
         state.transfer_progress.insert(
             transfer_id,
             TransferProgressEntry {
@@ -337,6 +341,8 @@ impl RouterActor {
                 direction: TransferDirection::Upload,
                 total_bytes,
                 transferred_bytes: 0,
+                started_at: now,
+                ended_at: None,
                 state: TransferProgressState::Active,
                 error: None,
             },
@@ -394,6 +400,7 @@ impl RouterActor {
         if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Completed;
             progress.transferred_bytes = progress.total_bytes;
+            progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
             progress.error = None;
             updated = true;
         }
@@ -415,6 +422,7 @@ impl RouterActor {
             }
             progress.state = TransferProgressState::Completed;
             progress.transferred_bytes = progress.total_bytes;
+            progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
             progress.error = None;
             updated = true;
         }
@@ -432,6 +440,7 @@ impl RouterActor {
         let mut updated = false;
         if let Some(progress) = state.transfer_progress.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Errored;
+            progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
             progress.error = Some(error_message);
             updated = true;
         }
@@ -450,6 +459,7 @@ impl RouterActor {
         dest_path: String,
         total_bytes: u64,
     ) {
+        let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
         state.transfer_progress.insert(
             request_id,
             TransferProgressEntry {
@@ -467,6 +477,8 @@ impl RouterActor {
                 direction: TransferDirection::Copy,
                 total_bytes,
                 transferred_bytes: 0,
+                started_at: now,
+                ended_at: None,
                 state: TransferProgressState::Active,
                 error: None,
             },

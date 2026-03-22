@@ -4,6 +4,7 @@ import {
     Link,
     useLocation,
     useRouter,
+    useRouterState,
     createRootRouteWithContext,
 } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -31,7 +32,7 @@ import {
 } from "../api-client";
 import type { AnyRouter } from "@tanstack/react-router";
 
-import { formatSize } from "../utils/path";
+import { formatSize, formatSpeed } from "../utils/path";
 import {
     selectedFilesAtom,
     unselectFileAtom,
@@ -190,6 +191,7 @@ function RootLayout() {
 
     return (
         <div className="flex h-screen">
+            <RouteLoadingIndicator />
             <aside className="w-72 border-r bg-gray-50 flex flex-col">
                 <div className="p-4 border-b bg-white flex items-center gap-2">
                     <Cpu className="h-6 w-6 text-blue-600" />
@@ -253,6 +255,41 @@ function RootLayout() {
                     },
                 ]}
             />
+        </div>
+    );
+}
+
+function RouteLoadingIndicator() {
+    const isLoading = useRouterState({
+        select: (state) => state.status === "pending",
+    });
+    const [isVisible, setIsVisible] = React.useState(false);
+
+    React.useEffect(() => {
+        if (!isLoading) {
+            setIsVisible(false);
+            return;
+        }
+
+        const showTimer = window.setTimeout(() => {
+            setIsVisible(true);
+        }, 250);
+
+        return () => {
+            window.clearTimeout(showTimer);
+        };
+    }, [isLoading]);
+
+    return (
+        <div
+            aria-hidden={!isVisible}
+            className={`pointer-events-none fixed inset-x-0 top-0 z-50 h-1 overflow-hidden transition-opacity duration-150 ${
+                isVisible ? "opacity-100" : "opacity-0"
+            }`}
+        >
+            <div className="route-loading-progress-bar h-full w-full bg-blue-100">
+                <div className="route-loading-progress-bar__indicator h-full bg-blue-600" />
+            </div>
         </div>
     );
 }
@@ -803,6 +840,22 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
     );
 }
 
+function getTransferSpeedBytesPerSecond(
+    transfer: TransferProgressEntry,
+): number | null {
+    if (transfer.ended_at === null || transfer.ended_at === undefined) {
+        return null;
+    }
+
+    const elapsedSeconds = transfer.ended_at - transfer.started_at;
+
+    if (elapsedSeconds <= 0) {
+        return null;
+    }
+
+    return transfer.transferred_bytes / elapsedSeconds;
+}
+
 function TransferProgressPanel(props: {
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transfers: TransferProgressEntry[];
@@ -932,6 +985,15 @@ function TransferProgressPanel(props: {
                                                 {formatSize(
                                                     transfer.total_bytes,
                                                 )}
+                                            </span>
+                                            <span className="text-xs text-gray-500">
+                                                {transfer.state === "active"
+                                                    ? "Current speed: —"
+                                                    : `Final speed: ${formatSpeed(
+                                                          getTransferSpeedBytesPerSecond(
+                                                              transfer,
+                                                          ),
+                                                      )}`}
                                             </span>
                                         </div>
                                     </td>

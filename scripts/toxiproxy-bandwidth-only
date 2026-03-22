@@ -1,0 +1,23 @@
+#!/bin/sh
+
+set -eu
+
+TOXIPROXY_CLI="${TOXIPROXY_CLI:-/opt/homebrew/opt/toxiproxy/bin/toxiproxy-cli}"
+PROXY_NAME="${PROXY_NAME:-slow}"
+LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:3001}"
+UPSTREAM_ADDR="${UPSTREAM_ADDR:-127.0.0.1:3000}"
+DOWNSTREAM_RATE_KBPS="${DOWNSTREAM_RATE_KBPS:-500}"
+UPSTREAM_RATE_KBPS="${UPSTREAM_RATE_KBPS:-500}"
+
+if [ ! -x "$TOXIPROXY_CLI" ]; then
+    echo "toxiproxy-cli not found or not executable: $TOXIPROXY_CLI" >&2
+    exit 1
+fi
+
+"$TOXIPROXY_CLI" delete "$PROXY_NAME" || true
+"$TOXIPROXY_CLI" create --listen "$LISTEN_ADDR" --upstream "$UPSTREAM_ADDR" "$PROXY_NAME"
+"$TOXIPROXY_CLI" toxic add --type bandwidth --downstream --attribute "rate=$DOWNSTREAM_RATE_KBPS" "$PROXY_NAME"
+"$TOXIPROXY_CLI" toxic add --type bandwidth --upstream --attribute "rate=$UPSTREAM_RATE_KBPS" "$PROXY_NAME"
+"$TOXIPROXY_CLI" inspect "$PROXY_NAME"
+
+echo "Recreated proxy '$PROXY_NAME' with downstream bandwidth limit ${DOWNSTREAM_RATE_KBPS}KB/s and upstream bandwidth limit ${UPSTREAM_RATE_KBPS}KB/s from $LISTEN_ADDR to $UPSTREAM_ADDR"

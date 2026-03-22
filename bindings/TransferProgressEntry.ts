@@ -3,5 +3,6 @@ import type { CopyEndpoint } from "./CopyEndpoint";
 import type { TransferDirection } from "./TransferDirection";
 import type { TransferId } from "./TransferId";
 import type { TransferProgressState } from "./TransferProgressState";
+import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 
-export type TransferProgressEntry = { request_id: TransferId, agent_id: string, path: string, source: CopyEndpoint | null, dest: CopyEndpoint | null, direction: TransferDirection, total_bytes: number, transferred_bytes: number, state: TransferProgressState, error: string | null, };
+export type TransferProgressEntry = { request_id: TransferId, agent_id: string, path: string, source: CopyEndpoint | null, dest: CopyEndpoint | null, direction: TransferDirection, total_bytes: number, transferred_bytes: number, started_at: UnixTimestampSeconds, ended_at: UnixTimestampSeconds | null, state: TransferProgressState, error: string | null, };

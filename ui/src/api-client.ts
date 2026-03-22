@@ -31,11 +31,17 @@ export type {
 
 type TransferProgressEntryJson = Omit<
     TransferProgressEntry,
-    "request_id" | "total_bytes" | "transferred_bytes"
+    | "request_id"
+    | "total_bytes"
+    | "transferred_bytes"
+    | "started_at"
+    | "ended_at"
 > & {
     request_id: number;
     total_bytes: number;
     transferred_bytes: number;
+    started_at: number;
+    ended_at: number | null;
 };
 
 type TransferProgressListResponseJson = {
