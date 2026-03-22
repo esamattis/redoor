@@ -8,10 +8,10 @@ use redoor::{
     streaming::{self, StreamPayloadKind},
     types::{ChunkIndex, Message, RequestId},
 };
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use sysinfo::System;
 use tokio::{
     fs::File,
