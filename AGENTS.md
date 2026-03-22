@@ -20,6 +20,7 @@ Guidelines
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
 - Never make git commit unless asked to!
 - On test failures see the ./log dir for related logs
+- When a single test needs cleanup, always use onTestFinished() instead of try-finally
 
 
 # UI
