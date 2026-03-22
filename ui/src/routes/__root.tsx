@@ -208,7 +208,10 @@ function RootLayout() {
                                     <li key={agent.id}>
                                         <Link
                                             to="/agents/$agentId/browser/$"
-                                            params={{ agentId: agent.id }}
+                                            params={{
+                                                agentId: agent.id,
+                                                _splat: undefined,
+                                            }}
                                             className={`px-4 py-3 hover:bg-gray-100 cursor-pointer flex items-center gap-3 ${
                                                 isActive
                                                     ? "bg-blue-50 border-l-4 border-blue-500"
