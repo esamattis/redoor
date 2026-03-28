@@ -20,7 +20,7 @@ import {
 
 const AGENT_NAME = "raw-upload-toxiproxy-test-agent";
 
-describe("Raw Upload API with toxiproxy", () => {
+describe("Raw Transfer API with toxiproxy", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
     let apiClient: ApiClient;
@@ -260,5 +260,97 @@ describe("Raw Upload API with toxiproxy", () => {
         expect(
             Buffer.compare(downloadedRecoveredContent, recoveredContent),
         ).toBe(0);
+    }, 20000);
+
+    it("should keep a slow download observable via toxiproxy", async () => {
+        const chunkSizeBytes = 64 * 1024;
+        const totalBytes = chunkSizeBytes * 2 + 123;
+        const downloadContent = Buffer.alloc(totalBytes, "d");
+        const sourceFilePath = tempFiles.tempFile({ suffix: ".bin" });
+
+        // Upload the file first so we can download it
+        await testAgent.upload(
+            sourceFilePath,
+            new File([downloadContent], "source-download.bin", {
+                type: "application/octet-stream",
+            }),
+        );
+
+        const { proxy, proxiedAgent } = await createToxiproxyAgent({
+            serverPort,
+            agent: testAgent,
+            proxyNamePrefix: "raw-download-slow",
+        });
+
+        onTestFinished(async () => {
+            await proxy.remove().catch(() => undefined);
+        });
+
+        // Add bandwidth toxic to slow down the downstream (download) stream
+        await proxy.addToxic({
+            name: "slow-download",
+            type: "bandwidth",
+            stream: "downstream",
+            toxicity: 1,
+            attributes: {
+                rate: 16,
+            },
+        });
+
+        const downloadPromise = proxiedAgent.download(sourceFilePath);
+
+        const activeTransfer = await waitForValue({
+            description: "partially transferred download progress row",
+            timeoutMs: 15000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === sourceFilePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.total_bytes === totalBytes &&
+                        transfer.transferred_bytes > 0 &&
+                        transfer.transferred_bytes < totalBytes,
+                );
+            },
+        });
+
+        // A partial byte count proves the toxiproxy bandwidth limit kept the download observable mid-flight.
+        expect(activeTransfer.transferred_bytes).toBeGreaterThan(0);
+        // Remaining bytes confirm we observed a live transfer instead of racing straight to completion after one chunk.
+        expect(activeTransfer.transferred_bytes).toBeLessThan(totalBytes);
+        // The active state check ensures progress polling works while the throttled request is still streaming.
+        expect(activeTransfer.state).toBe("active");
+
+        const downloadResponse = await downloadPromise;
+
+        // A successful response confirms the download still completes cleanly when the response body is throttled.
+        expect(downloadResponse.ok).toBe(true);
+
+        const completedTransfer = await waitForValue({
+            description: "completed slow download progress row",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "completed",
+                );
+            },
+        });
+
+        // Reusing the same request id shows the finished row belongs to the throttled download we observed earlier.
+        expect(completedTransfer.request_id).toBe(activeTransfer.request_id);
+        // Matching transferred and total bytes proves the slow download still reaches 100% progress.
+        expect(completedTransfer.transferred_bytes).toBe(totalBytes);
+
+        const downloadedContent = Buffer.from(
+            await downloadResponse.arrayBuffer(),
+        );
+
+        // Reading the file back verifies the bandwidth toxic did not corrupt the downloaded binary payload.
+        expect(Buffer.compare(downloadedContent, downloadContent)).toBe(0);
     }, 20000);
 });
