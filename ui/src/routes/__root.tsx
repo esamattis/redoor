@@ -630,14 +630,14 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             );
 
             if (successfulDeletes.length > 0) {
+                await router.invalidate();
+
                 successfulDeletes.forEach((file) => {
                     unselectFile({
                         agentId: file.agentId,
                         path: file.path,
                     });
                 });
-
-                await router.invalidate();
             }
 
             if (failedDeletes.length > 0) {

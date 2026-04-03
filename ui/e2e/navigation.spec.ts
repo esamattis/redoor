@@ -154,10 +154,30 @@ test.describe.serial("File Browser Navigation", () => {
 
         await page.getByRole("link", { name: "Up", exact: true }).click();
 
-        // The current browser behavior returns directly to the test directory root.
+        // One Up click should remove only the deepest path segment.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/subdir2`,
+        );
+        // Seeing the child directory confirms we landed in the immediate parent directory.
+        await expect(
+            page.getByRole("link", { name: "deep", exact: true }),
+        ).toBeVisible();
+        // The breadcrumb text confirms the browser stopped at subdir2 instead of jumping to the test root.
+        await expect(
+            page.locator(".flex.items-center.gap-2.text-sm"),
+        ).toContainText("subdir2");
+
+        const upButton = page.getByRole("link", {
+            name: "Up",
+            exact: true,
+        });
+        await upButton.click();
+
+        // The second Up click should return from subdir2 to the test directory root.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}`,
         );
+        // Root directory entries confirm the browser returned to the expected directory listing.
         await expect(
             page.getByRole("link", { name: "subdir1", exact: true }),
         ).toBeVisible();
@@ -168,11 +188,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
-        const rootUpButton = page.getByRole("link", {
-            name: "Up",
-            exact: true,
-        });
-        await rootUpButton.click();
+        await upButton.click();
 
         // This verifies the final upward navigation from the test directory returns to the agent cwd browser root.
         await expect(page).toHaveURL(
@@ -181,7 +197,8 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: testDirName, exact: true }),
         ).toBeVisible();
-        await expect(rootUpButton).toHaveClass(/disabled:opacity-50/);
+        // The disabled styling confirms there is no parent above the agent cwd root.
+        await expect(upButton).toHaveClass(/disabled:opacity-50/);
     });
 
     test("should navigate back to agent page using Back to Agent button", async ({
