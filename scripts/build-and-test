@@ -13,7 +13,27 @@ silent_unless_error() {
         exit $exit_code
     fi
     echo " ✅"
-    rm -f "$tmpfile"
+
+    return $exit_code
+}
+
+playwright_unless_error() {
+    local tmpfile=$(mktemp -t redoor-playwright.XXX)
+    echo -n "> $*"
+    local exit_code=0
+    "$@" >"$tmpfile" 2>&1 || exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "❌ failed with exit code $exit_code: $*"
+        echo
+        echo "Showing the last 100 log lines:"
+        tail -n 100 "$tmpfile"
+        echo
+        echo "Full logs: $tmpfile"
+        echo "If your changes did not change UI Typescript code or the REST APIs, it might be flaky test that should be re-run with command \`pnpm run playwright\`"
+        exit $exit_code
+    fi
+    echo " ✅"
+
     return $exit_code
 }
 
@@ -22,7 +42,7 @@ silent_unless_error pnpm run build
 silent_unless_error cargo build
 silent_unless_error pnpm run test
 silent_unless_error pnpm run types
-silent_unless_error pnpm run playwright
+playwright_unless_error pnpm run playwright
 silent_unless_error pnpm run lint
 silent_unless_error pnpm run format:check
 silent_unless_error cargo fmt -- --check
