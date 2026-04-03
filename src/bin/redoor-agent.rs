@@ -11,13 +11,14 @@ use redoor::{
 };
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 use sysinfo::System;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot},
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
@@ -61,18 +62,20 @@ impl std::io::Write for ChannelTarWriter {
     }
 }
 
-/// Tracks one active upload and how incoming stream chunks should be handled.
-enum UploadSession {
-    RawFile(RawUploadSession),
-    TarDirectory(TarUploadSession),
-}
-
 struct RawUploadSession {
     path: String,
     temp_path: PathBuf,
     file: File,
     bytes_written: u64,
 }
+
+#[derive(Clone)]
+struct UploadSessionHandle {
+    path: String,
+    chunk_sender: mpsc::Sender<streaming::StreamChunk>,
+}
+
+type ActiveUploads = Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>;
 
 /// Streams tar bytes into a blocking unpack worker that extracts into a temp directory.
 struct TarUploadSession {
@@ -87,8 +90,9 @@ pub struct AgentState {
     agent_id: String,
     agent_name: String,
     server_url: String,
-    ws_tx: Option<mpsc::Sender<WsMessage>>,
-    active_uploads: HashMap<RequestId, UploadSession>,
+    ws_text_tx: Option<mpsc::Sender<WsMessage>>,
+    ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
+    active_uploads: ActiveUploads,
 }
 
 #[derive(Clone)]
@@ -107,33 +111,34 @@ pub enum AgentMsg {
 }
 
 impl AgentActor {
-    async fn cleanup_upload_session(session: UploadSession) {
-        match session {
-            UploadSession::RawFile(session) => {
-                let temp_path = session.temp_path;
-                drop(session.file);
-                if let Err(error) = tokio::fs::remove_file(&temp_path).await {
-                    log!(
-                        Level::Warning,
-                        "Failed to remove upload temp file: path={}, error={}",
-                        temp_path.display(),
-                        error
-                    );
-                }
-            }
-            UploadSession::TarDirectory(session) => {
-                drop(session.chunk_sender);
-                let temp_path = session.temp_path;
-                if let Err(error) = tokio::fs::remove_dir_all(&temp_path).await {
-                    log!(
-                        Level::Warning,
-                        "Failed to remove upload temp directory: path={}, error={}",
-                        temp_path.display(),
-                        error
-                    );
-                }
-            }
+    async fn remove_upload_temp_file(temp_path: &Path) {
+        if let Err(error) = tokio::fs::remove_file(temp_path).await {
+            log!(
+                Level::Warning,
+                "Failed to remove upload temp file: path={}, error={}",
+                temp_path.display(),
+                error
+            );
         }
+    }
+
+    async fn remove_upload_temp_directory(temp_path: &Path) {
+        if let Err(error) = tokio::fs::remove_dir_all(temp_path).await {
+            log!(
+                Level::Warning,
+                "Failed to remove upload temp directory: path={}, error={}",
+                temp_path.display(),
+                error
+            );
+        }
+    }
+
+    async fn remove_active_upload(active_uploads: &ActiveUploads, request_id: RequestId) {
+        active_uploads.lock().await.remove(&request_id);
+    }
+
+    async fn clear_active_uploads(active_uploads: &ActiveUploads) {
+        active_uploads.lock().await.clear();
     }
 
     fn temp_upload_path(path: &str) -> PathBuf {
@@ -1105,6 +1110,293 @@ impl AgentActor {
         }
     }
 
+    async fn process_raw_upload(
+        active_uploads: ActiveUploads,
+        mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
+        mut session: RawUploadSession,
+        tx: mpsc::Sender<WsMessage>,
+        agent_id: String,
+        request_id: RequestId,
+    ) {
+        while let Some(chunk) = chunk_receiver.recv().await {
+            if chunk.payload_kind != StreamPayloadKind::RawFile {
+                let error_message = format!(
+                    "Upload payload kind mismatch: expected {:?}, got {:?}",
+                    StreamPayloadKind::RawFile,
+                    chunk.payload_kind
+                );
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            if chunk.is_error {
+                let error_message = if chunk.data.is_empty() {
+                    "Upload aborted by server".to_string()
+                } else {
+                    String::from_utf8_lossy(&chunk.data).to_string()
+                };
+
+                log!(
+                    Level::Warning,
+                    "Upload aborted: request_id={}, path={}, error={}",
+                    request_id,
+                    session.path,
+                    error_message
+                );
+
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            if let Err(error) = session.file.write_all(&chunk.data).await {
+                let error_message = format!("Failed to write upload chunk: {}", error);
+                log!(
+                    Level::Error,
+                    "Upload write failed: request_id={}, path={}, error={}",
+                    request_id,
+                    session.path,
+                    error_message
+                );
+
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            session.bytes_written += chunk.data.len() as u64;
+
+            if !chunk.is_last {
+                continue;
+            }
+
+            if let Err(error) = session.file.flush().await {
+                let error_message = format!("Failed to flush uploaded file: {}", error);
+                log!(
+                    Level::Error,
+                    "Upload flush failed: request_id={}, path={}, error={}",
+                    request_id,
+                    session.path,
+                    error_message
+                );
+
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            let final_path = session.path.clone();
+            let temp_path = session.temp_path.clone();
+            let bytes_written = session.bytes_written;
+            drop(session.file);
+
+            if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+                let error_message = format!("Failed to finalize uploaded file: {}", error);
+                log!(
+                    Level::Error,
+                    "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
+                    request_id,
+                    final_path,
+                    temp_path.display(),
+                    error_message
+                );
+
+                Self::remove_upload_temp_file(&temp_path).await;
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            log!(
+                Level::Info,
+                "Raw upload complete: request_id={}, path={}, bytes_written={}",
+                request_id,
+                final_path,
+                bytes_written
+            );
+
+            AgentActor
+                .send_command_response(&tx, &agent_id, request_id, CommandResult::RawUpload)
+                .await;
+            Self::remove_active_upload(&active_uploads, request_id).await;
+            return;
+        }
+
+        let error_message = "Upload stream ended before completion".to_string();
+        AgentActor
+            .send_command_response(
+                &tx,
+                &agent_id,
+                request_id,
+                CommandResult::Error {
+                    message: error_message,
+                },
+            )
+            .await;
+        Self::remove_upload_temp_file(&session.temp_path).await;
+        Self::remove_active_upload(&active_uploads, request_id).await;
+    }
+
+    async fn process_tar_upload(
+        active_uploads: ActiveUploads,
+        mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
+        mut session: TarUploadSession,
+        tx: mpsc::Sender<WsMessage>,
+        agent_id: String,
+        request_id: RequestId,
+    ) {
+        while let Some(chunk) = chunk_receiver.recv().await {
+            if chunk.payload_kind != StreamPayloadKind::Tar {
+                let error_message = format!(
+                    "Upload payload kind mismatch: expected {:?}, got {:?}",
+                    StreamPayloadKind::Tar,
+                    chunk.payload_kind
+                );
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                drop(session.chunk_sender);
+                Self::remove_upload_temp_directory(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            if chunk.is_error {
+                let error_message = if chunk.data.is_empty() {
+                    "Upload aborted by server".to_string()
+                } else {
+                    String::from_utf8_lossy(&chunk.data).to_string()
+                };
+
+                log!(
+                    Level::Warning,
+                    "Upload aborted: request_id={}, path={}, error={}",
+                    request_id,
+                    session.path,
+                    error_message
+                );
+
+                AgentActor
+                    .send_command_response(
+                        &tx,
+                        &agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                drop(session.chunk_sender);
+                Self::remove_upload_temp_directory(&session.temp_path).await;
+                Self::remove_active_upload(&active_uploads, request_id).await;
+                return;
+            }
+
+            if !chunk.data.is_empty() {
+                if let Err(error) = session.chunk_sender.send(chunk.data.clone()) {
+                    let error_message =
+                        format!("Failed to forward tar upload chunk to unpacker: {}", error);
+                    AgentActor
+                        .send_command_response(
+                            &tx,
+                            &agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: error_message,
+                            },
+                        )
+                        .await;
+                    drop(session.chunk_sender);
+                    Self::remove_upload_temp_directory(&session.temp_path).await;
+                    Self::remove_active_upload(&active_uploads, request_id).await;
+                    return;
+                }
+                session.bytes_written += chunk.data.len() as u64;
+            }
+
+            if !chunk.is_last {
+                continue;
+            }
+
+            AgentActor
+                .finalize_tar_upload(session, &tx, &agent_id, request_id)
+                .await;
+            Self::remove_active_upload(&active_uploads, request_id).await;
+            return;
+        }
+
+        drop(session.chunk_sender);
+        AgentActor
+            .send_command_response(
+                &tx,
+                &agent_id,
+                request_id,
+                CommandResult::Error {
+                    message: "Upload stream ended before completion".to_string(),
+                },
+            )
+            .await;
+        Self::remove_upload_temp_directory(&session.temp_path).await;
+        Self::remove_active_upload(&active_uploads, request_id).await;
+    }
+
     async fn handle_incoming_message(
         &self,
         text: String,
@@ -1126,167 +1418,22 @@ impl AgentActor {
                         request_id,
                         command
                     );
-
-                    match command {
-                        Command::RawDownload {
-                            path,
-                            range_start,
-                            range_end,
-                        } => {
-                            self.raw_download(path, range_start, range_end, request_id, write)
-                                .await;
-                        }
-                        Command::TarDownload { path } => {
-                            self.tar_download(path, request_id, write).await;
-                        }
-                        Command::LocalCopyFile {
-                            source_path,
-                            dest_path,
-                        } => {
-                            self.local_copy_file(
-                                source_path,
-                                dest_path,
-                                request_id,
-                                write,
-                                &state.agent_id,
-                            )
-                            .await;
-                        }
-                        Command::LocalCopyDirectory {
-                            source_path,
-                            dest_path,
-                        } => {
-                            self.local_copy_directory(
-                                source_path,
-                                dest_path,
-                                request_id,
-                                write,
-                                &state.agent_id,
-                            )
-                            .await;
-                        }
-                        Command::RawUpload { path } => {
-                            if state.active_uploads.contains_key(&request_id) {
-                                self.send_command_response(
-                                    write,
-                                    &state.agent_id,
-                                    request_id,
-                                    CommandResult::Error {
-                                        message: format!(
-                                            "Upload session already exists for request_id={}",
-                                            request_id
-                                        ),
-                                    },
-                                )
-                                .await;
-                            } else {
-                                let temp_path = Self::temp_upload_path(&path);
-                                match File::create(&temp_path).await {
-                                    Ok(file) => {
-                                        log!(
-                                            Level::Info,
-                                            "Started raw upload: request_id={}, path={}, temp_path={}",
-                                            request_id,
-                                            path,
-                                            temp_path.display()
-                                        );
-                                        state.active_uploads.insert(
-                                            request_id,
-                                            UploadSession::RawFile(RawUploadSession {
-                                                path,
-                                                temp_path,
-                                                file,
-                                                bytes_written: 0,
-                                            }),
-                                        );
-                                    }
-                                    Err(error) => {
-                                        self.send_command_response(
-                                            write,
-                                            &state.agent_id,
-                                            request_id,
-                                            CommandResult::Error {
-                                                message: format!(
-                                                    "Failed to create file: {}",
-                                                    error
-                                                ),
-                                            },
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                        }
-                        Command::TarUpload { path } => {
-                            if state.active_uploads.contains_key(&request_id) {
-                                self.send_command_response(
-                                    write,
-                                    &state.agent_id,
-                                    request_id,
-                                    CommandResult::Error {
-                                        message: format!(
-                                            "Upload session already exists for request_id={}",
-                                            request_id
-                                        ),
-                                    },
-                                )
-                                .await;
-                            } else {
-                                match Self::create_tar_upload_session(path.clone()).await {
-                                    Ok(session) => {
-                                        log!(
-                                            Level::Info,
-                                            "Started tar upload: request_id={}, path={}, temp_path={}",
-                                            request_id,
-                                            path,
-                                            session.temp_path.display()
-                                        );
-                                        state.active_uploads.insert(
-                                            request_id,
-                                            UploadSession::TarDirectory(session),
-                                        );
-                                    }
-                                    Err(error) => {
-                                        self.send_command_response(
-                                            write,
-                                            &state.agent_id,
-                                            request_id,
-                                            CommandResult::Error {
-                                                message: error.to_string(),
-                                            },
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                        }
-                        Command::RawDelete { path } => {
-                            let result = CommandHandler::new()
-                                .execute(Command::RawDelete { path })
-                                .await;
-                            self.send_command_response(write, &state.agent_id, request_id, result)
-                                .await;
-                        }
-                        other => {
-                            let result = CommandHandler::new().execute(other).await;
-                            let result_clone = result.clone();
-                            let response = Message::CommandResponse {
-                                agent_id: state.agent_id.clone(),
-                                request_id,
-                                result,
-                            };
-
-                            if let Ok(json) = serde_json::to_string(&response) {
-                                let _ = write.send(WsMessage::text(json)).await;
-                            }
-                            log!(
-                                Level::Trace,
-                                "Command response sent: agent_id={}, request_id={}, result={:?}",
-                                state.agent_id,
-                                request_id,
-                                result_clone
-                            );
-                        }
+                    if !self
+                        .start_upload_session(
+                            state.active_uploads.clone(),
+                            write,
+                            &state.agent_id,
+                            request_id,
+                            command.clone(),
+                        )
+                        .await
+                    {
+                        tokio::spawn(Self::handle_command_message(
+                            write.clone(),
+                            state.agent_id.clone(),
+                            request_id,
+                            command,
+                        ));
                     }
                 }
                 Message::Error { message } => {
@@ -1313,6 +1460,211 @@ impl AgentActor {
 
         if let Ok(json) = serde_json::to_string(&response) {
             let _ = write.send(WsMessage::text(json)).await;
+        }
+    }
+
+    async fn handle_command_message(
+        write: mpsc::Sender<WsMessage>,
+        agent_id: String,
+        request_id: RequestId,
+        command: Command,
+    ) {
+        match command {
+            Command::RawDownload {
+                path,
+                range_start,
+                range_end,
+            } => {
+                AgentActor
+                    .raw_download(path, range_start, range_end, request_id, &write)
+                    .await;
+            }
+            Command::TarDownload { path } => {
+                AgentActor.tar_download(path, request_id, &write).await;
+            }
+            Command::LocalCopyFile {
+                source_path,
+                dest_path,
+            } => {
+                AgentActor
+                    .local_copy_file(source_path, dest_path, request_id, &write, &agent_id)
+                    .await;
+            }
+            Command::LocalCopyDirectory {
+                source_path,
+                dest_path,
+            } => {
+                AgentActor
+                    .local_copy_directory(source_path, dest_path, request_id, &write, &agent_id)
+                    .await;
+            }
+            Command::RawDelete { path } => {
+                let result = CommandHandler::new()
+                    .execute(Command::RawDelete { path })
+                    .await;
+                AgentActor
+                    .send_command_response(&write, &agent_id, request_id, result)
+                    .await;
+            }
+            other => {
+                let result = CommandHandler::new().execute(other).await;
+                let result_clone = result.clone();
+                let response = Message::CommandResponse {
+                    agent_id: agent_id.clone(),
+                    request_id,
+                    result,
+                };
+
+                if let Ok(json) = serde_json::to_string(&response) {
+                    let _ = write.send(WsMessage::text(json)).await;
+                }
+                log!(
+                    Level::Trace,
+                    "Command response sent: agent_id={}, request_id={}, result={:?}",
+                    agent_id,
+                    request_id,
+                    result_clone
+                );
+            }
+        }
+    }
+
+    async fn start_upload_session(
+        &self,
+        active_uploads: ActiveUploads,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &str,
+        request_id: RequestId,
+        command: Command,
+    ) -> bool {
+        match command {
+            Command::RawUpload { path } => {
+                let upload_already_exists = active_uploads.lock().await.contains_key(&request_id);
+
+                if upload_already_exists {
+                    self.send_command_response(
+                        write,
+                        agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: format!(
+                                "Upload session already exists for request_id={}",
+                                request_id
+                            ),
+                        },
+                    )
+                    .await;
+                    return true;
+                }
+
+                let temp_path = Self::temp_upload_path(&path);
+                match File::create(&temp_path).await {
+                    Ok(file) => {
+                        let (chunk_sender, chunk_receiver) =
+                            mpsc::channel::<streaming::StreamChunk>(8);
+                        log!(
+                            Level::Info,
+                            "Started raw upload: request_id={}, path={}, temp_path={}",
+                            request_id,
+                            path,
+                            temp_path.display()
+                        );
+                        active_uploads.lock().await.insert(
+                            request_id,
+                            UploadSessionHandle {
+                                path: path.clone(),
+                                chunk_sender,
+                            },
+                        );
+                        tokio::spawn(Self::process_raw_upload(
+                            active_uploads,
+                            chunk_receiver,
+                            RawUploadSession {
+                                path,
+                                temp_path,
+                                file,
+                                bytes_written: 0,
+                            },
+                            write.clone(),
+                            agent_id.to_string(),
+                            request_id,
+                        ));
+                    }
+                    Err(error) => {
+                        self.send_command_response(
+                            write,
+                            agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: format!("Failed to create file: {}", error),
+                            },
+                        )
+                        .await;
+                    }
+                }
+                true
+            }
+            Command::TarUpload { path } => {
+                let upload_already_exists = active_uploads.lock().await.contains_key(&request_id);
+
+                if upload_already_exists {
+                    self.send_command_response(
+                        write,
+                        agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: format!(
+                                "Upload session already exists for request_id={}",
+                                request_id
+                            ),
+                        },
+                    )
+                    .await;
+                    return true;
+                }
+
+                match Self::create_tar_upload_session(path.clone()).await {
+                    Ok(session) => {
+                        let (chunk_sender, chunk_receiver) =
+                            mpsc::channel::<streaming::StreamChunk>(8);
+                        log!(
+                            Level::Info,
+                            "Started tar upload: request_id={}, path={}, temp_path={}",
+                            request_id,
+                            path,
+                            session.temp_path.display()
+                        );
+                        active_uploads.lock().await.insert(
+                            request_id,
+                            UploadSessionHandle {
+                                path: path.clone(),
+                                chunk_sender,
+                            },
+                        );
+                        tokio::spawn(Self::process_tar_upload(
+                            active_uploads,
+                            chunk_receiver,
+                            session,
+                            write.clone(),
+                            agent_id.to_string(),
+                            request_id,
+                        ));
+                    }
+                    Err(error) => {
+                        self.send_command_response(
+                            write,
+                            agent_id,
+                            request_id,
+                            CommandResult::Error {
+                                message: error.to_string(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1477,252 +1829,39 @@ impl AgentActor {
         };
 
         let request_id = chunk.request_id;
-        let is_known_upload = state.active_uploads.contains_key(&request_id);
-
-        if !is_known_upload {
-            return Ok(());
-        }
-
-        let Some(tx) = state.ws_tx.as_ref().cloned() else {
+        let Some(tx) = state.ws_text_tx.as_ref().cloned() else {
             log!(
                 Level::Warning,
                 "Upload chunk received without active websocket sender: request_id={}",
                 request_id
             );
-            state.active_uploads.remove(&request_id);
+            Self::remove_active_upload(&state.active_uploads, request_id).await;
             return Ok(());
         };
 
-        if chunk.is_error {
-            let error_message = if chunk.data.is_empty() {
-                "Upload aborted by server".to_string()
-            } else {
-                String::from_utf8_lossy(&chunk.data).to_string()
-            };
+        let upload_handle = { state.active_uploads.lock().await.get(&request_id).cloned() };
 
-            let path = state
-                .active_uploads
-                .remove(&request_id)
-                .map(|session| {
-                    let path = match &session {
-                        UploadSession::RawFile(session) => session.path.clone(),
-                        UploadSession::TarDirectory(session) => session.path.clone(),
-                    };
-                    tokio::spawn(Self::cleanup_upload_session(session));
-                    path
-                })
-                .unwrap_or_else(|| "<unknown>".to_string());
+        let Some(upload_handle) = upload_handle else {
+            return Ok(());
+        };
 
+        if upload_handle.chunk_sender.send(chunk).await.is_err() {
             log!(
                 Level::Warning,
-                "Upload aborted: request_id={}, path={}, error={}",
+                "Upload worker dropped before chunk delivery: request_id={}, path={}",
                 request_id,
-                path,
-                error_message
+                upload_handle.path
             );
-
+            Self::remove_active_upload(&state.active_uploads, request_id).await;
             self.send_command_response(
                 &tx,
                 &state.agent_id,
                 request_id,
                 CommandResult::Error {
-                    message: error_message,
+                    message: "Upload worker is no longer available".to_string(),
                 },
             )
             .await;
-
-            return Ok(());
-        }
-
-        let session = match state.active_uploads.remove(&request_id) {
-            Some(session) => session,
-            None => return Ok(()),
-        };
-
-        match session {
-            UploadSession::RawFile(mut session) => {
-                if chunk.payload_kind != StreamPayloadKind::RawFile {
-                    let error_message = format!(
-                        "Upload payload kind mismatch: expected {:?}, got {:?}",
-                        StreamPayloadKind::RawFile,
-                        chunk.payload_kind
-                    );
-                    self.send_command_response(
-                        &tx,
-                        &state.agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-                    tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
-                        session,
-                    )));
-                    return Ok(());
-                }
-
-                if let Err(error) = session.file.write_all(&chunk.data).await {
-                    let error_message = format!("Failed to write upload chunk: {}", error);
-                    log!(
-                        Level::Error,
-                        "Upload write failed: request_id={}, path={}, error={}",
-                        request_id,
-                        session.path,
-                        error_message
-                    );
-
-                    self.send_command_response(
-                        &tx,
-                        &state.agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-
-                    tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
-                        session,
-                    )));
-
-                    return Ok(());
-                }
-
-                session.bytes_written += chunk.data.len() as u64;
-
-                if chunk.is_last {
-                    if let Err(error) = session.file.flush().await {
-                        let error_message = format!("Failed to flush uploaded file: {}", error);
-                        log!(
-                            Level::Error,
-                            "Upload flush failed: request_id={}, path={}, error={}",
-                            request_id,
-                            session.path,
-                            error_message
-                        );
-
-                        self.send_command_response(
-                            &tx,
-                            &state.agent_id,
-                            request_id,
-                            CommandResult::Error {
-                                message: error_message,
-                            },
-                        )
-                        .await;
-
-                        tokio::spawn(Self::cleanup_upload_session(UploadSession::RawFile(
-                            session,
-                        )));
-
-                        return Ok(());
-                    }
-
-                    let final_path = session.path.clone();
-                    let temp_path = session.temp_path.clone();
-                    let bytes_written = session.bytes_written;
-                    drop(session.file);
-
-                    if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
-                        let error_message = format!("Failed to finalize uploaded file: {}", error);
-                        log!(
-                            Level::Error,
-                            "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
-                            request_id,
-                            final_path,
-                            temp_path.display(),
-                            error_message
-                        );
-
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-
-                        self.send_command_response(
-                            &tx,
-                            &state.agent_id,
-                            request_id,
-                            CommandResult::Error {
-                                message: error_message,
-                            },
-                        )
-                        .await;
-
-                        return Ok(());
-                    }
-
-                    log!(
-                        Level::Info,
-                        "Raw upload complete: request_id={}, path={}, bytes_written={}",
-                        request_id,
-                        final_path,
-                        bytes_written
-                    );
-
-                    self.send_command_response(
-                        &tx,
-                        &state.agent_id,
-                        request_id,
-                        CommandResult::RawUpload,
-                    )
-                    .await;
-                } else {
-                    state
-                        .active_uploads
-                        .insert(request_id, UploadSession::RawFile(session));
-                }
-            }
-            UploadSession::TarDirectory(mut session) => {
-                if chunk.payload_kind != StreamPayloadKind::Tar {
-                    let error_message = format!(
-                        "Upload payload kind mismatch: expected {:?}, got {:?}",
-                        StreamPayloadKind::Tar,
-                        chunk.payload_kind
-                    );
-                    self.send_command_response(
-                        &tx,
-                        &state.agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-                    tokio::spawn(Self::cleanup_upload_session(UploadSession::TarDirectory(
-                        session,
-                    )));
-                    return Ok(());
-                }
-
-                if !chunk.data.is_empty() {
-                    if let Err(error) = session.chunk_sender.send(chunk.data.clone()) {
-                        let error_message =
-                            format!("Failed to forward tar upload chunk to unpacker: {}", error);
-                        self.send_command_response(
-                            &tx,
-                            &state.agent_id,
-                            request_id,
-                            CommandResult::Error {
-                                message: error_message,
-                            },
-                        )
-                        .await;
-                        tokio::spawn(Self::cleanup_upload_session(UploadSession::TarDirectory(
-                            session,
-                        )));
-                        return Ok(());
-                    }
-                    session.bytes_written += chunk.data.len() as u64;
-                }
-
-                if chunk.is_last {
-                    self.finalize_tar_upload(session, &tx, &state.agent_id, request_id)
-                        .await;
-                } else {
-                    state
-                        .active_uploads
-                        .insert(request_id, UploadSession::TarDirectory(session));
-                }
-            }
         }
 
         Ok(())
@@ -1894,8 +2033,9 @@ impl Actor for AgentActor {
             agent_id,
             agent_name,
             server_url,
-            ws_tx: None,
-            active_uploads: HashMap::new(),
+            ws_text_tx: None,
+            ws_binary_tx: None,
+            active_uploads: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1926,16 +2066,44 @@ impl Actor for AgentActor {
                         );
 
                         let (write, read) = ws_stream.split();
-                        let (tx, mut rx) = mpsc::channel::<WsMessage>(32);
+                        let (text_tx, mut text_rx) = mpsc::channel::<WsMessage>(32);
+                        let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(32);
 
-                        state.ws_tx = Some(tx.clone());
+                        state.ws_text_tx = Some(text_tx.clone());
+                        state.ws_binary_tx = Some(binary_tx.clone());
 
                         Self::spawn_read_task(read, myself.clone()).await;
 
                         let mut write = write;
                         tokio::spawn(async move {
-                            while let Some(msg) = rx.recv().await {
-                                if write.send(msg).await.is_err() {
+                            let mut text_closed = false;
+                            let mut binary_closed = false;
+
+                            loop {
+                                let next_message = tokio::select! {
+                                    biased;
+                                    message = text_rx.recv(), if !text_closed => match message {
+                                        Some(message) => Some(message),
+                                        None => {
+                                            text_closed = true;
+                                            None
+                                        }
+                                    },
+                                    message = binary_rx.recv(), if !binary_closed => match message {
+                                        Some(message) => Some(message),
+                                        None => {
+                                            binary_closed = true;
+                                            None
+                                        }
+                                    },
+                                    else => break,
+                                };
+
+                                let Some(message) = next_message else {
+                                    continue;
+                                };
+
+                                if write.send(message).await.is_err() {
                                     log!(Level::Warning, "Failed to send WebSocket message");
                                     break;
                                 }
@@ -1961,7 +2129,7 @@ impl Actor for AgentActor {
 
                         if let Ok(json) = serde_json::to_string(&register_msg) {
                             log!(Level::Info, "Sending agent registration message: {}", json);
-                            if let Err(e) = tx.send(WsMessage::text(json)).await {
+                            if let Err(e) = text_tx.send(WsMessage::text(json)).await {
                                 log!(Level::Error, "Failed to send agent registration: {}", e);
                             }
                         }
@@ -1993,7 +2161,7 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::WebSocketMessage { text } => {
-                if let Some(tx) = state.ws_tx.as_ref().cloned() {
+                if let Some(tx) = state.ws_text_tx.as_ref().cloned() {
                     self.handle_incoming_message(text, state, &tx, myself.clone())
                         .await;
                 }
@@ -2005,11 +2173,9 @@ impl Actor for AgentActor {
                     "Connection lost: {}, scheduling reconnect in 5s",
                     reason
                 );
-                state.ws_tx = None;
-                let abandoned_uploads = std::mem::take(&mut state.active_uploads);
-                for (_, session) in abandoned_uploads {
-                    tokio::spawn(Self::cleanup_upload_session(session));
-                }
+                state.ws_text_tx = None;
+                state.ws_binary_tx = None;
+                Self::clear_active_uploads(&state.active_uploads).await;
                 let agent_ref_clone = myself.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -2023,7 +2189,7 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::SendWebSocketMessage { msg } => {
-                if let Some(tx) = &state.ws_tx {
+                if let Some(tx) = &state.ws_text_tx {
                     if tx.send(msg).await.is_err() {
                         log!(
                             Level::Error,
@@ -2034,7 +2200,7 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::SendWebSocketBinary { bytes } => {
-                if let Some(tx) = &state.ws_tx {
+                if let Some(tx) = &state.ws_binary_tx {
                     if tx.send(WsMessage::Binary(bytes.into())).await.is_err() {
                         log!(
                             Level::Error,
@@ -2054,11 +2220,9 @@ impl Actor for AgentActor {
                     "Shutting down agent: agent_id={}",
                     state.agent_id
                 );
-                state.ws_tx = None;
-                let abandoned_uploads = std::mem::take(&mut state.active_uploads);
-                for (_, session) in abandoned_uploads {
-                    tokio::spawn(Self::cleanup_upload_session(session));
-                }
+                state.ws_text_tx = None;
+                state.ws_binary_tx = None;
+                Self::clear_active_uploads(&state.active_uploads).await;
                 myself.stop(None);
             }
 

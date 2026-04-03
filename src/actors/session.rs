@@ -31,8 +31,10 @@ pub struct SessionState {
     /// The agent ID assigned after the agent sends an `AgentRegister` message.
     /// `None` until registration completes.
     pub agent_id: Option<String>,
-    /// Channel for sending serialized WebSocket frames back to the agent.
-    pub outgoing: mpsc::UnboundedSender<WsMessage>,
+    /// Channel for sending JSON/control WebSocket frames back to the agent.
+    pub outgoing_text: mpsc::UnboundedSender<WsMessage>,
+    /// Channel for sending binary streaming frames back to the agent.
+    pub outgoing_binary: mpsc::UnboundedSender<WsMessage>,
 }
 
 /// Messages that can be sent to a [`SessionActor`].
@@ -55,6 +57,7 @@ impl Actor for SessionActor {
         String,
         ActorRef<RouterMsg>,
         mpsc::UnboundedSender<WsMessage>,
+        mpsc::UnboundedSender<WsMessage>,
     );
 
     async fn pre_start(
@@ -62,14 +65,15 @@ impl Actor for SessionActor {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let (socket_id, router_ref, outgoing) = args;
+        let (socket_id, router_ref, outgoing_text, outgoing_binary) = args;
         log!(Level::Info, "SessionActor started: socket_id={}", socket_id);
 
         Ok(SessionState {
             socket_id,
             router_ref,
             agent_id: None,
-            outgoing,
+            outgoing_text,
+            outgoing_binary,
         })
     }
 
@@ -149,7 +153,7 @@ impl Actor for SessionActor {
                     );
                 }
                 if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = state.outgoing.send(WsMessage::Text(json.into()));
+                    let _ = state.outgoing_text.send(WsMessage::Text(json.into()));
                 }
             }
             SessionMsg::IncomingBinary(bytes) => {
@@ -164,7 +168,7 @@ impl Actor for SessionActor {
                 }
             }
             SessionMsg::OutgoingBinary(bytes) => {
-                let _ = state.outgoing.send(WsMessage::Binary(bytes.into()));
+                let _ = state.outgoing_binary.send(WsMessage::Binary(bytes.into()));
             }
         }
         Ok(())
@@ -202,12 +206,18 @@ pub async fn handle_websocket(
     router_ref: ActorRef<RouterMsg>,
 ) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
-    let (tx_out, mut rx_out) = mpsc::unbounded_channel::<WsMessage>();
+    let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
+    let (tx_out_binary, mut rx_out_binary) = mpsc::unbounded_channel::<WsMessage>();
 
     let (session_ref, _handle) = SessionActor::spawn(
         None,
         SessionActor,
-        (socket_id.clone(), router_ref.clone(), tx_out.clone()),
+        (
+            socket_id.clone(),
+            router_ref.clone(),
+            tx_out_text.clone(),
+            tx_out_binary.clone(),
+        ),
     )
     .await
     .expect("Failed to spawn SessionActor");
@@ -241,8 +251,36 @@ pub async fn handle_websocket(
     });
 
     tokio::spawn(async move {
-        while let Some(msg) = rx_out.recv().await {
-            let _ = sender.send(msg).await;
+        let mut text_closed = false;
+        let mut binary_closed = false;
+
+        loop {
+            let next_message = tokio::select! {
+                biased;
+                message = rx_out_text.recv(), if !text_closed => match message {
+                    Some(message) => Some(message),
+                    None => {
+                        text_closed = true;
+                        None
+                    }
+                },
+                message = rx_out_binary.recv(), if !binary_closed => match message {
+                    Some(message) => Some(message),
+                    None => {
+                        binary_closed = true;
+                        None
+                    }
+                },
+                else => break,
+            };
+
+            let Some(message) = next_message else {
+                continue;
+            };
+
+            if sender.send(message).await.is_err() {
+                break;
+            }
         }
     });
 }

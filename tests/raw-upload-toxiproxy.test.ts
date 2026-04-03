@@ -134,6 +134,85 @@ describe("Raw Upload API with toxiproxy", () => {
         expect(Buffer.compare(downloadedContent, uploadContent)).toBe(0);
     }, 20000);
 
+    it("should keep command requests responsive during a throttled upload", async () => {
+        const chunkSizeBytes = 64 * 1024;
+        const totalBytes = chunkSizeBytes * 3 + 17;
+        const uploadContent = Buffer.alloc(totalBytes, "c");
+        const uploadedFilePath = tempFiles.tempFile({ suffix: ".bin" });
+        const { proxy, proxiedAgent } = await createToxiproxyAgent({
+            serverPort,
+            agent: testAgent,
+            proxyNamePrefix: "raw-upload-concurrent-command",
+        });
+
+        onTestFinished(async () => {
+            await proxy.remove().catch(() => undefined);
+        });
+
+        await proxy.addToxic({
+            name: "slow-upload",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: {
+                rate: 16,
+            },
+        });
+
+        const uploadPromise = proxiedAgent.upload(
+            uploadedFilePath,
+            new File([uploadContent], "concurrent-upload.bin", {
+                type: "application/octet-stream",
+            }),
+        );
+
+        const activeTransfer = await waitForValue({
+            description: "active upload before issuing concurrent command",
+            timeoutMs: 15000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === uploadedFilePath &&
+                        transfer.direction === "upload" &&
+                        transfer.state === "active" &&
+                        transfer.transferred_bytes > 0 &&
+                        transfer.transferred_bytes < totalBytes,
+                );
+            },
+        });
+
+        const detailsResult = await Promise.race([
+            testAgent
+                .getDetails()
+                .then((details) => ({ ok: true as const, details })),
+            new Promise<{ ok: false; error: string }>((resolve) => {
+                setTimeout(() => {
+                    resolve({
+                        ok: false,
+                        error: "getDetails timed out while upload was still active",
+                    });
+                }, 3000);
+            }),
+        ]);
+
+        // Observing an active row first proves the command raced with a real in-flight upload instead of running after completion.
+        expect(activeTransfer.state).toBe("active");
+        // A successful metadata call confirms control commands are no longer queued behind upload chunks.
+        expect(detailsResult.ok).toBe(true);
+        if (!detailsResult.ok) {
+            throw new Error(detailsResult.error);
+        }
+        // Returning the same agent name proves the responsive command still reached the intended agent during the upload.
+        expect(detailsResult.details.name).toBe(testAgent.name);
+
+        const uploadResponse = await uploadPromise;
+
+        // Finishing successfully confirms the responsiveness fix does not break the throttled upload itself.
+        expect(uploadResponse.ok).toBe(true);
+    }, 20000);
+
     it("should report interrupted uploads and recover after removing the toxic", async () => {
         const chunkSizeBytes = 64 * 1024;
         const interruptedTotalBytes = chunkSizeBytes * 4 + 123;
