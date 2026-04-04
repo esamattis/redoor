@@ -18,7 +18,7 @@ use sysinfo::System;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot, watch},
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
@@ -77,6 +77,13 @@ struct UploadSessionHandle {
 
 type ActiveUploads = Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>;
 
+#[derive(Clone)]
+struct DownloadSessionHandle {
+    cancel_sender: watch::Sender<bool>,
+}
+
+type ActiveDownloads = Arc<Mutex<HashMap<RequestId, DownloadSessionHandle>>>;
+
 /// Streams tar bytes into a blocking unpack worker that extracts into a temp directory.
 struct TarUploadSession {
     path: String,
@@ -93,6 +100,7 @@ pub struct AgentState {
     ws_text_tx: Option<mpsc::Sender<WsMessage>>,
     ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
     active_uploads: ActiveUploads,
+    active_downloads: ActiveDownloads,
 }
 
 #[derive(Clone)]
@@ -139,6 +147,18 @@ impl AgentActor {
 
     async fn clear_active_uploads(active_uploads: &ActiveUploads) {
         active_uploads.lock().await.clear();
+    }
+
+    async fn remove_active_download(active_downloads: &ActiveDownloads, request_id: RequestId) {
+        active_downloads.lock().await.remove(&request_id);
+    }
+
+    async fn clear_active_downloads(active_downloads: &ActiveDownloads) {
+        let mut active_downloads = active_downloads.lock().await;
+        for download in active_downloads.values() {
+            let _ = download.cancel_sender.send(true);
+        }
+        active_downloads.clear();
     }
 
     fn temp_upload_path(path: &str) -> PathBuf {
@@ -936,8 +956,11 @@ impl AgentActor {
         path: String,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
+        mut cancel_receiver: watch::Receiver<bool>,
+        active_downloads: ActiveDownloads,
     ) {
         let source_path = PathBuf::from(&path);
+        let cancel_message = b"Download canceled by server";
 
         let metadata = match tokio::fs::metadata(&source_path).await {
             Ok(metadata) => metadata,
@@ -954,6 +977,7 @@ impl AgentActor {
                     true,
                 )
                 .await;
+                Self::remove_active_download(&active_downloads, request_id).await;
                 return;
             }
         };
@@ -971,6 +995,7 @@ impl AgentActor {
                 true,
             )
             .await;
+            Self::remove_active_download(&active_downloads, request_id).await;
             return;
         }
 
@@ -1005,7 +1030,38 @@ impl AgentActor {
         let mut chunk_index = ChunkIndex(0);
         let mut pending_chunk: Option<Vec<u8>> = None;
 
-        while let Some(chunk_bytes) = tar_receiver.recv().await {
+        loop {
+            let next_chunk_bytes = tokio::select! {
+                changed = cancel_receiver.changed() => {
+                    match changed {
+                        Ok(()) if *cancel_receiver.borrow() => {
+                            let _ = Self::send_framed_stream_bytes(
+                                write,
+                                request_id,
+                                &mut chunk_index,
+                                StreamPayloadKind::Tar,
+                                true,
+                                cancel_message,
+                                true,
+                            )
+                            .await;
+                            Self::remove_active_download(&active_downloads, request_id).await;
+                            return;
+                        }
+                        Ok(()) => continue,
+                        Err(_) => {
+                            Self::remove_active_download(&active_downloads, request_id).await;
+                            return;
+                        }
+                    }
+                }
+                chunk_bytes = tar_receiver.recv() => chunk_bytes,
+            };
+
+            let Some(chunk_bytes) = next_chunk_bytes else {
+                break;
+            };
+
             if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
                 if !Self::send_framed_stream_bytes(
                     write,
@@ -1022,6 +1078,7 @@ impl AgentActor {
                         Level::Warning,
                         "WebSocket channel full or closed, aborting tar download"
                     );
+                    Self::remove_active_download(&active_downloads, request_id).await;
                     return;
                 }
             }
@@ -1045,6 +1102,7 @@ impl AgentActor {
             path,
             chunk_index.display_number()
         );
+        Self::remove_active_download(&active_downloads, request_id).await;
     }
 
     async fn finalize_tar_upload(
@@ -1436,7 +1494,22 @@ impl AgentActor {
                             state.agent_id.clone(),
                             request_id,
                             command,
+                            state.active_downloads.clone(),
                         ));
+                    }
+                }
+                Message::CancelTransfer { request_id } => {
+                    let download_handle = {
+                        state
+                            .active_downloads
+                            .lock()
+                            .await
+                            .get(&request_id)
+                            .cloned()
+                    };
+
+                    if let Some(download_handle) = download_handle {
+                        let _ = download_handle.cancel_sender.send(true);
                     }
                 }
                 Message::Error { message } => {
@@ -1512,6 +1585,7 @@ impl AgentActor {
         agent_id: String,
         request_id: RequestId,
         command: Command,
+        active_downloads: ActiveDownloads,
     ) {
         match command {
             Command::RawDownload {
@@ -1519,13 +1593,37 @@ impl AgentActor {
                 range_start,
                 range_end,
             } => {
+                let (cancel_sender, cancel_receiver) = watch::channel(false);
+                active_downloads
+                    .lock()
+                    .await
+                    .insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
-                    .raw_download(path, range_start, range_end, request_id, &write_binary)
+                    .raw_download(
+                        path,
+                        range_start,
+                        range_end,
+                        request_id,
+                        &write_binary,
+                        cancel_receiver,
+                        active_downloads.clone(),
+                    )
                     .await;
             }
             Command::TarDownload { path } => {
+                let (cancel_sender, cancel_receiver) = watch::channel(false);
+                active_downloads
+                    .lock()
+                    .await
+                    .insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
-                    .tar_download(path, request_id, &write_binary)
+                    .tar_download(
+                        path,
+                        request_id,
+                        &write_binary,
+                        cancel_receiver,
+                        active_downloads.clone(),
+                    )
                     .await;
             }
             Command::LocalCopyFile {
@@ -1730,7 +1828,11 @@ impl AgentActor {
         range_end: Option<u64>,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
+        cancel_receiver: watch::Receiver<bool>,
+        active_downloads: ActiveDownloads,
     ) {
+        let mut cancel_receiver = cancel_receiver;
+        let cancel_message = b"Download canceled by server";
         match File::open(&path).await {
             Ok(mut file) => {
                 let mut chunk_index = ChunkIndex(0);
@@ -1778,7 +1880,32 @@ impl AgentActor {
                         buffer.resize(read_size, 0);
                     }
 
-                    match file.read(&mut buffer).await {
+                    match tokio::select! {
+                        changed = cancel_receiver.changed() => {
+                            match changed {
+                                Ok(()) if *cancel_receiver.borrow() => {
+                                    let _ = Self::send_framed_stream_bytes(
+                                        write,
+                                        request_id,
+                                        &mut chunk_index,
+                                        StreamPayloadKind::RawFile,
+                                        true,
+                                        cancel_message,
+                                        true,
+                                    )
+                                    .await;
+                                    Self::remove_active_download(&active_downloads, request_id).await;
+                                    return;
+                                }
+                                Ok(()) => continue,
+                                Err(_) => {
+                                    Self::remove_active_download(&active_downloads, request_id).await;
+                                    return;
+                                }
+                            }
+                        }
+                        read_result = file.read(&mut buffer) => read_result,
+                    } {
                         Ok(0) => break,
                         Ok(n) => {
                             if let Some(ref mut remaining) = bytes_remaining {
@@ -1801,6 +1928,8 @@ impl AgentActor {
                                         Level::Warning,
                                         "WebSocket channel full or closed, aborting download"
                                     );
+                                    Self::remove_active_download(&active_downloads, request_id)
+                                        .await;
                                     return;
                                 }
                             }
@@ -1818,6 +1947,7 @@ impl AgentActor {
                                 true,
                             )
                             .await;
+                            Self::remove_active_download(&active_downloads, request_id).await;
                             return;
                         }
                     }
@@ -1841,6 +1971,7 @@ impl AgentActor {
                     path,
                     chunk_index.display_number()
                 );
+                Self::remove_active_download(&active_downloads, request_id).await;
             }
             Err(e) => {
                 log!(Level::Error, "Failed to open file: {}", e);
@@ -1856,6 +1987,7 @@ impl AgentActor {
                     true,
                 )
                 .await;
+                Self::remove_active_download(&active_downloads, request_id).await;
             }
         }
     }
@@ -2085,6 +2217,7 @@ impl Actor for AgentActor {
             ws_text_tx: None,
             ws_binary_tx: None,
             active_uploads: Arc::new(Mutex::new(HashMap::new())),
+            active_downloads: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -2228,6 +2361,7 @@ impl Actor for AgentActor {
                 state.ws_text_tx = None;
                 state.ws_binary_tx = None;
                 Self::clear_active_uploads(&state.active_uploads).await;
+                Self::clear_active_downloads(&state.active_downloads).await;
                 let agent_ref_clone = myself.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -2275,6 +2409,7 @@ impl Actor for AgentActor {
                 state.ws_text_tx = None;
                 state.ws_binary_tx = None;
                 Self::clear_active_uploads(&state.active_uploads).await;
+                Self::clear_active_downloads(&state.active_downloads).await;
                 myself.stop(None);
             }
 

@@ -345,6 +345,144 @@ describe("Raw Download API", () => {
         expect(Buffer.compare(downloadedContent, downloadContent)).toBe(0);
     }, 40000);
 
+    it("should cancel throttled download cleanly when client aborts", async () => {
+        const totalBytes = 1024 * 1024;
+        const downloadContent = Buffer.alloc(totalBytes, "c");
+        const sourcePath = tempFiles.create(downloadContent, {
+            suffix: ".bin",
+        });
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+
+        const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
+        const proxyPort = await getAvailablePort();
+        const proxy = await toxiproxy.createProxy({
+            name: `raw-download-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            listen: `127.0.0.1:${proxyPort}`,
+            upstream: `127.0.0.1:${serverPort}`,
+        });
+        const proxiedAgentName = "raw-download-cancel-agent";
+        const waitForProxiedAgent = waitForLogMessage(
+            serverProcess,
+            new RegExp(`Agent registered:.*agent_name=${proxiedAgentName}`),
+            10000,
+        );
+        const proxiedAgentPid = processManager.spawnAgent({
+            wsAddress: `ws://${proxy.listen}/ws`,
+            name: proxiedAgentName,
+            cwd: tempFiles.tempDirectory({
+                suffix: "-proxied-cancel-agent-cwd",
+            }),
+        });
+
+        onTestFinished(async () => {
+            processManager.kill(proxiedAgentPid);
+            await proxy.remove().catch(() => undefined);
+        });
+
+        await waitForProxiedAgent;
+
+        const agents = await apiClient.listAgents();
+        const proxiedAgent = agents.find(
+            (agent) => agent.name === proxiedAgentName,
+        );
+        if (!proxiedAgent) {
+            throw new Error(`Agent ${proxiedAgentName} was not registered`);
+        }
+
+        await proxy.addToxic({
+            name: "slow-cancel-download",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: {
+                rate: 512,
+            },
+        });
+
+        const controller = new AbortController();
+        const downloadResponsePromise = fetch(
+            proxiedAgent.getRawUrl(sourcePath),
+            {
+                signal: controller.signal,
+            },
+        );
+
+        const activeTransfer = await waitForValue({
+            description: "active throttled download before cancellation",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === proxiedAgent.id &&
+                        transfer.path === sourcePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.transferred_bytes > 0 &&
+                        transfer.transferred_bytes < totalBytes,
+                );
+            },
+        });
+
+        const response = await downloadResponsePromise;
+        const abortReadPromise = response.arrayBuffer();
+        const serverLogBeforeAbort = processManager.getStdout(serverPid);
+
+        controller.abort();
+
+        await expect(abortReadPromise).rejects.toThrow(/abort|aborted|cancel/i);
+
+        const finishedTransfer = await waitForValue({
+            description: "errored download progress row after client abort",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "errored",
+                );
+            },
+        });
+
+        // The errored state proves the server surfaced client-side cancellation instead of leaving the transfer active forever.
+        expect(finishedTransfer.state).toBe("errored");
+        // Retaining partial progress proves cancellation happened mid-stream instead of after a completed download.
+        expect(finishedTransfer.transferred_bytes).toBeLessThan(
+            finishedTransfer.total_bytes,
+        );
+        // The cancellation message confirms the server recognized a client abort rather than inventing a transport error.
+        expect(finishedTransfer.error).toMatch(/canceled by client/i);
+
+        await waitForValue({
+            description:
+                "server cancel log without repeated missing-stream warnings",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const stdout = processManager.getStdout(serverPid);
+                const newStdout = stdout.slice(serverLogBeforeAbort.length);
+                const missingStreamWarnings = newStdout.match(
+                    /No streaming response found for request_id=/g,
+                );
+
+                if ((missingStreamWarnings?.length ?? 0) > 0) {
+                    throw new Error(
+                        `Unexpected repeated missing-stream warnings: ${missingStreamWarnings?.length}`,
+                    );
+                }
+
+                return /Failed to send chunk to REST stream: request_id=/.test(
+                    newStdout,
+                )
+                    ? true
+                    : undefined;
+            },
+        });
+    }, 40000);
+
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });
         fs.chmodSync(testFilePath, 0o000);

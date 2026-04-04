@@ -166,6 +166,8 @@ pub enum Message {
         transferred_bytes: u64,
         total_bytes: Option<u64>,
     },
+    #[serde(rename = "cancel_transfer")]
+    CancelTransfer { request_id: RequestId },
     #[serde(rename = "error")]
     Error { message: String },
 }

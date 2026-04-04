@@ -29,6 +29,7 @@ enum TransferRequest {
     Download {
         agent_id: String,
         chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
+        canceled_by_rest: bool,
     },
     Upload {
         agent_id: String,
@@ -262,6 +263,10 @@ pub enum RouterMsg {
         chunk: crate::streaming::StreamChunk,
         reply: RpcReplyPort<Result<(), String>>,
     },
+    CancelTransfer {
+        agent_id: String,
+        request_id: RequestId,
+    },
     StartCopyRest {
         source_agent_id: String,
         source_path: String,
@@ -392,6 +397,7 @@ impl RouterActor {
             TransferRequest::Download {
                 agent_id,
                 chunk_sender,
+                canceled_by_rest: false,
             },
         );
         Self::notify_ui_refresh(state);
@@ -973,6 +979,7 @@ impl RouterActor {
             Some(TransferRequest::Download {
                 agent_id: stored_agent_id,
                 chunk_sender,
+                canceled_by_rest,
             }) => {
                 if stored_agent_id != &agent_id {
                     log!(
@@ -982,6 +989,12 @@ impl RouterActor {
                         stored_agent_id,
                         agent_id
                     );
+                    return;
+                }
+                if *canceled_by_rest {
+                    if chunk.is_last || chunk.is_error {
+                        state.transfers.remove(&request_id);
+                    }
                     return;
                 }
                 chunk_sender.clone()
@@ -1024,9 +1037,17 @@ impl RouterActor {
                 state,
                 myself,
                 transfer_id,
-                "REST stream receiver dropped before download completed".to_string(),
+                "Download canceled by client".to_string(),
             );
-            state.transfers.remove(&request_id);
+            if let Some(TransferRequest::Download {
+                canceled_by_rest, ..
+            }) = state.transfers.get_mut(&request_id)
+            {
+                *canceled_by_rest = true;
+            }
+            if let Some(agent_info) = state.agents.get(&agent_id) {
+                Self::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+            }
             Self::notify_ui_refresh(state);
             return;
         }
@@ -1263,6 +1284,50 @@ impl RouterActor {
 
         if !orphaned_transfers.is_empty() || !orphaned_copy_ids.is_empty() {
             Self::notify_ui_refresh(state);
+        }
+    }
+
+    fn cancel_transfer(state: &mut RouterState, request_id: RequestId, agent_id: String) {
+        match state.transfers.get_mut(&request_id) {
+            Some(TransferRequest::Download {
+                agent_id: stored_agent_id,
+                canceled_by_rest,
+                ..
+            }) => {
+                if stored_agent_id != &agent_id {
+                    log!(
+                        Level::Warning,
+                        "Transfer cancel agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                        request_id,
+                        stored_agent_id,
+                        agent_id
+                    );
+                    return;
+                }
+
+                if *canceled_by_rest {
+                    return;
+                }
+
+                *canceled_by_rest = true;
+                if let Some(agent_info) = state.agents.get(&agent_id) {
+                    Self::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+                }
+            }
+            Some(TransferRequest::Upload { .. }) => {
+                log!(
+                    Level::Warning,
+                    "Received cancel request for upload transfer: request_id={}",
+                    request_id
+                );
+            }
+            None => {
+                log!(
+                    Level::Warning,
+                    "Transfer not found for cancel request: request_id={}",
+                    request_id
+                );
+            }
         }
     }
 }
@@ -1693,6 +1758,12 @@ impl Actor for RouterActor {
                     let _ = reply.send(Err(format!("Agent not found: {}", agent_id)));
                 }
             }
+            RouterMsg::CancelTransfer {
+                agent_id,
+                request_id,
+            } => {
+                Self::cancel_transfer(state, request_id, agent_id);
+            }
             RouterMsg::StartCopyRest {
                 source_agent_id,
                 source_path,
@@ -1798,6 +1869,7 @@ impl Actor for RouterActor {
                             TransferRequest::Download {
                                 agent_id: source_agent_id.clone(),
                                 chunk_sender: tokio::sync::mpsc::unbounded_channel().0,
+                                canceled_by_rest: false,
                             },
                         );
                         state.transfers.insert(

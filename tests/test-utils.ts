@@ -171,6 +171,7 @@ export type SpawnServerArgs = {
 
 export class ProcessManager {
     private processes: Map<number, ChildProcess> = new Map();
+    private stdoutBuffers: Map<number, OutputBuffer> = new Map();
 
     spawn(command: string, args: string[], cwd = PROJECT_ROOT): number {
         const proc = spawn(command, args, {
@@ -189,6 +190,13 @@ export class ProcessManager {
         }
 
         this.processes.set(pid, proc);
+        if (proc.stdout) {
+            const stdoutBuffer = new OutputBuffer(5000);
+            proc.stdout.on("data", (chunk: Buffer) => {
+                stdoutBuffer.add(chunk.toString());
+            });
+            this.stdoutBuffers.set(pid, stdoutBuffer);
+        }
         return pid;
     }
 
@@ -227,6 +235,7 @@ export class ProcessManager {
             }
         }
         this.processes.delete(pid);
+        this.stdoutBuffers.delete(pid);
     }
 
     killAll(): void {
@@ -237,6 +246,10 @@ export class ProcessManager {
 
     getProcess(pid: number): ChildProcess | undefined {
         return this.processes.get(pid);
+    }
+
+    getStdout(pid: number): string {
+        return this.stdoutBuffers.get(pid)?.getContent() ?? "";
     }
 
     async waitForExit(
