@@ -1046,6 +1046,12 @@ impl AgentActor {
                 changed = cancel_receiver.changed() => {
                     match changed {
                         Ok(()) if *cancel_receiver.borrow() => {
+                            log!(
+                                Level::Info,
+                                "Stopping tar download after cancel: request_id={}, path={}",
+                                request_id,
+                                path
+                            );
                             let _ = Self::send_framed_stream_bytes(
                                 write,
                                 request_id,
@@ -1520,7 +1526,18 @@ impl AgentActor {
                     };
 
                     if let Some(download_handle) = download_handle {
+                        log!(
+                            Level::Info,
+                            "Received transfer cancel from server: request_id={}",
+                            request_id
+                        );
                         let _ = download_handle.cancel_sender.send(true);
+                    } else {
+                        log!(
+                            Level::Warning,
+                            "Received transfer cancel for unknown download: request_id={}",
+                            request_id
+                        );
                     }
                 }
                 Message::Error { message } => {
@@ -1907,6 +1924,12 @@ impl AgentActor {
                         changed = cancel_receiver.changed() => {
                             match changed {
                                 Ok(()) if *cancel_receiver.borrow() => {
+                                    log!(
+                                        Level::Info,
+                                        "Stopping raw download after cancel: request_id={}, path={}",
+                                        request_id,
+                                        path
+                                    );
                                     let _ = Self::send_framed_stream_bytes(
                                         write,
                                         request_id,

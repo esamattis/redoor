@@ -993,6 +993,13 @@ impl RouterActor {
                 }
                 if *canceled_by_rest {
                     if chunk.is_last || chunk.is_error {
+                        log!(
+                            Level::Info,
+                            "Received canceled download ack from agent: agent_id={}, request_id={}, is_error={}",
+                            agent_id,
+                            request_id,
+                            chunk.is_error
+                        );
                         state.transfers.remove(&request_id);
                     }
                     return;
@@ -1046,6 +1053,12 @@ impl RouterActor {
                 *canceled_by_rest = true;
             }
             if let Some(agent_info) = state.agents.get(&agent_id) {
+                log!(
+                    Level::Info,
+                    "Sending download cancel to agent: agent_id={}, request_id={}",
+                    agent_id,
+                    request_id
+                );
                 Self::send_agent_message(agent_info, Message::CancelTransfer { request_id });
             }
             Self::notify_ui_refresh(state);
