@@ -4,7 +4,7 @@ use redoor::commands::{
     CommandResult, CopyFileRequest, CopyFileResponse, EchoRequest, EchoResponse, ErrorResponse,
     LsDirectoryResponse, LsFileResponse, RawDeleteResponse, RawUploadResponse, UiEvent,
 };
-use redoor::streaming::StreamPayloadKind;
+use redoor::streaming::StreamChunkFrameRequest;
 use redoor::types::ChunkIndex;
 
 use clap::Parser;
@@ -61,21 +61,12 @@ fn join_agent_path(cwd: &str, path: &str) -> String {
 async fn forward_split_stream_chunk(
     state: &ServerState,
     agent_id: &str,
-    request_id: redoor::types::RequestId,
     chunk_index: &mut ChunkIndex,
-    payload_kind: StreamPayloadKind,
-    is_error: bool,
-    data: &[u8],
-    is_last: bool,
+    request: StreamChunkFrameRequest<'_>,
 ) -> Result<(), Response> {
-    let mut frames = redoor::streaming::split_stream_chunk_bytes(
-        request_id,
-        *chunk_index,
-        payload_kind,
-        is_error,
-        data,
-        is_last,
-    );
+    let is_error = request.is_error_flag();
+    let is_last = request.is_last_flag();
+    let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
 
     while let Some(chunk) = frames.next() {
         let next_chunk_index = frames.next_chunk_index();
@@ -83,7 +74,7 @@ async fn forward_split_stream_chunk(
             &state.router_ref,
             |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
                 agent_id: agent_id.to_string(),
-                request_id,
+                request_id: chunk.request_id,
                 chunk,
                 reply,
             },
@@ -1007,12 +998,9 @@ async fn raw_agent_put_handler(
                 let _ = forward_split_stream_chunk(
                     &state,
                     &agent,
-                    request_id,
                     &mut chunk_index,
-                    StreamPayloadKind::RawFile,
-                    true,
-                    abort_message.as_bytes(),
-                    true,
+                    StreamChunkFrameRequest::new(request_id, abort_message.as_bytes())
+                        .is_error(true),
                 )
                 .await;
 
@@ -1031,12 +1019,8 @@ async fn raw_agent_put_handler(
         if let Err(response) = forward_split_stream_chunk(
             &state,
             &agent,
-            request_id,
             &mut chunk_index,
-            StreamPayloadKind::RawFile,
-            false,
-            &data,
-            false,
+            StreamChunkFrameRequest::new(request_id, &data).is_last(false),
         )
         .await
         {
@@ -1047,12 +1031,8 @@ async fn raw_agent_put_handler(
     if let Err(response) = forward_split_stream_chunk(
         &state,
         &agent,
-        request_id,
         &mut chunk_index,
-        StreamPayloadKind::RawFile,
-        false,
-        &[],
-        true,
+        StreamChunkFrameRequest::new(request_id, &[]),
     )
     .await
     {

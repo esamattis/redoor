@@ -6,7 +6,7 @@ use redoor::{
     Level,
     commands::{Command, CommandHandler, CommandResult},
     log,
-    streaming::{self, StreamPayloadKind},
+    streaming::{self, StreamChunkFrameRequest, StreamPayloadKind},
     types::{ChunkIndex, Message, RequestId},
 };
 use std::collections::HashMap;
@@ -980,12 +980,10 @@ impl AgentActor {
                 let error_message = format!("Failed to open directory: {}", error);
                 let _ = Self::send_framed_stream_bytes(
                     write,
-                    request_id,
                     &mut chunk_index,
-                    StreamPayloadKind::Tar,
-                    true,
-                    error_message.as_bytes(),
-                    true,
+                    StreamChunkFrameRequest::new(request_id, error_message.as_bytes())
+                        .payload_kind(StreamPayloadKind::Tar)
+                        .is_error(true),
                 )
                 .await;
                 Self::remove_active_download(&active_downloads, request_id).await;
@@ -998,12 +996,10 @@ impl AgentActor {
             let error_message = format!("Source path is not a directory: {}", path);
             let _ = Self::send_framed_stream_bytes(
                 write,
-                request_id,
                 &mut chunk_index,
-                StreamPayloadKind::Tar,
-                true,
-                error_message.as_bytes(),
-                true,
+                StreamChunkFrameRequest::new(request_id, error_message.as_bytes())
+                    .payload_kind(StreamPayloadKind::Tar)
+                    .is_error(true),
             )
             .await;
             Self::remove_active_download(&active_downloads, request_id).await;
@@ -1054,12 +1050,10 @@ impl AgentActor {
                             );
                             let _ = Self::send_framed_stream_bytes(
                                 write,
-                                request_id,
                                 &mut chunk_index,
-                                StreamPayloadKind::Tar,
-                                true,
-                                cancel_message,
-                                true,
+                                StreamChunkFrameRequest::new(request_id, cancel_message)
+                                    .payload_kind(StreamPayloadKind::Tar)
+                                    .is_error(true),
                             )
                             .await;
                             Self::remove_active_download(&active_downloads, request_id).await;
@@ -1082,12 +1076,10 @@ impl AgentActor {
             if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
                 if !Self::send_framed_stream_bytes(
                     write,
-                    request_id,
                     &mut chunk_index,
-                    StreamPayloadKind::Tar,
-                    false,
-                    &previous_chunk,
-                    false,
+                    StreamChunkFrameRequest::new(request_id, &previous_chunk)
+                        .payload_kind(StreamPayloadKind::Tar)
+                        .is_last(false),
                 )
                 .await
                 {
@@ -1104,12 +1096,9 @@ impl AgentActor {
         let final_chunk = pending_chunk.unwrap_or_default();
         let _ = Self::send_framed_stream_bytes(
             write,
-            request_id,
             &mut chunk_index,
-            StreamPayloadKind::Tar,
-            false,
-            &final_chunk,
-            true,
+            StreamChunkFrameRequest::new(request_id, &final_chunk)
+                .payload_kind(StreamPayloadKind::Tar),
         )
         .await;
 
@@ -1571,21 +1560,10 @@ impl AgentActor {
     /// Emits one logical transfer payload as bounded websocket binary frames.
     async fn send_framed_stream_bytes(
         write: &mpsc::Sender<WsMessage>,
-        request_id: RequestId,
         chunk_index: &mut ChunkIndex,
-        payload_kind: StreamPayloadKind,
-        is_error: bool,
-        data: &[u8],
-        is_last: bool,
+        request: StreamChunkFrameRequest<'_>,
     ) -> bool {
-        let mut frames = streaming::split_stream_chunk_bytes(
-            request_id,
-            *chunk_index,
-            payload_kind,
-            is_error,
-            data,
-            is_last,
-        );
+        let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
 
         while let Some(chunk) = frames.next() {
             let next_chunk_index = frames.next_chunk_index();
@@ -1887,12 +1865,9 @@ impl AgentActor {
                         let error_msg = format!("Failed to seek file: {}", e);
                         let _ = Self::send_framed_stream_bytes(
                             write,
-                            request_id,
                             &mut chunk_index,
-                            StreamPayloadKind::RawFile,
-                            true,
-                            error_msg.as_bytes(),
-                            true,
+                            StreamChunkFrameRequest::new(request_id, error_msg.as_bytes())
+                                .is_error(true),
                         )
                         .await;
                         return;
@@ -1932,12 +1907,9 @@ impl AgentActor {
                                     );
                                     let _ = Self::send_framed_stream_bytes(
                                         write,
-                                        request_id,
                                         &mut chunk_index,
-                                        StreamPayloadKind::RawFile,
-                                        true,
-                                        cancel_message,
-                                        true,
+                                        StreamChunkFrameRequest::new(request_id, cancel_message)
+                                            .is_error(true),
                                     )
                                     .await;
                                     Self::remove_active_download(&active_downloads, request_id).await;
@@ -1961,12 +1933,8 @@ impl AgentActor {
                             if let Some(data) = pending_chunk.replace(buffer[..n].to_vec()) {
                                 if !Self::send_framed_stream_bytes(
                                     write,
-                                    request_id,
                                     &mut chunk_index,
-                                    StreamPayloadKind::RawFile,
-                                    false,
-                                    &data,
-                                    false,
+                                    StreamChunkFrameRequest::new(request_id, &data).is_last(false),
                                 )
                                 .await
                                 {
@@ -1985,12 +1953,9 @@ impl AgentActor {
                             let error_msg = format!("Failed to read file: {}", e);
                             let _ = Self::send_framed_stream_bytes(
                                 write,
-                                request_id,
                                 &mut chunk_index,
-                                StreamPayloadKind::RawFile,
-                                true,
-                                error_msg.as_bytes(),
-                                true,
+                                StreamChunkFrameRequest::new(request_id, error_msg.as_bytes())
+                                    .is_error(true),
                             )
                             .await;
                             Self::remove_active_download(&active_downloads, request_id).await;
@@ -2002,12 +1967,8 @@ impl AgentActor {
                 let final_chunk = pending_chunk.unwrap_or_default();
                 let _ = Self::send_framed_stream_bytes(
                     write,
-                    request_id,
                     &mut chunk_index,
-                    StreamPayloadKind::RawFile,
-                    false,
-                    &final_chunk,
-                    true,
+                    StreamChunkFrameRequest::new(request_id, &final_chunk),
                 )
                 .await;
 
@@ -2025,12 +1986,8 @@ impl AgentActor {
                 let mut chunk_index = ChunkIndex::new(0);
                 let _ = Self::send_framed_stream_bytes(
                     write,
-                    request_id,
                     &mut chunk_index,
-                    StreamPayloadKind::RawFile,
-                    true,
-                    error_msg.as_bytes(),
-                    true,
+                    StreamChunkFrameRequest::new(request_id, error_msg.as_bytes()).is_error(true),
                 )
                 .await;
                 Self::remove_active_download(&active_downloads, request_id).await;

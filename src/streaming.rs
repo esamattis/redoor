@@ -48,6 +48,70 @@ pub struct StreamChunkFrames<'a> {
     emitted_empty_final_chunk: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StreamChunkFrameRequest<'a> {
+    request_id: RequestId,
+    starting_chunk_index: ChunkIndex,
+    payload_kind: StreamPayloadKind,
+    is_error: bool,
+    data: &'a [u8],
+    is_last: bool,
+}
+
+impl<'a> StreamChunkFrameRequest<'a> {
+    pub fn new(request_id: RequestId, data: &'a [u8]) -> Self {
+        Self {
+            request_id,
+            starting_chunk_index: ChunkIndex::new(0),
+            payload_kind: StreamPayloadKind::RawFile,
+            is_error: false,
+            data,
+            is_last: true,
+        }
+    }
+
+    pub fn starting_chunk_index(mut self, starting_chunk_index: ChunkIndex) -> Self {
+        self.starting_chunk_index = starting_chunk_index;
+        self
+    }
+
+    pub fn payload_kind(mut self, payload_kind: StreamPayloadKind) -> Self {
+        self.payload_kind = payload_kind;
+        self
+    }
+
+    pub fn is_error(mut self, is_error: bool) -> Self {
+        self.is_error = is_error;
+        self
+    }
+
+    pub fn is_last(mut self, is_last: bool) -> Self {
+        self.is_last = is_last;
+        self
+    }
+
+    pub fn is_error_flag(&self) -> bool {
+        self.is_error
+    }
+
+    pub fn is_last_flag(&self) -> bool {
+        self.is_last
+    }
+
+    pub fn into_frames(self) -> StreamChunkFrames<'a> {
+        StreamChunkFrames {
+            request_id: self.request_id,
+            next_chunk_index: self.starting_chunk_index,
+            payload_kind: self.payload_kind,
+            is_error: self.is_error,
+            data: self.data,
+            offset: 0,
+            is_last: self.is_last,
+            emitted_empty_final_chunk: false,
+        }
+    }
+}
+
 impl StreamChunk {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_SIZE + self.data.len());
@@ -112,24 +176,8 @@ impl StreamChunk {
 
 /// Splits one logical payload into websocket-sized transfer frames while
 /// preserving ordering, `ChunkIndex` progression, and final-chunk semantics.
-pub fn split_stream_chunk_bytes(
-    request_id: RequestId,
-    starting_chunk_index: ChunkIndex,
-    payload_kind: StreamPayloadKind,
-    is_error: bool,
-    data: &[u8],
-    is_last: bool,
-) -> StreamChunkFrames<'_> {
-    StreamChunkFrames {
-        request_id,
-        next_chunk_index: starting_chunk_index,
-        payload_kind,
-        is_error,
-        data,
-        offset: 0,
-        is_last,
-        emitted_empty_final_chunk: false,
-    }
+pub fn split_stream_chunk_bytes(request: StreamChunkFrameRequest<'_>) -> StreamChunkFrames<'_> {
+    request.into_frames()
 }
 
 impl StreamChunkFrames<'_> {
@@ -192,12 +240,11 @@ mod tests {
         is_last: bool,
     ) -> (Vec<StreamChunk>, ChunkIndex) {
         let mut frames = split_stream_chunk_bytes(
-            RequestId::new(42),
-            starting_chunk_index,
-            payload_kind,
-            is_error,
-            data,
-            is_last,
+            StreamChunkFrameRequest::new(RequestId::new(42), data)
+                .starting_chunk_index(starting_chunk_index)
+                .payload_kind(payload_kind)
+                .is_error(is_error)
+                .is_last(is_last),
         );
         let chunks: Vec<_> = (&mut frames).collect();
         (chunks, frames.next_chunk_index())

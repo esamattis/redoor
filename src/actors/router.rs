@@ -4,7 +4,7 @@ use crate::commands::{
 };
 use crate::log;
 use crate::logging::Level;
-use crate::streaming::StreamPayloadKind;
+use crate::streaming::{StreamChunkFrameRequest, StreamPayloadKind};
 use crate::types::{ChunkIndex, Message, RequestId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
@@ -336,21 +336,10 @@ impl RouterActor {
     /// it to the destination agent.
     async fn send_framed_copy_chunk(
         agent_info: &AgentInfo,
-        request_id: RequestId,
         chunk_index: &mut ChunkIndex,
-        payload_kind: StreamPayloadKind,
-        is_error: bool,
-        data: &[u8],
-        is_last: bool,
+        request: StreamChunkFrameRequest<'_>,
     ) -> usize {
-        let mut frames = crate::streaming::split_stream_chunk_bytes(
-            request_id,
-            *chunk_index,
-            payload_kind,
-            is_error,
-            data,
-            is_last,
-        );
+        let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
         let mut emitted = 0usize;
 
         while let Some(chunk) = frames.next() {
@@ -637,12 +626,10 @@ impl RouterActor {
 
         Self::send_framed_copy_chunk(
             &agent_info,
-            *dest_request_id,
             next_chunk_index,
-            copy_request.content_kind.payload_kind(),
-            true,
-            error_message.as_bytes(),
-            true,
+            StreamChunkFrameRequest::new(*dest_request_id, error_message.as_bytes())
+                .payload_kind(copy_request.content_kind.payload_kind())
+                .is_error(true),
         )
         .await;
         Ok(())
@@ -742,12 +729,10 @@ impl RouterActor {
         let bytes = chunk.data.len() as u64;
         Self::send_framed_copy_chunk(
             &dest_agent_info,
-            dest_request_id,
             &mut chunk_index,
-            chunk.payload_kind,
-            false,
-            &chunk.data,
-            chunk.is_last,
+            StreamChunkFrameRequest::new(dest_request_id, &chunk.data)
+                .payload_kind(chunk.payload_kind)
+                .is_last(chunk.is_last),
         )
         .await;
 
