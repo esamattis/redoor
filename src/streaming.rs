@@ -1,5 +1,5 @@
 use crate::types::{ChunkIndex, RequestId};
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
@@ -27,6 +27,10 @@ impl StreamPayloadKind {
 }
 
 #[derive(Debug, Clone)]
+/// One websocket transfer frame carrying a portion of a logical streamed
+/// payload. `StreamChunkFrameRequest` describes the full logical payload to
+/// send, `StreamChunkFrames` splits it into frame-sized pieces, and each item
+/// yielded by that iterator is one `StreamChunk` serialized on the wire.
 pub struct StreamChunk {
     pub request_id: RequestId,
     pub chunk_index: ChunkIndex,
@@ -37,6 +41,10 @@ pub struct StreamChunk {
     pub data: Vec<u8>,
 }
 
+/// Iterator state type implementing `Iterator<Item = StreamChunk>`, produced
+/// from a `StreamChunkFrameRequest` to emit that one logical payload as one or
+/// more websocket-sized frames while preserving chunk ordering and final-frame
+/// semantics.
 pub struct StreamChunkFrames<'a> {
     request_id: RequestId,
     next_chunk_index: ChunkIndex,
@@ -48,6 +56,8 @@ pub struct StreamChunkFrames<'a> {
     emitted_empty_final_chunk: bool,
 }
 
+/// Builder-style description of one logical transfer payload that should be
+/// reframed into websocket-sized `StreamChunk` values by `StreamChunkFrames`.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamChunkFrameRequest<'a> {
     request_id: RequestId,
