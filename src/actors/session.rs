@@ -15,9 +15,8 @@ use tokio::sync::mpsc;
 /// forwards them to the [`RouterActor`](super::router::RouterActor) (e.g.
 /// agent registration, command responses, stream chunks).
 ///
-/// **Outbound**: receives [`SessionMsg::OutgoingMessage`] /
-/// [`SessionMsg::OutgoingBinary`] from other actors and pushes them into the
-/// WebSocket send channels so they reach the remote agent.
+/// **Outbound**: owns the prioritized WebSocket send channels used by the
+/// router to push control and streaming frames to the remote agent.
 pub struct SessionActor;
 
 /// Internal state held by a [`SessionActor`] for the lifetime of one WebSocket
@@ -42,12 +41,8 @@ pub struct SessionState {
 pub enum SessionMsg {
     /// A JSON message received from the remote agent over the WebSocket.
     IncomingMessage(Message),
-    /// A JSON message to send to the remote agent (e.g. a command from the REST API).
-    OutgoingMessage(Message),
     /// A binary frame received from the remote agent (e.g. a stream chunk).
     IncomingBinary(Vec<u8>),
-    /// A binary frame to send to the remote agent.
-    OutgoingBinary(Vec<u8>),
 }
 
 impl Actor for SessionActor {
@@ -97,7 +92,8 @@ impl Actor for SessionActor {
                         agent_id: agent_id.clone(),
                         agent_name,
                         socket_id: state.socket_id.clone(),
-                        session_ref: _myself.clone(),
+                        outgoing_text: state.outgoing_text.clone(),
+                        outgoing_binary: state.outgoing_binary.clone(),
                         os,
                         arch,
                         hostname,
@@ -136,26 +132,6 @@ impl Actor for SessionActor {
                 }
                 _ => {}
             },
-            SessionMsg::OutgoingMessage(msg) => {
-                if let Message::CommandResponse {
-                    agent_id,
-                    request_id,
-                    result,
-                } = &msg
-                {
-                    log!(
-                        Level::Info,
-                        "Web client received response: session_id={}, agent_id={}, request_id={}, result={:?}",
-                        state.socket_id,
-                        agent_id,
-                        request_id,
-                        result
-                    );
-                }
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = state.outgoing_text.send(WsMessage::Text(json.into()));
-                }
-            }
             SessionMsg::IncomingBinary(bytes) => {
                 if let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) {
                     let _ =
@@ -166,9 +142,6 @@ impl Actor for SessionActor {
                                 chunk,
                             });
                 }
-            }
-            SessionMsg::OutgoingBinary(bytes) => {
-                let _ = state.outgoing_binary.send(WsMessage::Binary(bytes.into()));
             }
         }
         Ok(())

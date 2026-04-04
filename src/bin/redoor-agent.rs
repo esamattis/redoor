@@ -111,6 +111,8 @@ pub enum AgentMsg {
 }
 
 impl AgentActor {
+    const PRIORITIZED_DOWNLOAD_CHUNK_SIZE: usize = 8 * 1024;
+
     async fn remove_upload_temp_file(temp_path: &Path) {
         if let Err(error) = tokio::fs::remove_file(temp_path).await {
             log!(
@@ -1679,7 +1681,9 @@ impl AgentActor {
         match File::open(&path).await {
             Ok(mut file) => {
                 let mut chunk_index = ChunkIndex(0);
-                let chunk_size = streaming::CHUNK_SIZE;
+                // Keep download frames smaller than upload frames so control
+                // messages get more opportunities to preempt throttled binary traffic.
+                let chunk_size = Self::PRIORITIZED_DOWNLOAD_CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
                 let mut bytes_remaining: Option<u64> = None;
                 let mut pending_chunk: Option<Vec<u8>> = None;

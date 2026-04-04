@@ -1,4 +1,3 @@
-use crate::actors::session::SessionMsg;
 use crate::commands::{
     Command, CommandResult, CopyEndpoint, TransferDirection, TransferProgressEntry,
     TransferProgressListResponse, TransferProgressState, UiEvent,
@@ -7,6 +6,7 @@ use crate::log;
 use crate::logging::Level;
 use crate::streaming::StreamPayloadKind;
 use crate::types::{ChunkIndex, Message, RequestId, TransferId, UnixTimestampSeconds};
+use axum::extract::ws::Message as WsMessage;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 ///
 /// When the REST API wants to execute a command on an agent, it sends an
 /// `ExecuteCommandRest` message here. The router looks up the target agent's
-/// `SessionActor` reference and forwards the command over the WebSocket.
+/// WebSocket send channels and forwards the command over the live connection.
 /// When the agent responds, the router matches the response's `request_id`
 /// to the waiting REST reply port and completes the round-trip.
 pub struct RouterActor;
@@ -156,14 +156,15 @@ pub struct RouterState {
 
 /// Metadata about a connected agent, cached at registration time.
 ///
-/// Stored in the router's agent registry and used to route commands to the
-/// correct [`SessionActor`] via `session_ref`, as well as to enrich
+/// Stored in the router's agent registry and used to route commands directly to
+/// the connection's prioritized WebSocket send channels, as well as to enrich
 /// responses with registration-time metadata (e.g. `connected_at`, `agent_name`).
 #[derive(Clone, Debug)]
 pub struct AgentInfo {
     pub agent_name: String,
     pub socket_id: String,
-    pub session_ref: ActorRef<SessionMsg>,
+    pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    pub outgoing_binary: tokio::sync::mpsc::UnboundedSender<WsMessage>,
     pub connected_at: UnixTimestampSeconds,
     pub os: String,
     pub arch: String,
@@ -194,7 +195,8 @@ pub enum RouterMsg {
         agent_id: String,
         agent_name: String,
         socket_id: String,
-        session_ref: ActorRef<SessionMsg>,
+        outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outgoing_binary: tokio::sync::mpsc::UnboundedSender<WsMessage>,
         os: String,
         arch: String,
         hostname: String,
@@ -281,6 +283,46 @@ pub enum RouterMsg {
 }
 
 impl RouterActor {
+    fn send_agent_message(agent_info: &AgentInfo, message: Message) {
+        match serde_json::to_string(&message) {
+            Ok(json) => {
+                if agent_info
+                    .outgoing_text
+                    .send(WsMessage::Text(json.into()))
+                    .is_err()
+                {
+                    log!(
+                        Level::Warning,
+                        "Failed to queue text message for agent: socket_id={}",
+                        agent_info.socket_id
+                    );
+                }
+            }
+            Err(error) => {
+                log!(
+                    Level::Error,
+                    "Failed to serialize message for agent: socket_id={}, error={}",
+                    agent_info.socket_id,
+                    error
+                );
+            }
+        }
+    }
+
+    fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) {
+        if agent_info
+            .outgoing_binary
+            .send(WsMessage::Binary(bytes.into()))
+            .is_err()
+        {
+            log!(
+                Level::Warning,
+                "Failed to queue binary message for agent: socket_id={}",
+                agent_info.socket_id
+            );
+        }
+    }
+
     fn record_download_start(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -548,9 +590,7 @@ impl RouterActor {
             data: error_message.into_bytes(),
         };
         *next_chunk_index = next_chunk_index.saturating_next_index();
-        let _ = agent_info
-            .session_ref
-            .cast(SessionMsg::OutgoingBinary(abort_chunk.to_bytes()));
+        Self::send_agent_binary(&agent_info, abort_chunk.to_bytes());
         Ok(())
     }
 
@@ -656,9 +696,7 @@ impl RouterActor {
         };
 
         let bytes = forwarded_chunk.data.len() as u64;
-        let _ = dest_agent_info
-            .session_ref
-            .cast(SessionMsg::OutgoingBinary(forwarded_chunk.to_bytes()));
+        Self::send_agent_binary(&dest_agent_info, forwarded_chunk.to_bytes());
 
         if bytes > 0 {
             Self::increment_download_progress(state, myself, public_request_id, bytes);
@@ -1225,7 +1263,8 @@ impl Actor for RouterActor {
                 agent_id,
                 agent_name,
                 socket_id,
-                session_ref,
+                outgoing_text,
+                outgoing_binary,
                 os,
                 arch,
                 hostname,
@@ -1242,9 +1281,21 @@ impl Actor for RouterActor {
                         "Agent with name '{}' already registered, rejecting connection",
                         agent_name
                     );
-                    let _ = session_ref.cast(SessionMsg::OutgoingMessage(Message::Error {
+                    let duplicate_error = Message::Error {
                         message: format!("Agent with name '{}' already connected", agent_name),
-                    }));
+                    };
+                    let duplicate_agent_info = AgentInfo {
+                        agent_name: agent_name.clone(),
+                        socket_id,
+                        outgoing_text,
+                        outgoing_binary,
+                        connected_at: UnixTimestampSeconds::new(chrono::Utc::now().timestamp()),
+                        os,
+                        arch,
+                        hostname,
+                        username,
+                    };
+                    Self::send_agent_message(&duplicate_agent_info, duplicate_error);
                     return Ok(());
                 }
 
@@ -1261,7 +1312,8 @@ impl Actor for RouterActor {
                     AgentInfo {
                         agent_name,
                         socket_id,
-                        session_ref,
+                        outgoing_text,
+                        outgoing_binary,
                         connected_at,
                         os,
                         arch,
@@ -1385,13 +1437,14 @@ impl Actor for RouterActor {
                     state
                         .rest_pending_responses
                         .insert(request_id, (reply, agent_id.clone()));
-                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                    Self::send_agent_message(
+                        agent_info,
                         Message::Command {
                             agent_id: agent_id.clone(),
                             request_id,
                             command,
                         },
-                    ));
+                    );
                 } else {
                     let _ = reply.send(CommandResult::Error {
                         message: format!("Agent not found: {}", agent_id),
@@ -1445,13 +1498,14 @@ impl Actor for RouterActor {
                         chunk_sender,
                     );
 
-                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                    Self::send_agent_message(
+                        &agent_info,
                         Message::Command {
                             agent_id: agent_id.clone(),
                             request_id,
                             command,
                         },
-                    ));
+                    );
                     let _ = reply.send(Ok(()));
                 } else {
                     log!(
@@ -1491,13 +1545,14 @@ impl Actor for RouterActor {
                         completion_sender,
                     );
 
-                    let _ = agent_info.session_ref.cast(SessionMsg::OutgoingMessage(
+                    Self::send_agent_message(
+                        &agent_info,
                         Message::Command {
                             agent_id: agent_id.clone(),
                             request_id,
                             command,
                         },
-                    ));
+                    );
                     let _ = reply.send(Ok(request_id));
                 } else {
                     log!(
@@ -1557,9 +1612,7 @@ impl Actor for RouterActor {
                         );
                     }
 
-                    let _ = agent_info
-                        .session_ref
-                        .cast(SessionMsg::OutgoingBinary(chunk.to_bytes()));
+                    Self::send_agent_binary(&agent_info, chunk.to_bytes());
                     let _ = reply.send(Ok(()));
                 } else {
                     Self::mark_transfer_errored(
@@ -1642,13 +1695,14 @@ impl Actor for RouterActor {
                             };
 
                             let _ =
-                                source_agent_info
-                                    .session_ref
-                                    .cast(SessionMsg::OutgoingMessage(Message::Command {
+                                Self::send_agent_message(
+                                    &source_agent_info,
+                                    Message::Command {
                                         agent_id: source_agent_id.clone(),
                                         request_id: local_request_id,
                                         command,
-                                    }));
+                                    },
+                                );
 
                             let _ = reply.send(Ok(public_request_id));
                             return Ok(());
@@ -1692,20 +1746,22 @@ impl Actor for RouterActor {
                             },
                         );
 
-                        let _ = dest_agent_info
-                            .session_ref
-                            .cast(SessionMsg::OutgoingMessage(Message::Command {
+                        Self::send_agent_message(
+                            &dest_agent_info,
+                            Message::Command {
                                 agent_id: dest_agent_id.clone(),
                                 request_id: dest_request_id,
                                 command: content_kind.upload_command(dest_path.clone()),
-                            }));
-                        let _ = source_agent_info
-                            .session_ref
-                            .cast(SessionMsg::OutgoingMessage(Message::Command {
+                            },
+                        );
+                        Self::send_agent_message(
+                            &source_agent_info,
+                            Message::Command {
                                 agent_id: source_agent_id.clone(),
                                 request_id: source_request_id,
                                 command: content_kind.download_command(source_path),
-                            }));
+                            },
+                        );
 
                         let _ = reply.send(Ok(public_request_id));
                     }
