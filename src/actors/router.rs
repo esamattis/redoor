@@ -28,7 +28,7 @@ pub struct RouterActor;
 enum TransferRequest {
     Download {
         agent_id: String,
-        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
         canceled_by_rest: bool,
     },
     Upload {
@@ -237,6 +237,18 @@ pub enum RouterMsg {
     RouteStreamChunk {
         agent_id: String,
         chunk: crate::streaming::StreamChunk,
+        reply: RpcReplyPort<()>,
+    },
+    /// Internal message used to finish forwarding one download chunk after the
+    /// bounded REST stream sender accepts it or reports the receiver closed.
+    FinishRoutedDownloadChunk {
+        agent_id: String,
+        request_id: RequestId,
+        chunk_index: ChunkIndex,
+        is_last: bool,
+        error_message: Option<String>,
+        send_succeeded: bool,
+        reply: RpcReplyPort<()>,
     },
     /// Execute a streaming command on an agent, initiated from the REST API.
     ExecuteStreamCommandRest {
@@ -245,7 +257,7 @@ pub enum RouterMsg {
         path: String,
         total_bytes: u64,
         reply: RpcReplyPort<Result<(), String>>,
-        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
     },
     /// Start a streamed upload command on an agent and return the allocated request id.
     StartUploadStreamRest {
@@ -361,7 +373,7 @@ impl RouterActor {
         agent_id: String,
         path: String,
         total_bytes: u64,
-        chunk_sender: tokio::sync::mpsc::UnboundedSender<crate::streaming::StreamChunk>,
+        chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
     ) {
         let transfer_id = request_id.as_transfer_id();
         let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
@@ -957,6 +969,7 @@ impl RouterActor {
         myself: &ActorRef<RouterMsg>,
         agent_id: String,
         chunk: crate::streaming::StreamChunk,
+        reply: RpcReplyPort<()>,
     ) {
         let request_id = chunk.request_id;
         let transfer_id = request_id.as_transfer_id();
@@ -975,6 +988,7 @@ impl RouterActor {
                         stored_agent_id,
                         agent_id
                     );
+                    let _ = reply.send(());
                     return;
                 }
                 if *canceled_by_rest {
@@ -988,6 +1002,7 @@ impl RouterActor {
                         );
                         state.transfers.remove(&request_id);
                     }
+                    let _ = reply.send(());
                     return;
                 }
                 chunk_sender.clone()
@@ -998,6 +1013,7 @@ impl RouterActor {
                     "Received stream chunk for upload transfer: request_id={}",
                     request_id
                 );
+                let _ = reply.send(());
                 return;
             }
             None => {
@@ -1006,6 +1022,7 @@ impl RouterActor {
                     "No streaming response found for request_id={}",
                     request_id
                 );
+                let _ = reply.send(());
                 return;
             }
         };
@@ -1014,55 +1031,132 @@ impl RouterActor {
             Self::increment_download_progress(state, myself, transfer_id, chunk.data.len() as u64);
         }
 
-        // This send only forwards an already-received agent chunk into the REST
-        // response body stream. An error here does not mean the agent-side file
-        // read failed. It means the HTTP response body receiver was already
-        // dropped on the server side, typically because the client stopped
-        // consuming the response or disconnected while the download was in
-        // flight.
-        if let Err(_error) = chunk_sender.send(chunk.clone()) {
-            log!(
-                Level::Warning,
-                "Failed to send chunk to REST stream: request_id={}",
-                request_id
-            );
-            Self::mark_transfer_errored(
-                state,
-                myself,
-                transfer_id,
-                "Download canceled by client".to_string(),
-            );
-            if let Some(TransferRequest::Download {
-                canceled_by_rest, ..
-            }) = state.transfers.get_mut(&request_id)
-            {
-                *canceled_by_rest = true;
-            }
-            if let Some(agent_info) = state.agents.get(&agent_id) {
-                log!(
-                    Level::Info,
-                    "Sending download cancel to agent: agent_id={}, request_id={}",
-                    agent_id,
-                    request_id
-                );
-                Self::send_agent_message(agent_info, Message::CancelTransfer { request_id });
-            }
-            Self::notify_ui_refresh(state);
-            return;
-        }
-
-        if chunk.is_error {
-            let error_message = if chunk.data.is_empty() {
+        let error_message = if chunk.is_error {
+            Some(if chunk.data.is_empty() {
                 "Download failed on agent".to_string()
             } else {
                 String::from_utf8_lossy(&chunk.data).to_string()
+            })
+        } else {
+            None
+        };
+        let chunk_index = chunk.chunk_index;
+        let is_last = chunk.is_last;
+
+        let myself = myself.clone();
+        tokio::spawn(async move {
+            let send_succeeded = chunk_sender.send(chunk).await.is_ok();
+            let send_result = myself.cast(RouterMsg::FinishRoutedDownloadChunk {
+                agent_id,
+                request_id,
+                chunk_index,
+                is_last,
+                error_message,
+                send_succeeded,
+                reply,
+            });
+            if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
+                if let RouterMsg::FinishRoutedDownloadChunk { reply, .. } = message {
+                    let _ = reply.send(());
+                }
+            }
+        });
+    }
+
+    fn finish_routed_download_chunk(
+        state: &mut RouterState,
+        myself: &ActorRef<RouterMsg>,
+        agent_id: String,
+        request_id: RequestId,
+        chunk_index: ChunkIndex,
+        is_last: bool,
+        error_message: Option<String>,
+        send_succeeded: bool,
+    ) {
+        let transfer_id = request_id.as_transfer_id();
+        let is_error = error_message.is_some();
+
+        if !send_succeeded {
+            let should_cancel_agent = match state.transfers.get_mut(&request_id) {
+                Some(TransferRequest::Download {
+                    agent_id: stored_agent_id,
+                    canceled_by_rest,
+                    ..
+                }) => {
+                    if stored_agent_id != &agent_id {
+                        log!(
+                            Level::Warning,
+                            "Streaming agent mismatch while finishing chunk send: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                            request_id,
+                            stored_agent_id,
+                            agent_id
+                        );
+                        return;
+                    }
+                    if *canceled_by_rest {
+                        return;
+                    }
+                    *canceled_by_rest = true;
+                    true
+                }
+                Some(TransferRequest::Upload { .. }) => {
+                    log!(
+                        Level::Warning,
+                        "Received download chunk completion for upload transfer: request_id={}",
+                        request_id
+                    );
+                    return;
+                }
+                None => {
+                    return;
+                }
             };
+
+            if should_cancel_agent {
+                log!(
+                    Level::Warning,
+                    "Failed to send chunk to REST stream: request_id={}",
+                    request_id
+                );
+                Self::mark_transfer_errored(
+                    state,
+                    myself,
+                    transfer_id,
+                    "Download canceled by client".to_string(),
+                );
+                if let Some(agent_info) = state.agents.get(&agent_id) {
+                    log!(
+                        Level::Info,
+                        "Sending download cancel to agent: agent_id={}, request_id={}",
+                        agent_id,
+                        request_id
+                    );
+                    Self::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+                }
+                Self::notify_ui_refresh(state);
+            }
+            return;
+        }
+
+        let has_matching_transfer = matches!(
+            state.transfers.get(&request_id),
+            Some(TransferRequest::Download {
+                agent_id: stored_agent_id,
+                ..
+            }) if stored_agent_id == &agent_id
+        );
+
+        if !has_matching_transfer {
+            return;
+        }
+
+        if let Some(error_message) = error_message {
             Self::mark_transfer_errored(state, myself, transfer_id, error_message);
-        } else if chunk.is_last {
+        } else if is_last {
             Self::mark_transfer_completed(state, myself, transfer_id);
         }
 
-        if chunk.is_last || chunk.is_error {
+        if is_last || is_error {
             state.transfers.remove(&request_id);
             Self::notify_ui_refresh(state);
             log!(
@@ -1070,8 +1164,8 @@ impl RouterActor {
                 "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",
                 agent_id,
                 request_id,
-                chunk.chunk_index.display_number(),
-                chunk.is_error
+                chunk_index.display_number(),
+                is_error
             );
         }
     }
@@ -1578,7 +1672,11 @@ impl Actor for RouterActor {
                     });
                 }
             }
-            RouterMsg::RouteStreamChunk { agent_id, chunk } => {
+            RouterMsg::RouteStreamChunk {
+                agent_id,
+                chunk,
+                reply,
+            } => {
                 let is_remote_copy_stream = state
                     .copy_request_ids_by_internal_request
                     .get(&chunk.request_id)
@@ -1592,9 +1690,31 @@ impl Actor for RouterActor {
 
                 if is_remote_copy_stream {
                     Self::route_copy_chunk(state, &myself, agent_id, chunk).await;
+                    let _ = reply.send(());
                 } else {
-                    Self::route_download_chunk(state, &myself, agent_id, chunk);
+                    Self::route_download_chunk(state, &myself, agent_id, chunk, reply);
                 }
+            }
+            RouterMsg::FinishRoutedDownloadChunk {
+                agent_id,
+                request_id,
+                chunk_index,
+                is_last,
+                error_message,
+                send_succeeded,
+                reply,
+            } => {
+                Self::finish_routed_download_chunk(
+                    state,
+                    &myself,
+                    agent_id,
+                    request_id,
+                    chunk_index,
+                    is_last,
+                    error_message,
+                    send_succeeded,
+                );
+                let _ = reply.send(());
             }
             RouterMsg::ExecuteStreamCommandRest {
                 agent_id,
@@ -1867,7 +1987,7 @@ impl Actor for RouterActor {
                             source_request_id,
                             TransferRequest::Download {
                                 agent_id: source_agent_id.clone(),
-                                chunk_sender: tokio::sync::mpsc::unbounded_channel().0,
+                                chunk_sender: tokio::sync::mpsc::channel(1).0,
                                 canceled_by_rest: false,
                             },
                         );

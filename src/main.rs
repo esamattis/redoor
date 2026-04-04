@@ -784,7 +784,7 @@ async fn raw_agent_handler(
         };
 
     let (response_sender, mut response_receiver) =
-        tokio::sync::mpsc::unbounded_channel::<redoor::streaming::StreamChunk>();
+        tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
 
     match call_t!(
         &state.router_ref,

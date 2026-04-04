@@ -4,7 +4,7 @@ use crate::logging::Level;
 use crate::types::Message;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use ractor::{Actor, ActorProcessingErr, ActorRef};
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, rpc::CallResult};
 use tokio::sync::mpsc;
 
 /// Per-WebSocket-connection actor that bridges the raw WebSocket transport and
@@ -37,12 +37,11 @@ pub struct SessionState {
 }
 
 /// Messages that can be sent to a [`SessionActor`].
-#[derive(Clone)]
 pub enum SessionMsg {
     /// A JSON message received from the remote agent over the WebSocket.
     IncomingMessage(Message),
     /// A binary frame received from the remote agent (e.g. a stream chunk).
-    IncomingBinary(Vec<u8>),
+    IncomingBinary(Vec<u8>, RpcReplyPort<()>),
 }
 
 impl Actor for SessionActor {
@@ -132,7 +131,7 @@ impl Actor for SessionActor {
                 }
                 _ => {}
             },
-            SessionMsg::IncomingBinary(bytes) => {
+            SessionMsg::IncomingBinary(bytes, reply) => {
                 if let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) {
                     let _ =
                         state
@@ -140,7 +139,10 @@ impl Actor for SessionActor {
                             .cast(crate::actors::router::RouterMsg::RouteStreamChunk {
                                 agent_id: state.agent_id.clone().unwrap_or_default(),
                                 chunk,
+                                reply,
                             });
+                } else {
+                    let _ = reply.send(());
                 }
             }
         }
@@ -215,7 +217,16 @@ pub async fn handle_websocket(
                     }
                 },
                 WsMessage::Binary(bytes) => {
-                    let _ = session_ref_clone.cast(SessionMsg::IncomingBinary(bytes.to_vec()));
+                    match session_ref_clone
+                        .call(
+                            |reply| SessionMsg::IncomingBinary(bytes.to_vec(), reply),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(CallResult::Success(())) => {}
+                        Ok(CallResult::Timeout) | Ok(CallResult::SenderError) | Err(_) => break,
+                    }
                 }
                 _ => {}
             }
