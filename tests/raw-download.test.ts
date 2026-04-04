@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import {
+    describe,
+    it,
+    expect,
+    beforeAll,
+    afterAll,
+    afterEach,
+    onTestFinished,
+} from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import type { TransferProgressEntry } from "@/api-client";
 
@@ -6,10 +14,12 @@ import fs from "node:fs";
 import {
     ProcessManager,
     TempFileManager,
+    getAvailablePort,
     waitForLogMessage,
     waitForValue,
     startServerAndAgent,
 } from "./test-utils";
+import { Toxiproxy } from "toxiproxy-node-client";
 const AGENT_NAME = "raw-test-agent";
 
 describe("Raw Download API", () => {
@@ -227,6 +237,113 @@ describe("Raw Download API", () => {
             expect(finishedTransfer.error).toBeNull();
         }
     }, 30000);
+
+    it("should keep command requests responsive during a throttled download", async () => {
+        const chunkSizeBytes = 1024 * 1024;
+        const totalBytes = chunkSizeBytes * 8 + 123;
+        const downloadContent = Buffer.alloc(totalBytes, "d");
+        const sourcePath = tempFiles.create(downloadContent, {
+            suffix: ".bin",
+        });
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+
+        const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
+        const proxyPort = await getAvailablePort();
+        const proxy = await toxiproxy.createProxy({
+            name: `raw-download-concurrent-command-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            listen: `127.0.0.1:${proxyPort}`,
+            upstream: `127.0.0.1:${serverPort}`,
+        });
+        const proxiedAgentName = "raw-download-proxied-agent";
+        const waitForProxiedAgent = waitForLogMessage(
+            serverProcess,
+            new RegExp(`Agent registered:.*agent_name=${proxiedAgentName}`),
+            10000,
+        );
+        const proxiedAgentPid = processManager.spawnAgent({
+            wsAddress: `ws://${proxy.listen}/ws`,
+            name: proxiedAgentName,
+            cwd: tempFiles.tempDirectory({
+                suffix: "-proxied-download-agent-cwd",
+            }),
+        });
+
+        onTestFinished(async () => {
+            processManager.kill(proxiedAgentPid);
+            await proxy.remove().catch(() => undefined);
+        });
+
+        await waitForProxiedAgent;
+
+        const agents = await apiClient.listAgents();
+        const proxiedAgent = agents.find(
+            (agent) => agent.name === proxiedAgentName,
+        );
+        if (!proxiedAgent) {
+            throw new Error(`Agent ${proxiedAgentName} was not registered`);
+        }
+
+        await proxy.addToxic({
+            name: "slow-download",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: {
+                rate: 512,
+            },
+        });
+
+        const downloadPromise = proxiedAgent.raw(sourcePath);
+
+        const activeTransfer = await waitForValue({
+            description: "active download before issuing concurrent command",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === proxiedAgent.id &&
+                        transfer.path === sourcePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.transferred_bytes > 0 &&
+                        transfer.transferred_bytes < totalBytes,
+                );
+            },
+        });
+
+        const detailsPromise = proxiedAgent.getDetails();
+        const firstCompletion = await Promise.race([
+            detailsPromise.then((details) => ({
+                winner: "details" as const,
+                details,
+            })),
+            downloadPromise.then((bytes) => ({
+                winner: "download" as const,
+                bytes,
+            })),
+        ]);
+
+        // Observing an active row first proves the command raced with a real in-flight download instead of running after completion.
+        expect(activeTransfer.state).toBe("active");
+        // Finishing the command before the payload proves control messages are not stuck behind the throttled download stream.
+        expect(firstCompletion.winner).toBe("details");
+        if (firstCompletion.winner !== "details") {
+            throw new Error(
+                "Download completed before getDetails responded during throttled transfer",
+            );
+        }
+        // Returning the proxied agent name proves the responsive command still reached the intended agent during the download.
+        expect(firstCompletion.details.name).toBe(proxiedAgent.name);
+
+        const downloadedContent = Buffer.from(await downloadPromise);
+
+        // Matching bytes prove the throttled download still completes successfully after the concurrent command.
+        expect(Buffer.compare(downloadedContent, downloadContent)).toBe(0);
+    }, 40000);
 
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });

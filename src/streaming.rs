@@ -3,7 +3,11 @@ use anyhow::{Result, bail};
 
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
+/// Preferred file read size for disk IO before websocket framing.
 pub const CHUNK_SIZE: usize = 64 * 1024;
+/// Control messages can only preempt transfer traffic between websocket frames,
+/// so all streamed binary transfers share one payload cap.
+pub const MAX_TRANSFER_FRAME_PAYLOAD_BYTES: usize = 8 * 1024;
 
 /// Identifies how the chunk payload bytes should be interpreted by the receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,17 @@ pub struct StreamChunk {
     /// Marks whether `data` contains raw file bytes or a tar stream chunk.
     pub payload_kind: StreamPayloadKind,
     pub data: Vec<u8>,
+}
+
+pub struct StreamChunkFrames<'a> {
+    request_id: RequestId,
+    next_chunk_index: ChunkIndex,
+    payload_kind: StreamPayloadKind,
+    is_error: bool,
+    data: &'a [u8],
+    offset: usize,
+    is_last: bool,
+    emitted_empty_final_chunk: bool,
 }
 
 impl StreamChunk {
@@ -95,9 +110,98 @@ impl StreamChunk {
     }
 }
 
+/// Splits one logical payload into websocket-sized transfer frames while
+/// preserving ordering, `ChunkIndex` progression, and final-chunk semantics.
+pub fn split_stream_chunk_bytes(
+    request_id: RequestId,
+    starting_chunk_index: ChunkIndex,
+    payload_kind: StreamPayloadKind,
+    is_error: bool,
+    data: &[u8],
+    is_last: bool,
+) -> StreamChunkFrames<'_> {
+    StreamChunkFrames {
+        request_id,
+        next_chunk_index: starting_chunk_index,
+        payload_kind,
+        is_error,
+        data,
+        offset: 0,
+        is_last,
+        emitted_empty_final_chunk: false,
+    }
+}
+
+impl StreamChunkFrames<'_> {
+    /// Returns the next chunk index that should be used after exhausting the
+    /// iterator or after stopping early during incremental forwarding.
+    pub fn next_chunk_index(&self) -> ChunkIndex {
+        self.next_chunk_index
+    }
+}
+
+impl Iterator for StreamChunkFrames<'_> {
+    type Item = StreamChunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.data.len() {
+            if self.data.is_empty() && self.is_last && !self.emitted_empty_final_chunk {
+                self.emitted_empty_final_chunk = true;
+                let chunk = StreamChunk {
+                    request_id: self.request_id,
+                    chunk_index: self.next_chunk_index,
+                    is_last: true,
+                    is_error: self.is_error,
+                    payload_kind: self.payload_kind,
+                    data: Vec::new(),
+                };
+                self.next_chunk_index = self.next_chunk_index.saturating_next_index();
+                return Some(chunk);
+            }
+
+            return None;
+        }
+
+        let end = (self.offset + MAX_TRANSFER_FRAME_PAYLOAD_BYTES).min(self.data.len());
+        let is_final_data_chunk = end == self.data.len();
+        let chunk = StreamChunk {
+            request_id: self.request_id,
+            chunk_index: self.next_chunk_index,
+            is_last: self.is_last && is_final_data_chunk,
+            is_error: self.is_error,
+            payload_kind: self.payload_kind,
+            data: self.data[self.offset..end].to_vec(),
+        };
+
+        self.offset = end;
+        self.next_chunk_index = self.next_chunk_index.saturating_next_index();
+
+        Some(chunk)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_split_chunks(
+        starting_chunk_index: ChunkIndex,
+        payload_kind: StreamPayloadKind,
+        is_error: bool,
+        data: &[u8],
+        is_last: bool,
+    ) -> (Vec<StreamChunk>, ChunkIndex) {
+        let mut frames = split_stream_chunk_bytes(
+            RequestId::new(42),
+            starting_chunk_index,
+            payload_kind,
+            is_error,
+            data,
+            is_last,
+        );
+        let chunks: Vec<_> = (&mut frames).collect();
+        (chunks, frames.next_chunk_index())
+    }
 
     #[test]
     fn test_stream_chunk_serialization() {
@@ -195,5 +299,117 @@ mod tests {
         assert_eq!(PROTOCOL_MAGIC, 0x52415844);
         assert_eq!(HEADER_SIZE, 23);
         assert_eq!(CHUNK_SIZE, 64 * 1024);
+        assert_eq!(MAX_TRANSFER_FRAME_PAYLOAD_BYTES, 8 * 1024);
+    }
+
+    #[test]
+    fn test_split_stream_chunk_exact_boundary() {
+        let data = vec![7u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES];
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(3),
+            StreamPayloadKind::RawFile,
+            false,
+            &data,
+            true,
+        );
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].chunk_index, ChunkIndex::new(3));
+        assert!(chunks[0].is_last);
+        assert_eq!(chunks[0].data, data);
+        assert_eq!(next_chunk_index, ChunkIndex::new(4));
+    }
+
+    #[test]
+    fn test_split_stream_chunk_one_byte_over_boundary() {
+        let data = vec![9u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES + 1];
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(0),
+            StreamPayloadKind::RawFile,
+            false,
+            &data,
+            true,
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chunk_index, ChunkIndex::new(0));
+        assert!(!chunks[0].is_last);
+        assert_eq!(chunks[0].data.len(), MAX_TRANSFER_FRAME_PAYLOAD_BYTES);
+        assert_eq!(chunks[1].chunk_index, ChunkIndex::new(1));
+        assert!(chunks[1].is_last);
+        assert_eq!(chunks[1].data, vec![9u8]);
+        assert_eq!(next_chunk_index, ChunkIndex::new(2));
+    }
+
+    #[test]
+    fn test_split_stream_chunk_empty_final_chunk() {
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(11),
+            StreamPayloadKind::Tar,
+            false,
+            &[],
+            true,
+        );
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].chunk_index, ChunkIndex::new(11));
+        assert!(chunks[0].is_last);
+        assert!(chunks[0].data.is_empty());
+        assert_eq!(chunks[0].payload_kind, StreamPayloadKind::Tar);
+        assert_eq!(next_chunk_index, ChunkIndex::new(12));
+    }
+
+    #[test]
+    fn test_split_stream_chunk_large_error_payload() {
+        let data = vec![5u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES * 2 + 3];
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(8),
+            StreamPayloadKind::Tar,
+            true,
+            &data,
+            true,
+        );
+
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|chunk| chunk.is_error));
+        assert_eq!(chunks[0].payload_kind, StreamPayloadKind::Tar);
+        assert!(!chunks[0].is_last);
+        assert!(!chunks[1].is_last);
+        assert!(chunks[2].is_last);
+        assert_eq!(chunks[2].data.len(), 3);
+        assert_eq!(next_chunk_index, ChunkIndex::new(11));
+    }
+
+    #[test]
+    fn test_split_stream_chunk_skips_empty_non_final_payload() {
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(2),
+            StreamPayloadKind::RawFile,
+            false,
+            &[],
+            false,
+        );
+
+        assert!(chunks.is_empty());
+        assert_eq!(next_chunk_index, ChunkIndex::new(2));
+    }
+
+    #[test]
+    fn test_split_stream_chunk_preserves_chunk_indexes() {
+        let data = vec![1u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES * 2];
+        let (chunks, next_chunk_index) = collect_split_chunks(
+            ChunkIndex::new(5),
+            StreamPayloadKind::RawFile,
+            false,
+            &data,
+            false,
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chunk_index, ChunkIndex::new(5));
+        assert_eq!(chunks[1].chunk_index, ChunkIndex::new(6));
+        assert!(!chunks[0].is_last);
+        assert!(!chunks[1].is_last);
+        assert_eq!(next_chunk_index, ChunkIndex::new(7));
     }
 }

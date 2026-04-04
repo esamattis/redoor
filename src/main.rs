@@ -4,6 +4,7 @@ use redoor::commands::{
     CommandResult, CopyFileRequest, CopyFileResponse, EchoRequest, EchoResponse, ErrorResponse,
     LsDirectoryResponse, LsFileResponse, RawDeleteResponse, RawUploadResponse, UiEvent,
 };
+use redoor::streaming::StreamPayloadKind;
 use redoor::types::ChunkIndex;
 
 use clap::Parser;
@@ -53,6 +54,77 @@ fn join_agent_path(cwd: &str, path: &str) -> String {
         cwd.trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+/// Reframes one upload-side payload into bounded transfer chunks and forwards
+/// them to the destination agent in order.
+async fn forward_split_stream_chunk(
+    state: &ServerState,
+    agent_id: &str,
+    request_id: redoor::types::RequestId,
+    chunk_index: &mut ChunkIndex,
+    payload_kind: StreamPayloadKind,
+    is_error: bool,
+    data: &[u8],
+    is_last: bool,
+) -> Result<(), Response> {
+    let mut frames = redoor::streaming::split_stream_chunk_bytes(
+        request_id,
+        *chunk_index,
+        payload_kind,
+        is_error,
+        data,
+        is_last,
+    );
+
+    while let Some(chunk) = frames.next() {
+        let next_chunk_index = frames.next_chunk_index();
+        match call_t!(
+            &state.router_ref,
+            |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
+                agent_id: agent_id.to_string(),
+                request_id,
+                chunk,
+                reply,
+            },
+            30000
+        ) {
+            Ok(Ok(())) => {}
+            Ok(Err(error_msg)) => {
+                *chunk_index = next_chunk_index;
+                let status = if error_msg.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else if error_msg.contains("Permission denied") {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+
+                return Err((status, Json(ErrorResponse { error: error_msg })).into_response());
+            }
+            Err(e) => {
+                *chunk_index = next_chunk_index;
+                let action = if is_last {
+                    "final upload chunk"
+                } else if is_error {
+                    "upload abort chunk"
+                } else {
+                    "upload chunk"
+                };
+
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to forward {}: {:?}", action, e),
+                    }),
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    *chunk_index = frames.next_chunk_index();
+    Ok(())
 }
 
 async fn get_agent_details(
@@ -931,25 +1003,18 @@ async fn raw_agent_put_handler(
         let data = match next_chunk {
             Ok(data) => data,
             Err(error) => {
-                let abort_chunk = redoor::streaming::StreamChunk {
+                let abort_message = format!("Failed to read request body: {}", error);
+                let _ = forward_split_stream_chunk(
+                    &state,
+                    &agent,
                     request_id,
-                    chunk_index,
-                    is_last: true,
-                    is_error: true,
-                    payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
-                    data: format!("Failed to read request body: {}", error).into_bytes(),
-                };
-
-                let _ = call_t!(
-                    &state.router_ref,
-                    |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
-                        agent_id: agent.clone(),
-                        request_id,
-                        chunk: abort_chunk,
-                        reply,
-                    },
-                    30000
-                );
+                    &mut chunk_index,
+                    StreamPayloadKind::RawFile,
+                    true,
+                    abort_message.as_bytes(),
+                    true,
+                )
+                .await;
 
                 return (
                     StatusCode::BAD_REQUEST,
@@ -963,91 +1028,35 @@ async fn raw_agent_put_handler(
 
         bytes_written += data.len() as u64;
 
-        let stream_chunk = redoor::streaming::StreamChunk {
+        if let Err(response) = forward_split_stream_chunk(
+            &state,
+            &agent,
             request_id,
-            chunk_index,
-            is_last: false,
-            is_error: false,
-            payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
-            data: data.to_vec(),
-        };
-
-        match call_t!(
-            &state.router_ref,
-            |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
-                agent_id: agent.clone(),
-                request_id,
-                chunk: stream_chunk,
-                reply,
-            },
-            30000
-        ) {
-            Ok(Ok(())) => {}
-            Ok(Err(error_msg)) => {
-                let status = if error_msg.contains("not found") {
-                    StatusCode::NOT_FOUND
-                } else if error_msg.contains("Permission denied") {
-                    StatusCode::FORBIDDEN
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-
-                return (status, Json(ErrorResponse { error: error_msg })).into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to forward upload chunk: {:?}", e),
-                    }),
-                )
-                    .into_response();
-            }
+            &mut chunk_index,
+            StreamPayloadKind::RawFile,
+            false,
+            &data,
+            false,
+        )
+        .await
+        {
+            return response;
         }
-
-        chunk_index = chunk_index.next_index();
     }
 
-    let final_chunk = redoor::streaming::StreamChunk {
+    if let Err(response) = forward_split_stream_chunk(
+        &state,
+        &agent,
         request_id,
-        chunk_index,
-        is_last: true,
-        is_error: false,
-        payload_kind: redoor::streaming::StreamPayloadKind::RawFile,
-        data: Vec::new(),
-    };
-
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
-            agent_id: agent.clone(),
-            request_id,
-            chunk: final_chunk,
-            reply,
-        },
-        30000
-    ) {
-        Ok(Ok(())) => {}
-        Ok(Err(error_msg)) => {
-            let status = if error_msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if error_msg.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-
-            return (status, Json(ErrorResponse { error: error_msg })).into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to forward final upload chunk: {:?}", e),
-                }),
-            )
-                .into_response();
-        }
+        &mut chunk_index,
+        StreamPayloadKind::RawFile,
+        false,
+        &[],
+        true,
+    )
+    .await
+    {
+        return response;
     }
 
     match upload_completion_receiver.await {

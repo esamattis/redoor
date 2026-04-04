@@ -111,8 +111,6 @@ pub enum AgentMsg {
 }
 
 impl AgentActor {
-    const PRIORITIZED_DOWNLOAD_CHUNK_SIZE: usize = 8 * 1024;
-
     async fn remove_upload_temp_file(temp_path: &Path) {
         if let Err(error) = tokio::fs::remove_file(temp_path).await {
             log!(
@@ -931,6 +929,8 @@ impl AgentActor {
         Ok(())
     }
 
+    /// Streams a directory as tar bytes to the server using the shared transfer
+    /// frame size.
     async fn tar_download(
         &self,
         path: String,
@@ -942,33 +942,35 @@ impl AgentActor {
         let metadata = match tokio::fs::metadata(&source_path).await {
             Ok(metadata) => metadata,
             Err(error) => {
-                let error_chunk = streaming::StreamChunk {
+                let mut chunk_index = ChunkIndex::new(0);
+                let error_message = format!("Failed to open directory: {}", error);
+                let _ = Self::send_framed_stream_bytes(
+                    write,
                     request_id,
-                    chunk_index: ChunkIndex(0),
-                    is_last: true,
-                    is_error: true,
-                    payload_kind: StreamPayloadKind::Tar,
-                    data: format!("Failed to open directory: {}", error).into_bytes(),
-                };
-                let _ = write
-                    .send(WsMessage::Binary(error_chunk.to_bytes().into()))
-                    .await;
+                    &mut chunk_index,
+                    StreamPayloadKind::Tar,
+                    true,
+                    error_message.as_bytes(),
+                    true,
+                )
+                .await;
                 return;
             }
         };
 
         if !metadata.is_dir() {
-            let error_chunk = streaming::StreamChunk {
+            let mut chunk_index = ChunkIndex::new(0);
+            let error_message = format!("Source path is not a directory: {}", path);
+            let _ = Self::send_framed_stream_bytes(
+                write,
                 request_id,
-                chunk_index: ChunkIndex(0),
-                is_last: true,
-                is_error: true,
-                payload_kind: StreamPayloadKind::Tar,
-                data: format!("Source path is not a directory: {}", path).into_bytes(),
-            };
-            let _ = write
-                .send(WsMessage::Binary(error_chunk.to_bytes().into()))
-                .await;
+                &mut chunk_index,
+                StreamPayloadKind::Tar,
+                true,
+                error_message.as_bytes(),
+                true,
+            )
+            .await;
             return;
         }
 
@@ -1005,19 +1007,16 @@ impl AgentActor {
 
         while let Some(chunk_bytes) = tar_receiver.recv().await {
             if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
-                let chunk = streaming::StreamChunk {
+                if !Self::send_framed_stream_bytes(
+                    write,
                     request_id,
-                    chunk_index,
-                    is_last: false,
-                    is_error: false,
-                    payload_kind: StreamPayloadKind::Tar,
-                    data: previous_chunk,
-                };
-
-                if write
-                    .send(WsMessage::Binary(chunk.to_bytes().into()))
-                    .await
-                    .is_err()
+                    &mut chunk_index,
+                    StreamPayloadKind::Tar,
+                    false,
+                    &previous_chunk,
+                    false,
+                )
+                .await
                 {
                     log!(
                         Level::Warning,
@@ -1025,22 +1024,20 @@ impl AgentActor {
                     );
                     return;
                 }
-
-                chunk_index = chunk_index.next_index();
             }
         }
 
-        let final_chunk = streaming::StreamChunk {
+        let final_chunk = pending_chunk.unwrap_or_default();
+        let _ = Self::send_framed_stream_bytes(
+            write,
             request_id,
-            chunk_index,
-            is_last: true,
-            is_error: false,
-            payload_kind: StreamPayloadKind::Tar,
-            data: pending_chunk.unwrap_or_default(),
-        };
-        let _ = write
-            .send(WsMessage::Binary(final_chunk.to_bytes().into()))
-            .await;
+            &mut chunk_index,
+            StreamPayloadKind::Tar,
+            false,
+            &final_chunk,
+            true,
+        )
+        .await;
 
         log!(
             Level::Info,
@@ -1399,11 +1396,14 @@ impl AgentActor {
         Self::remove_active_upload(&active_uploads, request_id).await;
     }
 
+    /// Dispatches one incoming control message from the server and routes
+    /// transfer-producing commands onto the binary websocket sender.
     async fn handle_incoming_message(
         &self,
         text: String,
         state: &mut AgentState,
-        write: &mpsc::Sender<WsMessage>,
+        write_text: &mpsc::Sender<WsMessage>,
+        write_binary: &mpsc::Sender<WsMessage>,
         agent_ref: ActorRef<AgentMsg>,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
@@ -1423,7 +1423,7 @@ impl AgentActor {
                     if !self
                         .start_upload_session(
                             state.active_uploads.clone(),
-                            write,
+                            write_text,
                             &state.agent_id,
                             request_id,
                             command.clone(),
@@ -1431,7 +1431,8 @@ impl AgentActor {
                         .await
                     {
                         tokio::spawn(Self::handle_command_message(
-                            write.clone(),
+                            write_text.clone(),
+                            write_binary.clone(),
                             state.agent_id.clone(),
                             request_id,
                             command,
@@ -1447,6 +1448,7 @@ impl AgentActor {
         }
     }
 
+    /// Sends a command response back to the server on the prioritized text lane.
     async fn send_command_response(
         &self,
         write: &mpsc::Sender<WsMessage>,
@@ -1465,8 +1467,48 @@ impl AgentActor {
         }
     }
 
+    /// Emits one logical transfer payload as bounded websocket binary frames.
+    async fn send_framed_stream_bytes(
+        write: &mpsc::Sender<WsMessage>,
+        request_id: RequestId,
+        chunk_index: &mut ChunkIndex,
+        payload_kind: StreamPayloadKind,
+        is_error: bool,
+        data: &[u8],
+        is_last: bool,
+    ) -> bool {
+        let mut frames = streaming::split_stream_chunk_bytes(
+            request_id,
+            *chunk_index,
+            payload_kind,
+            is_error,
+            data,
+            is_last,
+        );
+
+        while let Some(chunk) = frames.next() {
+            let next_chunk_index = frames.next_chunk_index();
+            if write
+                .send(WsMessage::Binary(chunk.to_bytes().into()))
+                .await
+                .is_err()
+            {
+                *chunk_index = next_chunk_index;
+                return false;
+            }
+
+            tokio::task::yield_now().await;
+        }
+
+        *chunk_index = frames.next_chunk_index();
+        true
+    }
+
+    /// Executes one non-upload command and routes any streamed payload over the
+    /// binary websocket sender while keeping command responses on text.
     async fn handle_command_message(
-        write: mpsc::Sender<WsMessage>,
+        write_text: mpsc::Sender<WsMessage>,
+        write_binary: mpsc::Sender<WsMessage>,
         agent_id: String,
         request_id: RequestId,
         command: Command,
@@ -1478,18 +1520,20 @@ impl AgentActor {
                 range_end,
             } => {
                 AgentActor
-                    .raw_download(path, range_start, range_end, request_id, &write)
+                    .raw_download(path, range_start, range_end, request_id, &write_binary)
                     .await;
             }
             Command::TarDownload { path } => {
-                AgentActor.tar_download(path, request_id, &write).await;
+                AgentActor
+                    .tar_download(path, request_id, &write_binary)
+                    .await;
             }
             Command::LocalCopyFile {
                 source_path,
                 dest_path,
             } => {
                 AgentActor
-                    .local_copy_file(source_path, dest_path, request_id, &write, &agent_id)
+                    .local_copy_file(source_path, dest_path, request_id, &write_text, &agent_id)
                     .await;
             }
             Command::LocalCopyDirectory {
@@ -1497,7 +1541,13 @@ impl AgentActor {
                 dest_path,
             } => {
                 AgentActor
-                    .local_copy_directory(source_path, dest_path, request_id, &write, &agent_id)
+                    .local_copy_directory(
+                        source_path,
+                        dest_path,
+                        request_id,
+                        &write_text,
+                        &agent_id,
+                    )
                     .await;
             }
             Command::RawDelete { path } => {
@@ -1505,7 +1555,7 @@ impl AgentActor {
                     .execute(Command::RawDelete { path })
                     .await;
                 AgentActor
-                    .send_command_response(&write, &agent_id, request_id, result)
+                    .send_command_response(&write_text, &agent_id, request_id, result)
                     .await;
             }
             other => {
@@ -1518,7 +1568,7 @@ impl AgentActor {
                 };
 
                 if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = write.send(WsMessage::text(json)).await;
+                    let _ = write_text.send(WsMessage::text(json)).await;
                 }
                 log!(
                     Level::Trace,
@@ -1531,6 +1581,8 @@ impl AgentActor {
         }
     }
 
+    /// Initializes agent-side state for streamed uploads before binary chunks
+    /// start arriving for the request id.
     async fn start_upload_session(
         &self,
         active_uploads: ActiveUploads,
@@ -1670,6 +1722,7 @@ impl AgentActor {
         }
     }
 
+    /// Streams file contents to the server as reframed websocket binary chunks.
     async fn raw_download(
         &self,
         path: String,
@@ -1681,9 +1734,7 @@ impl AgentActor {
         match File::open(&path).await {
             Ok(mut file) => {
                 let mut chunk_index = ChunkIndex(0);
-                // Keep download frames smaller than upload frames so control
-                // messages get more opportunities to preempt throttled binary traffic.
-                let chunk_size = Self::PRIORITIZED_DOWNLOAD_CHUNK_SIZE;
+                let chunk_size = streaming::CHUNK_SIZE;
                 let mut buffer = vec![0u8; chunk_size];
                 let mut bytes_remaining: Option<u64> = None;
                 let mut pending_chunk: Option<Vec<u8>> = None;
@@ -1692,17 +1743,16 @@ impl AgentActor {
                     if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
                         log!(Level::Error, "Failed to seek file: {}", e);
                         let error_msg = format!("Failed to seek file: {}", e);
-                        let error_chunk = streaming::StreamChunk {
+                        let _ = Self::send_framed_stream_bytes(
+                            write,
                             request_id,
-                            chunk_index,
-                            is_last: true,
-                            is_error: true,
-                            payload_kind: StreamPayloadKind::RawFile,
-                            data: error_msg.into_bytes(),
-                        };
-                        let _ = write
-                            .send(WsMessage::Binary(error_chunk.to_bytes().into()))
-                            .await;
+                            &mut chunk_index,
+                            StreamPayloadKind::RawFile,
+                            true,
+                            error_msg.as_bytes(),
+                            true,
+                        )
+                        .await;
                         return;
                     }
 
@@ -1736,19 +1786,16 @@ impl AgentActor {
                             }
 
                             if let Some(data) = pending_chunk.replace(buffer[..n].to_vec()) {
-                                let chunk = streaming::StreamChunk {
+                                if !Self::send_framed_stream_bytes(
+                                    write,
                                     request_id,
-                                    chunk_index,
-                                    is_last: false,
-                                    is_error: false,
-                                    payload_kind: StreamPayloadKind::RawFile,
-                                    data,
-                                };
-
-                                if write
-                                    .send(WsMessage::Binary(chunk.to_bytes().into()))
-                                    .await
-                                    .is_err()
+                                    &mut chunk_index,
+                                    StreamPayloadKind::RawFile,
+                                    false,
+                                    &data,
+                                    false,
+                                )
+                                .await
                                 {
                                     log!(
                                         Level::Warning,
@@ -1756,39 +1803,37 @@ impl AgentActor {
                                     );
                                     return;
                                 }
-                                chunk_index = chunk_index.next_index();
                             }
                         }
                         Err(e) => {
                             log!(Level::Error, "Failed to read file: {}", e);
                             let error_msg = format!("Failed to read file: {}", e);
-                            let error_chunk = streaming::StreamChunk {
+                            let _ = Self::send_framed_stream_bytes(
+                                write,
                                 request_id,
-                                chunk_index,
-                                is_last: true,
-                                is_error: true,
-                                payload_kind: StreamPayloadKind::RawFile,
-                                data: error_msg.into_bytes(),
-                            };
-                            let _ = write
-                                .send(WsMessage::Binary(error_chunk.to_bytes().into()))
-                                .await;
+                                &mut chunk_index,
+                                StreamPayloadKind::RawFile,
+                                true,
+                                error_msg.as_bytes(),
+                                true,
+                            )
+                            .await;
                             return;
                         }
                     }
                 }
 
-                let final_chunk = streaming::StreamChunk {
+                let final_chunk = pending_chunk.unwrap_or_default();
+                let _ = Self::send_framed_stream_bytes(
+                    write,
                     request_id,
-                    chunk_index,
-                    is_last: true,
-                    is_error: false,
-                    payload_kind: StreamPayloadKind::RawFile,
-                    data: pending_chunk.unwrap_or_default(),
-                };
-                let _ = write
-                    .send(WsMessage::Binary(final_chunk.to_bytes().into()))
-                    .await;
+                    &mut chunk_index,
+                    StreamPayloadKind::RawFile,
+                    false,
+                    &final_chunk,
+                    true,
+                )
+                .await;
 
                 log!(
                     Level::Info,
@@ -1800,17 +1845,17 @@ impl AgentActor {
             Err(e) => {
                 log!(Level::Error, "Failed to open file: {}", e);
                 let error_msg = format!("Failed to open file: {}", e);
-                let error_chunk = streaming::StreamChunk {
+                let mut chunk_index = ChunkIndex::new(0);
+                let _ = Self::send_framed_stream_bytes(
+                    write,
                     request_id,
-                    chunk_index: ChunkIndex(0),
-                    is_last: true,
-                    is_error: true,
-                    payload_kind: StreamPayloadKind::RawFile,
-                    data: error_msg.into_bytes(),
-                };
-                let _ = write
-                    .send(WsMessage::Binary(error_chunk.to_bytes().into()))
-                    .await;
+                    &mut chunk_index,
+                    StreamPayloadKind::RawFile,
+                    true,
+                    error_msg.as_bytes(),
+                    true,
+                )
+                .await;
             }
         }
     }
@@ -2071,7 +2116,7 @@ impl Actor for AgentActor {
 
                         let (write, read) = ws_stream.split();
                         let (text_tx, mut text_rx) = mpsc::channel::<WsMessage>(32);
-                        let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(32);
+                        let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
 
                         state.ws_text_tx = Some(text_tx.clone());
                         state.ws_binary_tx = Some(binary_tx.clone());
@@ -2165,8 +2210,11 @@ impl Actor for AgentActor {
             }
 
             AgentMsg::WebSocketMessage { text } => {
-                if let Some(tx) = state.ws_text_tx.as_ref().cloned() {
-                    self.handle_incoming_message(text, state, &tx, myself.clone())
+                if let (Some(tx_text), Some(tx_binary)) = (
+                    state.ws_text_tx.as_ref().cloned(),
+                    state.ws_binary_tx.as_ref().cloned(),
+                ) {
+                    self.handle_incoming_message(text, state, &tx_text, &tx_binary, myself.clone())
                         .await;
                 }
             }

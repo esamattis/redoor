@@ -164,7 +164,7 @@ pub struct AgentInfo {
     pub agent_name: String,
     pub socket_id: String,
     pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
-    pub outgoing_binary: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    pub outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
     pub connected_at: UnixTimestampSeconds,
     pub os: String,
     pub arch: String,
@@ -196,7 +196,7 @@ pub enum RouterMsg {
         agent_name: String,
         socket_id: String,
         outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
-        outgoing_binary: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
         os: String,
         arch: String,
         hostname: String,
@@ -283,6 +283,7 @@ pub enum RouterMsg {
 }
 
 impl RouterActor {
+    /// Serializes and queues one control message onto the agent's text lane.
     fn send_agent_message(agent_info: &AgentInfo, message: Message) {
         match serde_json::to_string(&message) {
             Ok(json) => {
@@ -309,10 +310,13 @@ impl RouterActor {
         }
     }
 
-    fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) {
+    /// Queues one binary websocket frame to an agent while honoring bounded
+    /// backpressure on the session binary channel.
+    async fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) {
         if agent_info
             .outgoing_binary
             .send(WsMessage::Binary(bytes.into()))
+            .await
             .is_err()
         {
             log!(
@@ -323,6 +327,38 @@ impl RouterActor {
         }
     }
 
+    /// Reframes one copy payload to the shared transfer size before forwarding
+    /// it to the destination agent.
+    async fn send_framed_copy_chunk(
+        agent_info: &AgentInfo,
+        request_id: RequestId,
+        chunk_index: &mut ChunkIndex,
+        payload_kind: StreamPayloadKind,
+        is_error: bool,
+        data: &[u8],
+        is_last: bool,
+    ) -> usize {
+        let mut frames = crate::streaming::split_stream_chunk_bytes(
+            request_id,
+            *chunk_index,
+            payload_kind,
+            is_error,
+            data,
+            is_last,
+        );
+        let mut emitted = 0usize;
+
+        while let Some(chunk) = frames.next() {
+            emitted += 1;
+            Self::send_agent_binary(agent_info, chunk.to_bytes()).await;
+        }
+
+        *chunk_index = frames.next_chunk_index();
+        emitted
+    }
+
+    /// Registers a new download transfer so REST/UI consumers can observe
+    /// progress while chunks are still streaming.
     fn record_download_start(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -361,6 +397,7 @@ impl RouterActor {
         Self::notify_ui_refresh(state);
     }
 
+    /// Registers a new upload transfer and stores its completion channel.
     fn record_upload_start(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -399,6 +436,8 @@ impl RouterActor {
         Self::notify_ui_refresh(state);
     }
 
+    /// Advances tracked byte counts for an in-flight download or remote copy
+    /// source stream.
     fn increment_download_progress(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -416,6 +455,7 @@ impl RouterActor {
         }
     }
 
+    /// Advances tracked byte counts for an in-flight upload.
     fn increment_upload_progress(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -433,6 +473,7 @@ impl RouterActor {
         }
     }
 
+    /// Marks a direct upload or download transfer as successfully completed.
     fn mark_transfer_completed(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -451,6 +492,8 @@ impl RouterActor {
         }
     }
 
+    /// Marks a copy transfer as completed, optionally updating its final byte
+    /// count first.
     fn mark_copy_transfer_completed(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -473,6 +516,7 @@ impl RouterActor {
         }
     }
 
+    /// Marks a tracked transfer as failed and stores the surfaced error.
     fn mark_transfer_errored(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -491,6 +535,7 @@ impl RouterActor {
         }
     }
 
+    /// Registers a new copy transfer for progress reporting and later cleanup.
     fn record_copy_start(
         state: &mut RouterState,
         _myself: &ActorRef<RouterMsg>,
@@ -528,6 +573,7 @@ impl RouterActor {
         Self::notify_ui_refresh(state);
     }
 
+    /// Removes router bookkeeping for a finished or aborted copy operation.
     fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: TransferId) {
         if let Some(copy_request) = state.copy_requests_by_public_id.remove(&public_request_id) {
             match copy_request.execution {
@@ -555,7 +601,9 @@ impl RouterActor {
         }
     }
 
-    fn abort_copy_upload(
+    /// Sends a final error chunk to the destination side of a remote copy so
+    /// the upload half terminates cleanly.
+    async fn abort_copy_upload(
         state: &mut RouterState,
         public_request_id: TransferId,
         error_message: String,
@@ -581,20 +629,22 @@ impl RouterActor {
             return Err(format!("Agent not found: {}", copy_request.dest_agent_id));
         };
 
-        let abort_chunk = crate::streaming::StreamChunk {
-            request_id: *dest_request_id,
-            chunk_index: *next_chunk_index,
-            is_last: true,
-            is_error: true,
-            payload_kind: copy_request.content_kind.payload_kind(),
-            data: error_message.into_bytes(),
-        };
-        *next_chunk_index = next_chunk_index.saturating_next_index();
-        Self::send_agent_binary(&agent_info, abort_chunk.to_bytes());
+        Self::send_framed_copy_chunk(
+            &agent_info,
+            *dest_request_id,
+            next_chunk_index,
+            copy_request.content_kind.payload_kind(),
+            true,
+            error_message.as_bytes(),
+            true,
+        )
+        .await;
         Ok(())
     }
 
-    fn route_copy_chunk(
+    /// Forwards one source-side copy chunk to the destination agent using the
+    /// shared frame size and remapped request id.
+    async fn route_copy_chunk(
         state: &mut RouterState,
         myself: &ActorRef<RouterMsg>,
         agent_id: String,
@@ -608,7 +658,7 @@ impl RouterActor {
             return;
         };
 
-        let (source_agent_id, dest_agent_id, dest_request_id, chunk_index, content_kind) = {
+        let (source_agent_id, dest_agent_id, dest_request_id, mut chunk_index, content_kind) = {
             let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
             else {
                 return;
@@ -627,14 +677,11 @@ impl RouterActor {
                 return;
             }
 
-            let chunk_index = *next_chunk_index;
-            *next_chunk_index = next_chunk_index.saturating_next_index();
-
             (
                 copy_request.source_agent_id.clone(),
                 copy_request.dest_agent_id.clone(),
                 *dest_request_id,
-                chunk_index,
+                *next_chunk_index,
                 copy_request.content_kind,
             )
         };
@@ -668,7 +715,7 @@ impl RouterActor {
                 String::from_utf8_lossy(&chunk.data).to_string()
             };
 
-            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone()).await;
             Self::mark_transfer_errored(state, myself, public_request_id, error_message);
             Self::cleanup_copy_tracking(state, public_request_id);
             return;
@@ -680,23 +727,36 @@ impl RouterActor {
                 content_kind.payload_kind(),
                 chunk.payload_kind
             );
-            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone()).await;
             Self::mark_transfer_errored(state, myself, public_request_id, error_message);
             Self::cleanup_copy_tracking(state, public_request_id);
             return;
         }
 
-        let forwarded_chunk = crate::streaming::StreamChunk {
-            request_id: dest_request_id,
-            chunk_index,
-            is_last: chunk.is_last,
-            is_error: false,
-            payload_kind: chunk.payload_kind,
-            data: chunk.data,
-        };
+        let bytes = chunk.data.len() as u64;
+        Self::send_framed_copy_chunk(
+            &dest_agent_info,
+            dest_request_id,
+            &mut chunk_index,
+            chunk.payload_kind,
+            false,
+            &chunk.data,
+            chunk.is_last,
+        )
+        .await;
 
-        let bytes = forwarded_chunk.data.len() as u64;
-        Self::send_agent_binary(&dest_agent_info, forwarded_chunk.to_bytes());
+        if let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id) {
+            if let CopyExecution::RemoteStream {
+                source_request_id,
+                next_chunk_index,
+                ..
+            } = &mut copy_request.execution
+            {
+                if *source_request_id == chunk.request_id {
+                    *next_chunk_index = chunk_index;
+                }
+            }
+        }
 
         if bytes > 0 {
             Self::increment_download_progress(state, myself, public_request_id, bytes);
@@ -1093,7 +1153,9 @@ impl RouterActor {
         }
     }
 
-    fn cleanup_agent_requests(
+    /// Cleans up in-flight requests, transfers, and copy bookkeeping that were
+    /// owned by a disconnected agent.
+    async fn cleanup_agent_requests(
         state: &mut RouterState,
         myself: &ActorRef<RouterMsg>,
         agent_id: &str,
@@ -1140,7 +1202,8 @@ impl RouterActor {
                 state,
                 *request_id,
                 format!("Agent disconnected: {}", agent_id),
-            );
+            )
+            .await;
             Self::mark_transfer_errored(
                 state,
                 myself,
@@ -1328,7 +1391,7 @@ impl Actor for RouterActor {
                 state.agents.remove(&agent_id);
                 Self::notify_ui_refresh(state);
 
-                Self::cleanup_agent_requests(state, &myself, &agent_id);
+                Self::cleanup_agent_requests(state, &myself, &agent_id).await;
             }
             RouterMsg::RouteResponse {
                 agent_id,
@@ -1464,7 +1527,7 @@ impl Actor for RouterActor {
                     .unwrap_or(false);
 
                 if is_remote_copy_stream {
-                    Self::route_copy_chunk(state, &myself, agent_id, chunk);
+                    Self::route_copy_chunk(state, &myself, agent_id, chunk).await;
                 } else {
                     Self::route_download_chunk(state, &myself, agent_id, chunk);
                 }
@@ -1612,7 +1675,7 @@ impl Actor for RouterActor {
                         );
                     }
 
-                    Self::send_agent_binary(&agent_info, chunk.to_bytes());
+                    Self::send_agent_binary(&agent_info, chunk.to_bytes()).await;
                     let _ = reply.send(Ok(()));
                 } else {
                     Self::mark_transfer_errored(
@@ -1694,15 +1757,14 @@ impl Actor for RouterActor {
                                 },
                             };
 
-                            let _ =
-                                Self::send_agent_message(
-                                    &source_agent_info,
-                                    Message::Command {
-                                        agent_id: source_agent_id.clone(),
-                                        request_id: local_request_id,
-                                        command,
-                                    },
-                                );
+                            let _ = Self::send_agent_message(
+                                &source_agent_info,
+                                Message::Command {
+                                    agent_id: source_agent_id.clone(),
+                                    request_id: local_request_id,
+                                    command,
+                                },
+                            );
 
                             let _ = reply.send(Ok(public_request_id));
                             return Ok(());

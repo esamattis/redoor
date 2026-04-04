@@ -33,7 +33,7 @@ pub struct SessionState {
     /// Channel for sending JSON/control WebSocket frames back to the agent.
     pub outgoing_text: mpsc::UnboundedSender<WsMessage>,
     /// Channel for sending binary streaming frames back to the agent.
-    pub outgoing_binary: mpsc::UnboundedSender<WsMessage>,
+    pub outgoing_binary: mpsc::Sender<WsMessage>,
 }
 
 /// Messages that can be sent to a [`SessionActor`].
@@ -52,7 +52,7 @@ impl Actor for SessionActor {
         String,
         ActorRef<RouterMsg>,
         mpsc::UnboundedSender<WsMessage>,
-        mpsc::UnboundedSender<WsMessage>,
+        mpsc::Sender<WsMessage>,
     );
 
     async fn pre_start(
@@ -180,7 +180,7 @@ pub async fn handle_websocket(
 ) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
-    let (tx_out_binary, mut rx_out_binary) = mpsc::unbounded_channel::<WsMessage>();
+    let (tx_out_binary, mut rx_out_binary) = mpsc::channel::<WsMessage>(1);
 
     let (session_ref, _handle) = SessionActor::spawn(
         None,
