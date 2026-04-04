@@ -339,7 +339,8 @@ impl RouterActor {
         chunk_index: &mut ChunkIndex,
         request: StreamChunkFrameRequest<'_>,
     ) -> usize {
-        let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
+        let mut frames =
+            crate::streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
         let mut emitted = 0usize;
 
         while let Some(chunk) = frames.next() {

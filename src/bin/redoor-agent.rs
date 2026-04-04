@@ -1563,7 +1563,8 @@ impl AgentActor {
         chunk_index: &mut ChunkIndex,
         request: StreamChunkFrameRequest<'_>,
     ) -> bool {
-        let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
+        let mut frames =
+            streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
 
         while let Some(chunk) = frames.next() {
             let next_chunk_index = frames.next_chunk_index();

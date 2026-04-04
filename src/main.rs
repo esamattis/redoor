@@ -66,7 +66,8 @@ async fn forward_split_stream_chunk(
 ) -> Result<(), Response> {
     let is_error = request.is_error_flag();
     let is_last = request.is_last_flag();
-    let mut frames = request.starting_chunk_index(*chunk_index).into_frames();
+    let mut frames =
+        redoor::streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
 
     while let Some(chunk) = frames.next() {
         let next_chunk_index = frames.next_chunk_index();

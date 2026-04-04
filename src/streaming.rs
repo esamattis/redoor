@@ -1,5 +1,5 @@
 use crate::types::{ChunkIndex, RequestId};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
@@ -107,19 +107,6 @@ impl<'a> StreamChunkFrameRequest<'a> {
     pub fn is_last_flag(&self) -> bool {
         self.is_last
     }
-
-    pub fn into_frames(self) -> StreamChunkFrames<'a> {
-        StreamChunkFrames {
-            request_id: self.request_id,
-            next_chunk_index: self.starting_chunk_index,
-            payload_kind: self.payload_kind,
-            is_error: self.is_error,
-            data: self.data,
-            offset: 0,
-            is_last: self.is_last,
-            emitted_empty_final_chunk: false,
-        }
-    }
 }
 
 impl StreamChunk {
@@ -184,13 +171,22 @@ impl StreamChunk {
     }
 }
 
-/// Splits one logical payload into websocket-sized transfer frames while
-/// preserving ordering, `ChunkIndex` progression, and final-chunk semantics.
-pub fn split_stream_chunk_bytes(request: StreamChunkFrameRequest<'_>) -> StreamChunkFrames<'_> {
-    request.into_frames()
-}
-
 impl StreamChunkFrames<'_> {
+    /// Creates an iterator over websocket-sized `StreamChunk` frames for the
+    /// logical payload described by `request`.
+    pub fn new(request: StreamChunkFrameRequest<'_>) -> StreamChunkFrames<'_> {
+        StreamChunkFrames {
+            request_id: request.request_id,
+            next_chunk_index: request.starting_chunk_index,
+            payload_kind: request.payload_kind,
+            is_error: request.is_error,
+            data: request.data,
+            offset: 0,
+            is_last: request.is_last,
+            emitted_empty_final_chunk: false,
+        }
+    }
+
     /// Returns the next chunk index that should be used after exhausting the
     /// iterator or after stopping early during incremental forwarding.
     pub fn next_chunk_index(&self) -> ChunkIndex {
@@ -249,7 +245,7 @@ mod tests {
         data: &[u8],
         is_last: bool,
     ) -> (Vec<StreamChunk>, ChunkIndex) {
-        let mut frames = split_stream_chunk_bytes(
+        let mut frames = StreamChunkFrames::new(
             StreamChunkFrameRequest::new(RequestId::new(42), data)
                 .starting_chunk_index(starting_chunk_index)
                 .payload_kind(payload_kind)
