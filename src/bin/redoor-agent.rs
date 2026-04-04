@@ -11,14 +11,14 @@ use redoor::{
 };
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::System;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch},
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
@@ -142,19 +142,30 @@ impl AgentActor {
     }
 
     async fn remove_active_upload(active_uploads: &ActiveUploads, request_id: RequestId) {
-        active_uploads.lock().await.remove(&request_id);
+        active_uploads
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .remove(&request_id);
     }
 
     async fn clear_active_uploads(active_uploads: &ActiveUploads) {
-        active_uploads.lock().await.clear();
+        active_uploads
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .clear();
     }
 
     async fn remove_active_download(active_downloads: &ActiveDownloads, request_id: RequestId) {
-        active_downloads.lock().await.remove(&request_id);
+        active_downloads
+            .lock()
+            .expect("active downloads mutex poisoned")
+            .remove(&request_id);
     }
 
     async fn clear_active_downloads(active_downloads: &ActiveDownloads) {
-        let mut active_downloads = active_downloads.lock().await;
+        let mut active_downloads = active_downloads
+            .lock()
+            .expect("active downloads mutex poisoned");
         for download in active_downloads.values() {
             let _ = download.cancel_sender.send(true);
         }
@@ -1503,7 +1514,7 @@ impl AgentActor {
                         state
                             .active_downloads
                             .lock()
-                            .await
+                            .expect("active downloads mutex poisoned")
                             .get(&request_id)
                             .cloned()
                     };
@@ -1596,7 +1607,7 @@ impl AgentActor {
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
                 active_downloads
                     .lock()
-                    .await
+                    .expect("active downloads mutex poisoned")
                     .insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
                     .raw_download(
@@ -1614,7 +1625,7 @@ impl AgentActor {
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
                 active_downloads
                     .lock()
-                    .await
+                    .expect("active downloads mutex poisoned")
                     .insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
                     .tar_download(
@@ -1691,7 +1702,10 @@ impl AgentActor {
     ) -> bool {
         match command {
             Command::RawUpload { path } => {
-                let upload_already_exists = active_uploads.lock().await.contains_key(&request_id);
+                let upload_already_exists = active_uploads
+                    .lock()
+                    .expect("active uploads mutex poisoned")
+                    .contains_key(&request_id);
 
                 if upload_already_exists {
                     self.send_command_response(
@@ -1721,13 +1735,16 @@ impl AgentActor {
                             path,
                             temp_path.display()
                         );
-                        active_uploads.lock().await.insert(
-                            request_id,
-                            UploadSessionHandle {
-                                path: path.clone(),
-                                chunk_sender,
-                            },
-                        );
+                        active_uploads
+                            .lock()
+                            .expect("active uploads mutex poisoned")
+                            .insert(
+                                request_id,
+                                UploadSessionHandle {
+                                    path: path.clone(),
+                                    chunk_sender,
+                                },
+                            );
                         tokio::spawn(Self::process_raw_upload(
                             active_uploads,
                             chunk_receiver,
@@ -1757,7 +1774,10 @@ impl AgentActor {
                 true
             }
             Command::TarUpload { path } => {
-                let upload_already_exists = active_uploads.lock().await.contains_key(&request_id);
+                let upload_already_exists = active_uploads
+                    .lock()
+                    .expect("active uploads mutex poisoned")
+                    .contains_key(&request_id);
 
                 if upload_already_exists {
                     self.send_command_response(
@@ -1786,13 +1806,16 @@ impl AgentActor {
                             path,
                             session.temp_path.display()
                         );
-                        active_uploads.lock().await.insert(
-                            request_id,
-                            UploadSessionHandle {
-                                path: path.clone(),
-                                chunk_sender,
-                            },
-                        );
+                        active_uploads
+                            .lock()
+                            .expect("active uploads mutex poisoned")
+                            .insert(
+                                request_id,
+                                UploadSessionHandle {
+                                    path: path.clone(),
+                                    chunk_sender,
+                                },
+                            );
                         tokio::spawn(Self::process_tar_upload(
                             active_uploads,
                             chunk_receiver,
@@ -2020,7 +2043,14 @@ impl AgentActor {
             return Ok(());
         };
 
-        let upload_handle = { state.active_uploads.lock().await.get(&request_id).cloned() };
+        let upload_handle = {
+            state
+                .active_uploads
+                .lock()
+                .expect("active uploads mutex poisoned")
+                .get(&request_id)
+                .cloned()
+        };
 
         let Some(upload_handle) = upload_handle else {
             return Ok(());
