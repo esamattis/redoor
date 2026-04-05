@@ -187,14 +187,6 @@ async fn main() {
         .await
         .expect("Failed to spawn RouterActor");
 
-    let _ = actors::command_executor::CommandExecutorActor::spawn(
-        None,
-        actors::command_executor::CommandExecutorActor,
-        (),
-    )
-    .await
-    .expect("Failed to spawn CommandExecutorActor");
-
     let server_state = ServerState {
         router_ref: router_ref.clone(),
     };
