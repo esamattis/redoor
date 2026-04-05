@@ -1,4 +1,4 @@
-use super::{AgentActor, messages::AgentMsg};
+use super::{AgentActor, AgentMsg};
 use futures_util::StreamExt;
 use ractor::ActorRef;
 use tokio_tungstenite::{

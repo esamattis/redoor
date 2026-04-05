@@ -1,31 +1,21 @@
 mod actor;
-mod copy;
-mod download;
 mod messages;
-mod state;
-mod upload;
+mod protocol;
+mod raw;
+pub(crate) mod state;
+mod transfers;
 mod ws;
 
-use clap::Args;
 use ractor::Actor;
 use redoor::{Level, log, types::AgentId};
 
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
-    ActiveDownloads, ActiveUploads, AgentState, DownloadSessionHandle, UploadSessionHandle,
+    ActiveDownloads, ActiveUploads, AgentArgs, AgentState, DownloadSessionHandle,
+    UploadSessionHandle,
 };
 
 pub(crate) struct AgentActor;
-
-#[derive(Args)]
-#[command(author, version, about)]
-pub(crate) struct AgentArgs {
-    pub(crate) ws_address: String,
-    #[arg(long)]
-    pub(crate) name: String,
-    #[arg(long)]
-    pub(crate) log: Option<String>,
-}
 
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let server_url = args.ws_address;

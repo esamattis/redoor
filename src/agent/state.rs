@@ -1,4 +1,5 @@
 use super::AgentActor;
+use clap::Args;
 use redoor::{
     streaming,
     types::{AgentId, RequestId},
@@ -9,6 +10,16 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+
+#[derive(Args)]
+#[command(author, version, about)]
+pub(crate) struct AgentArgs {
+    pub(crate) ws_address: String,
+    #[arg(long)]
+    pub(crate) name: String,
+    #[arg(long)]
+    pub(crate) log: Option<String>,
+}
 
 #[derive(Clone)]
 pub(crate) struct UploadSessionHandle {
