@@ -140,56 +140,21 @@ impl Actor for RouterActor {
             }
             RouterMsg::RouteStreamChunk(request) => {
                 if Self::is_remote_copy_stream(state, request.chunk.request_id) {
-                    transfers::copy::route_chunk(
-                        state,
-                        &myself,
-                        request.agent_id,
-                        request.chunk,
-                        request.reply,
-                    );
+                    transfers::copy::route_chunk(state, &myself, request);
                 } else {
-                    transfers::download::route_chunk(
-                        state,
-                        &myself,
-                        request.agent_id,
-                        request.chunk,
-                        request.reply,
-                    );
+                    transfers::download::route_chunk(state, &myself, request);
                 }
             }
             RouterMsg::FinishRoutedDownloadChunk(route) => {
-                transfers::download::finish_routed_chunk(
-                    state,
-                    route.agent_id,
-                    route.request_id,
-                    route.chunk_index,
-                    route.is_last,
-                    route.error_message,
-                    route.send_succeeded,
-                );
+                transfers::download::finish_routed_chunk(state, &route);
                 let _ = route.reply.send(());
             }
             RouterMsg::FinishRoutedUploadChunk(route) => {
-                let _ = route.reply.send(transfers::upload::finish_routed_chunk(
-                    state,
-                    route.agent_id,
-                    route.request_id,
-                    route.bytes,
-                    route.is_error,
-                    route.send_succeeded,
-                ));
+                let result = transfers::upload::finish_routed_chunk(state, &route);
+                let _ = route.reply.send(result);
             }
             RouterMsg::FinishRoutedCopyChunk(route) => {
-                transfers::copy::finish_routed_chunk(
-                    state,
-                    route.source_agent_id,
-                    route.public_request_id,
-                    route.source_request_id,
-                    route.dest_request_id,
-                    route.next_chunk_index,
-                    route.bytes,
-                    route.send_succeeded,
-                );
+                transfers::copy::finish_routed_chunk(state, &route);
                 let _ = route.reply.send(());
             }
             RouterMsg::ExecuteStreamCommandRest(request) => {

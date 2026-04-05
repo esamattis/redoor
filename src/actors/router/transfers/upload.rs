@@ -137,36 +137,36 @@ pub(crate) fn route_chunk(
 /// Finalizes one upload chunk after the downstream binary send completes.
 pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
-    agent_id: AgentId,
-    request_id: crate::types::RequestId,
-    bytes: u64,
-    is_error: bool,
-    send_succeeded: bool,
+    route: &FinishUploadChunkRoute,
 ) -> Result<(), String> {
     let has_matching_upload = matches!(
-        state.streams.uploads.get(&request_id),
-        Some(transfer) if transfer.agent_id == agent_id
+        state.streams.uploads.get(&route.request_id),
+        Some(transfer) if transfer.agent_id == route.agent_id
     );
 
     if !has_matching_upload {
         return Err(format!(
             "Upload stream not found: agent_id={}, request_id={}",
-            agent_id, request_id
+            route.agent_id, route.request_id
         ));
     }
 
-    if !send_succeeded {
+    if !route.send_succeeded {
         let error_message = format!(
             "Failed to forward upload chunk to agent: agent_id={}, request_id={}",
-            agent_id, request_id
+            route.agent_id, route.request_id
         );
 
-        progress::mark_transfer_errored(state, request_id.as_transfer_id(), error_message.clone());
+        progress::mark_transfer_errored(
+            state,
+            route.request_id.as_transfer_id(),
+            error_message.clone(),
+        );
 
         let completion_sender = state
             .streams
             .uploads
-            .remove(&request_id)
+            .remove(&route.request_id)
             .and_then(|transfer| transfer.completion_sender);
 
         ui::notify_refresh(state);
@@ -178,8 +178,8 @@ pub(crate) fn finish_routed_chunk(
         return Err(error_message);
     }
 
-    if !is_error {
-        progress::increment_bytes(state, request_id.as_transfer_id(), bytes);
+    if !route.is_error {
+        progress::increment_bytes(state, route.request_id.as_transfer_id(), route.bytes);
     }
 
     Ok(())

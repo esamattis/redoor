@@ -1,7 +1,8 @@
 use super::super::agents;
 use super::super::cleanup;
 use super::super::messages::{
-    FinishCopyChunkRoute, RouterMsg, StartCopyRequest, TransferProgressUpdateRequest,
+    FinishCopyChunkRoute, RouteStreamChunkRequest, RouterMsg, StartCopyRequest,
+    TransferProgressUpdateRequest,
 };
 use super::super::progress::{self, CopyStartContext};
 use super::super::state::{CopyExecution, CopyRequest, DirectDownload, DirectUpload, RouterState};
@@ -11,7 +12,7 @@ use crate::logging::Level;
 use crate::streaming::StreamChunkFrameRequest;
 use crate::types::Message;
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
-use ractor::{ActorRef, RpcReplyPort};
+use ractor::ActorRef;
 
 /// Reframes one source chunk into destination-sized frames and forwards them incrementally.
 pub(crate) async fn send_framed_copy_chunk(
@@ -265,10 +266,11 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
 pub(crate) fn route_chunk(
     state: &mut RouterState,
     myself: &ActorRef<RouterMsg>,
-    agent_id: AgentId,
-    chunk: crate::streaming::StreamChunk,
-    reply: RpcReplyPort<()>,
+    request: RouteStreamChunkRequest,
 ) {
+    let agent_id = request.agent_id;
+    let chunk = request.chunk;
+    let reply = request.reply;
     let Some(public_request_id) = state.copies.public_id_for_internal(chunk.request_id) else {
         let _ = reply.send(());
         return;
@@ -391,17 +393,8 @@ pub(crate) fn route_chunk(
 }
 
 /// Finalizes one remote-copy chunk after all destination frames have been queued.
-pub(crate) fn finish_routed_chunk(
-    state: &mut RouterState,
-    source_agent_id: AgentId,
-    public_request_id: TransferId,
-    source_request_id: RequestId,
-    dest_request_id: RequestId,
-    next_chunk_index: ChunkIndex,
-    bytes: u64,
-    send_succeeded: bool,
-) {
-    let Some(copy_request) = state.copies.by_public_id.get_mut(&public_request_id) else {
+pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishCopyChunkRoute) {
+    let Some(copy_request) = state.copies.by_public_id.get_mut(&route.public_request_id) else {
         return;
     };
 
@@ -414,35 +407,39 @@ pub(crate) fn finish_routed_chunk(
         return;
     };
 
-    if copy_request.source_agent_id != source_agent_id
-        || *stored_source_request_id != source_request_id
-        || *stored_dest_request_id != dest_request_id
+    if copy_request.source_agent_id != route.source_agent_id
+        || *stored_source_request_id != route.source_request_id
+        || *stored_dest_request_id != route.dest_request_id
     {
         log!(
             Level::Warning,
             "Copy completion mismatch while finishing routed chunk: request_id={}, expected_source_agent_id={}, actual_source_agent_id={}",
-            public_request_id,
+            route.public_request_id,
             copy_request.source_agent_id,
-            source_agent_id
+            route.source_agent_id
         );
         return;
     }
 
-    if !send_succeeded {
-        cleanup::cancel_transfer(state, source_request_id, source_agent_id);
+    if !route.send_succeeded {
+        cleanup::cancel_transfer(
+            state,
+            route.source_request_id,
+            route.source_agent_id.clone(),
+        );
         progress::mark_transfer_errored(
             state,
-            public_request_id,
+            route.public_request_id,
             "Failed to forward copy chunk to destination agent".to_string(),
         );
-        cleanup_copy_tracking(state, public_request_id);
+        cleanup_copy_tracking(state, route.public_request_id);
         return;
     }
 
-    *stored_next_chunk_index = next_chunk_index;
+    *stored_next_chunk_index = route.next_chunk_index;
 
-    if bytes > 0 {
-        progress::increment_bytes(state, public_request_id, bytes);
+    if route.bytes > 0 {
+        progress::increment_bytes(state, route.public_request_id, route.bytes);
     }
 }
 
