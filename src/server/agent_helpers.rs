@@ -1,0 +1,75 @@
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use ractor::call_t;
+use redoor::{
+    actors,
+    commands::{AgentDetailsResponse, Command, CommandResult, ErrorResponse},
+    types::AgentId,
+};
+
+use super::state::ServerState;
+
+fn join_agent_path(cwd: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        cwd.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+pub(crate) async fn get_agent_details(
+    state: &ServerState,
+    agent_id: &AgentId,
+) -> Result<AgentDetailsResponse, Response> {
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: Command::GetAgentDetails,
+                reply,
+            }
+        ),
+        30000
+    ) {
+        Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
+        Ok(CommandResult::Error { message }) => {
+            let status = if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, Json(ErrorResponse { error: message })).into_response())
+        }
+        Ok(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected result type while fetching agent details".to_string(),
+            }),
+        )
+            .into_response()),
+        Err(error) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get agent details: {:?}", error),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+pub(crate) async fn resolve_agent_path(
+    state: &ServerState,
+    agent_id: &AgentId,
+    path: String,
+) -> Result<String, Response> {
+    if path.starts_with('/') {
+        return Ok(path);
+    }
+
+    let details = get_agent_details(state, agent_id).await?;
+    Ok(join_agent_path(&details.cwd, &path))
+}
