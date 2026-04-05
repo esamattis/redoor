@@ -12,6 +12,7 @@ import type { TransferProgressListResponse } from "../../bindings/TransferProgre
 import type { TransferProgressState } from "../../bindings/TransferProgressState";
 import type { UiEvent } from "../../bindings/UiEvent";
 import type { RawDeleteResponse } from "../../bindings/RawDeleteResponse";
+import type { CreateDirectoryResponse } from "../../bindings/CreateDirectoryResponse";
 import type { CopyFileRequest } from "../../bindings/CopyFileRequest";
 import type { CopyFileResponse } from "../../bindings/CopyFileResponse";
 import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
@@ -19,6 +20,7 @@ import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
     RawDeleteResponse,
+    CreateDirectoryResponse,
     TransferDirection,
     TransferProgressEntry,
     TransferProgressListResponse,
@@ -167,6 +169,29 @@ export class Agent {
         const response = await fetch(this.getRawUrl(path), {
             method: "DELETE",
         });
+
+        if (!response.ok) {
+            const text = await response.text();
+            if (text) {
+                const error: ErrorResponse = JSON.parse(text);
+                throw new Error(error.error);
+            }
+            throw new Error(
+                `Request failed: ${response.status} ${response.statusText}`,
+            );
+        }
+
+        return response.json();
+    }
+
+    async createDirectory(path: string): Promise<CreateDirectoryResponse> {
+        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir/${encodedPath}`,
+            {
+                method: "POST",
+            },
+        );
 
         if (!response.ok) {
             const text = await response.text();

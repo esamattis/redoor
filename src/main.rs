@@ -1,8 +1,9 @@
 use redoor::actors;
 use redoor::commands::{
     AgentDetailsResponse, AgentInfoResponse, AgentListResponse, CatResponse, Command,
-    CommandResult, CopyFileRequest, CopyFileResponse, EchoRequest, EchoResponse, ErrorResponse,
-    LsDirectoryResponse, LsFileResponse, RawDeleteResponse, RawUploadResponse, UiEvent,
+    CommandResult, CopyFileRequest, CopyFileResponse, CreateDirectoryResponse, EchoRequest,
+    EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RawDeleteResponse,
+    RawUploadResponse, UiEvent,
 };
 use redoor::streaming::StreamChunkFrameRequest;
 use redoor::types::ChunkIndex;
@@ -210,6 +211,10 @@ async fn main() {
             get(raw_agent_handler)
                 .put(raw_agent_put_handler)
                 .delete(raw_agent_delete_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/mkdir/{*path}",
+            post(create_directory_handler),
         )
         .route("/api/v1/copy", post(copy_file_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
@@ -1139,6 +1144,61 @@ async fn raw_agent_delete_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Failed to delete file: {:?}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn create_directory_handler(
+    Path((agent, path)): Path<(String, String)>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+
+    match call_t!(
+        &state.router_ref,
+        |reply| actors::router::RouterMsg::ExecuteCommandRest {
+            agent_id: agent.clone(),
+            command: Command::CreateDirectory {
+                path: resolved_path.clone(),
+            },
+            reply,
+        },
+        30000
+    ) {
+        Ok(CommandResult::CreateDirectory) => (
+            StatusCode::OK,
+            Json(CreateDirectoryResponse {
+                path: resolved_path,
+            }),
+        )
+            .into_response(),
+        Ok(CommandResult::Error { message }) => {
+            let status = if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("Permission denied") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            (status, Json(ErrorResponse { error: message })).into_response()
+        }
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected create directory response".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to create directory: {:?}", e),
             }),
         )
             .into_response(),

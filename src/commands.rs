@@ -36,6 +36,9 @@ pub enum Command {
     RawDelete {
         path: String,
     },
+    CreateDirectory {
+        path: String,
+    },
     Metadata {
         path: String,
     },
@@ -104,6 +107,7 @@ pub enum CommandResult {
     LocalCopyFile,
     LocalCopyDirectory,
     RawDelete,
+    CreateDirectory,
     Metadata(MetadataResponse),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
@@ -218,6 +222,12 @@ pub struct RawDeleteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct CreateDirectoryResponse {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct CopyEndpoint {
     pub agent: String,
     pub path: String,
@@ -326,6 +336,7 @@ impl CommandHandler {
                 message: "LocalCopyDirectory is handled by the agent runtime".to_string(),
             },
             Command::RawDelete { path } => self.raw_delete(path).await,
+            Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
@@ -463,6 +474,15 @@ impl CommandHandler {
             }
             Err(e) => CommandResult::Error {
                 message: format!("Failed to access path for deletion: {}", e),
+            },
+        }
+    }
+
+    async fn create_directory(&self, path: String) -> CommandResult {
+        match tokio::fs::create_dir_all(&path).await {
+            Ok(()) => CommandResult::CreateDirectory,
+            Err(e) => CommandResult::Error {
+                message: format!("Failed to create directory: {}", e),
             },
         }
     }
@@ -884,6 +904,41 @@ mod tests {
             }
             _ => panic!("Expected EchoResult"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_directory_command() {
+        let handler = CommandHandler::new();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "redoor-create-dir-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos()
+        ));
+        let nested_dir = temp_dir.join("nested").join("child");
+
+        let result = handler
+            .execute(Command::CreateDirectory {
+                path: nested_dir.to_string_lossy().to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::CreateDirectory => {
+                assert!(
+                    tokio::fs::try_exists(&nested_dir)
+                        .await
+                        .expect("directory existence should be queryable"),
+                    "directory should be created recursively"
+                );
+            }
+            _ => panic!("Expected CreateDirectory"),
+        }
+
+        tokio::fs::remove_dir_all(&temp_dir)
+            .await
+            .expect("temporary directory should be removable");
     }
 
     #[tokio::test]
