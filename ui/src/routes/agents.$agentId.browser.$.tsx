@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import {
     Folder,
+    FolderPlus,
     File,
     ArrowUp,
     AlertCircle,
@@ -17,10 +18,10 @@ import {
     Check,
     Upload,
     Trash2,
-    X,
     Square,
     CheckSquare,
 } from "lucide-react";
+import { BrowserActionDialog } from "../components/browser-action-dialog";
 import { getParentPath, formatSize } from "../utils/path";
 import {
     type Agent,
@@ -38,6 +39,12 @@ type DeleteState =
     | { type: "idle" }
     | { type: "deleting" }
     | { type: "error"; message: string };
+
+type CreateDirectoryState =
+    | { type: "idle" }
+    | { type: "creating" }
+    | { type: "error"; message: string };
+
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -164,12 +171,12 @@ function joinBrowserPath(directoryPath: string, fileName: string) {
     return `${directoryPath}/${fileName}`;
 }
 
-function getErrorMessage(error: unknown) {
+function getErrorMessage(error: unknown, fallbackMessage: string) {
     if (error instanceof Error) {
         return error.message;
     }
 
-    return "Upload failed";
+    return fallbackMessage;
 }
 
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
@@ -231,6 +238,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
                 const firstFailedUpload = failedUploads[0];
                 const failureMessage = getErrorMessage(
                     firstFailedUpload ? firstFailedUpload.reason : undefined,
+                    "Upload failed",
                 );
                 setUploadState({
                     type: "error",
@@ -252,7 +260,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
         } catch (error) {
             setUploadState({
                 type: "error",
-                message: getErrorMessage(error),
+                message: getErrorMessage(error, "Upload failed"),
             });
         } finally {
             event.target.value = "";
@@ -294,6 +302,151 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
     );
 }
 
+function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
+    const router = useRouter();
+    const inputId = React.useId();
+    const [isDialogOpen, setIsDialogOpen] = React.useState(false);
+    const [directoryName, setDirectoryName] = React.useState("");
+    const [createDirectoryState, setCreateDirectoryState] =
+        React.useState<CreateDirectoryState>({
+            type: "idle",
+        });
+
+    const trimmedDirectoryName = directoryName.trim();
+    const createDirectoryPath = trimmedDirectoryName
+        ? joinBrowserPath(props.directoryPath, trimmedDirectoryName)
+        : null;
+    const isCreating = createDirectoryState.type === "creating";
+
+    const resetDialog = () => {
+        setIsDialogOpen(false);
+        setDirectoryName("");
+        setCreateDirectoryState({ type: "idle" });
+    };
+
+    const closeDialog = () => {
+        if (isCreating) {
+            return;
+        }
+
+        resetDialog();
+    };
+
+    const openDialog = () => {
+        setDirectoryName("");
+        setCreateDirectoryState({ type: "idle" });
+        setIsDialogOpen(true);
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (!createDirectoryPath) {
+            setCreateDirectoryState({
+                type: "error",
+                message: "Directory name is required",
+            });
+            return;
+        }
+
+        setCreateDirectoryState({ type: "creating" });
+
+        try {
+            await props.agent.createDirectory(createDirectoryPath);
+            await router.invalidate();
+            resetDialog();
+        } catch (error) {
+            setCreateDirectoryState({
+                type: "error",
+                message: getErrorMessage(error, "Create directory failed"),
+            });
+        }
+    };
+
+    return (
+        <>
+            <button
+                type="button"
+                onClick={openDialog}
+                className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-white hover:bg-sky-700"
+            >
+                <FolderPlus className="h-4 w-4" />
+                Create directory
+            </button>
+
+            <BrowserActionDialog
+                isOpen={isDialogOpen}
+                title="Create directory"
+                description="Create a new directory in the current location."
+                dialogTitleId="create-directory-title"
+                dialogDescriptionId="create-directory-description"
+                closeAriaLabel="Close create directory dialog"
+                isBusy={isCreating}
+                errorMessage={
+                    createDirectoryState.type === "error"
+                        ? createDirectoryState.message
+                        : null
+                }
+                onClose={closeDialog}
+            >
+                <form onSubmit={handleSubmit} className="mt-4">
+                    <label
+                        htmlFor={inputId}
+                        className="mb-2 block text-sm font-medium text-gray-700"
+                    >
+                        Directory name
+                    </label>
+                    <input
+                        id={inputId}
+                        type="text"
+                        value={directoryName}
+                        onChange={(event) => {
+                            setDirectoryName(event.target.value);
+                            if (createDirectoryState.type === "error") {
+                                setCreateDirectoryState({ type: "idle" });
+                            }
+                        }}
+                        placeholder="logs"
+                        autoFocus
+                        disabled={isCreating}
+                        className="w-full rounded border border-gray-300 px-3 py-2 text-gray-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:bg-gray-50"
+                    />
+
+                    {createDirectoryPath ? (
+                        <div className="mt-4">
+                            <p className="mb-2 text-sm text-gray-600">
+                                Directory path
+                            </p>
+                            <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                                {createDirectoryPath}
+                            </p>
+                        </div>
+                    ) : null}
+
+                    <div className="mt-6 flex justify-end gap-3">
+                        <button
+                            type="button"
+                            onClick={closeDialog}
+                            disabled={isCreating}
+                            className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={isCreating}
+                            className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <FolderPlus className="h-4 w-4" />
+                            {isCreating ? "Creating..." : "Create directory"}
+                        </button>
+                    </div>
+                </form>
+            </BrowserActionDialog>
+        </>
+    );
+}
+
 function BrowserHeader(props: {
     agent: Agent;
     agentId: string;
@@ -312,6 +465,10 @@ function BrowserHeader(props: {
                     relativePath={props.relativePath}
                 />
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                    <CreateDirectoryAction
+                        agent={props.agent}
+                        directoryPath={props.directoryPath}
+                    />
                     <UploadFilesAction
                         agent={props.agent}
                         directoryPath={props.directoryPath}
@@ -596,10 +753,7 @@ function FileDetailView(props: {
         } catch (error) {
             setDeleteState({
                 type: "error",
-                message: getErrorMessage(error).replace(
-                    /^Upload failed$/,
-                    "Delete failed",
-                ),
+                message: getErrorMessage(error, "Delete failed"),
             });
         }
     };
@@ -811,57 +965,26 @@ function DeleteConfirmationDialog(props: {
     onClose: () => void;
     onConfirm: () => void;
 }) {
-    if (!props.isOpen) {
-        return null;
-    }
-
     return (
-        <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={props.dialogTitleId}
-            aria-describedby={props.dialogDescriptionId}
+        <BrowserActionDialog
+            isOpen={props.isOpen}
+            title={props.title}
+            description={props.description}
+            dialogTitleId={props.dialogTitleId}
+            dialogDescriptionId={props.dialogDescriptionId}
+            closeAriaLabel="Close delete confirmation"
+            isBusy={props.deleteState.type === "deleting"}
+            errorMessage={
+                props.deleteState.type === "error"
+                    ? props.deleteState.message
+                    : null
+            }
+            onClose={props.onClose}
         >
-            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
-                <div className="mb-4 flex items-start justify-between gap-4">
-                    <div>
-                        <h2
-                            id={props.dialogTitleId}
-                            className="text-lg font-semibold text-gray-900"
-                        >
-                            {props.title}
-                        </h2>
-                        <div
-                            id={props.dialogDescriptionId}
-                            className="mt-2 text-sm text-gray-600"
-                        >
-                            {props.description}
-                        </div>
-                    </div>
-                    <button
-                        type="button"
-                        aria-label="Close delete confirmation"
-                        onClick={props.onClose}
-                        disabled={props.deleteState.type === "deleting"}
-                        className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-
+            <div className="mt-4">
                 <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
                     {props.pathDisplay}
                 </p>
-
-                {props.deleteState.type === "error" ? (
-                    <p
-                        role="alert"
-                        className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
-                    >
-                        {props.deleteState.message}
-                    </p>
-                ) : null}
 
                 <div className="mt-6 flex justify-end gap-3">
                     <button
@@ -885,7 +1008,7 @@ function DeleteConfirmationDialog(props: {
                     </button>
                 </div>
             </div>
-        </div>
+        </BrowserActionDialog>
     );
 }
 
