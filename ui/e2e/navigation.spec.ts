@@ -539,9 +539,19 @@ test.describe.serial("File Browser Navigation", () => {
 
         await deleteSelectedItemsButton.click();
 
-        // This waits for the selected-items deletion flow to finish before checking the remaining directory entries.
+        // The file name is rendered in both the listing and the selected-items panel, so wait on disk state first.
+        await expect
+            .poll(async () => {
+                try {
+                    await fs.stat(deletableFilePath);
+                    return "present";
+                } catch {
+                    return "missing";
+                }
+            })
+            .toBe("missing");
         await expect(
-            page.getByRole("link", { name: "delete-selected.txt" }),
+            page.getByRole("button", { name: "Unselect delete-selected.txt" }),
         ).toHaveCount(0);
         await expect(
             page.getByRole("button", {
@@ -549,18 +559,15 @@ test.describe.serial("File Browser Navigation", () => {
             }),
         ).toHaveCount(0);
         await expect(
-            page.getByRole("button", {
-                name: "Unselect file delete-selected.txt",
-            }),
-        ).toHaveCount(0);
-        await expect(
             page.getByRole("row", {
                 name: /File entry delete-selected\.txt/,
             }),
         ).toHaveCount(0);
-        // This verifies the directory action deletes the selected file through the shared selected-items action.
+        // The file row disappearing confirms the directory view refreshed after the shared selected-items delete action.
         await expect(
-            page.getByRole("link", { name: "delete-selected.txt" }),
+            page.getByRole("button", {
+                name: "Unselect file delete-selected.txt",
+            }),
         ).toHaveCount(0);
     });
 });
