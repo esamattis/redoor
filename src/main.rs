@@ -1,12 +1,38 @@
+mod agent;
 mod server;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ractor::Actor;
 use redoor::{actors, logging};
 
+#[derive(Parser)]
+#[command(author, version, about)]
+#[command(subcommand_required = true, arg_required_else_help = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Server(server::CoordinatorArgs),
+    Agent(agent::AgentArgs),
+}
+
 #[tokio::main]
 async fn main() {
-    let args = server::CoordinatorArgs::parse();
+    match Cli::parse().command {
+        Commands::Server(args) => run_server(args).await,
+        Commands::Agent(args) => {
+            if let Err(error) = agent::run(args).await {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+async fn run_server(args: server::CoordinatorArgs) {
     logging::init(args.log.clone());
 
     let (router_ref, _) = actors::router::RouterActor::spawn(None, actors::router::RouterActor, ())

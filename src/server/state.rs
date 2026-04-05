@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::Args;
 use ractor::ActorRef;
 use redoor::actors;
 
@@ -13,7 +13,7 @@ impl ServerState {
     }
 }
 
-#[derive(Parser)]
+#[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct CoordinatorArgs {
     #[arg(long, env = "REDOOR_PORT", default_value_t = 3000)]

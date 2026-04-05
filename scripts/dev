@@ -2,7 +2,7 @@
 
 set -eu
 
-cargo build --bin redoor --bin redoor-agent
+cargo build --bin redoor
 
 cd "$(dirname $(dirname "$(readlink -f "$0")"))"
 

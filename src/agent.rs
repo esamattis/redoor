@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
+use clap::Args;
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{
@@ -24,14 +24,14 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 
 pub struct AgentActor;
 
-#[derive(Parser)]
+#[derive(Args)]
 #[command(author, version, about)]
-struct AgentArgs {
-    ws_address: String,
+pub(crate) struct AgentArgs {
+    pub(crate) ws_address: String,
     #[arg(long)]
-    name: String,
+    pub(crate) name: String,
     #[arg(long)]
-    log: Option<String>,
+    pub(crate) log: Option<String>,
 }
 
 /// Bridges synchronous `tar::Builder` writes into the async websocket sender.
@@ -2443,9 +2443,7 @@ impl Actor for AgentActor {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = AgentArgs::parse();
+pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let server_url = args.ws_address;
     let agent_name = args.name;
     let log_file = args.log;

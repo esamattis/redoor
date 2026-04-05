@@ -156,7 +156,7 @@ export class TempFileManager {
 const TESTS_DIRECTORY = dirname(import.meta.filename);
 const PROJECT_ROOT = join(TESTS_DIRECTORY, "..");
 export const SERVER_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor");
-export const AGENT_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor-agent");
+export const AGENT_PATH = SERVER_PATH;
 
 export type SpawnAgentArgs = {
     wsAddress: string;
@@ -201,7 +201,7 @@ export class ProcessManager {
     }
 
     spawnAgent(args: SpawnAgentArgs): number {
-        const cliArgs = [args.wsAddress, "--name", args.name];
+        const cliArgs = ["agent", args.wsAddress, "--name", args.name];
 
         if (args.log !== undefined) {
             rmSync(args.log, { force: true });
@@ -216,7 +216,7 @@ export class ProcessManager {
     }
 
     spawnServer(args: SpawnServerArgs): number {
-        const cliArgs: string[] = [];
+        const cliArgs: string[] = ["server"];
 
         if (args.log !== undefined) {
             rmSync(args.log, { force: true });

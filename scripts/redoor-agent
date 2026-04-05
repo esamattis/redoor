@@ -1,5 +1,0 @@
-#!/bin/sh
-
-set -eu
-
-cargo run --bin redoor-agent -- "$@"

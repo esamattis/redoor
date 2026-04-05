@@ -6,5 +6,5 @@ cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 
 rm -f log/playwright-*.log
 pnpm run build
-cargo build --bin redoor --bin redoor-agent
+cargo build --bin redoor
 pnpm run --parallel --stream "/^playwright-server:/"

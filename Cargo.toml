@@ -7,10 +7,6 @@ edition = "2024"
 name = "redoor"
 path = "src/main.rs"
 
-[[bin]]
-name = "redoor-agent"
-path = "src/bin/redoor-agent.rs"
-
 [dependencies]
 tokio = { version = "1.42", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
