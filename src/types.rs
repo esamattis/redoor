@@ -3,6 +3,40 @@ use std::fmt;
 use tokio::sync::mpsc;
 use ts_rs::TS;
 
+/// Identifies one agent across the router, websocket protocol, and REST API.
+///
+/// This is the stable key used to address a connected agent and to associate
+/// agent-originated messages with that agent.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(export)]
+#[ts(type = "string")]
+pub struct AgentId(pub String);
+
+impl AgentId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<String> for AgentId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for AgentId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl fmt::Display for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Correlates one router command request with its eventual response.
 ///
 /// This is used for internal command routing between the server router,
@@ -138,7 +172,7 @@ impl fmt::Display for UnixTimestampSeconds {
 pub enum Message {
     #[serde(rename = "agent_register")]
     AgentRegister {
-        agent_id: String,
+        agent_id: AgentId,
         agent_name: String,
         os: String,
         arch: String,
@@ -146,22 +180,22 @@ pub enum Message {
         username: String,
     },
     #[serde(rename = "agent_unregister")]
-    AgentUnregister { agent_id: String },
+    AgentUnregister { agent_id: AgentId },
     #[serde(rename = "command")]
     Command {
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
         command: crate::commands::Command,
     },
     #[serde(rename = "command_response")]
     CommandResponse {
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
         result: crate::commands::CommandResult,
     },
     #[serde(rename = "transfer_progress_update")]
     TransferProgressUpdate {
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
         transferred_bytes: u64,
         total_bytes: Option<u64>,

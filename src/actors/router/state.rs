@@ -1,6 +1,6 @@
 use crate::commands::{Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
-use crate::types::{ChunkIndex, RequestId, TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, ChunkIndex, RequestId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
 use ractor::RpcReplyPort;
 use std::collections::HashMap;
@@ -33,20 +33,20 @@ pub struct AgentInfo {
 /// Registry of currently connected agents keyed by agent id.
 pub struct AgentRegistry {
     /// Connected agents addressable by their stable agent id.
-    pub(crate) by_id: HashMap<String, AgentInfo>,
+    pub(crate) by_id: HashMap<AgentId, AgentInfo>,
 }
 
 #[derive(Default)]
 /// Pending one-shot REST replies waiting for a final command response.
 pub struct PendingRestReplies {
     /// Reply ports plus owning agent ids keyed by internal request id.
-    pub(crate) by_request_id: HashMap<RequestId, (RpcReplyPort<CommandResult>, String)>,
+    pub(crate) by_request_id: HashMap<RequestId, (RpcReplyPort<CommandResult>, AgentId)>,
 }
 
 /// State tracked for one direct download stream flowing from agent to REST.
 pub struct DirectDownload {
     /// Agent currently producing this stream.
-    pub(crate) agent_id: String,
+    pub(crate) agent_id: AgentId,
     /// Bounded REST-facing sink that receives forwarded chunks.
     pub(crate) chunk_sender: tokio::sync::mpsc::Sender<StreamChunk>,
     /// Whether the REST side has already requested cancellation.
@@ -56,7 +56,7 @@ pub struct DirectDownload {
 /// State tracked for one direct upload stream flowing from REST to agent.
 pub struct DirectUpload {
     /// Agent currently receiving this upload.
-    pub(crate) agent_id: String,
+    pub(crate) agent_id: AgentId,
     /// Optional final-result channel for REST uploads that expect completion.
     pub(crate) completion_sender:
         Option<tokio::sync::oneshot::Sender<Result<CommandResult, String>>>,
@@ -122,7 +122,7 @@ pub(crate) enum CopyExecution {
         next_chunk_index: ChunkIndex,
     },
     LocalAgent {
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
     },
 }
@@ -130,9 +130,9 @@ pub(crate) enum CopyExecution {
 /// Bookkeeping for one logical copy request managed by the router.
 pub(crate) struct CopyRequest {
     /// Agent providing the source contents.
-    pub(crate) source_agent_id: String,
+    pub(crate) source_agent_id: AgentId,
     /// Agent receiving the copied contents.
-    pub(crate) dest_agent_id: String,
+    pub(crate) dest_agent_id: AgentId,
     /// Execution mode and internal request ids for this copy.
     pub(crate) execution: CopyExecution,
     /// Streaming/content mode for command and payload validation.

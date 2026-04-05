@@ -226,6 +226,7 @@ mod tests {
     use super::*;
     use crate::commands::Command;
     use crate::streaming::{StreamChunk, StreamPayloadKind};
+    use crate::types::AgentId;
     use axum::extract::ws::Message as WsMessage;
     use ractor::call_t;
     use tokio::sync::{mpsc, oneshot};
@@ -244,7 +245,7 @@ mod tests {
 
         router_ref
             .cast(RouterMsg::RegisterAgent(RegisterAgentRequest {
-                agent_id: "agent-1".to_string(),
+                agent_id: AgentId::from("agent-1"),
                 agent_name: "agent-1".to_string(),
                 socket_id: "socket-1".to_string(),
                 outgoing_text: text_tx,
@@ -260,7 +261,7 @@ mod tests {
         let request_id = call_t!(
             &router_ref,
             |reply| RouterMsg::StartUploadStreamRest(StartUploadRequest {
-                agent_id: "agent-1".to_string(),
+                agent_id: AgentId::from("agent-1"),
                 command: Command::RawUpload {
                     path: "/tmp/file.bin".to_string(),
                 },
@@ -287,7 +288,7 @@ mod tests {
         call_t!(
             &router_ref,
             |reply| RouterMsg::SendStreamChunkToAgent(SendStreamChunkRequest {
-                agent_id: "agent-1".to_string(),
+                agent_id: AgentId::from("agent-1"),
                 request_id,
                 chunk: first_chunk,
                 reply,
@@ -311,7 +312,7 @@ mod tests {
             call_t!(
                 &router_ref_for_chunk,
                 |reply| RouterMsg::SendStreamChunkToAgent(SendStreamChunkRequest {
-                    agent_id: "agent-1".to_string(),
+                    agent_id: AgentId::from("agent-1"),
                     request_id,
                     chunk: second_chunk,
                     reply,
@@ -336,7 +337,10 @@ mod tests {
 
         // Returning promptly here proves the router event loop stayed responsive
         // even though one upload chunk was still waiting for binary backpressure.
-        assert_eq!(list_agents.get("agent-1"), Some(&"agent-1".to_string()));
+        assert_eq!(
+            list_agents.get(&AgentId::from("agent-1")),
+            Some(&"agent-1".to_string())
+        );
 
         let first_frame = binary_rx.recv().await.expect("first binary frame queued");
         assert!(

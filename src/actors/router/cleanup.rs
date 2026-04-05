@@ -6,7 +6,7 @@ use super::ui;
 use crate::commands::CommandResult;
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{AgentId, Message};
 use ractor::ActorRef;
 
 use super::messages::RouterMsg;
@@ -15,7 +15,7 @@ use super::messages::RouterMsg;
 pub(crate) async fn cleanup_agent_requests(
     state: &mut RouterState,
     _myself: &ActorRef<RouterMsg>,
-    agent_id: &str,
+    agent_id: &AgentId,
 ) {
     let orphaned_oneshot: Vec<_> = state
         .pending_rest
@@ -45,7 +45,7 @@ pub(crate) async fn cleanup_agent_requests(
         .iter()
         .filter(|(_, copy_request)| match &copy_request.execution {
             CopyExecution::RemoteStream { .. } => {
-                copy_request.source_agent_id == agent_id || copy_request.dest_agent_id == agent_id
+                &copy_request.source_agent_id == agent_id || &copy_request.dest_agent_id == agent_id
             }
             CopyExecution::LocalAgent {
                 agent_id: local_agent_id,
@@ -73,14 +73,14 @@ pub(crate) async fn cleanup_agent_requests(
         .streams
         .downloads
         .iter()
-        .filter(|(_, transfer)| transfer.agent_id == agent_id)
+        .filter(|(_, transfer)| &transfer.agent_id == agent_id)
         .map(|(request_id, _)| *request_id)
         .collect();
     let orphaned_uploads: Vec<_> = state
         .streams
         .uploads
         .iter()
-        .filter(|(_, transfer)| transfer.agent_id == agent_id)
+        .filter(|(_, transfer)| &transfer.agent_id == agent_id)
         .map(|(request_id, _)| *request_id)
         .collect();
 
@@ -129,7 +129,7 @@ pub(crate) async fn cleanup_agent_requests(
 pub(crate) fn cancel_transfer(
     state: &mut RouterState,
     request_id: crate::types::RequestId,
-    agent_id: String,
+    agent_id: AgentId,
 ) {
     match state.streams.downloads.get_mut(&request_id) {
         Some(transfer) => {

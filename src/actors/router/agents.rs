@@ -4,7 +4,7 @@ use super::ui;
 use crate::commands::CommandResult;
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{AgentId, Message};
 use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
 
@@ -112,7 +112,7 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
 }
 
 /// Builds the agent id to agent name map returned by the REST API.
-pub(crate) fn list_agents(state: &RouterState) -> HashMap<String, String> {
+pub(crate) fn list_agents(state: &RouterState) -> HashMap<AgentId, String> {
     state
         .agents
         .by_id

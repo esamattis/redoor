@@ -7,7 +7,7 @@ use redoor::{
     commands::{Command, CommandHandler, CommandResult},
     log,
     streaming::{self, StreamChunkFrameRequest, StreamPayloadKind},
-    types::{ChunkIndex, Message, RequestId},
+    types::{AgentId, ChunkIndex, Message, RequestId},
 };
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -94,7 +94,7 @@ struct TarUploadSession {
 }
 
 pub struct AgentState {
-    agent_id: String,
+    agent_id: AgentId,
     agent_name: String,
     server_url: String,
     ws_text_tx: Option<mpsc::Sender<WsMessage>>,
@@ -254,7 +254,7 @@ impl AgentActor {
     async fn send_local_copy_error(
         &self,
         write: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
         request_id: RequestId,
         message: String,
     ) {
@@ -501,7 +501,7 @@ impl AgentActor {
         dest_path: String,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
     ) {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
@@ -571,7 +571,7 @@ impl AgentActor {
 
         let mut reporter = LocalCopyProgressReporter::new(
             write.clone(),
-            agent_id.to_string(),
+            agent_id.clone(),
             request_id,
             source_metadata.len(),
         );
@@ -604,7 +604,7 @@ impl AgentActor {
         dest_path: String,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
     ) {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
@@ -711,7 +711,7 @@ impl AgentActor {
 
         let mut reporter = LocalCopyProgressReporter::new(
             write.clone(),
-            agent_id.to_string(),
+            agent_id.clone(),
             request_id,
             plan.total_bytes,
         );
@@ -1115,7 +1115,7 @@ impl AgentActor {
         &self,
         session: TarUploadSession,
         tx: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
         request_id: RequestId,
     ) {
         let final_path = session.path.clone();
@@ -1178,7 +1178,7 @@ impl AgentActor {
         mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
         mut session: RawUploadSession,
         tx: mpsc::Sender<WsMessage>,
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
     ) {
         while let Some(chunk) = chunk_receiver.recv().await {
@@ -1355,7 +1355,7 @@ impl AgentActor {
         mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
         mut session: TarUploadSession,
         tx: mpsc::Sender<WsMessage>,
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
     ) {
         while let Some(chunk) = chunk_receiver.recv().await {
@@ -1542,12 +1542,12 @@ impl AgentActor {
     async fn send_command_response(
         &self,
         write: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
         request_id: RequestId,
         result: CommandResult,
     ) {
         let response = Message::CommandResponse {
-            agent_id: agent_id.to_string(),
+            agent_id: agent_id.clone(),
             request_id,
             result,
         };
@@ -1589,7 +1589,7 @@ impl AgentActor {
     async fn handle_command_message(
         write_text: mpsc::Sender<WsMessage>,
         write_binary: mpsc::Sender<WsMessage>,
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
         command: Command,
         active_downloads: ActiveDownloads,
@@ -1692,7 +1692,7 @@ impl AgentActor {
         &self,
         active_uploads: ActiveUploads,
         write: &mpsc::Sender<WsMessage>,
-        agent_id: &str,
+        agent_id: &AgentId,
         request_id: RequestId,
         command: Command,
     ) -> bool {
@@ -1751,7 +1751,7 @@ impl AgentActor {
                                 bytes_written: 0,
                             },
                             write.clone(),
-                            agent_id.to_string(),
+                            agent_id.clone(),
                             request_id,
                         ));
                     }
@@ -1817,7 +1817,7 @@ impl AgentActor {
                             chunk_receiver,
                             session,
                             write.clone(),
-                            agent_id.to_string(),
+                            agent_id.clone(),
                             request_id,
                         ));
                     }
@@ -2130,7 +2130,7 @@ struct DirectoryCopyPlan {
 
 struct LocalCopyProgressReporter {
     write: mpsc::Sender<WsMessage>,
-    agent_id: String,
+    agent_id: AgentId,
     request_id: RequestId,
     total_bytes: u64,
     transferred_bytes: u64,
@@ -2144,7 +2144,7 @@ impl LocalCopyProgressReporter {
 
     fn new(
         write: mpsc::Sender<WsMessage>,
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
         total_bytes: u64,
     ) -> Self {
@@ -2201,7 +2201,7 @@ impl LocalCopyProgressReporter {
 impl Actor for AgentActor {
     type Msg = AgentMsg;
     type State = AgentState;
-    type Arguments = (String, String, String);
+    type Arguments = (AgentId, String, String);
 
     async fn pre_start(
         &self,
@@ -2450,7 +2450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_name = args.name;
     let log_file = args.log;
 
-    let agent_id = agent_name.clone();
+    let agent_id = AgentId::from(agent_name.clone());
 
     redoor::logging::init(log_file);
     log!(Level::Info, "Starting agent '{}'", agent_name);

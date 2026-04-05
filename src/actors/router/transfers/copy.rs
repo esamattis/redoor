@@ -10,7 +10,7 @@ use crate::log;
 use crate::logging::Level;
 use crate::streaming::StreamChunkFrameRequest;
 use crate::types::Message;
-use crate::types::{ChunkIndex, RequestId, TransferId};
+use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
 use ractor::{ActorRef, RpcReplyPort};
 
 /// Reframes one source chunk into destination-sized frames and forwards them incrementally.
@@ -265,7 +265,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
 pub(crate) fn route_chunk(
     state: &mut RouterState,
     myself: &ActorRef<RouterMsg>,
-    agent_id: String,
+    agent_id: AgentId,
     chunk: crate::streaming::StreamChunk,
     reply: RpcReplyPort<()>,
 ) {
@@ -393,7 +393,7 @@ pub(crate) fn route_chunk(
 /// Finalizes one remote-copy chunk after all destination frames have been queued.
 pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
-    source_agent_id: String,
+    source_agent_id: AgentId,
     public_request_id: TransferId,
     source_request_id: RequestId,
     dest_request_id: RequestId,
@@ -449,7 +449,7 @@ pub(crate) fn finish_routed_chunk(
 /// Handles the final command response that completes a local or remote copy.
 pub(crate) fn finish_transfer(
     state: &mut RouterState,
-    agent_id: String,
+    agent_id: AgentId,
     request_id: RequestId,
     result: CommandResult,
 ) -> bool {

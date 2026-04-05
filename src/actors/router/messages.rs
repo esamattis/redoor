@@ -1,13 +1,13 @@
 use super::state::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
-use crate::types::{ChunkIndex, RequestId, TransferId};
+use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
 use axum::extract::ws::Message as WsMessage;
 use ractor::RpcReplyPort;
 
 /// Payload for registering one websocket-backed agent session with the router.
 pub struct RegisterAgentRequest {
     /// Stable agent identifier used as the router registry key.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Human-readable agent name shown in the UI.
     pub agent_name: String,
     /// Unique websocket session identifier for this connection.
@@ -29,7 +29,7 @@ pub struct RegisterAgentRequest {
 /// Final command response routed back from an agent to the original caller.
 pub struct RouteResponse {
     /// Agent that produced the response.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Internal request id used to correlate the response.
     pub request_id: RequestId,
     /// Final command result returned by the agent.
@@ -47,7 +47,7 @@ pub struct RegisterUiSubscriberRequest {
 /// Executes a one-shot command on an agent and replies with its final result.
 pub struct ExecuteCommandRequest {
     /// Target agent that should execute the command.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// One-shot command to run on the agent.
     pub command: Command,
     /// Reply port that receives the final command result.
@@ -57,7 +57,7 @@ pub struct ExecuteCommandRequest {
 /// Routes one inbound streaming chunk from an agent into the matching transfer flow.
 pub struct RouteStreamChunkRequest {
     /// Agent that sent the chunk.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Parsed stream chunk received from the websocket binary lane.
     pub chunk: crate::streaming::StreamChunk,
     /// Reply port used to acknowledge chunk handling back to the session actor.
@@ -67,7 +67,7 @@ pub struct RouteStreamChunkRequest {
 /// Completes one bounded direct-download chunk forward after the REST receiver accepts it.
 pub struct FinishDownloadChunkRoute {
     /// Agent that produced the download chunk.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Internal transfer request id for the direct download.
     pub request_id: RequestId,
     /// Chunk index used for completion logging.
@@ -85,7 +85,7 @@ pub struct FinishDownloadChunkRoute {
 /// Completes one bounded direct-upload chunk forward after the agent binary lane accepts it.
 pub struct FinishUploadChunkRoute {
     /// Agent that should receive the upload chunk.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Internal transfer request id for the direct upload.
     pub request_id: RequestId,
     /// Number of payload bytes in the forwarded chunk.
@@ -101,7 +101,7 @@ pub struct FinishUploadChunkRoute {
 /// Completes one remote-copy chunk forward after all derived destination frames are queued.
 pub struct FinishCopyChunkRoute {
     /// Source agent that originally sent the copy chunk.
-    pub source_agent_id: String,
+    pub source_agent_id: AgentId,
     /// Public transfer id exposed for the logical copy operation.
     pub public_request_id: TransferId,
     /// Internal request id for the source-side download stream.
@@ -121,7 +121,7 @@ pub struct FinishCopyChunkRoute {
 /// Starts a direct download-style streaming command for a REST caller.
 pub struct ExecuteStreamRequest {
     /// Target agent that should execute the download-style command.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Streaming command to run on the agent.
     pub command: Command,
     /// Path used for transfer progress reporting.
@@ -137,7 +137,7 @@ pub struct ExecuteStreamRequest {
 /// Starts a direct upload stream and returns the allocated internal request id.
 pub struct StartUploadRequest {
     /// Target agent that should receive the upload.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Streaming upload command to run on the agent.
     pub command: Command,
     /// Path used for progress reporting.
@@ -153,7 +153,7 @@ pub struct StartUploadRequest {
 /// Forwards one upload chunk from the REST layer to the target agent.
 pub struct SendStreamChunkRequest {
     /// Agent that should receive the chunk.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Internal request id of the active upload stream.
     pub request_id: RequestId,
     /// Chunk payload to forward over the websocket binary lane.
@@ -165,11 +165,11 @@ pub struct SendStreamChunkRequest {
 /// Starts a local or remote copy operation managed by the router.
 pub struct StartCopyRequest {
     /// Source agent that provides the file or directory contents.
-    pub source_agent_id: String,
+    pub source_agent_id: AgentId,
     /// Source path to copy from.
     pub source_path: String,
     /// Destination agent that receives the copied contents.
-    pub dest_agent_id: String,
+    pub dest_agent_id: AgentId,
     /// Destination path to copy to.
     pub dest_path: String,
     /// Expected total byte count used for progress reporting.
@@ -183,7 +183,7 @@ pub struct StartCopyRequest {
 /// Progress notification emitted by an agent for copy-style transfers.
 pub struct TransferProgressUpdateRequest {
     /// Agent that emitted the progress update.
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// Internal request id the update belongs to.
     pub request_id: RequestId,
     /// Latest transferred byte count reported by the agent.
@@ -195,11 +195,11 @@ pub struct TransferProgressUpdateRequest {
 pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
     UnregisterAgent {
-        agent_id: String,
+        agent_id: AgentId,
     },
     RouteResponse(RouteResponse),
     GetAgentList {
-        reply: RpcReplyPort<std::collections::HashMap<String, String>>,
+        reply: RpcReplyPort<std::collections::HashMap<AgentId, String>>,
     },
     GetTransferProgress {
         reply: RpcReplyPort<TransferProgressListResponse>,
@@ -217,7 +217,7 @@ pub enum RouterMsg {
     StartUploadStreamRest(StartUploadRequest),
     SendStreamChunkToAgent(SendStreamChunkRequest),
     CancelTransfer {
-        agent_id: String,
+        agent_id: AgentId,
         request_id: RequestId,
     },
     StartCopyRest(StartCopyRequest),

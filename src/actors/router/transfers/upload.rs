@@ -8,7 +8,7 @@ use super::super::ui;
 use crate::commands::CommandResult;
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{AgentId, Message};
 use ractor::ActorRef;
 
 /// Starts a direct upload stream and records its progress entry.
@@ -137,7 +137,7 @@ pub(crate) fn route_chunk(
 /// Finalizes one upload chunk after the downstream binary send completes.
 pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
-    agent_id: String,
+    agent_id: AgentId,
     request_id: crate::types::RequestId,
     bytes: u64,
     is_error: bool,
@@ -188,7 +188,7 @@ pub(crate) fn finish_routed_chunk(
 /// Handles the final command response that completes a direct upload stream.
 pub(crate) fn finish_transfer(
     state: &mut RouterState,
-    agent_id: String,
+    agent_id: AgentId,
     request_id: crate::types::RequestId,
     result: CommandResult,
 ) {

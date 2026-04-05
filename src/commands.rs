@@ -1,4 +1,4 @@
-use crate::types::{TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, TransferId, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -124,7 +124,7 @@ pub struct AgentListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentInfoResponse {
-    pub id: String,
+    pub id: AgentId,
     pub name: String,
 }
 
@@ -184,7 +184,7 @@ pub struct EchoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentDetailsResponse {
-    pub id: String,
+    pub id: AgentId,
     pub name: String,
     pub pid: u32,
     pub cwd: String,
@@ -229,7 +229,7 @@ pub struct CreateDirectoryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CopyEndpoint {
-    pub agent: String,
+    pub agent: AgentId,
     pub path: String,
 }
 
@@ -255,7 +255,7 @@ pub struct TransferProgressListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TransferProgressUpdate {
-    pub agent_id: String,
+    pub agent_id: AgentId,
     pub request_id: TransferId,
     #[ts(type = "number")]
     pub transferred_bytes: u64,
@@ -275,7 +275,7 @@ pub enum UiEvent {
 #[ts(export)]
 pub struct TransferProgressEntry {
     pub request_id: TransferId,
-    pub agent_id: String,
+    pub agent_id: AgentId,
     pub path: String,
     pub source: Option<CopyEndpoint>,
     pub dest: Option<CopyEndpoint>,
@@ -671,7 +671,7 @@ impl CommandHandler {
         let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
 
         CommandResult::GetAgentDetails(AgentDetailsResponse {
-            id: String::new(),
+            id: AgentId::from(""),
             name: String::new(),
             pid,
             cwd,

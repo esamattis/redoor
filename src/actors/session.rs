@@ -1,7 +1,7 @@
 use crate::actors::router::RouterMsg;
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{AgentId, Message};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, rpc::CallResult};
@@ -29,7 +29,7 @@ pub struct SessionState {
     pub router_ref: ActorRef<RouterMsg>,
     /// The agent ID assigned after the agent sends an `AgentRegister` message.
     /// `None` until registration completes.
-    pub agent_id: Option<String>,
+    pub agent_id: Option<AgentId>,
     /// Channel for sending JSON/control WebSocket frames back to the agent.
     pub outgoing_text: mpsc::UnboundedSender<WsMessage>,
     /// Channel for sending binary streaming frames back to the agent.
@@ -139,12 +139,16 @@ impl Actor for SessionActor {
             },
             SessionMsg::IncomingBinary(bytes, reply) => {
                 if let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) {
+                    let Some(agent_id) = state.agent_id.clone() else {
+                        let _ = reply.send(());
+                        return Ok(());
+                    };
                     let _ =
                         state
                             .router_ref
                             .cast(crate::actors::router::RouterMsg::RouteStreamChunk(
                                 crate::actors::router::RouteStreamChunkRequest {
-                                    agent_id: state.agent_id.clone().unwrap_or_default(),
+                                    agent_id,
                                     chunk,
                                     reply,
                                 },

@@ -6,7 +6,7 @@ use redoor::commands::{
     RawUploadResponse, UiEvent,
 };
 use redoor::streaming::StreamChunkFrameRequest;
-use redoor::types::ChunkIndex;
+use redoor::types::{AgentId, ChunkIndex};
 
 use clap::Parser;
 use redoor::{Level, log, logging};
@@ -61,7 +61,7 @@ fn join_agent_path(cwd: &str, path: &str) -> String {
 /// them to the destination agent in order.
 async fn forward_split_stream_chunk(
     state: &ServerState,
-    agent_id: &str,
+    agent_id: &AgentId,
     chunk_index: &mut ChunkIndex,
     request: StreamChunkFrameRequest<'_>,
 ) -> Result<(), Response> {
@@ -76,7 +76,7 @@ async fn forward_split_stream_chunk(
             &state.router_ref,
             |reply| actors::router::RouterMsg::SendStreamChunkToAgent(
                 actors::router::SendStreamChunkRequest {
-                    agent_id: agent_id.to_string(),
+                    agent_id: agent_id.clone(),
                     request_id: chunk.request_id,
                     chunk,
                     reply,
@@ -124,13 +124,13 @@ async fn forward_split_stream_chunk(
 
 async fn get_agent_details(
     state: &ServerState,
-    agent_id: &str,
+    agent_id: &AgentId,
 ) -> Result<AgentDetailsResponse, Response> {
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.to_string(),
+                agent_id: agent_id.clone(),
                 command: Command::GetAgentDetails,
                 reply,
             }
@@ -165,7 +165,7 @@ async fn get_agent_details(
 
 async fn resolve_agent_path(
     state: &ServerState,
-    agent_id: &str,
+    agent_id: &AgentId,
     path: String,
 ) -> Result<String, Response> {
     if path.starts_with('/') {
@@ -347,11 +347,12 @@ async fn get_agent_details_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::GetAgentDetails,
                 reply,
             }
@@ -403,11 +404,12 @@ async fn ls_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::Ls { path: Some(path) },
                 reply,
             }
@@ -465,11 +467,12 @@ async fn cat_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::Cat { path },
                 reply,
             }
@@ -647,11 +650,12 @@ async fn echo_agent_handler(
     AxumState(state): AxumState<ServerState>,
     Json(payload): Json<EchoRequest>,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::Echo {
                     request: payload.clone()
                 },
@@ -732,12 +736,13 @@ async fn raw_agent_handler(
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     // Get file metadata first
     let metadata = match call_t!(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::Metadata { path: path.clone() },
                 reply,
             }
@@ -813,7 +818,7 @@ async fn raw_agent_handler(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteStreamCommandRest(
             actors::router::ExecuteStreamRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::RawDownload {
                     path: path.clone(),
                     range_start,
@@ -932,6 +937,7 @@ async fn raw_agent_put_handler(
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
     let total_bytes = match headers.get(axum::http::header::CONTENT_LENGTH) {
         Some(header_value) => match header_value.to_str() {
             Ok(value) => match value.parse::<u64>() {
@@ -967,7 +973,7 @@ async fn raw_agent_put_handler(
         }
     };
 
-    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+    let resolved_path = match resolve_agent_path(&state, &agent_id, path).await {
         Ok(path) => path,
         Err(response) => return response,
     };
@@ -979,7 +985,7 @@ async fn raw_agent_put_handler(
         &state.router_ref,
         |reply| actors::router::RouterMsg::StartUploadStreamRest(
             actors::router::StartUploadRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::RawUpload {
                     path: resolved_path.clone(),
                 },
@@ -1025,7 +1031,7 @@ async fn raw_agent_put_handler(
                 let abort_message = format!("Failed to read request body: {}", error);
                 let _ = forward_split_stream_chunk(
                     &state,
-                    &agent,
+                    &agent_id,
                     &mut chunk_index,
                     StreamChunkFrameRequest::new(request_id, abort_message.as_bytes())
                         .is_error(true),
@@ -1046,7 +1052,7 @@ async fn raw_agent_put_handler(
 
         if let Err(response) = forward_split_stream_chunk(
             &state,
-            &agent,
+            &agent_id,
             &mut chunk_index,
             StreamChunkFrameRequest::new(request_id, &data).is_last(false),
         )
@@ -1058,7 +1064,7 @@ async fn raw_agent_put_handler(
 
     if let Err(response) = forward_split_stream_chunk(
         &state,
-        &agent,
+        &agent_id,
         &mut chunk_index,
         StreamChunkFrameRequest::new(request_id, &[]),
     )
@@ -1119,7 +1125,8 @@ async fn raw_agent_delete_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+    let agent_id = AgentId::from(agent.clone());
+    let resolved_path = match resolve_agent_path(&state, &agent_id, path).await {
         Ok(path) => path,
         Err(response) => return response,
     };
@@ -1128,7 +1135,7 @@ async fn raw_agent_delete_handler(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::RawDelete {
                     path: resolved_path.clone(),
                 },
@@ -1178,7 +1185,8 @@ async fn create_directory_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let resolved_path = match resolve_agent_path(&state, &agent, path).await {
+    let agent_id = AgentId::from(agent.clone());
+    let resolved_path = match resolve_agent_path(&state, &agent_id, path).await {
         Ok(path) => path,
         Err(response) => return response,
     };
@@ -1187,7 +1195,7 @@ async fn create_directory_handler(
         &state.router_ref,
         |reply| actors::router::RouterMsg::ExecuteCommandRest(
             actors::router::ExecuteCommandRequest {
-                agent_id: agent.clone(),
+                agent_id: agent_id.clone(),
                 command: Command::CreateDirectory {
                     path: resolved_path.clone(),
                 },

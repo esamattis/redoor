@@ -4,14 +4,14 @@ use crate::commands::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
     TransferProgressState,
 };
-use crate::types::{RequestId, TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, RequestId, TransferId, UnixTimestampSeconds};
 
 /// Inputs needed to register a new direct download in progress tracking.
 pub(crate) struct DownloadStartContext {
     /// Internal request id of the direct download stream.
     pub(crate) request_id: RequestId,
     /// Agent producing the download stream.
-    pub(crate) agent_id: String,
+    pub(crate) agent_id: AgentId,
     /// Path shown in progress listings.
     pub(crate) path: String,
     /// Expected total byte count for the transfer.
@@ -25,7 +25,7 @@ pub(crate) struct UploadStartContext {
     /// Internal request id of the direct upload stream.
     pub(crate) request_id: RequestId,
     /// Agent receiving the upload stream.
-    pub(crate) agent_id: String,
+    pub(crate) agent_id: AgentId,
     /// Path shown in progress listings.
     pub(crate) path: String,
     /// Expected total byte count for the transfer.
@@ -40,11 +40,11 @@ pub(crate) struct CopyStartContext {
     /// Public transfer id for the logical copy.
     pub(crate) request_id: TransferId,
     /// Source agent shown in progress listings.
-    pub(crate) source_agent_id: String,
+    pub(crate) source_agent_id: AgentId,
     /// Source path shown in progress listings.
     pub(crate) source_path: String,
     /// Destination agent shown in progress listings.
-    pub(crate) dest_agent_id: String,
+    pub(crate) dest_agent_id: AgentId,
     /// Destination path shown in progress listings.
     pub(crate) dest_path: String,
     /// Expected total byte count for the copy.

@@ -5,7 +5,7 @@ use super::super::state::RouterState;
 use super::super::ui;
 use crate::log;
 use crate::logging::Level;
-use crate::types::Message;
+use crate::types::{AgentId, Message};
 use ractor::ActorRef;
 use ractor::RpcReplyPort;
 
@@ -58,7 +58,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
 pub(crate) fn route_chunk(
     state: &mut RouterState,
     myself: &ActorRef<RouterMsg>,
-    agent_id: String,
+    agent_id: AgentId,
     chunk: crate::streaming::StreamChunk,
     reply: RpcReplyPort<()>,
 ) {
@@ -154,7 +154,7 @@ pub(crate) fn route_chunk(
 /// Finalizes one direct-download chunk after the REST-side bounded send completes.
 pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
-    agent_id: String,
+    agent_id: AgentId,
     request_id: crate::types::RequestId,
     chunk_index: crate::types::ChunkIndex,
     is_last: bool,
