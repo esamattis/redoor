@@ -74,12 +74,14 @@ async fn forward_split_stream_chunk(
         let next_chunk_index = frames.next_chunk_index();
         match call_t!(
             &state.router_ref,
-            |reply| actors::router::RouterMsg::SendStreamChunkToAgent {
-                agent_id: agent_id.to_string(),
-                request_id: chunk.request_id,
-                chunk,
-                reply,
-            },
+            |reply| actors::router::RouterMsg::SendStreamChunkToAgent(
+                actors::router::SendStreamChunkRequest {
+                    agent_id: agent_id.to_string(),
+                    request_id: chunk.request_id,
+                    chunk,
+                    reply,
+                }
+            ),
             30000
         ) {
             Ok(Ok(())) => {}
@@ -126,11 +128,13 @@ async fn get_agent_details(
 ) -> Result<AgentDetailsResponse, Response> {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent_id.to_string(),
-            command: Command::GetAgentDetails,
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.to_string(),
+                command: Command::GetAgentDetails,
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
@@ -258,10 +262,12 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: ActorRef<actors::router
     let (mut sender, mut receiver) = socket.split();
     let (tx_out, mut rx_out) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
 
-    let _ = router_ref.cast(actors::router::RouterMsg::RegisterUiSubscriber {
-        subscriber_id: subscriber_id.clone(),
-        sender: tx_out,
-    });
+    let _ = router_ref.cast(actors::router::RouterMsg::RegisterUiSubscriber(
+        actors::router::RegisterUiSubscriberRequest {
+            subscriber_id: subscriber_id.clone(),
+            sender: tx_out,
+        },
+    ));
 
     tokio::select! {
         _ = async {
@@ -343,11 +349,13 @@ async fn get_agent_details_handler(
 ) -> impl IntoResponse {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::GetAgentDetails,
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::GetAgentDetails,
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(result) => match result {
@@ -397,11 +405,13 @@ async fn ls_agent_handler(
 ) -> impl IntoResponse {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::Ls { path: Some(path) },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::Ls { path: Some(path) },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(result) => match result {
@@ -457,11 +467,13 @@ async fn cat_agent_handler(
 ) -> impl IntoResponse {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::Cat { path },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::Cat { path },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(result) => match result {
@@ -533,13 +545,15 @@ async fn copy_file_handler(
 
     let source_metadata = match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: payload.source.agent.clone(),
-            command: Command::Metadata {
-                path: source_path.clone(),
-            },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: payload.source.agent.clone(),
+                command: Command::Metadata {
+                    path: source_path.clone(),
+                },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(CommandResult::Metadata(metadata)) => metadata,
@@ -592,7 +606,7 @@ async fn copy_file_handler(
 
     let copy_request_id = match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::StartCopyRest {
+        |reply| actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
             source_agent_id: payload.source.agent.clone(),
             source_path: source_path.clone(),
             dest_agent_id: payload.dest.agent.clone(),
@@ -600,7 +614,7 @@ async fn copy_file_handler(
             total_bytes,
             content_kind,
             reply,
-        },
+        }),
         30000
     ) {
         Ok(Ok(copy_request_id)) => copy_request_id,
@@ -635,13 +649,15 @@ async fn echo_agent_handler(
 ) -> impl IntoResponse {
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::Echo {
-                request: payload.clone()
-            },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::Echo {
+                    request: payload.clone()
+                },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(result) => match result {
@@ -719,11 +735,13 @@ async fn raw_agent_handler(
     // Get file metadata first
     let metadata = match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::Metadata { path: path.clone() },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::Metadata { path: path.clone() },
+                reply,
+            }
+        ),
         5000
     ) {
         Ok(CommandResult::Metadata(metadata)) => metadata,
@@ -793,18 +811,20 @@ async fn raw_agent_handler(
 
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteStreamCommandRest {
-            agent_id: agent.clone(),
-            command: Command::RawDownload {
+        |reply| actors::router::RouterMsg::ExecuteStreamCommandRest(
+            actors::router::ExecuteStreamRequest {
+                agent_id: agent.clone(),
+                command: Command::RawDownload {
+                    path: path.clone(),
+                    range_start,
+                    range_end,
+                },
                 path: path.clone(),
-                range_start,
-                range_end,
-            },
-            path: path.clone(),
-            total_bytes: content_length,
-            reply,
-            chunk_sender: response_sender,
-        },
+                total_bytes: content_length,
+                reply,
+                chunk_sender: response_sender,
+            }
+        ),
         30000
     ) {
         Ok(Ok(())) => {} // stream started successfully
@@ -957,16 +977,18 @@ async fn raw_agent_put_handler(
 
     let request_id = match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::StartUploadStreamRest {
-            agent_id: agent.clone(),
-            command: Command::RawUpload {
+        |reply| actors::router::RouterMsg::StartUploadStreamRest(
+            actors::router::StartUploadRequest {
+                agent_id: agent.clone(),
+                command: Command::RawUpload {
+                    path: resolved_path.clone(),
+                },
                 path: resolved_path.clone(),
-            },
-            path: resolved_path.clone(),
-            total_bytes,
-            completion_sender: upload_completion_sender,
-            reply,
-        },
+                total_bytes,
+                completion_sender: upload_completion_sender,
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(Ok(request_id)) => request_id,
@@ -1104,13 +1126,15 @@ async fn raw_agent_delete_handler(
 
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::RawDelete {
-                path: resolved_path.clone(),
-            },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::RawDelete {
+                    path: resolved_path.clone(),
+                },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(CommandResult::RawDelete) => (
@@ -1161,13 +1185,15 @@ async fn create_directory_handler(
 
     match call_t!(
         &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest {
-            agent_id: agent.clone(),
-            command: Command::CreateDirectory {
-                path: resolved_path.clone(),
-            },
-            reply,
-        },
+        |reply| actors::router::RouterMsg::ExecuteCommandRest(
+            actors::router::ExecuteCommandRequest {
+                agent_id: agent.clone(),
+                command: Command::CreateDirectory {
+                    path: resolved_path.clone(),
+                },
+                reply,
+            }
+        ),
         30000
     ) {
         Ok(CommandResult::CreateDirectory) => (

@@ -87,17 +87,19 @@ impl Actor for SessionActor {
                     hostname,
                     username,
                 } => {
-                    let _ = state.router_ref.cast(RouterMsg::RegisterAgent {
-                        agent_id: agent_id.clone(),
-                        agent_name,
-                        socket_id: state.socket_id.clone(),
-                        outgoing_text: state.outgoing_text.clone(),
-                        outgoing_binary: state.outgoing_binary.clone(),
-                        os,
-                        arch,
-                        hostname,
-                        username,
-                    });
+                    let _ = state.router_ref.cast(RouterMsg::RegisterAgent(
+                        crate::actors::router::RegisterAgentRequest {
+                            agent_id: agent_id.clone(),
+                            agent_name,
+                            socket_id: state.socket_id.clone(),
+                            outgoing_text: state.outgoing_text.clone(),
+                            outgoing_binary: state.outgoing_binary.clone(),
+                            os,
+                            arch,
+                            hostname,
+                            username,
+                        },
+                    ));
                     state.agent_id = Some(agent_id);
                 }
                 Message::AgentUnregister { agent_id } => {
@@ -110,11 +112,13 @@ impl Actor for SessionActor {
                     request_id,
                     result,
                 } => {
-                    let _ = state.router_ref.cast(RouterMsg::RouteResponse {
-                        agent_id,
-                        request_id,
-                        result,
-                    });
+                    let _ = state.router_ref.cast(RouterMsg::RouteResponse(
+                        crate::actors::router::RouteResponse {
+                            agent_id,
+                            request_id,
+                            result,
+                        },
+                    ));
                 }
                 Message::TransferProgressUpdate {
                     agent_id,
@@ -122,12 +126,14 @@ impl Actor for SessionActor {
                     transferred_bytes,
                     total_bytes,
                 } => {
-                    let _ = state.router_ref.cast(RouterMsg::TransferProgressUpdate {
-                        agent_id,
-                        request_id,
-                        transferred_bytes,
-                        total_bytes,
-                    });
+                    let _ = state.router_ref.cast(RouterMsg::TransferProgressUpdate(
+                        crate::actors::router::TransferProgressUpdateRequest {
+                            agent_id,
+                            request_id,
+                            transferred_bytes,
+                            total_bytes,
+                        },
+                    ));
                 }
                 _ => {}
             },
@@ -136,11 +142,13 @@ impl Actor for SessionActor {
                     let _ =
                         state
                             .router_ref
-                            .cast(crate::actors::router::RouterMsg::RouteStreamChunk {
-                                agent_id: state.agent_id.clone().unwrap_or_default(),
-                                chunk,
-                                reply,
-                            });
+                            .cast(crate::actors::router::RouterMsg::RouteStreamChunk(
+                                crate::actors::router::RouteStreamChunkRequest {
+                                    agent_id: state.agent_id.clone().unwrap_or_default(),
+                                    chunk,
+                                    reply,
+                                },
+                            ));
                 } else {
                     let _ = reply.send(());
                 }
