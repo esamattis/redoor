@@ -418,6 +418,52 @@ test.describe.serial("File Browser Navigation", () => {
         }
     });
 
+    test("should create directory from directory view", async ({ page }) => {
+        const createdDirectoryName = `created-via-ui-${Date.now()}`;
+        const createdDirectoryPath = path.join(
+            TEST_DIR,
+            "subdir3",
+            createdDirectoryName,
+        );
+
+        await fs.rm(createdDirectoryPath, { force: true, recursive: true });
+
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
+        await page.getByRole("link", { name: "subdir3", exact: true }).click();
+
+        await page.getByRole("button", { name: "Create directory" }).click();
+
+        // The dialog must open before submitting so the test exercises the browser action rather than the API directly.
+        await expect(
+            page.getByRole("dialog", { name: "Create directory" }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("textbox", { name: "Directory name" })
+            .fill(createdDirectoryName);
+
+        // The preview path confirms the UI targets the current directory instead of the agent root.
+        await expect(page.getByText(createdDirectoryPath)).toBeVisible();
+
+        await page
+            .getByRole("dialog", { name: "Create directory" })
+            .getByRole("button", { name: "Create directory", exact: true })
+            .click();
+
+        // Seeing the new entry in the listing confirms the route refreshed with the created directory.
+        await expect(
+            page.getByRole("link", { name: createdDirectoryName, exact: true }),
+        ).toBeVisible();
+
+        const createdDirectoryStats = await fs.stat(createdDirectoryPath);
+
+        // A directory on disk proves the UI action created the requested directory through the backend.
+        expect(createdDirectoryStats.isDirectory()).toBe(true);
+    });
+
     test("should delete file from detail view after confirmation", async ({
         page,
     }) => {
