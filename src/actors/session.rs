@@ -184,9 +184,18 @@ impl Actor for SessionActor {
 /// halves, spawns a [`SessionActor`] to manage the connection, and wires up
 /// background tasks that shuttle frames between the WebSocket and the actor.
 ///
+/// The receive task parses inbound text frames into [`Message`] values and hands
+/// inbound binary frames to the session actor for stream routing. The send task
+/// merges the actor's outbound text and binary lanes back onto the single
+/// websocket sink, intentionally prioritizing text frames so registration,
+/// command, cancellation, and response messages stay responsive while large
+/// transfers are in flight.
+///
 /// When the remote side disconnects, the receive task detects the closed stream
 /// and stops the `SessionActor`, which in turn unregisters the agent from the
-/// [`RouterActor`](super::router::RouterActor) via its `post_stop` hook.
+/// [`RouterActor`](super::router::RouterActor) via its `post_stop` hook. The
+/// outbound relay task exits once both outbound lanes are closed or the
+/// websocket sender itself fails.
 pub async fn handle_websocket(
     socket: WebSocket,
     socket_id: String,
@@ -251,11 +260,19 @@ pub async fn handle_websocket(
         let mut binary_closed = false;
 
         loop {
+            // Drain both outbound lanes onto the single websocket sink.
+            //
+            // `biased` gives the text lane priority whenever both lanes are ready,
+            // which keeps control-plane JSON messages responsive even if binary
+            // streaming traffic is flowing continuously.
             let next_message = tokio::select! {
                 biased;
                 message = rx_out_text.recv(), if !text_closed => match message {
                     Some(message) => Some(message),
                     None => {
+                        // The text producer side is gone. Mark it closed so future
+                        // iterations stop polling this branch, but keep relaying any
+                        // remaining binary traffic until that lane also shuts down.
                         text_closed = true;
                         None
                     }
@@ -263,17 +280,24 @@ pub async fn handle_websocket(
                 message = rx_out_binary.recv(), if !binary_closed => match message {
                     Some(message) => Some(message),
                     None => {
+                        // The binary producer side is gone. We still keep the task
+                        // alive for text traffic until both lanes are closed.
                         binary_closed = true;
                         None
                     }
                 },
+                // Once both lanes are marked closed there is nothing left to relay.
                 else => break,
             };
 
+            // A `None` here means one lane just closed in this iteration, not that
+            // the websocket should close immediately.
             let Some(message) = next_message else {
                 continue;
             };
 
+            // Forward the next queued websocket frame. Any send failure means the
+            // websocket sink is no longer usable, so this relay task exits.
             if sender.send(message).await.is_err() {
                 break;
             }

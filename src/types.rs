@@ -170,6 +170,9 @@ impl fmt::Display for UnixTimestampSeconds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {
+    /// Sent by a newly connected agent to bind the websocket session to its
+    /// stable agent id and publish metadata used by the router, UI, and agent
+    /// detail responses.
     #[serde(rename = "agent_register")]
     AgentRegister {
         agent_id: AgentId,
@@ -179,20 +182,40 @@ pub enum Message {
         hostname: String,
         username: String,
     },
+
+    /// Optional explicit teardown signal from an agent asking the router to
+    /// remove it from the active registry; websocket session shutdown also
+    /// triggers the same cleanup automatically.
     #[serde(rename = "agent_unregister")]
     AgentUnregister { agent_id: AgentId },
+
+    /// Sent by the router to start a request on an agent.
+    ///
+    /// The `request_id` becomes the correlation key for the request's terminal
+    /// `CommandResponse` and, for streaming commands, any binary stream frames.
     #[serde(rename = "command")]
     Command {
         agent_id: AgentId,
         request_id: RequestId,
         command: crate::commands::Command,
     },
+
+    /// Sent by an agent when a request reaches its terminal result.
+    ///
+    /// The router routes this either back to a waiting one-shot REST caller or
+    /// uses it to complete router-managed uploads and copy operations.
     #[serde(rename = "command_response")]
     CommandResponse {
         agent_id: AgentId,
         request_id: RequestId,
         result: crate::commands::CommandResult,
     },
+
+    /// Sent by an agent to report byte progress for a router-managed copy that
+    /// executes locally on one agent.
+    ///
+    /// Direct uploads and downloads do not use this message because the router
+    /// derives their progress from streamed chunks instead.
     #[serde(rename = "transfer_progress_update")]
     TransferProgressUpdate {
         agent_id: AgentId,
@@ -200,8 +223,20 @@ pub enum Message {
         transferred_bytes: u64,
         total_bytes: Option<u64>,
     },
+
+    /// Sent by the router to ask an agent to abort an active download-style
+    /// stream for the given request id.
+    ///
+    /// This is used when the REST-side consumer goes away or router cleanup
+    /// cancels the transfer; the agent currently applies it to active
+    /// downloads, not uploads.
     #[serde(rename = "cancel_transfer")]
     CancelTransfer { request_id: RequestId },
+
+    /// Protocol-level error outside any request-specific response flow.
+    ///
+    /// The router currently uses this to reject invalid agent registration such
+    /// as duplicate live agent names, and the agent treats it as fatal.
     #[serde(rename = "error")]
     Error { message: String },
 }
