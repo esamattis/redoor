@@ -631,6 +631,9 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
 
             if (successfulDeletes.length > 0) {
                 await router.invalidate();
+                // Force the active route loaders to run now so the directory listing
+                // reflects the deleted files before we assert on the updated UI state.
+                await router.load();
 
                 successfulDeletes.forEach((file) => {
                     unselectFile({
