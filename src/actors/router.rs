@@ -250,6 +250,28 @@ pub enum RouterMsg {
         send_succeeded: bool,
         reply: RpcReplyPort<()>,
     },
+    /// Internal message used to finish forwarding one upload chunk after the
+    /// bounded agent binary lane accepts it or reports the socket closed.
+    FinishRoutedUploadChunk {
+        agent_id: String,
+        request_id: RequestId,
+        bytes: u64,
+        is_error: bool,
+        send_succeeded: bool,
+        reply: RpcReplyPort<Result<(), String>>,
+    },
+    /// Internal message used to finish forwarding one remote copy chunk after
+    /// all derived destination frames have been queued for the target agent.
+    FinishRoutedCopyChunk {
+        source_agent_id: String,
+        public_request_id: TransferId,
+        source_request_id: RequestId,
+        dest_request_id: RequestId,
+        next_chunk_index: ChunkIndex,
+        bytes: u64,
+        send_succeeded: bool,
+        reply: RpcReplyPort<()>,
+    },
     /// Execute a streaming command on an agent, initiated from the REST API.
     ExecuteStreamCommandRest {
         agent_id: String,
@@ -329,7 +351,7 @@ impl RouterActor {
 
     /// Queues one binary websocket frame to an agent while honoring bounded
     /// backpressure on the session binary channel.
-    async fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) {
+    async fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) -> bool {
         if agent_info
             .outgoing_binary
             .send(WsMessage::Binary(bytes.into()))
@@ -341,6 +363,9 @@ impl RouterActor {
                 "Failed to queue binary message for agent: socket_id={}",
                 agent_info.socket_id
             );
+            false
+        } else {
+            true
         }
     }
 
@@ -350,18 +375,22 @@ impl RouterActor {
         agent_info: &AgentInfo,
         chunk_index: &mut ChunkIndex,
         request: StreamChunkFrameRequest<'_>,
-    ) -> usize {
+    ) -> (usize, bool) {
         let mut frames =
             crate::streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
         let mut emitted = 0usize;
+        let mut send_succeeded = true;
 
         while let Some(chunk) = frames.next() {
             emitted += 1;
-            Self::send_agent_binary(agent_info, chunk.to_bytes()).await;
+            if !Self::send_agent_binary(agent_info, chunk.to_bytes()).await {
+                send_succeeded = false;
+                break;
+            }
         }
 
         *chunk_index = frames.next_chunk_index();
-        emitted
+        (emitted, send_succeeded)
     }
 
     /// Registers a new download transfer so REST/UI consumers can observe
@@ -611,7 +640,7 @@ impl RouterActor {
 
     /// Sends a final error chunk to the destination side of a remote copy so
     /// the upload half terminates cleanly.
-    async fn abort_copy_upload(
+    fn abort_copy_upload(
         state: &mut RouterState,
         public_request_id: TransferId,
         error_message: String,
@@ -637,36 +666,48 @@ impl RouterActor {
             return Err(format!("Agent not found: {}", copy_request.dest_agent_id));
         };
 
-        Self::send_framed_copy_chunk(
-            &agent_info,
-            next_chunk_index,
-            StreamChunkFrameRequest::new(*dest_request_id, error_message.as_bytes())
-                .payload_kind(copy_request.content_kind.payload_kind())
-                .is_error(true),
-        )
-        .await;
+        let agent_info = agent_info.clone();
+        let dest_request_id = *dest_request_id;
+        let starting_chunk_index = *next_chunk_index;
+        let payload_kind = copy_request.content_kind.payload_kind();
+
+        tokio::spawn(async move {
+            let mut next_chunk_index = starting_chunk_index;
+            let _ = Self::send_framed_copy_chunk(
+                &agent_info,
+                &mut next_chunk_index,
+                StreamChunkFrameRequest::new(dest_request_id, error_message.as_bytes())
+                    .payload_kind(payload_kind)
+                    .is_error(true),
+            )
+            .await;
+        });
+
         Ok(())
     }
 
     /// Forwards one source-side copy chunk to the destination agent using the
     /// shared frame size and remapped request id.
-    async fn route_copy_chunk(
+    fn route_copy_chunk(
         state: &mut RouterState,
         myself: &ActorRef<RouterMsg>,
         agent_id: String,
         chunk: crate::streaming::StreamChunk,
+        reply: RpcReplyPort<()>,
     ) {
         let Some(public_request_id) = state
             .copy_request_ids_by_internal_request
             .get(&chunk.request_id)
             .copied()
         else {
+            let _ = reply.send(());
             return;
         };
 
         let (source_agent_id, dest_agent_id, dest_request_id, mut chunk_index, content_kind) = {
             let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
             else {
+                let _ = reply.send(());
                 return;
             };
 
@@ -676,10 +717,12 @@ impl RouterActor {
                 next_chunk_index,
             } = &mut copy_request.execution
             else {
+                let _ = reply.send(());
                 return;
             };
 
             if chunk.request_id != *source_request_id {
+                let _ = reply.send(());
                 return;
             }
 
@@ -700,6 +743,7 @@ impl RouterActor {
                 source_agent_id,
                 agent_id
             );
+            let _ = reply.send(());
             return;
         }
 
@@ -711,6 +755,7 @@ impl RouterActor {
                 format!("Agent not found: {}", dest_agent_id),
             );
             Self::cleanup_copy_tracking(state, public_request_id);
+            let _ = reply.send(());
             return;
         };
 
@@ -721,9 +766,10 @@ impl RouterActor {
                 String::from_utf8_lossy(&chunk.data).to_string()
             };
 
-            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone()).await;
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
             Self::mark_transfer_errored(state, myself, public_request_id, error_message);
             Self::cleanup_copy_tracking(state, public_request_id);
+            let _ = reply.send(());
             return;
         }
 
@@ -733,34 +779,101 @@ impl RouterActor {
                 content_kind.payload_kind(),
                 chunk.payload_kind
             );
-            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone()).await;
+            let _ = Self::abort_copy_upload(state, public_request_id, error_message.clone());
             Self::mark_transfer_errored(state, myself, public_request_id, error_message);
             Self::cleanup_copy_tracking(state, public_request_id);
+            let _ = reply.send(());
             return;
         }
 
         let bytes = chunk.data.len() as u64;
-        Self::send_framed_copy_chunk(
-            &dest_agent_info,
-            &mut chunk_index,
-            StreamChunkFrameRequest::new(dest_request_id, &chunk.data)
-                .payload_kind(chunk.payload_kind)
-                .is_last(chunk.is_last),
-        )
-        .await;
+        let source_request_id = chunk.request_id;
+        let payload_kind = chunk.payload_kind;
+        let is_last = chunk.is_last;
+        let chunk_data = chunk.data;
+        let myself = myself.clone();
 
-        if let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id) {
-            if let CopyExecution::RemoteStream {
+        tokio::spawn(async move {
+            let (_, send_succeeded) = Self::send_framed_copy_chunk(
+                &dest_agent_info,
+                &mut chunk_index,
+                StreamChunkFrameRequest::new(dest_request_id, &chunk_data)
+                    .payload_kind(payload_kind)
+                    .is_last(is_last),
+            )
+            .await;
+
+            let send_result = myself.cast(RouterMsg::FinishRoutedCopyChunk {
+                source_agent_id: agent_id,
+                public_request_id,
                 source_request_id,
-                next_chunk_index,
-                ..
-            } = &mut copy_request.execution
-            {
-                if *source_request_id == chunk.request_id {
-                    *next_chunk_index = chunk_index;
+                dest_request_id,
+                next_chunk_index: chunk_index,
+                bytes,
+                send_succeeded,
+                reply,
+            });
+
+            if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
+                if let RouterMsg::FinishRoutedCopyChunk { reply, .. } = message {
+                    let _ = reply.send(());
                 }
             }
+        });
+    }
+
+    fn finish_routed_copy_chunk(
+        state: &mut RouterState,
+        myself: &ActorRef<RouterMsg>,
+        source_agent_id: String,
+        public_request_id: TransferId,
+        source_request_id: RequestId,
+        dest_request_id: RequestId,
+        next_chunk_index: ChunkIndex,
+        bytes: u64,
+        send_succeeded: bool,
+    ) {
+        let Some(copy_request) = state.copy_requests_by_public_id.get_mut(&public_request_id)
+        else {
+            return;
+        };
+
+        let CopyExecution::RemoteStream {
+            source_request_id: stored_source_request_id,
+            dest_request_id: stored_dest_request_id,
+            next_chunk_index: stored_next_chunk_index,
+        } = &mut copy_request.execution
+        else {
+            return;
+        };
+
+        if copy_request.source_agent_id != source_agent_id
+            || *stored_source_request_id != source_request_id
+            || *stored_dest_request_id != dest_request_id
+        {
+            log!(
+                Level::Warning,
+                "Copy completion mismatch while finishing routed chunk: request_id={}, expected_source_agent_id={}, actual_source_agent_id={}",
+                public_request_id,
+                copy_request.source_agent_id,
+                source_agent_id
+            );
+            return;
         }
+
+        if !send_succeeded {
+            Self::cancel_transfer(state, source_request_id, source_agent_id);
+            Self::mark_transfer_errored(
+                state,
+                myself,
+                public_request_id,
+                "Failed to forward copy chunk to destination agent".to_string(),
+            );
+            Self::cleanup_copy_tracking(state, public_request_id);
+            return;
+        }
+
+        *stored_next_chunk_index = next_chunk_index;
 
         if bytes > 0 {
             Self::increment_download_progress(state, myself, public_request_id, bytes);
@@ -1170,6 +1283,66 @@ impl RouterActor {
         }
     }
 
+    fn finish_routed_upload_chunk(
+        state: &mut RouterState,
+        myself: &ActorRef<RouterMsg>,
+        agent_id: String,
+        request_id: RequestId,
+        bytes: u64,
+        is_error: bool,
+        send_succeeded: bool,
+    ) -> Result<(), String> {
+        let has_matching_upload = matches!(
+            state.transfers.get(&request_id),
+            Some(TransferRequest::Upload {
+                agent_id: stored_agent_id,
+                ..
+            }) if stored_agent_id == &agent_id
+        );
+
+        if !has_matching_upload {
+            return Err(format!(
+                "Upload stream not found: agent_id={}, request_id={}",
+                agent_id, request_id
+            ));
+        }
+
+        if !send_succeeded {
+            let error_message = format!(
+                "Failed to forward upload chunk to agent: agent_id={}, request_id={}",
+                agent_id, request_id
+            );
+
+            Self::mark_transfer_errored(
+                state,
+                myself,
+                request_id.as_transfer_id(),
+                error_message.clone(),
+            );
+
+            let completion_sender = match state.transfers.remove(&request_id) {
+                Some(TransferRequest::Upload {
+                    completion_sender, ..
+                }) => completion_sender,
+                _ => None,
+            };
+
+            Self::notify_ui_refresh(state);
+
+            if let Some(sender) = completion_sender {
+                let _ = sender.send(Err(error_message.clone()));
+            }
+
+            return Err(error_message);
+        }
+
+        if !is_error {
+            Self::increment_upload_progress(state, myself, request_id.as_transfer_id(), bytes);
+        }
+
+        Ok(())
+    }
+
     fn finish_upload_transfer(
         state: &mut RouterState,
         myself: &ActorRef<RouterMsg>,
@@ -1316,8 +1489,7 @@ impl RouterActor {
                 state,
                 *request_id,
                 format!("Agent disconnected: {}", agent_id),
-            )
-            .await;
+            );
             Self::mark_transfer_errored(
                 state,
                 myself,
@@ -1689,8 +1861,7 @@ impl Actor for RouterActor {
                     .unwrap_or(false);
 
                 if is_remote_copy_stream {
-                    Self::route_copy_chunk(state, &myself, agent_id, chunk).await;
-                    let _ = reply.send(());
+                    Self::route_copy_chunk(state, &myself, agent_id, chunk, reply);
                 } else {
                     Self::route_download_chunk(state, &myself, agent_id, chunk, reply);
                 }
@@ -1712,6 +1883,47 @@ impl Actor for RouterActor {
                     chunk_index,
                     is_last,
                     error_message,
+                    send_succeeded,
+                );
+                let _ = reply.send(());
+            }
+            RouterMsg::FinishRoutedUploadChunk {
+                agent_id,
+                request_id,
+                bytes,
+                is_error,
+                send_succeeded,
+                reply,
+            } => {
+                let _ = reply.send(Self::finish_routed_upload_chunk(
+                    state,
+                    &myself,
+                    agent_id,
+                    request_id,
+                    bytes,
+                    is_error,
+                    send_succeeded,
+                ));
+            }
+            RouterMsg::FinishRoutedCopyChunk {
+                source_agent_id,
+                public_request_id,
+                source_request_id,
+                dest_request_id,
+                next_chunk_index,
+                bytes,
+                send_succeeded,
+                reply,
+            } => {
+                Self::finish_routed_copy_chunk(
+                    state,
+                    &myself,
+                    source_agent_id,
+                    public_request_id,
+                    source_request_id,
+                    dest_request_id,
+                    next_chunk_index,
+                    bytes,
                     send_succeeded,
                 );
                 let _ = reply.send(());
@@ -1836,16 +2048,12 @@ impl Actor for RouterActor {
                         agent_id, request_id
                     )));
                 } else if let Some(agent_info) = state.agents.get(&agent_id).cloned() {
-                    if !chunk.is_error {
-                        Self::increment_upload_progress(
-                            state,
-                            &myself,
-                            request_id.as_transfer_id(),
-                            chunk.data.len() as u64,
-                        );
-                    }
+                    let bytes = chunk.data.len() as u64;
+                    let is_error = chunk.is_error;
+                    let payload = chunk.to_bytes();
+                    let myself = myself.clone();
 
-                    if chunk.is_error {
+                    if is_error {
                         let error_message = if chunk.data.is_empty() {
                             "Upload aborted by server".to_string()
                         } else {
@@ -1859,8 +2067,26 @@ impl Actor for RouterActor {
                         );
                     }
 
-                    Self::send_agent_binary(&agent_info, chunk.to_bytes()).await;
-                    let _ = reply.send(Ok(()));
+                    tokio::spawn(async move {
+                        let send_succeeded = Self::send_agent_binary(&agent_info, payload).await;
+                        let send_result = myself.cast(RouterMsg::FinishRoutedUploadChunk {
+                            agent_id,
+                            request_id,
+                            bytes,
+                            is_error,
+                            send_succeeded,
+                            reply,
+                        });
+
+                        if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
+                            if let RouterMsg::FinishRoutedUploadChunk { reply, .. } = message {
+                                let _ = reply.send(Err(
+                                    "Router stopped before upload chunk forwarding completed"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    });
                 } else {
                     Self::mark_transfer_errored(
                         state,
@@ -2028,5 +2254,142 @@ impl Actor for RouterActor {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::Command;
+    use crate::streaming::{StreamChunk, StreamPayloadKind};
+    use axum::extract::ws::Message as WsMessage;
+    use ractor::call_t;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn slow_upload_send_does_not_block_unrelated_router_work() {
+        crate::logging::init(None);
+
+        let (router_ref, _handle) = RouterActor::spawn(None, RouterActor, ())
+            .await
+            .expect("router spawned");
+
+        let (text_tx, _text_rx) = mpsc::unbounded_channel::<WsMessage>();
+        let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
+
+        router_ref
+            .cast(RouterMsg::RegisterAgent {
+                agent_id: "agent-1".to_string(),
+                agent_name: "agent-1".to_string(),
+                socket_id: "socket-1".to_string(),
+                outgoing_text: text_tx,
+                outgoing_binary: binary_tx,
+                os: "macos".to_string(),
+                arch: "arm64".to_string(),
+                hostname: "host".to_string(),
+                username: "user".to_string(),
+            })
+            .expect("agent registered");
+
+        let (completion_tx, _completion_rx) = oneshot::channel();
+        let request_id = call_t!(
+            &router_ref,
+            |reply| RouterMsg::StartUploadStreamRest {
+                agent_id: "agent-1".to_string(),
+                command: Command::RawUpload {
+                    path: "/tmp/file.bin".to_string(),
+                },
+                path: "/tmp/file.bin".to_string(),
+                total_bytes: 32,
+                completion_sender: completion_tx,
+                reply,
+            },
+            1_000
+        )
+        .expect("upload start rpc succeeded")
+        .expect("upload start accepted");
+
+        // Holding the first queued binary frame keeps the bounded lane full so the
+        // second forwarded chunk must wait in the background task instead of the router.
+        let first_chunk = StreamChunk {
+            request_id,
+            chunk_index: ChunkIndex::new(0),
+            is_last: false,
+            is_error: false,
+            payload_kind: StreamPayloadKind::RawFile,
+            data: vec![1, 2, 3, 4],
+        };
+        call_t!(
+            &router_ref,
+            |reply| RouterMsg::SendStreamChunkToAgent {
+                agent_id: "agent-1".to_string(),
+                request_id,
+                chunk: first_chunk,
+                reply,
+            },
+            1_000
+        )
+        .expect("first chunk rpc succeeded")
+        .expect("first chunk accepted");
+
+        let second_chunk = StreamChunk {
+            request_id,
+            chunk_index: ChunkIndex::new(1),
+            is_last: false,
+            is_error: false,
+            payload_kind: StreamPayloadKind::RawFile,
+            data: vec![5, 6, 7, 8],
+        };
+
+        let router_ref_for_chunk = router_ref.clone();
+        let blocked_chunk = tokio::spawn(async move {
+            call_t!(
+                &router_ref_for_chunk,
+                |reply| RouterMsg::SendStreamChunkToAgent {
+                    agent_id: "agent-1".to_string(),
+                    request_id,
+                    chunk: second_chunk,
+                    reply,
+                },
+                5_000
+            )
+        });
+
+        tokio::task::yield_now().await;
+
+        let router_ref_for_list = router_ref.clone();
+        let list_agents = timeout(Duration::from_millis(250), async move {
+            call_t!(
+                &router_ref_for_list,
+                |reply| RouterMsg::GetAgentList { reply },
+                1_000
+            )
+        })
+        .await
+        .expect("agent list should not wait for blocked binary send")
+        .expect("agent list rpc succeeded");
+
+        // Returning promptly here proves the router event loop stayed responsive
+        // even though one upload chunk was still waiting for binary backpressure.
+        assert_eq!(list_agents.get("agent-1"), Some(&"agent-1".to_string()));
+
+        let first_frame = binary_rx.recv().await.expect("first binary frame queued");
+        assert!(
+            matches!(first_frame, WsMessage::Binary(_)),
+            "the first queued frame should be the upload chunk we intentionally used to fill the lane"
+        );
+
+        let blocked_result = timeout(Duration::from_secs(1), blocked_chunk)
+            .await
+            .expect("second chunk should complete after freeing binary capacity")
+            .expect("second chunk task joined")
+            .expect("second chunk rpc succeeded");
+        assert!(
+            blocked_result.is_ok(),
+            "the queued upload chunk should still succeed once the binary lane has capacity again"
+        );
+
+        let _ = router_ref.stop(None);
     }
 }
