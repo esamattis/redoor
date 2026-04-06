@@ -34,7 +34,7 @@ impl AgentRuntime {
     /// Runs the agent event loop until shutdown or fatal error.
     pub(crate) async fn run(mut self, mut receiver: Receiver<AgentMsg>, handle: AgentHandle) {
         spawn_stdin_task(handle.clone()).await;
-        let _ = handle.send(AgentMsg::Connect);
+        let _ = handle.try_send(AgentMsg::Connect);
 
         log!(
             Level::Info,
@@ -77,7 +77,7 @@ impl AgentRuntime {
                 );
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    let _ = handle.send(AgentMsg::Connect);
+                    let _ = handle.try_send(AgentMsg::Connect);
                 });
             }
             AgentMsg::WebSocketMessage { text } => {
@@ -111,7 +111,7 @@ impl AgentRuntime {
                 self.state.active_downloads.clear();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    let _ = handle.send(AgentMsg::Connect);
+                    let _ = handle.try_send(AgentMsg::Connect);
                 });
             }
             AgentMsg::SendWebSocketMessage { msg } => {
@@ -209,7 +209,7 @@ impl AgentRuntime {
             }
             Err(error) => {
                 log!(Level::Error, "Connection failed: {}", error);
-                let _ = handle.send(AgentMsg::ScheduleReconnect {
+                let _ = handle.try_send(AgentMsg::ScheduleReconnect {
                     error: error.to_string(),
                 });
             }

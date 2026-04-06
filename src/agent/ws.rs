@@ -15,25 +15,41 @@ pub(super) async fn spawn_read_task(
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(WsMessage::Text(text)) => {
-                    let _ = agent_ref.send(AgentMsg::WebSocketMessage {
-                        text: text.to_string(),
-                    });
+                    if agent_ref
+                        .send(AgentMsg::WebSocketMessage {
+                            text: text.to_string(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 Ok(WsMessage::Binary(bytes)) => {
-                    let _ = agent_ref.send(AgentMsg::WebSocketBinaryMessage {
-                        bytes: bytes.to_vec(),
-                    });
+                    if agent_ref
+                        .send(AgentMsg::WebSocketBinaryMessage {
+                            bytes: bytes.to_vec(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 Ok(WsMessage::Close(_)) => {
-                    let _ = agent_ref.send(AgentMsg::ConnectionLost {
-                        reason: "Server closed connection".to_string(),
-                    });
+                    let _ = agent_ref
+                        .send(AgentMsg::ConnectionLost {
+                            reason: "Server closed connection".to_string(),
+                        })
+                        .await;
                     break;
                 }
                 Err(error) => {
-                    let _ = agent_ref.send(AgentMsg::ConnectionLost {
-                        reason: format!("Error receiving message: {}", error),
-                    });
+                    let _ = agent_ref
+                        .send(AgentMsg::ConnectionLost {
+                            reason: format!("Error receiving message: {}", error),
+                        })
+                        .await;
                     break;
                 }
                 _ => {}
@@ -57,9 +73,11 @@ pub(super) async fn spawn_stdin_task(agent_ref: AgentHandle) {
         {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                let _ = agent_ref_clone.send(AgentMsg::SendWebSocketMessage {
-                    msg: WsMessage::text(trimmed.to_string()),
-                });
+                let _ = agent_ref_clone
+                    .send(AgentMsg::SendWebSocketMessage {
+                        msg: WsMessage::text(trimmed.to_string()),
+                    })
+                    .await;
             }
             line.clear();
         }

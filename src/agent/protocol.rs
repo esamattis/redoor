@@ -177,7 +177,7 @@ impl AgentActor {
                 }
                 Message::Error { message } => {
                     log!(Level::Error, "Server error: {}", message);
-                    let _ = agent_ref.send(AgentMsg::ExitWithError);
+                    let _ = agent_ref.try_send(AgentMsg::ExitWithError);
                 }
                 _ => {}
             }

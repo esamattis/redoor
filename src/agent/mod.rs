@@ -65,8 +65,20 @@ pub(crate) struct AgentHandle {
 }
 
 impl AgentHandle {
-    /// Queues one control event for the agent runtime.
-    pub(crate) fn send(
+    /// Awaits mailbox capacity so external producers can backpressure instead of
+    /// dropping inbound websocket frames when upload handlers slow down.
+    pub(crate) async fn send(
+        &self,
+        message: AgentMsg,
+    ) -> Result<(), mpsc::error::SendError<AgentMsg>> {
+        self.sender.send(message).await
+    }
+
+    /// Attempts to queue one control event without waiting.
+    ///
+    /// The agent runtime uses this only for self-scheduled messages so it does
+    /// not deadlock on its own bounded mailbox.
+    pub(crate) fn try_send(
         &self,
         message: AgentMsg,
     ) -> Result<(), mpsc::error::TrySendError<AgentMsg>> {
@@ -99,4 +111,59 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     runtime.run(receiver, handle).await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentHandle, AgentMsg};
+    use tokio::sync::mpsc;
+
+    /// Verifies awaited sends stay pending while the bounded mailbox is full so
+    /// websocket ingress can propagate upload backpressure instead of dropping frames.
+    #[tokio::test]
+    async fn send_waits_for_channel_capacity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        handle
+            .try_send(AgentMsg::Connect)
+            .expect("initial enqueue should succeed");
+
+        let pending_send = handle.send(AgentMsg::ExitWithError);
+        tokio::pin!(pending_send);
+
+        // A pending send here proves the bounded mailbox is applying backpressure instead of accepting and losing another frame.
+        assert!(futures_util::poll!(&mut pending_send).is_pending());
+
+        let received = receiver.recv().await;
+        // Draining one slot verifies the send can complete only after the runtime makes room in the mailbox.
+        assert!(matches!(received, Some(AgentMsg::Connect)));
+
+        // Completing after capacity frees proves awaited ingress can resume without dropping the queued frame.
+        assert!(pending_send.await.is_ok());
+
+        let received = receiver.recv().await;
+        // Receiving the queued message confirms the mailbox preserved it while the sender was backpressured.
+        assert!(matches!(received, Some(AgentMsg::ExitWithError)));
+    }
+
+    /// Verifies non-blocking self-sends still fail fast when the mailbox is
+    /// full so the runtime does not await capacity on its own queue.
+    #[tokio::test]
+    async fn try_send_fails_fast_when_channel_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        handle
+            .try_send(AgentMsg::Connect)
+            .expect("initial enqueue should succeed");
+
+        let result = handle.try_send(AgentMsg::ExitWithError);
+
+        // A full error here protects in-actor self-sends from deadlocking the runtime on its own bounded mailbox.
+        assert!(matches!(
+            result,
+            Err(mpsc::error::TrySendError::Full(AgentMsg::ExitWithError))
+        ));
+    }
 }

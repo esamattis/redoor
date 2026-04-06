@@ -6,16 +6,6 @@ Reviewed the direct raw upload/download paths, the tar directory upload/download
 
 ## Findings
 
-### High: Agent-side upload ingress is bounded now, but it still drops frames instead of backpressuring
-
-Refs: `src/agent/ws.rs:15-26`, `src/agent/mod.rs:69-74`, `src/agent/mod.rs:95`, `src/agent/protocol.rs:229-279`
-
-The old unbounded `ractor` mailbox is gone. The agent now routes websocket frames through a bounded `tokio::mpsc::channel::<AgentMsg>(256)`, and the raw and tar upload workers still use bounded per-upload chunk queues. However, the websocket read loop still calls `agent_ref.send(...)`, which is implemented with `try_send`, and then ignores the result.
-
-Impact: when file writes or tar extraction slow down, `handle_upload_chunk()` can stall on the bounded per-upload queue as intended, but the websocket reader does not propagate that pressure to the socket. Instead it keeps reading until the shared 256-message agent queue fills, after which inbound binary frames are silently dropped. That makes uploads lossy under load rather than truly backpressured. This still affects raw uploads, tar uploads, and the destination side of remote copy uploads because they all reuse the same ingress path.
-
-Recommendation: make agent-side inbound binary handling acknowledged or otherwise awaitable so the websocket read loop does not read the next frame until the current one has been accepted by the per-upload worker. At minimum, do not ignore `try_send` failures for transfer frames.
-
 ### High: Extensionless downloads read the whole file into memory before streaming starts
 
 Refs: `src/server/raw.rs:169-206`, `src/commands.rs:536-541`, `src/server/raw.rs:238-347`
