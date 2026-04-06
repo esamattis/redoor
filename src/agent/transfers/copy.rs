@@ -1,5 +1,4 @@
 use super::super::AgentActor;
-use anyhow::{Context, Result, bail};
 use redoor::{
     commands::{CommandErrorKind, CommandResult},
     types::{AgentId, Message, RequestId},
@@ -8,12 +7,126 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use thiserror::Error;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+
+/// Keeps local-copy failures typed so the HTTP layer never has to infer them from text.
+#[derive(Debug, Error)]
+enum LocalCopyError {
+    #[error("Failed to access source file: {0}")]
+    AccessSourceFile(#[source] std::io::Error),
+    #[error("Failed to access source directory: {0}")]
+    AccessSourceDirectory(#[source] std::io::Error),
+    #[error("Source path is not a file: {0}")]
+    SourceNotFile(String),
+    #[error("Source path is not a directory: {0}")]
+    SourceNotDirectory(String),
+    #[error("Source and destination must be different")]
+    SamePath,
+    #[error("Destination directory cannot be inside the source directory")]
+    DestinationInsideSource,
+    #[error("Destination parent not found for {0}")]
+    DestinationParentNotFound(String),
+    #[error("Destination parent is not a directory: {0}")]
+    DestinationParentNotDirectory(String),
+    #[error("Destination already exists: {0}")]
+    DestinationAlreadyExists(String),
+    #[error("Failed to check destination path: {0}")]
+    CheckDestinationPath(#[source] std::io::Error),
+    #[error("Invalid source path: {0}")]
+    InvalidSourcePath(String),
+    #[error("Invalid destination path: {0}")]
+    InvalidDestinationPath(String),
+    #[error("Non-utf8 destination path: {0}")]
+    NonUtf8DestinationPath(String),
+    #[error("Failed to access source parent: {0}")]
+    AccessSourceParent(String),
+    #[error("Failed to access absolute source path: {0}")]
+    AccessAbsoluteSourcePath(String),
+    #[error("Failed to access destination parent: {0}")]
+    AccessDestinationParent(String),
+    #[error("Failed to open source file: {0}")]
+    OpenSourceFile(String),
+    #[error("Failed to create destination file: {0}")]
+    CreateDestinationFile(String),
+    #[error("Failed to read source file: {0}")]
+    ReadSourceFile(String),
+    #[error("Failed to write destination file: {0}")]
+    WriteDestinationFile(String),
+    #[error("Failed to flush destination file: {0}")]
+    FlushDestinationFile(String),
+    #[error("Failed to finalize copied file from {from} to {to}")]
+    FinalizeCopiedFile { from: String, to: String },
+    #[error("Failed to read directory: {0}")]
+    ReadDirectory(String),
+    #[error("Failed to read directory entry: {0}")]
+    ReadDirectoryEntry(String),
+    #[error("Failed to strip source prefix {source_root} from {entry_path}")]
+    StripSourcePrefix {
+        source_root: String,
+        entry_path: String,
+    },
+    #[error("Failed to read entry metadata: {0}")]
+    ReadEntryMetadata(String),
+    #[error("Unsupported directory entry type in copy source: {0}")]
+    UnsupportedEntryType(String),
+    #[error("Failed to read source metadata: {0}")]
+    ReadSourceMetadata(String),
+    #[error("Failed to create destination directory: {0}")]
+    CreateDestinationDirectory(String),
+    #[error("Directory copy planner failed: {0}")]
+    PlannerFailed(String),
+    #[error("Failed to create temp directory: {0}")]
+    CreateTempDirectory(#[source] std::io::Error),
+    #[error("Failed to finalize copied directory: {0}")]
+    FinalizeCopiedDirectory(#[source] std::io::Error),
+}
+
+impl LocalCopyError {
+    /// Maps one local-copy failure to the stable command error kind carried over the protocol.
+    fn kind(&self) -> CommandErrorKind {
+        match self {
+            Self::AccessSourceFile(error)
+            | Self::AccessSourceDirectory(error)
+            | Self::CheckDestinationPath(error)
+            | Self::CreateTempDirectory(error)
+            | Self::FinalizeCopiedDirectory(error) => CommandErrorKind::from_io_error(error),
+            Self::SourceNotDirectory(_) | Self::DestinationParentNotDirectory(_) => {
+                CommandErrorKind::NotADirectory
+            }
+            Self::DestinationAlreadyExists(_) => CommandErrorKind::AlreadyExists,
+            Self::SamePath
+            | Self::DestinationInsideSource
+            | Self::SourceNotFile(_)
+            | Self::DestinationParentNotFound(_)
+            | Self::InvalidSourcePath(_)
+            | Self::InvalidDestinationPath(_)
+            | Self::NonUtf8DestinationPath(_)
+            | Self::UnsupportedEntryType(_) => CommandErrorKind::InvalidInput,
+            Self::AccessSourceParent(_)
+            | Self::AccessAbsoluteSourcePath(_)
+            | Self::AccessDestinationParent(_)
+            | Self::OpenSourceFile(_)
+            | Self::CreateDestinationFile(_)
+            | Self::ReadSourceFile(_)
+            | Self::WriteDestinationFile(_)
+            | Self::FlushDestinationFile(_)
+            | Self::FinalizeCopiedFile { .. }
+            | Self::ReadDirectory(_)
+            | Self::ReadDirectoryEntry(_)
+            | Self::StripSourcePrefix { .. }
+            | Self::ReadEntryMetadata(_)
+            | Self::ReadSourceMetadata(_)
+            | Self::CreateDestinationDirectory(_)
+            | Self::PlannerFailed(_) => CommandErrorKind::Internal,
+        }
+    }
+}
 
 /// Builds the hidden temp file path used while a local file copy is still incomplete.
 fn temp_local_copy_path(path: &str) -> PathBuf {
@@ -50,68 +163,58 @@ fn validate_local_copy_destination(
     source_path: &Path,
     dest_path: &Path,
     source_is_dir: bool,
-) -> Result<()> {
+) -> Result<(), LocalCopyError> {
     let source_parent = source_path
         .parent()
-        .with_context(|| format!("Source parent not found for {}", source_path.display()))?;
-    let dest_parent = dest_path
-        .parent()
-        .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
-
-    let canonical_source_parent = std::fs::canonicalize(source_parent).with_context(|| {
-        format!(
-            "Failed to access source parent: {}",
-            source_parent.display()
-        )
-    })?;
-    let canonical_dest_parent = std::fs::canonicalize(dest_parent).with_context(|| {
-        format!(
-            "Failed to access destination parent: {}",
-            dest_parent.display()
-        )
+        .ok_or_else(|| LocalCopyError::InvalidSourcePath(source_path.display().to_string()))?;
+    let dest_parent = dest_path.parent().ok_or_else(|| {
+        LocalCopyError::DestinationParentNotFound(dest_path.display().to_string())
     })?;
 
-    let source_canonical = if source_path.is_absolute() {
-        std::fs::canonicalize(source_path)
-            .with_context(|| format!("Failed to access source path: {}", source_path.display()))?
-    } else {
-        canonical_source_parent.join(
-            source_path
-                .file_name()
-                .with_context(|| format!("Invalid source path: {}", source_path.display()))?,
-        )
-    };
+    let canonical_source_parent = std::fs::canonicalize(source_parent)
+        .map_err(|_| LocalCopyError::AccessSourceParent(source_parent.display().to_string()))?;
+    let canonical_dest_parent = std::fs::canonicalize(dest_parent)
+        .map_err(|_| LocalCopyError::AccessDestinationParent(dest_parent.display().to_string()))?;
 
-    let dest_effective = canonical_dest_parent.join(
-        dest_path
-            .file_name()
-            .with_context(|| format!("Invalid destination path: {}", dest_path.display()))?,
-    );
+    let source_canonical =
+        if source_path.is_absolute() {
+            std::fs::canonicalize(source_path).map_err(|_| {
+                LocalCopyError::AccessAbsoluteSourcePath(source_path.display().to_string())
+            })?
+        } else {
+            canonical_source_parent.join(source_path.file_name().ok_or_else(|| {
+                LocalCopyError::InvalidSourcePath(source_path.display().to_string())
+            })?)
+        };
+
+    let dest_effective =
+        canonical_dest_parent.join(dest_path.file_name().ok_or_else(|| {
+            LocalCopyError::InvalidDestinationPath(dest_path.display().to_string())
+        })?);
 
     if source_canonical == dest_effective {
-        bail!("Source and destination must be different");
+        return Err(LocalCopyError::SamePath);
     }
 
     if source_is_dir && dest_effective.starts_with(&source_canonical) {
-        bail!("Destination directory cannot be inside the source directory");
+        return Err(LocalCopyError::DestinationInsideSource);
     }
 
     Ok(())
 }
 
 /// Verifies the destination parent exists and is a directory before copy work begins.
-async fn validate_local_copy_parent(dest_path: &Path) -> Result<()> {
-    let parent = dest_path
-        .parent()
-        .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
+async fn validate_local_copy_parent(dest_path: &Path) -> Result<(), LocalCopyError> {
+    let parent = dest_path.parent().ok_or_else(|| {
+        LocalCopyError::DestinationParentNotFound(dest_path.display().to_string())
+    })?;
     let parent_metadata = tokio::fs::metadata(parent)
         .await
-        .with_context(|| format!("Failed to access destination parent: {}", parent.display()))?;
+        .map_err(|_| LocalCopyError::AccessDestinationParent(parent.display().to_string()))?;
     if !parent_metadata.is_dir() {
-        bail!(
-            "Destination parent is not a directory: {}",
-            parent.display()
-        );
+        return Err(LocalCopyError::DestinationParentNotDirectory(
+            parent.display().to_string(),
+        ));
     }
     Ok(())
 }
@@ -196,19 +299,18 @@ async fn copy_file_streaming(
     source_path: &Path,
     dest_path: &Path,
     reporter: &mut LocalCopyProgressReporter,
-) -> Result<()> {
+) -> Result<(), LocalCopyError> {
     let mut source = File::open(source_path)
         .await
-        .with_context(|| format!("Failed to open source file: {}", source_path.display()))?;
-    let temp_path = temp_local_copy_path(
-        dest_path
-            .to_str()
-            .with_context(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
-    );
+        .map_err(|_| LocalCopyError::OpenSourceFile(source_path.display().to_string()))?;
+    let temp_path =
+        temp_local_copy_path(dest_path.to_str().ok_or_else(|| {
+            LocalCopyError::NonUtf8DestinationPath(dest_path.display().to_string())
+        })?);
 
     let mut destination = File::create(&temp_path)
         .await
-        .with_context(|| format!("Failed to create destination file: {}", temp_path.display()))?;
+        .map_err(|_| LocalCopyError::CreateDestinationFile(temp_path.display().to_string()))?;
 
     let mut buffer = vec![0u8; 1024 * 1024];
 
@@ -216,7 +318,7 @@ async fn copy_file_streaming(
         let bytes_read = source
             .read(&mut buffer)
             .await
-            .with_context(|| format!("Failed to read source file: {}", source_path.display()))?;
+            .map_err(|_| LocalCopyError::ReadSourceFile(source_path.display().to_string()))?;
 
         if bytes_read == 0 {
             break;
@@ -225,9 +327,7 @@ async fn copy_file_streaming(
         destination
             .write_all(&buffer[..bytes_read])
             .await
-            .with_context(|| {
-                format!("Failed to write destination file: {}", temp_path.display())
-            })?;
+            .map_err(|_| LocalCopyError::WriteDestinationFile(temp_path.display().to_string()))?;
 
         reporter.advance(bytes_read as u64).await;
     }
@@ -235,17 +335,14 @@ async fn copy_file_streaming(
     destination
         .flush()
         .await
-        .with_context(|| format!("Failed to flush destination file: {}", temp_path.display()))?;
+        .map_err(|_| LocalCopyError::FlushDestinationFile(temp_path.display().to_string()))?;
     drop(destination);
 
     tokio::fs::rename(&temp_path, dest_path)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to finalize copied file from {} to {}",
-                temp_path.display(),
-                dest_path.display()
-            )
+        .map_err(|_| LocalCopyError::FinalizeCopiedFile {
+            from: temp_path.display().to_string(),
+            to: dest_path.display().to_string(),
         })?;
 
     Ok(())
@@ -259,14 +356,18 @@ struct DirectoryCopyPlan {
 }
 
 /// Builds the deterministic directory traversal plan used to copy trees without loading file data eagerly.
-fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
-    fn walk(source_root: &Path, current_path: &Path, plan: &mut DirectoryCopyPlan) -> Result<()> {
+fn build_directory_copy_plan(
+    source_root: &Path,
+) -> std::result::Result<DirectoryCopyPlan, LocalCopyError> {
+    fn walk(
+        source_root: &Path,
+        current_path: &Path,
+        plan: &mut DirectoryCopyPlan,
+    ) -> Result<(), LocalCopyError> {
         let mut entries = std::fs::read_dir(current_path)
-            .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
+            .map_err(|_| LocalCopyError::ReadDirectory(current_path.display().to_string()))?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| {
-                format!("Failed to read directory entry: {}", current_path.display())
-            })?;
+            .map_err(|_| LocalCopyError::ReadDirectoryEntry(current_path.display().to_string()))?;
 
         entries.sort_by_key(|entry| entry.file_name());
 
@@ -274,17 +375,13 @@ fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
             let entry_path = entry.path();
             let relative_path = entry_path
                 .strip_prefix(source_root)
-                .with_context(|| {
-                    format!(
-                        "Failed to strip source prefix {} from {}",
-                        source_root.display(),
-                        entry_path.display()
-                    )
+                .map_err(|_| LocalCopyError::StripSourcePrefix {
+                    source_root: source_root.display().to_string(),
+                    entry_path: entry_path.display().to_string(),
                 })?
                 .to_path_buf();
-            let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
-                format!("Failed to read entry metadata: {}", entry_path.display())
-            })?;
+            let metadata = std::fs::symlink_metadata(&entry_path)
+                .map_err(|_| LocalCopyError::ReadEntryMetadata(entry_path.display().to_string()))?;
 
             if metadata.is_dir() {
                 plan.directories.push(relative_path.clone());
@@ -293,10 +390,9 @@ fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
                 plan.total_bytes = plan.total_bytes.saturating_add(metadata.len());
                 plan.files.push(relative_path);
             } else {
-                bail!(
-                    "Unsupported directory entry type in copy source: {}",
-                    entry_path.display()
-                );
+                return Err(LocalCopyError::UnsupportedEntryType(
+                    entry_path.display().to_string(),
+                ));
             }
         }
 
@@ -304,9 +400,11 @@ fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
     }
 
     let source_metadata = std::fs::symlink_metadata(source_root)
-        .with_context(|| format!("Failed to read source metadata: {}", source_root.display()))?;
+        .map_err(|_| LocalCopyError::ReadSourceMetadata(source_root.display().to_string()))?;
     if !source_metadata.is_dir() {
-        bail!("Source path is not a directory: {}", source_root.display());
+        return Err(LocalCopyError::SourceNotDirectory(
+            source_root.display().to_string(),
+        ));
     }
 
     let mut plan = DirectoryCopyPlan {
@@ -324,15 +422,14 @@ async fn copy_directory_from_plan(
     temp_dest_root: &Path,
     plan: &DirectoryCopyPlan,
     reporter: &mut LocalCopyProgressReporter,
-) -> Result<()> {
+) -> std::result::Result<(), LocalCopyError> {
     for directory in &plan.directories {
         let destination_directory = temp_dest_root.join(directory);
         tokio::fs::create_dir_all(&destination_directory)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to create destination directory: {}",
-                    destination_directory.display()
+            .map_err(|_| {
+                LocalCopyError::CreateDestinationDirectory(
+                    destination_directory.display().to_string(),
                 )
             })?;
     }
@@ -342,11 +439,8 @@ async fn copy_directory_from_plan(
         let dest_path = temp_dest_root.join(relative_path);
 
         if let Some(parent) = dest_path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "Failed to create destination directory: {}",
-                    parent.display()
-                )
+            tokio::fs::create_dir_all(parent).await.map_err(|_| {
+                LocalCopyError::CreateDestinationDirectory(parent.display().to_string())
             })?;
         }
 
@@ -363,13 +457,14 @@ impl AgentActor {
         write: &mpsc::Sender<WsMessage>,
         agent_id: &AgentId,
         request_id: RequestId,
-        message: String,
+        error: LocalCopyError,
     ) {
+        let message = error.to_string();
         self.send_command_response(
             write,
             agent_id,
             request_id,
-            CommandResult::error(CommandErrorKind::from_message(&message), message),
+            CommandResult::error(error.kind(), message),
         )
         .await;
     }
@@ -393,7 +488,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Failed to access source file: {}", error),
+                    LocalCopyError::AccessSourceFile(error),
                 )
                 .await;
                 return;
@@ -405,7 +500,7 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                format!("Source path is not a file: {}", source_path),
+                LocalCopyError::SourceNotFile(source_path.clone()),
             )
             .await;
             return;
@@ -413,13 +508,13 @@ impl AgentActor {
 
         if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
         {
-            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+            self.send_local_copy_error(write, agent_id, request_id, error)
                 .await;
             return;
         }
 
         if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+            self.send_local_copy_error(write, agent_id, request_id, error)
                 .await;
             return;
         }
@@ -430,7 +525,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Destination already exists: {}", dest_path),
+                    LocalCopyError::DestinationAlreadyExists(dest_path.clone()),
                 )
                 .await;
                 return;
@@ -441,7 +536,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Failed to check destination path: {}", error),
+                    LocalCopyError::CheckDestinationPath(error),
                 )
                 .await;
                 return;
@@ -471,7 +566,7 @@ impl AgentActor {
             Err(error) => {
                 let temp_path = temp_local_copy_path(&dest_path);
                 let _ = tokio::fs::remove_file(&temp_path).await;
-                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+                self.send_local_copy_error(write, agent_id, request_id, error)
                     .await;
             }
         }
@@ -496,7 +591,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Failed to access source directory: {}", error),
+                    LocalCopyError::AccessSourceDirectory(error),
                 )
                 .await;
                 return;
@@ -508,7 +603,7 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                format!("Source path is not a directory: {}", source_path),
+                LocalCopyError::SourceNotDirectory(source_path.clone()),
             )
             .await;
             return;
@@ -516,13 +611,13 @@ impl AgentActor {
 
         if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
         {
-            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+            self.send_local_copy_error(write, agent_id, request_id, error)
                 .await;
             return;
         }
 
         if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+            self.send_local_copy_error(write, agent_id, request_id, error)
                 .await;
             return;
         }
@@ -533,7 +628,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Destination already exists: {}", dest_path),
+                    LocalCopyError::DestinationAlreadyExists(dest_path.clone()),
                 )
                 .await;
                 return;
@@ -544,7 +639,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Failed to check destination path: {}", error),
+                    LocalCopyError::CheckDestinationPath(error),
                 )
                 .await;
                 return;
@@ -559,7 +654,7 @@ impl AgentActor {
         {
             Ok(Ok(plan)) => plan,
             Ok(Err(error)) => {
-                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+                self.send_local_copy_error(write, agent_id, request_id, error)
                     .await;
                 return;
             }
@@ -568,7 +663,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    format!("Directory copy planner failed: {}", error),
+                    LocalCopyError::PlannerFailed(error.to_string()),
                 )
                 .await;
                 return;
@@ -582,7 +677,7 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                format!("Failed to create temp directory: {}", error),
+                LocalCopyError::CreateTempDirectory(error),
             )
             .await;
             return;
@@ -607,7 +702,7 @@ impl AgentActor {
                         write,
                         agent_id,
                         request_id,
-                        format!("Failed to finalize copied directory: {}", error),
+                        LocalCopyError::FinalizeCopiedDirectory(error),
                     )
                     .await;
                     return;
@@ -624,7 +719,7 @@ impl AgentActor {
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                self.send_local_copy_error(write, agent_id, request_id, error.to_string())
+                self.send_local_copy_error(write, agent_id, request_id, error)
                     .await;
             }
         }

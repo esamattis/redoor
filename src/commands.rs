@@ -122,32 +122,6 @@ impl CommandErrorKind {
             _ => Self::Internal,
         }
     }
-
-    /// Best-effort classification for domain errors that do not expose `std::io::ErrorKind`.
-    pub fn from_message(message: &str) -> Self {
-        let lower = message.to_ascii_lowercase();
-
-        if lower.contains("no such file") || lower.contains("not found") {
-            Self::NotFound
-        } else if lower.contains("permission denied") {
-            Self::PermissionDenied
-        } else if lower.contains("not a directory") {
-            Self::NotADirectory
-        } else if lower.contains("is a directory") {
-            Self::IsDirectory
-        } else if lower.contains("already exists") {
-            Self::AlreadyExists
-        } else if lower.contains("invalid")
-            || lower.contains("must be different")
-            || lower.contains("cannot be inside")
-            || lower.contains("payload kind mismatch")
-            || lower.contains("cannot be empty")
-        {
-            Self::InvalidInput
-        } else {
-            Self::Internal
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,13 +354,6 @@ impl CommandResult {
             kind,
             message: message.into(),
         }
-    }
-
-    /// Builds one structured command failure from a free-form message.
-    pub fn error_from_message(message: impl Into<String>) -> Self {
-        let message = message.into();
-        let kind = CommandErrorKind::from_message(&message);
-        Self::Error { kind, message }
     }
 
     /// Builds one structured command failure from an I/O error.

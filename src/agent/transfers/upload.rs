@@ -1,5 +1,5 @@
 use super::super::{ActiveUploads, AgentActor, UploadSessionHandle};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::Result;
 use redoor::{
     Level,
     commands::{CommandErrorKind, CommandResult},
@@ -11,8 +11,70 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::mpsc as std_mpsc,
 };
+use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+
+/// Keeps tar upload failures typed so the API layer never depends on parsing text.
+#[derive(Debug, Error)]
+enum TarUploadError {
+    #[error("Tar entry path escapes destination: {0}")]
+    EscapingTarEntryPath(String),
+    #[error("Tar entry path cannot be empty")]
+    EmptyTarEntryPath,
+    #[error("Destination parent not found for {0}")]
+    DestinationParentNotFound(String),
+    #[error("Failed to access destination parent: {0}")]
+    AccessDestinationParent(#[source] std::io::Error),
+    #[error("Destination parent is not a directory: {0}")]
+    DestinationParentNotDirectory(String),
+    #[error("Failed to check destination path: {0}")]
+    CheckDestinationPath(#[source] std::io::Error),
+    #[error("Destination already exists: {0}")]
+    DestinationAlreadyExists(String),
+    #[error("Failed to create temp directory: {0}")]
+    CreateTempDirectory(#[source] std::io::Error),
+    #[error("Failed to read tar entries")]
+    ReadTarEntries,
+    #[error("Failed to read tar entry")]
+    ReadTarEntry,
+    #[error("Unsupported tar entry type: {0:?}")]
+    UnsupportedTarEntryType(tar::EntryType),
+    #[error("Failed to read tar entry path")]
+    ReadTarEntryPath,
+    #[error("Failed to create destination directory: {0}")]
+    CreateDestinationDirectory(String),
+    #[error("Failed to unpack tar entry to {0}")]
+    UnpackTarEntry(String),
+    #[error("Tar extraction worker failed: {0}")]
+    ExtractionWorkerFailed(String),
+    #[error("Failed to finalize uploaded directory: {0}")]
+    FinalizeUploadedDirectory(#[source] std::io::Error),
+}
+
+impl TarUploadError {
+    /// Maps one tar-upload failure to the stable command error kind carried over the protocol.
+    fn kind(&self) -> CommandErrorKind {
+        match self {
+            Self::AccessDestinationParent(error)
+            | Self::CheckDestinationPath(error)
+            | Self::CreateTempDirectory(error)
+            | Self::FinalizeUploadedDirectory(error) => CommandErrorKind::from_io_error(error),
+            Self::DestinationParentNotDirectory(_) => CommandErrorKind::NotADirectory,
+            Self::DestinationAlreadyExists(_) => CommandErrorKind::AlreadyExists,
+            Self::EscapingTarEntryPath(_)
+            | Self::EmptyTarEntryPath
+            | Self::DestinationParentNotFound(_)
+            | Self::UnsupportedTarEntryType(_) => CommandErrorKind::InvalidInput,
+            Self::ReadTarEntries
+            | Self::ReadTarEntry
+            | Self::ReadTarEntryPath
+            | Self::CreateDestinationDirectory(_)
+            | Self::UnpackTarEntry(_)
+            | Self::ExtractionWorkerFailed(_) => CommandErrorKind::Internal,
+        }
+    }
+}
 
 /// Removes an abandoned upload temp directory so failed tar uploads do not leave partial trees behind.
 async fn remove_upload_temp_directory(temp_path: &Path) {
@@ -42,7 +104,7 @@ fn temp_upload_dir_path(path: &str) -> PathBuf {
 }
 
 /// Rejects tar entry paths that could escape the destination directory during extraction.
-fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf> {
+fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf, TarUploadError> {
     let mut sanitized = PathBuf::new();
 
     for component in entry_path.components() {
@@ -50,55 +112,53 @@ fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf> {
             Component::Normal(part) => sanitized.push(part),
             Component::CurDir => {}
             Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                bail!(
-                    "Tar entry path escapes destination: {}",
-                    entry_path.display()
-                );
+                return Err(TarUploadError::EscapingTarEntryPath(
+                    entry_path.display().to_string(),
+                ));
             }
         }
     }
 
     if sanitized.as_os_str().is_empty() {
-        bail!("Tar entry path cannot be empty");
+        return Err(TarUploadError::EmptyTarEntryPath);
     }
 
     Ok(sanitized)
 }
 
 /// Creates the temp destination and background unpack worker for one tar upload request.
-async fn create_tar_upload_session(path: String) -> Result<TarUploadSession> {
+async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, TarUploadError> {
     let destination = PathBuf::from(&path);
     let parent = destination
         .parent()
-        .with_context(|| format!("Destination parent not found for {}", path))?
+        .ok_or_else(|| TarUploadError::DestinationParentNotFound(path.clone()))?
         .to_path_buf();
 
     let parent_metadata = tokio::fs::metadata(&parent)
         .await
-        .with_context(|| format!("Failed to access destination parent: {}", parent.display()))?;
+        .map_err(TarUploadError::AccessDestinationParent)?;
     if !parent_metadata.is_dir() {
-        bail!(
-            "Destination parent is not a directory: {}",
-            parent.display()
-        );
+        return Err(TarUploadError::DestinationParentNotDirectory(
+            parent.display().to_string(),
+        ));
     }
 
-    if tokio::fs::try_exists(&destination).await.with_context(|| {
-        format!(
-            "Failed to check destination path: {}",
-            destination.display()
-        )
-    })? {
-        bail!("Destination already exists: {}", destination.display());
+    if tokio::fs::try_exists(&destination)
+        .await
+        .map_err(TarUploadError::CheckDestinationPath)?
+    {
+        return Err(TarUploadError::DestinationAlreadyExists(
+            destination.display().to_string(),
+        ));
     }
 
     let temp_path = temp_upload_dir_path(&path);
     tokio::fs::create_dir(&temp_path)
         .await
-        .with_context(|| format!("Failed to create temp directory: {}", temp_path.display()))?;
+        .map_err(TarUploadError::CreateTempDirectory)?;
 
     let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
-    let (completion_sender, completion_receiver) = oneshot::channel::<Result<()>>();
+    let (completion_sender, completion_receiver) = oneshot::channel::<Result<(), TarUploadError>>();
     let temp_path_for_worker = temp_path.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -119,7 +179,7 @@ async fn create_tar_upload_session(path: String) -> Result<TarUploadSession> {
 fn unpack_tar_stream_into_directory(
     chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
     destination_root: &Path,
-) -> Result<()> {
+) -> Result<(), TarUploadError> {
     struct ChannelTarReader {
         chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
         current_chunk: Vec<u8>,
@@ -169,42 +229,38 @@ fn unpack_tar_stream_into_directory(
         finished: false,
     };
     let mut archive = tar::Archive::new(reader);
-    let entries = archive.entries().context("Failed to read tar entries")?;
+    let entries = archive
+        .entries()
+        .map_err(|_| TarUploadError::ReadTarEntries)?;
 
     for entry_result in entries {
-        let mut entry = entry_result.context("Failed to read tar entry")?;
+        let mut entry = entry_result.map_err(|_| TarUploadError::ReadTarEntry)?;
 
         let entry_type = entry.header().entry_type();
         if !(entry_type.is_dir() || entry_type.is_file()) {
-            bail!("Unsupported tar entry type: {:?}", entry_type);
+            return Err(TarUploadError::UnsupportedTarEntryType(entry_type));
         }
 
-        let entry_path = entry.path().context("Failed to read tar entry path")?;
+        let entry_path = entry.path().map_err(|_| TarUploadError::ReadTarEntryPath)?;
         let sanitized_path = sanitize_tar_entry_path(&entry_path)?;
         let output_path = destination_root.join(&sanitized_path);
 
         if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create destination directory: {}",
-                    parent.display()
-                )
+            std::fs::create_dir_all(parent).map_err(|_| {
+                TarUploadError::CreateDestinationDirectory(parent.display().to_string())
             })?;
         }
 
         if entry_type.is_dir() {
-            std::fs::create_dir_all(&output_path).with_context(|| {
-                format!(
-                    "Failed to create destination directory: {}",
-                    output_path.display()
-                )
+            std::fs::create_dir_all(&output_path).map_err(|_| {
+                TarUploadError::CreateDestinationDirectory(output_path.display().to_string())
             })?;
             continue;
         }
 
         entry
             .unpack(&output_path)
-            .with_context(|| format!("Failed to unpack tar entry to {}", output_path.display()))?;
+            .map_err(|_| TarUploadError::UnpackTarEntry(output_path.display().to_string()))?;
     }
 
     Ok(())
@@ -215,7 +271,7 @@ struct TarUploadSession {
     path: String,
     temp_path: PathBuf,
     chunk_sender: std_mpsc::SyncSender<Vec<u8>>,
-    completion_receiver: oneshot::Receiver<Result<()>>,
+    completion_receiver: oneshot::Receiver<Result<(), TarUploadError>>,
     bytes_written: u64,
 }
 
@@ -472,7 +528,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    CommandResult::error_from_message(error.to_string()),
+                    CommandResult::error(error.kind(), error.to_string()),
                 )
                 .await;
             }
@@ -495,7 +551,7 @@ async fn finalize_tar_upload(
 
     let unpack_result = match session.completion_receiver.await {
         Ok(result) => result,
-        Err(error) => Err(anyhow!("Tar extraction worker failed: {}", error)),
+        Err(error) => Err(TarUploadError::ExtractionWorkerFailed(error.to_string())),
     };
 
     match unpack_result {
@@ -530,14 +586,14 @@ async fn finalize_tar_upload(
                 .send_command_response(tx, agent_id, request_id, CommandResult::TarUpload)
                 .await;
         }
-        Err(error_message) => {
+        Err(error) => {
             let _ = tokio::fs::remove_dir_all(&temp_path).await;
             AgentActor
                 .send_command_response(
                     tx,
                     agent_id,
                     request_id,
-                    CommandResult::error_from_message(error_message.to_string()),
+                    CommandResult::error(error.kind(), error.to_string()),
                 )
                 .await;
         }
