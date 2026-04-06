@@ -14,6 +14,8 @@ Architecture:
 Guidelines
 
 - Always use async apis from tokio instead of sync apis instead
+- Always comments to functions, structs, enums and methods
+  - The comments should try to answer the "why" question
 - When adding a retust api always create a dedicated struct for it's reponse with `#[ts(export)]` derive macro which genertes the related typescript interface.
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
 - The generated ts bindings are put in the `bindings` directory
