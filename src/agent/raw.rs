@@ -22,6 +22,20 @@ struct RawUploadSession {
     bytes_written: u64,
 }
 
+/// Outcome of waiting for either the next raw upload chunk or a cancel signal.
+enum RawUploadEvent {
+    Chunk(Option<streaming::StreamChunk>),
+    Continue,
+    Exit,
+}
+
+/// Outcome of waiting for either the next file read or a cancel signal.
+enum RawDownloadEvent {
+    Read(std::io::Result<usize>),
+    Continue,
+    Exit,
+}
+
 impl AgentActor {
     async fn remove_upload_temp_file(temp_path: &Path) {
         if let Err(error) = tokio::fs::remove_file(temp_path).await {
@@ -45,6 +59,87 @@ impl AgentActor {
         match destination.parent() {
             Some(parent) => parent.join(temp_name),
             None => PathBuf::from(format!("./{}", temp_name)),
+        }
+    }
+
+    /// Resolves the cancel branch for raw uploads into a small event the select
+    /// loop can handle without inline cleanup logic.
+    async fn wait_for_raw_upload_event(
+        cancel_receiver: &mut watch::Receiver<bool>,
+        session: &RawUploadSession,
+        tx: &mpsc::Sender<WsMessage>,
+        agent_id: &AgentId,
+        request_id: RequestId,
+        active_uploads: &ActiveUploads,
+    ) -> RawUploadEvent {
+        match cancel_receiver.changed().await {
+            Ok(()) if *cancel_receiver.borrow() => {
+                let error_message = "Upload canceled by server".to_string();
+                log!(
+                    Level::Info,
+                    "Stopping raw upload after cancel: request_id={}, path={}",
+                    request_id,
+                    session.path
+                );
+                AgentActor
+                    .send_command_response(
+                        tx,
+                        agent_id,
+                        request_id,
+                        CommandResult::Error {
+                            message: error_message,
+                        },
+                    )
+                    .await;
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(active_uploads, request_id).await;
+                RawUploadEvent::Exit
+            }
+            Ok(()) => RawUploadEvent::Continue,
+            Err(_) => {
+                // If the cancel sender disappears entirely the upload registry is
+                // already being torn down, so this worker should exit and discard
+                // its temp file.
+                Self::remove_upload_temp_file(&session.temp_path).await;
+                Self::remove_active_upload(active_uploads, request_id).await;
+                RawUploadEvent::Exit
+            }
+        }
+    }
+
+    /// Resolves the cancel branch for raw downloads into a small event so the
+    /// select loop only routes outcomes.
+    async fn wait_for_raw_download_event(
+        cancel_receiver: &mut watch::Receiver<bool>,
+        write: &mpsc::Sender<WsMessage>,
+        chunk_index: &mut ChunkIndex,
+        request_id: RequestId,
+        path: &str,
+        cancel_message: &[u8],
+        active_downloads: &ActiveDownloads,
+    ) -> RawDownloadEvent {
+        match cancel_receiver.changed().await {
+            Ok(()) if *cancel_receiver.borrow() => {
+                log!(
+                    Level::Info,
+                    "Stopping raw download after cancel: request_id={}, path={}",
+                    request_id,
+                    path
+                );
+                let _ = Self::send_framed_stream_bytes(
+                    write,
+                    chunk_index,
+                    StreamChunkFrameRequest::new(request_id, cancel_message).is_error(true),
+                )
+                .await;
+                Self::remove_active_download(active_downloads, request_id).await;
+                RawDownloadEvent::Exit
+            }
+            Ok(()) => RawDownloadEvent::Continue,
+            Err(_) => {
+                Self::remove_active_download(active_downloads, request_id).await;
+                RawDownloadEvent::Exit
+            }
         }
     }
 
@@ -166,42 +261,21 @@ impl AgentActor {
     ) {
         loop {
             let next_chunk = tokio::select! {
-                changed = cancel_receiver.changed() => {
-                    match changed {
-                        Ok(()) if *cancel_receiver.borrow() => {
-                            let error_message = "Upload canceled by server".to_string();
-                            log!(
-                                Level::Info,
-                                "Stopping raw upload after cancel: request_id={}, path={}",
-                                request_id,
-                                session.path
-                            );
-                            AgentActor
-                                .send_command_response(
-                                    &tx,
-                                    &agent_id,
-                                    request_id,
-                                    CommandResult::Error {
-                                        message: error_message,
-                                    },
-                                )
-                                .await;
-                            Self::remove_upload_temp_file(&session.temp_path).await;
-                            Self::remove_active_upload(&active_uploads, request_id).await;
-                            return;
-                        }
-                        Ok(()) => continue,
-                        Err(_) => {
-                            // If the cancel sender disappears entirely the
-                            // upload registry is already being torn down, so
-                            // this worker should exit and discard its temp file.
-                            Self::remove_upload_temp_file(&session.temp_path).await;
-                            Self::remove_active_upload(&active_uploads, request_id).await;
-                            return;
-                        }
-                    }
-                }
-                chunk = chunk_receiver.recv() => chunk,
+                event = Self::wait_for_raw_upload_event(
+                    &mut cancel_receiver,
+                    &session,
+                    &tx,
+                    &agent_id,
+                    request_id,
+                    &active_uploads,
+                ) => event,
+                chunk = chunk_receiver.recv() => RawUploadEvent::Chunk(chunk),
+            };
+
+            let next_chunk = match next_chunk {
+                RawUploadEvent::Chunk(chunk) => chunk,
+                RawUploadEvent::Continue => continue,
+                RawUploadEvent::Exit => return,
             };
 
             let Some(chunk) = next_chunk else {
@@ -436,72 +510,61 @@ impl AgentActor {
                     }
 
                     match tokio::select! {
-                        changed = cancel_receiver.changed() => {
-                            match changed {
-                                Ok(()) if *cancel_receiver.borrow() => {
-                                    log!(
-                                        Level::Info,
-                                        "Stopping raw download after cancel: request_id={}, path={}",
-                                        request_id,
-                                        path
-                                    );
-                                    let _ = Self::send_framed_stream_bytes(
+                        event = Self::wait_for_raw_download_event(
+                            &mut cancel_receiver,
+                            write,
+                            &mut chunk_index,
+                            request_id,
+                            &path,
+                            cancel_message,
+                            &active_downloads,
+                        ) => event,
+                        read_result = file.read(&mut buffer) => RawDownloadEvent::Read(read_result),
+                    } {
+                        RawDownloadEvent::Continue => continue,
+                        RawDownloadEvent::Exit => return,
+                        RawDownloadEvent::Read(read_result) => match read_result {
+                            Ok(0) => break,
+                            Ok(bytes_read) => {
+                                if let Some(ref mut remaining) = bytes_remaining {
+                                    *remaining = remaining.saturating_sub(bytes_read as u64);
+                                }
+
+                                if let Some(data) =
+                                    pending_chunk.replace(buffer[..bytes_read].to_vec())
+                                {
+                                    if !Self::send_framed_stream_bytes(
                                         write,
                                         &mut chunk_index,
-                                        StreamChunkFrameRequest::new(request_id, cancel_message)
-                                            .is_error(true),
+                                        StreamChunkFrameRequest::new(request_id, &data)
+                                            .is_last(false),
                                     )
-                                    .await;
-                                    Self::remove_active_download(&active_downloads, request_id).await;
-                                    return;
-                                }
-                                Ok(()) => continue,
-                                Err(_) => {
-                                    Self::remove_active_download(&active_downloads, request_id).await;
-                                    return;
+                                    .await
+                                    {
+                                        log!(
+                                            Level::Warning,
+                                            "WebSocket channel full or closed, aborting download"
+                                        );
+                                        Self::remove_active_download(&active_downloads, request_id)
+                                            .await;
+                                        return;
+                                    }
                                 }
                             }
-                        }
-                        read_result = file.read(&mut buffer) => read_result,
-                    } {
-                        Ok(0) => break,
-                        Ok(bytes_read) => {
-                            if let Some(ref mut remaining) = bytes_remaining {
-                                *remaining = remaining.saturating_sub(bytes_read as u64);
-                            }
-
-                            if let Some(data) = pending_chunk.replace(buffer[..bytes_read].to_vec())
-                            {
-                                if !Self::send_framed_stream_bytes(
+                            Err(error) => {
+                                log!(Level::Error, "Failed to read file: {}", error);
+                                let error_msg = format!("Failed to read file: {}", error);
+                                let _ = Self::send_framed_stream_bytes(
                                     write,
                                     &mut chunk_index,
-                                    StreamChunkFrameRequest::new(request_id, &data).is_last(false),
+                                    StreamChunkFrameRequest::new(request_id, error_msg.as_bytes())
+                                        .is_error(true),
                                 )
-                                .await
-                                {
-                                    log!(
-                                        Level::Warning,
-                                        "WebSocket channel full or closed, aborting download"
-                                    );
-                                    Self::remove_active_download(&active_downloads, request_id)
-                                        .await;
-                                    return;
-                                }
+                                .await;
+                                Self::remove_active_download(&active_downloads, request_id).await;
+                                return;
                             }
-                        }
-                        Err(error) => {
-                            log!(Level::Error, "Failed to read file: {}", error);
-                            let error_msg = format!("Failed to read file: {}", error);
-                            let _ = Self::send_framed_stream_bytes(
-                                write,
-                                &mut chunk_index,
-                                StreamChunkFrameRequest::new(request_id, error_msg.as_bytes())
-                                    .is_error(true),
-                            )
-                            .await;
-                            Self::remove_active_download(&active_downloads, request_id).await;
-                            return;
-                        }
+                        },
                     }
                 }
 

@@ -9,6 +9,23 @@ use sysinfo::System;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
+impl AgentActor {
+    /// Converts a channel receive result into the next outbound websocket frame
+    /// while marking the lane closed once its sender side is gone.
+    fn take_outbound_message(
+        message: Option<WsMessage>,
+        lane_closed: &mut bool,
+    ) -> Option<WsMessage> {
+        match message {
+            Some(message) => Some(message),
+            None => {
+                *lane_closed = true;
+                None
+            }
+        }
+    }
+}
+
 impl Actor for AgentActor {
     type Msg = AgentMsg;
     type State = AgentState;
@@ -78,20 +95,8 @@ impl Actor for AgentActor {
                             loop {
                                 let next_message = tokio::select! {
                                     biased;
-                                    message = text_rx.recv(), if !text_closed => match message {
-                                        Some(message) => Some(message),
-                                        None => {
-                                            text_closed = true;
-                                            None
-                                        }
-                                    },
-                                    message = binary_rx.recv(), if !binary_closed => match message {
-                                        Some(message) => Some(message),
-                                        None => {
-                                            binary_closed = true;
-                                            None
-                                        }
-                                    },
+                                    message = text_rx.recv(), if !text_closed => Self::take_outbound_message(message, &mut text_closed),
+                                    message = binary_rx.recv(), if !binary_closed => Self::take_outbound_message(message, &mut binary_closed),
                                     else => break,
                                 };
 

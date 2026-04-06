@@ -25,6 +25,7 @@ Guidelines
 - Never make git commit unless asked to!
 - On test failures see the ./log dir for related logs
 - When a single test needs cleanup, always use onTestFinished() instead of try-finally
+- When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
 
 
 # UI

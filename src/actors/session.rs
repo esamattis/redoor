@@ -44,6 +44,18 @@ pub enum SessionMsg {
     IncomingBinary(Vec<u8>, RpcReplyPort<()>),
 }
 
+/// Converts a lane receive result into the next outbound websocket frame while
+/// tracking when that lane has closed.
+fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> Option<WsMessage> {
+    match message {
+        Some(message) => Some(message),
+        None => {
+            *lane_closed = true;
+            None
+        }
+    }
+}
+
 impl Actor for SessionActor {
     type Msg = SessionMsg;
     type State = SessionState;
@@ -267,25 +279,8 @@ pub async fn handle_websocket(
             // streaming traffic is flowing continuously.
             let next_message = tokio::select! {
                 biased;
-                message = rx_out_text.recv(), if !text_closed => match message {
-                    Some(message) => Some(message),
-                    None => {
-                        // The text producer side is gone. Mark it closed so future
-                        // iterations stop polling this branch, but keep relaying any
-                        // remaining binary traffic until that lane also shuts down.
-                        text_closed = true;
-                        None
-                    }
-                },
-                message = rx_out_binary.recv(), if !binary_closed => match message {
-                    Some(message) => Some(message),
-                    None => {
-                        // The binary producer side is gone. We still keep the task
-                        // alive for text traffic until both lanes are closed.
-                        binary_closed = true;
-                        None
-                    }
-                },
+                message = rx_out_text.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
+                message = rx_out_binary.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
                 // Once both lanes are marked closed there is nothing left to relay.
                 else => break,
             };
