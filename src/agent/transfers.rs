@@ -60,6 +60,7 @@ struct TarUploadSession {
 enum TarDownloadEvent {
     Chunk(Option<Vec<u8>>),
     Continue,
+    Cancel,
     Exit,
 }
 
@@ -69,6 +70,357 @@ enum TarUploadEvent {
     Continue,
     Cancel,
     Exit,
+}
+
+/// Owns the state and side effects for one in-progress tar directory download.
+struct TarDownloadWorker {
+    path: String,
+    request_id: RequestId,
+    write: mpsc::Sender<WsMessage>,
+    cancel_receiver: watch::Receiver<bool>,
+    active_downloads: ActiveDownloads,
+    chunk_index: ChunkIndex,
+}
+
+impl TarDownloadWorker {
+    const CANCEL_MESSAGE: &'static [u8] = b"Download canceled by server";
+
+    /// Waits for the cooperative cancel signal used by tar download workers.
+    async fn wait_for_event(&mut self) -> TarDownloadEvent {
+        match self.cancel_receiver.changed().await {
+            Ok(()) if *self.cancel_receiver.borrow() => TarDownloadEvent::Cancel,
+            Ok(()) => TarDownloadEvent::Continue,
+            Err(_) => TarDownloadEvent::Exit,
+        }
+    }
+
+    /// Frames and forwards one tar payload over the websocket.
+    async fn send_chunk(&mut self, request: StreamChunkFrameRequest<'_>) -> bool {
+        AgentActor::send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
+    }
+
+    /// Unregisters the download worker from the active download registry.
+    async fn cleanup(&self) {
+        AgentActor::remove_active_download(&self.active_downloads, self.request_id).await;
+    }
+
+    /// Sends the tar cancellation frame expected by the server and exits.
+    async fn cancel(mut self) {
+        log!(
+            Level::Info,
+            "Stopping tar download after cancel: request_id={}, path={}",
+            self.request_id,
+            self.path
+        );
+        let _ = self
+            .send_chunk(
+                StreamChunkFrameRequest::new(self.request_id, Self::CANCEL_MESSAGE)
+                    .payload_kind(StreamPayloadKind::Tar)
+                    .is_error(true),
+            )
+            .await;
+        self.cleanup().await;
+    }
+
+    /// Stops quietly after the download registry has been torn down.
+    async fn shutdown(self) {
+        self.cleanup().await;
+    }
+
+    /// Runs the tar streaming loop until EOF, cancellation, or failure.
+    async fn process(mut self) {
+        let source_path = PathBuf::from(&self.path);
+
+        let metadata = match tokio::fs::metadata(&source_path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let error_message = format!("Failed to open directory: {}", error);
+                let _ = self
+                    .send_chunk(
+                        StreamChunkFrameRequest::new(self.request_id, error_message.as_bytes())
+                            .payload_kind(StreamPayloadKind::Tar)
+                            .is_error(true),
+                    )
+                    .await;
+                self.cleanup().await;
+                return;
+            }
+        };
+
+        if !metadata.is_dir() {
+            let error_message = format!("Source path is not a directory: {}", self.path);
+            let _ = self
+                .send_chunk(
+                    StreamChunkFrameRequest::new(self.request_id, error_message.as_bytes())
+                        .payload_kind(StreamPayloadKind::Tar)
+                        .is_error(true),
+                )
+                .await;
+            self.cleanup().await;
+            return;
+        }
+
+        let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
+        let source_path_for_worker = source_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Handle::current();
+            let writer = ChannelTarWriter {
+                sender: tar_sender,
+                runtime,
+            };
+            let mut builder = tar::Builder::new(writer);
+
+            let result = AgentActor::append_directory_entries(
+                &mut builder,
+                &source_path_for_worker,
+                &source_path_for_worker,
+            )
+            .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
+
+            if let Err(error) = result {
+                log!(
+                    Level::Error,
+                    "Tar directory streaming failed: path={}, error={}",
+                    source_path_for_worker.display(),
+                    error
+                );
+            }
+        });
+
+        let mut pending_chunk: Option<Vec<u8>> = None;
+
+        loop {
+            let next_chunk_bytes = tokio::select! {
+                event = self.wait_for_event() => event,
+                chunk_bytes = tar_receiver.recv() => TarDownloadEvent::Chunk(chunk_bytes),
+            };
+
+            let next_chunk_bytes = match next_chunk_bytes {
+                TarDownloadEvent::Chunk(chunk_bytes) => chunk_bytes,
+                TarDownloadEvent::Continue => continue,
+                TarDownloadEvent::Cancel => {
+                    self.cancel().await;
+                    return;
+                }
+                TarDownloadEvent::Exit => {
+                    self.shutdown().await;
+                    return;
+                }
+            };
+
+            let Some(chunk_bytes) = next_chunk_bytes else {
+                break;
+            };
+
+            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
+                if !self
+                    .send_chunk(
+                        StreamChunkFrameRequest::new(self.request_id, &previous_chunk)
+                            .payload_kind(StreamPayloadKind::Tar)
+                            .is_last(false),
+                    )
+                    .await
+                {
+                    log!(
+                        Level::Warning,
+                        "WebSocket channel full or closed, aborting tar download"
+                    );
+                    self.cleanup().await;
+                    return;
+                }
+            }
+        }
+
+        let final_chunk = pending_chunk.unwrap_or_default();
+        let _ = self
+            .send_chunk(
+                StreamChunkFrameRequest::new(self.request_id, &final_chunk)
+                    .payload_kind(StreamPayloadKind::Tar),
+            )
+            .await;
+
+        log!(
+            Level::Info,
+            "Tar directory download complete: path={}, chunks={}",
+            self.path,
+            self.chunk_index.display_number()
+        );
+        self.cleanup().await;
+    }
+}
+
+/// Owns the state and side effects for one in-progress tar upload.
+struct TarUploadWorker {
+    active_uploads: ActiveUploads,
+    chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
+    cancel_receiver: watch::Receiver<bool>,
+    session: TarUploadSession,
+    tx: mpsc::Sender<WsMessage>,
+    agent_id: AgentId,
+    request_id: RequestId,
+}
+
+impl TarUploadWorker {
+    /// Waits for the cooperative cancel signal used by tar upload workers.
+    async fn wait_for_cancel(cancel_receiver: &mut watch::Receiver<bool>) -> TarUploadEvent {
+        match cancel_receiver.changed().await {
+            Ok(()) if *cancel_receiver.borrow() => TarUploadEvent::Cancel,
+            Ok(()) => TarUploadEvent::Continue,
+            Err(_) => TarUploadEvent::Exit,
+        }
+    }
+
+    /// Sends an error command response for this tar upload request.
+    async fn send_error_response(&self, message: String) {
+        AgentActor
+            .send_command_response(
+                &self.tx,
+                &self.agent_id,
+                self.request_id,
+                CommandResult::Error { message },
+            )
+            .await;
+    }
+
+    /// Removes the temporary directory and unregisters the upload worker.
+    async fn cleanup(&self) {
+        AgentActor::remove_upload_temp_directory(&self.session.temp_path).await;
+        AgentActor::remove_active_upload(&self.active_uploads, self.request_id).await;
+    }
+
+    /// Drops the active tar byte channel so the unpack worker can stop.
+    async fn stop_unpacker(&mut self) {
+        let replacement = std_mpsc::sync_channel::<Vec<u8>>(1).0;
+        let _ = std::mem::replace(&mut self.session.chunk_sender, replacement);
+    }
+
+    /// Handles an explicit server-side cancellation request.
+    async fn cancel(mut self) {
+        log!(
+            Level::Info,
+            "Stopping tar upload after cancel: request_id={}, path={}",
+            self.request_id,
+            self.session.path
+        );
+        self.send_error_response("Upload canceled by server".to_string())
+            .await;
+        self.stop_unpacker().await;
+        self.cleanup().await;
+    }
+
+    /// Handles worker shutdown after the upload registry has been torn down.
+    async fn shutdown(mut self) {
+        // Registry teardown drops the watch sender before the chunk receiver
+        // necessarily closes, so treat it as an instruction to stop and clean
+        // up now.
+        self.stop_unpacker().await;
+        self.cleanup().await;
+    }
+
+    /// Reports a terminal upload error and cleans up temporary state.
+    async fn fail(mut self, message: String) {
+        self.send_error_response(message).await;
+        self.stop_unpacker().await;
+        self.cleanup().await;
+    }
+
+    /// Finalizes a successfully received tar stream and reports completion.
+    async fn finalize(self) {
+        let TarUploadWorker {
+            active_uploads,
+            session,
+            tx,
+            agent_id,
+            request_id,
+            ..
+        } = self;
+
+        AgentActor
+            .finalize_tar_upload(session, &tx, &agent_id, request_id)
+            .await;
+        AgentActor::remove_active_upload(&active_uploads, request_id).await;
+    }
+
+    /// Runs the tar upload loop until completion, cancellation, or failure.
+    async fn process(mut self) {
+        loop {
+            let cancel_receiver = &mut self.cancel_receiver;
+            let chunk_receiver = &mut self.chunk_receiver;
+            let next_chunk = tokio::select! {
+                event = Self::wait_for_cancel(cancel_receiver) => event,
+                chunk = chunk_receiver.recv() => TarUploadEvent::Chunk(chunk),
+            };
+
+            let next_chunk = match next_chunk {
+                TarUploadEvent::Chunk(chunk) => chunk,
+                TarUploadEvent::Continue => continue,
+                TarUploadEvent::Cancel => {
+                    self.cancel().await;
+                    return;
+                }
+                TarUploadEvent::Exit => {
+                    self.shutdown().await;
+                    return;
+                }
+            };
+
+            let Some(chunk) = next_chunk else {
+                break;
+            };
+
+            // Tar uploads must remain tar-framed end-to-end because the unpack
+            // worker consumes a tar byte stream from the chunk channel.
+            if chunk.payload_kind != StreamPayloadKind::Tar {
+                let error_message = format!(
+                    "Upload payload kind mismatch: expected {:?}, got {:?}",
+                    StreamPayloadKind::Tar,
+                    chunk.payload_kind
+                );
+                self.fail(error_message).await;
+                return;
+            }
+
+            if chunk.is_error {
+                let error_message = if chunk.data.is_empty() {
+                    "Upload aborted by server".to_string()
+                } else {
+                    String::from_utf8_lossy(&chunk.data).to_string()
+                };
+
+                log!(
+                    Level::Warning,
+                    "Upload aborted: request_id={}, path={}, error={}",
+                    self.request_id,
+                    self.session.path,
+                    error_message
+                );
+
+                self.fail(error_message).await;
+                return;
+            }
+
+            if !chunk.data.is_empty() {
+                if let Err(error) = self.session.chunk_sender.send(chunk.data.clone()) {
+                    let error_message =
+                        format!("Failed to forward tar upload chunk to unpacker: {}", error);
+                    self.fail(error_message).await;
+                    return;
+                }
+                self.session.bytes_written += chunk.data.len() as u64;
+            }
+
+            if !chunk.is_last {
+                continue;
+            }
+
+            self.finalize().await;
+            return;
+        }
+
+        self.fail("Upload stream ended before completion".to_string())
+            .await;
+    }
 }
 
 struct DirectoryCopyPlan {
@@ -221,79 +573,6 @@ impl AgentActor {
         match destination.parent() {
             Some(parent) => parent.join(temp_name),
             None => PathBuf::from(format!("./{}", temp_name)),
-        }
-    }
-
-    /// Resolves the cancel branch for tar downloads into a small event so the
-    /// select loop stays formatter-friendly.
-    async fn wait_for_tar_download_event(
-        cancel_receiver: &mut watch::Receiver<bool>,
-        write: &mpsc::Sender<WsMessage>,
-        chunk_index: &mut ChunkIndex,
-        request_id: RequestId,
-        path: &str,
-        cancel_message: &[u8],
-        active_downloads: &ActiveDownloads,
-    ) -> TarDownloadEvent {
-        match cancel_receiver.changed().await {
-            Ok(()) if *cancel_receiver.borrow() => {
-                log!(
-                    Level::Info,
-                    "Stopping tar download after cancel: request_id={}, path={}",
-                    request_id,
-                    path
-                );
-                let _ = Self::send_framed_stream_bytes(
-                    write,
-                    chunk_index,
-                    StreamChunkFrameRequest::new(request_id, cancel_message)
-                        .payload_kind(StreamPayloadKind::Tar)
-                        .is_error(true),
-                )
-                .await;
-                Self::remove_active_download(active_downloads, request_id).await;
-                TarDownloadEvent::Exit
-            }
-            Ok(()) => TarDownloadEvent::Continue,
-            Err(_) => {
-                Self::remove_active_download(active_downloads, request_id).await;
-                TarDownloadEvent::Exit
-            }
-        }
-    }
-
-    /// Resolves the cancel branch for tar uploads into a small event for the
-    /// outer select loop to handle.
-    async fn wait_for_tar_upload_event(
-        cancel_receiver: &mut watch::Receiver<bool>,
-        session: &TarUploadSession,
-        tx: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
-        request_id: RequestId,
-    ) -> TarUploadEvent {
-        match cancel_receiver.changed().await {
-            Ok(()) if *cancel_receiver.borrow() => {
-                let error_message = "Upload canceled by server".to_string();
-                log!(
-                    Level::Info,
-                    "Stopping tar upload after cancel: request_id={}, path={}",
-                    request_id,
-                    session.path
-                );
-                AgentActor
-                    .send_command_response(
-                        tx,
-                        agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-                TarUploadEvent::Cancel
-            }
-            Ok(()) => TarUploadEvent::Continue,
-            Err(_) => TarUploadEvent::Exit,
         }
     }
 
@@ -1057,15 +1336,18 @@ impl AgentActor {
                             cancel_sender,
                         },
                     );
-                tokio::spawn(Self::process_tar_upload(
-                    active_uploads,
-                    chunk_receiver,
-                    cancel_receiver,
-                    session,
-                    write.clone(),
-                    agent_id.clone(),
-                    request_id,
-                ));
+                tokio::spawn(
+                    TarUploadWorker {
+                        active_uploads,
+                        chunk_receiver,
+                        cancel_receiver,
+                        session,
+                        tx: write.clone(),
+                        agent_id: agent_id.clone(),
+                        request_id,
+                    }
+                    .process(),
+                );
             }
             Err(error) => {
                 self.send_command_response(
@@ -1088,136 +1370,19 @@ impl AgentActor {
         path: String,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
-        mut cancel_receiver: watch::Receiver<bool>,
+        cancel_receiver: watch::Receiver<bool>,
         active_downloads: ActiveDownloads,
     ) {
-        let source_path = PathBuf::from(&path);
-        let cancel_message = b"Download canceled by server";
-
-        let metadata = match tokio::fs::metadata(&source_path).await {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                let mut chunk_index = ChunkIndex::new(0);
-                let error_message = format!("Failed to open directory: {}", error);
-                let _ = Self::send_framed_stream_bytes(
-                    write,
-                    &mut chunk_index,
-                    StreamChunkFrameRequest::new(request_id, error_message.as_bytes())
-                        .payload_kind(StreamPayloadKind::Tar)
-                        .is_error(true),
-                )
-                .await;
-                Self::remove_active_download(&active_downloads, request_id).await;
-                return;
-            }
-        };
-
-        if !metadata.is_dir() {
-            let mut chunk_index = ChunkIndex::new(0);
-            let error_message = format!("Source path is not a directory: {}", path);
-            let _ = Self::send_framed_stream_bytes(
-                write,
-                &mut chunk_index,
-                StreamChunkFrameRequest::new(request_id, error_message.as_bytes())
-                    .payload_kind(StreamPayloadKind::Tar)
-                    .is_error(true),
-            )
-            .await;
-            Self::remove_active_download(&active_downloads, request_id).await;
-            return;
-        }
-
-        let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
-        let source_path_for_worker = source_path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let runtime = tokio::runtime::Handle::current();
-            let writer = ChannelTarWriter {
-                sender: tar_sender,
-                runtime,
-            };
-            let mut builder = tar::Builder::new(writer);
-
-            let result = Self::append_directory_entries(
-                &mut builder,
-                &source_path_for_worker,
-                &source_path_for_worker,
-            )
-            .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
-
-            if let Err(error) = result {
-                log!(
-                    Level::Error,
-                    "Tar directory streaming failed: path={}, error={}",
-                    source_path_for_worker.display(),
-                    error
-                );
-            }
-        });
-
-        let mut chunk_index = ChunkIndex(0);
-        let mut pending_chunk: Option<Vec<u8>> = None;
-
-        loop {
-            let next_chunk_bytes = tokio::select! {
-                event = Self::wait_for_tar_download_event(
-                    &mut cancel_receiver,
-                    write,
-                    &mut chunk_index,
-                    request_id,
-                    &path,
-                    cancel_message,
-                    &active_downloads,
-                ) => event,
-                chunk_bytes = tar_receiver.recv() => TarDownloadEvent::Chunk(chunk_bytes),
-            };
-
-            let next_chunk_bytes = match next_chunk_bytes {
-                TarDownloadEvent::Chunk(chunk_bytes) => chunk_bytes,
-                TarDownloadEvent::Continue => continue,
-                TarDownloadEvent::Exit => return,
-            };
-
-            let Some(chunk_bytes) = next_chunk_bytes else {
-                break;
-            };
-
-            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
-                if !Self::send_framed_stream_bytes(
-                    write,
-                    &mut chunk_index,
-                    StreamChunkFrameRequest::new(request_id, &previous_chunk)
-                        .payload_kind(StreamPayloadKind::Tar)
-                        .is_last(false),
-                )
-                .await
-                {
-                    log!(
-                        Level::Warning,
-                        "WebSocket channel full or closed, aborting tar download"
-                    );
-                    Self::remove_active_download(&active_downloads, request_id).await;
-                    return;
-                }
-            }
-        }
-
-        let final_chunk = pending_chunk.unwrap_or_default();
-        let _ = Self::send_framed_stream_bytes(
-            write,
-            &mut chunk_index,
-            StreamChunkFrameRequest::new(request_id, &final_chunk)
-                .payload_kind(StreamPayloadKind::Tar),
-        )
-        .await;
-
-        log!(
-            Level::Info,
-            "Tar directory download complete: path={}, chunks={}",
+        TarDownloadWorker {
             path,
-            chunk_index.display_number()
-        );
-        Self::remove_active_download(&active_downloads, request_id).await;
+            request_id,
+            write: write.clone(),
+            cancel_receiver,
+            active_downloads,
+            chunk_index: ChunkIndex::new(0),
+        }
+        .process()
+        .await;
     }
 
     async fn finalize_tar_upload(
@@ -1280,155 +1445,5 @@ impl AgentActor {
                 .await;
             }
         }
-    }
-
-    /// Waits for tar upload chunks or cancellation and tears down the temp
-    /// directory unless a full tar stream is finalized successfully.
-    async fn process_tar_upload(
-        active_uploads: ActiveUploads,
-        mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
-        mut cancel_receiver: watch::Receiver<bool>,
-        mut session: TarUploadSession,
-        tx: mpsc::Sender<WsMessage>,
-        agent_id: AgentId,
-        request_id: RequestId,
-    ) {
-        loop {
-            let next_chunk = tokio::select! {
-                event = Self::wait_for_tar_upload_event(
-                    &mut cancel_receiver,
-                    &session,
-                    &tx,
-                    &agent_id,
-                    request_id,
-                ) => event,
-                chunk = chunk_receiver.recv() => TarUploadEvent::Chunk(chunk),
-            };
-
-            let next_chunk = match next_chunk {
-                TarUploadEvent::Chunk(chunk) => chunk,
-                TarUploadEvent::Continue => continue,
-                TarUploadEvent::Cancel => {
-                    drop(session.chunk_sender);
-                    Self::remove_upload_temp_directory(&session.temp_path).await;
-                    Self::remove_active_upload(&active_uploads, request_id).await;
-                    return;
-                }
-                TarUploadEvent::Exit => {
-                    // Registry teardown drops the watch sender before the chunk
-                    // receiver necessarily closes, so treat it as an instruction
-                    // to stop and clean up now.
-                    drop(session.chunk_sender);
-                    Self::remove_upload_temp_directory(&session.temp_path).await;
-                    Self::remove_active_upload(&active_uploads, request_id).await;
-                    return;
-                }
-            };
-
-            let Some(chunk) = next_chunk else {
-                break;
-            };
-
-            // Tar uploads must remain tar-framed end-to-end because the unpack
-            // worker consumes a tar byte stream from the chunk channel.
-            if chunk.payload_kind != StreamPayloadKind::Tar {
-                let error_message = format!(
-                    "Upload payload kind mismatch: expected {:?}, got {:?}",
-                    StreamPayloadKind::Tar,
-                    chunk.payload_kind
-                );
-                AgentActor
-                    .send_command_response(
-                        &tx,
-                        &agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-                drop(session.chunk_sender);
-                Self::remove_upload_temp_directory(&session.temp_path).await;
-                Self::remove_active_upload(&active_uploads, request_id).await;
-                return;
-            }
-
-            if chunk.is_error {
-                let error_message = if chunk.data.is_empty() {
-                    "Upload aborted by server".to_string()
-                } else {
-                    String::from_utf8_lossy(&chunk.data).to_string()
-                };
-
-                log!(
-                    Level::Warning,
-                    "Upload aborted: request_id={}, path={}, error={}",
-                    request_id,
-                    session.path,
-                    error_message
-                );
-
-                AgentActor
-                    .send_command_response(
-                        &tx,
-                        &agent_id,
-                        request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
-                    )
-                    .await;
-                drop(session.chunk_sender);
-                Self::remove_upload_temp_directory(&session.temp_path).await;
-                Self::remove_active_upload(&active_uploads, request_id).await;
-                return;
-            }
-
-            if !chunk.data.is_empty() {
-                if let Err(error) = session.chunk_sender.send(chunk.data.clone()) {
-                    let error_message =
-                        format!("Failed to forward tar upload chunk to unpacker: {}", error);
-                    AgentActor
-                        .send_command_response(
-                            &tx,
-                            &agent_id,
-                            request_id,
-                            CommandResult::Error {
-                                message: error_message,
-                            },
-                        )
-                        .await;
-                    drop(session.chunk_sender);
-                    Self::remove_upload_temp_directory(&session.temp_path).await;
-                    Self::remove_active_upload(&active_uploads, request_id).await;
-                    return;
-                }
-                session.bytes_written += chunk.data.len() as u64;
-            }
-
-            if !chunk.is_last {
-                continue;
-            }
-
-            AgentActor
-                .finalize_tar_upload(session, &tx, &agent_id, request_id)
-                .await;
-            Self::remove_active_upload(&active_uploads, request_id).await;
-            return;
-        }
-
-        drop(session.chunk_sender);
-        AgentActor
-            .send_command_response(
-                &tx,
-                &agent_id,
-                request_id,
-                CommandResult::Error {
-                    message: "Upload stream ended before completion".to_string(),
-                },
-            )
-            .await;
-        Self::remove_upload_temp_directory(&session.temp_path).await;
-        Self::remove_active_upload(&active_uploads, request_id).await;
     }
 }
