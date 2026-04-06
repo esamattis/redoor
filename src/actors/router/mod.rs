@@ -55,7 +55,12 @@ impl RouterHandle {
     }
 
     /// Runs one request/reply interaction against the router task with a timeout.
-    pub async fn call<T, F>(&self, timeout_ms: u64, build: F) -> Result<T, RouterCallError>
+    ///
+    /// `build` receives the one-shot sender that the router-side handler must use to
+    /// deliver the reply for this request. The closure packages that sender into the
+    /// appropriate `RouterMsg` variant together with any request-specific payload, which
+    /// keeps the caller from having to construct and manage the reply channel manually.
+    pub async fn request<T, F>(&self, timeout_ms: u64, build: F) -> Result<T, RouterCallError>
     where
         T: Send + 'static,
         F: FnOnce(oneshot::Sender<T>) -> RouterMsg,
@@ -265,7 +270,7 @@ mod tests {
 
         let (completion_tx, _completion_rx) = oneshot::channel();
         let request_id = router_ref
-            .call(1_000, |reply| {
+            .request(1_000, |reply| {
                 RouterMsg::StartUploadStreamRest(StartUploadRequest {
                     agent_id: AgentId::from("agent-1"),
                     command: Command::RawUpload {
@@ -292,7 +297,7 @@ mod tests {
             data: vec![1, 2, 3, 4],
         };
         router_ref
-            .call(1_000, |reply| {
+            .request(1_000, |reply| {
                 RouterMsg::SendStreamChunkToAgent(SendStreamChunkRequest {
                     agent_id: AgentId::from("agent-1"),
                     request_id,
@@ -316,7 +321,7 @@ mod tests {
         let router_ref_for_chunk = router_ref.clone();
         let blocked_chunk = tokio::spawn(async move {
             router_ref_for_chunk
-                .call(5_000, |reply| {
+                .request(5_000, |reply| {
                     RouterMsg::SendStreamChunkToAgent(SendStreamChunkRequest {
                         agent_id: AgentId::from("agent-1"),
                         request_id,
@@ -332,7 +337,7 @@ mod tests {
         let router_ref_for_list = router_ref.clone();
         let list_agents = timeout(Duration::from_millis(250), async move {
             router_ref_for_list
-                .call(1_000, |reply| RouterMsg::GetAgentList { reply })
+                .request(1_000, |reply| RouterMsg::GetAgentList { reply })
                 .await
         })
         .await

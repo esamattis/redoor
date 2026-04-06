@@ -89,7 +89,7 @@ async fn forward_split_stream_chunk(
         let next_chunk_index = frames.next_chunk_index();
         match state
             .router_ref
-            .call(30000, |reply| {
+            .request(30000, |reply| {
                 actors::router::RouterMsg::SendStreamChunkToAgent(
                     actors::router::SendStreamChunkRequest {
                         agent_id: agent_id.clone(),
@@ -169,7 +169,7 @@ pub(crate) async fn raw_agent_handler(
     let agent_id = AgentId::from(agent.clone());
     let metadata = match state
         .router_ref
-        .call(5000, |reply| {
+        .request(5000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Metadata { path: path.clone() },
@@ -241,7 +241,7 @@ pub(crate) async fn raw_agent_handler(
 
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteStreamCommandRest(
                 actors::router::ExecuteStreamRequest {
                     agent_id: agent_id.clone(),
@@ -420,7 +420,7 @@ pub(crate) async fn raw_agent_put_handler(
 
     let request_id = match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::StartUploadStreamRest(actors::router::StartUploadRequest {
                 agent_id: agent_id.clone(),
                 command: Command::RawUpload {

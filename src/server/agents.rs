@@ -23,7 +23,7 @@ pub(crate) async fn list_agents_handler(
 ) -> impl IntoResponse {
     match state
         .router_ref
-        .call(5000, |reply| actors::router::RouterMsg::GetAgentList {
+        .request(5000, |reply| actors::router::RouterMsg::GetAgentList {
             reply,
         })
         .await
@@ -81,7 +81,7 @@ pub(crate) async fn ls_agent_handler(
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Ls { path: Some(path) },
@@ -141,7 +141,7 @@ pub(crate) async fn cat_agent_handler(
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Cat { path },
@@ -191,7 +191,7 @@ pub(crate) async fn echo_agent_handler(
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Echo {

@@ -16,7 +16,7 @@ pub(crate) async fn list_transfer_progress_handler(
 ) -> impl IntoResponse {
     match state
         .router_ref
-        .call(5000, |reply| {
+        .request(5000, |reply| {
             actors::router::RouterMsg::GetTransferProgress { reply }
         })
         .await
@@ -67,7 +67,7 @@ pub(crate) async fn copy_file_handler(
 
     let source_metadata = match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: payload.source.agent.clone(),
                 command: Command::Metadata {
@@ -122,7 +122,7 @@ pub(crate) async fn copy_file_handler(
 
     let copy_request_id = match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
                 source_agent_id: payload.source.agent.clone(),
                 source_path: source_path.clone(),

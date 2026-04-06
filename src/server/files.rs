@@ -27,7 +27,7 @@ pub(crate) async fn raw_agent_delete_handler(
 
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::RawDelete {
@@ -79,7 +79,7 @@ pub(crate) async fn create_directory_handler(
 
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::CreateDirectory {

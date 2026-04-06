@@ -25,7 +25,7 @@ pub(crate) async fn get_agent_details(
 ) -> Result<AgentDetailsResponse, Response> {
     match state
         .router_ref
-        .call(30000, |reply| {
+        .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::GetAgentDetails,
