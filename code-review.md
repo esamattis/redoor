@@ -6,16 +6,6 @@ Reviewed the direct raw upload/download paths, the tar directory upload/download
 
 ## Findings
 
-### High: Extensionless downloads read the whole file into memory before streaming starts
-
-Refs: `src/server/raw.rs:169-206`, `src/commands.rs:536-541`, `src/server/raw.rs:238-347`
-
-Every raw download does a `Metadata` command before the stream starts. When the file has no extension, `metadata()` falls back to `detect_mime_type_from_content()`, which calls `tokio::fs::read(path).await` even though the comment says it should read only the first 8 KiB.
-
-Impact: downloading a large extensionless file can allocate the entire file on the agent before the first streamed chunk is sent. That undermines the streaming design and can create very large one-request memory spikes. The same issue also affects range requests and `HEAD` requests because they go through the same metadata path.
-
-Recommendation: open the file and read only a small fixed prefix for content sniffing. Do not use `tokio::fs::read` here.
-
 ### Medium: Tar upload backpressure is memory-bounded, but it blocks a Tokio worker thread
 
 Refs: `src/agent/transfers/upload.rs:160-166`, `src/agent/transfers/upload.rs:439-446`

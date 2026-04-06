@@ -533,12 +533,35 @@ impl CommandHandler {
         }
     }
 
+    /// Sniffs a small file prefix so extensionless downloads can set a MIME type
+    /// without buffering the entire file before streaming starts.
     async fn detect_mime_type_from_content(path: &str) -> Option<String> {
-        // Read first 8KB of file
-        let content = match tokio::fs::read(path).await {
-            Ok(data) => data,
+        use tokio::{fs::File, io::AsyncReadExt};
+
+        const MIME_SNIFF_BYTES: usize = 8 * 1024;
+
+        let mut file = match File::open(path).await {
+            Ok(file) => file,
             Err(_) => return None,
         };
+
+        let mut content = [0_u8; MIME_SNIFF_BYTES];
+        let mut bytes_read = 0;
+
+        while bytes_read < content.len() {
+            let read = match file.read(&mut content[bytes_read..]).await {
+                Ok(read) => read,
+                Err(_) => return None,
+            };
+
+            if read == 0 {
+                break;
+            }
+
+            bytes_read += read;
+        }
+
+        let content = &content[..bytes_read];
 
         // Check for shebang pattern at the start (scripts without extension)
         if content.starts_with(b"#!") {
@@ -618,7 +641,7 @@ impl CommandHandler {
             return Some("video/mp4".to_string());
         }
 
-        if content.starts_with(b"RIFF") && content.len() >= 8 && &content[8..12] == b"AVI " {
+        if content.starts_with(b"RIFF") && content.len() >= 12 && &content[8..12] == b"AVI " {
             return Some("video/x-msvideo".to_string());
         }
 
@@ -735,6 +758,27 @@ impl CommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_detect_mime_type_from_content_reads_only_prefix() {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            CommandHandler::detect_mime_type_from_content("/dev/zero"),
+        )
+        .await;
+
+        // This must complete promptly so extensionless metadata requests do not wait for EOF on
+        // special files or buffer unbounded content before the download stream can start.
+        assert!(
+            result.is_ok(),
+            "content sniffing should only read a bounded prefix"
+        );
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "zero-filled content should not match a known MIME"
+        );
+    }
 
     #[tokio::test]
     async fn test_ls_command() {
