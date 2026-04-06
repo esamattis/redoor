@@ -6,7 +6,6 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use ractor::ActorRef;
 use redoor::{Level, actors, commands::UiEvent, log};
 use uuid::Uuid;
 
@@ -28,7 +27,7 @@ pub(crate) async fn ui_websocket_handler(
     ws.on_upgrade(|socket| handle_ui_socket(socket, state.router_ref))
 }
 
-async fn handle_socket(socket: WebSocket, router_ref: ActorRef<actors::router::RouterMsg>) {
+async fn handle_socket(socket: WebSocket, router_ref: actors::router::RouterHandle) {
     let socket_id = Uuid::new_v4().to_string();
     actors::session::handle_websocket(socket, socket_id, router_ref).await;
 }
@@ -66,12 +65,12 @@ async fn wait_for_ui_disconnect(receiver: &mut futures_util::stream::SplitStream
     }
 }
 
-async fn handle_ui_socket(socket: WebSocket, router_ref: ActorRef<actors::router::RouterMsg>) {
+async fn handle_ui_socket(socket: WebSocket, router_ref: actors::router::RouterHandle) {
     let subscriber_id = Uuid::new_v4().to_string();
     let (mut sender, mut receiver) = socket.split();
     let (tx_out, mut rx_out) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
 
-    let _ = router_ref.cast(actors::router::RouterMsg::RegisterUiSubscriber(
+    let _ = router_ref.send(actors::router::RouterMsg::RegisterUiSubscriber(
         actors::router::RegisterUiSubscriberRequest {
             subscriber_id: subscriber_id.clone(),
             sender: tx_out,
@@ -83,5 +82,5 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: ActorRef<actors::router
         _ = wait_for_ui_disconnect(&mut receiver) => {}
     }
 
-    let _ = router_ref.cast(actors::router::RouterMsg::UnregisterUiSubscriber { subscriber_id });
+    let _ = router_ref.send(actors::router::RouterMsg::UnregisterUiSubscriber { subscriber_id });
 }

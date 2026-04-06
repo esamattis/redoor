@@ -1,4 +1,5 @@
 use super::super::RouterError;
+use super::super::RouterHandle;
 use super::super::agents;
 use super::super::messages::{
     FinishUploadChunkRoute, RouterMsg, SendStreamChunkRequest, StartUploadRequest,
@@ -10,7 +11,6 @@ use crate::commands::CommandResult;
 use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message};
-use ractor::ActorRef;
 
 /// Starts a direct upload stream and records its progress entry.
 pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
@@ -60,7 +60,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
 /// Forwards one REST upload chunk to the target agent's bounded binary lane.
 pub(crate) fn route_chunk(
     state: &mut RouterState,
-    myself: &ActorRef<RouterMsg>,
+    myself: &RouterHandle,
     request: SendStreamChunkRequest,
 ) {
     let transfer = match state.streams.uploads.get(&request.request_id) {
@@ -123,7 +123,7 @@ pub(crate) fn route_chunk(
         tokio::spawn(async move {
             let send_succeeded = agents::send_agent_binary(&agent_info, payload).await;
             let send_result =
-                myself.cast(RouterMsg::FinishRoutedUploadChunk(FinishUploadChunkRoute {
+                myself.send(RouterMsg::FinishRoutedUploadChunk(FinishUploadChunkRoute {
                     agent_id,
                     request_id,
                     bytes,
@@ -132,7 +132,7 @@ pub(crate) fn route_chunk(
                     reply,
                 }));
 
-            if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
+            if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result {
                 if let RouterMsg::FinishRoutedUploadChunk(route) = message {
                     let _ = route.reply.send(Err(RouterError::RouterStopped {
                         operation: "upload chunk forwarding",

@@ -1,6 +1,6 @@
 # Redoor
 
-A remote agent management system built with Rust, Tokio, Axum, and the Ractor actor framework. Redoor enables remote command execution and file operations on distributed agents through a central server, with a web UI for management.
+A remote agent management system built with Rust, Tokio, and Axum. Redoor enables remote command execution and file operations on distributed agents through a central server, with a web UI for management.
 
 ## Overview
 
@@ -18,20 +18,19 @@ graph TB
         Browser["Browser"]
     end
 
-    subgraph Server["Redoor Server (Axum + Ractor)"]
+    subgraph Server["Redoor Server (Axum + Tokio Tasks)"]
         REST["REST API"]
         WS["WebSocket Endpoint"]
-        Router["RouterActor"]
-        Session1["SessionActor #1"]
-        Session2["SessionActor #2"]
-        SessionN["SessionActor #N"]
-        CmdExec["CommandExecutorActor"]
+        Router["Router Task"]
+        Session1["Session Task #1"]
+        Session2["Session Task #2"]
+        SessionN["Session Task #N"]
     end
 
     subgraph Agents["Remote Agents"]
-        Agent1["AgentActor #1"]
-        Agent2["AgentActor #2"]
-        AgentN["AgentActor #N"]
+        Agent1["Agent Task #1"]
+        Agent2["Agent Task #2"]
+        AgentN["Agent Task #N"]
     end
 
     Browser -- "HTTP requests" --> REST
@@ -42,21 +41,19 @@ graph TB
     Session1 -- "WebSocket" --> Agent1
     Session2 -- "WebSocket" --> Agent2
     SessionN -- "WebSocket" --> AgentN
-    Router -.-> CmdExec
 ```
 
-## Actor System
+## Task Architecture
 
-The server uses the [Ractor](https://github.com/slawlor/ractor) actor framework to manage concurrent connections and command routing.
+The server uses dedicated Tokio tasks and message passing to manage concurrent connections and command routing.
 
-### Actors
+### Runtime Tasks
 
-| Actor                           | Cardinality                  | Responsibility                                                                                                        |
-| ------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **RouterActor**                 | Singleton                    | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs.                  |
-| **SessionActor**                | One per WebSocket connection | Bridges a single WebSocket connection to the actor system. Deserializes inbound frames, serializes outbound messages. |
-| **CommandExecutorActor**        | Singleton                    | Executes commands locally on the server side.                                                                         |
-| **AgentActor** _(agent binary)_ | One per agent process        | Manages the agent's WebSocket connection, executes commands locally, and streams results back.                        |
+| Actor                           | Cardinality                  | Responsibility                                                                                                  |
+| ------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Router Task**                 | Singleton                    | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs.            |
+| **Session Task**                | One per WebSocket connection | Bridges a single WebSocket connection to the router. Deserializes inbound frames, serializes outbound messages. |
+| **Agent Task** _(agent binary)_ | One per agent process        | Manages the agent's WebSocket connection, executes commands locally, and streams results back.                  |
 
 ### Message Flow: REST Command Execution
 
@@ -64,10 +61,10 @@ The server uses the [Ractor](https://github.com/slawlor/ractor) actor framework 
 sequenceDiagram
     participant Client as REST Client / UI
     participant API as Axum REST API
-    participant Router as RouterActor
-    participant Session as SessionActor
+    participant Router as Router Task
+    participant Session as Session Task
     participant WS as WebSocket
-    participant Agent as AgentActor
+    participant Agent as Agent Task
 
     Client->>API: GET /api/v1/agents/{id}/ls/path
     API->>Router: ExecuteCommandRest { agent_id, command, reply }
@@ -80,7 +77,7 @@ sequenceDiagram
     WS->>Session: IncomingMessage(CommandResponse)
     Session->>Router: RouteResponse { request_id, result }
     Router->>Router: Match request_id to stored reply port
-    Router->>API: Send result via RpcReplyPort
+    Router->>API: Send result via oneshot reply
     API->>Client: JSON response
 ```
 
@@ -92,10 +89,10 @@ Large file downloads use a custom binary streaming protocol to avoid loading ent
 sequenceDiagram
     participant Client as REST Client / UI
     participant API as Axum REST API
-    participant Router as RouterActor
-    participant Session as SessionActor
+    participant Router as Router Task
+    participant Session as Session Task
     participant WS as WebSocket
-    participant Agent as AgentActor
+    participant Agent as Agent Task
 
     Client->>API: GET /api/v1/agents/{id}/raw/path
     API->>Router: Metadata command (get MIME type + size)
@@ -180,7 +177,7 @@ Streaming transfers use a custom binary protocol over WebSocket binary frames:
 ```
 redoor/
 ├── src/
-│   ├── main.rs                  # Server entry point (Axum routes + actor bootstrap)
+│   ├── main.rs                  # Server entry point (Axum routes + router bootstrap)
 │   ├── lib.rs                   # Library root (re-exports)
 │   ├── types.rs                 # WebSocket message types (AgentRegister, Command, etc.)
 │   ├── commands.rs              # Command definitions, result types, and CommandHandler
@@ -188,12 +185,11 @@ redoor/
 │   ├── logging.rs               # Logging utilities
 │   ├── agent_types.rs           # Agent-related type definitions
 │   ├── bin/
-│   │   └── redoor-agent.rs      # Agent binary (AgentActor)
+│   │   └── redoor-agent.rs      # Agent binary runtime
 │   └── actors/
 │       ├── mod.rs
-│       ├── router.rs            # RouterActor — central message hub
-│       ├── session.rs           # SessionActor — per-connection WebSocket bridge
-│       └── command_executor.rs  # CommandExecutorActor — local command execution
+│       ├── router.rs            # Router task — central message hub
+│       └── session.rs           # Session task — per-connection WebSocket bridge
 ├── bindings/                    # Auto-generated TypeScript interfaces (ts-rs)
 ├── ui/                          # Web UI (TanStack Router + Tailwind)
 │   ├── src/
@@ -260,7 +256,7 @@ pnpm run dev
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | Runtime                  | [Tokio](https://tokio.rs/)                                                                |
 | HTTP / WebSocket Server  | [Axum](https://github.com/tokio-rs/axum)                                                  |
-| Actor Framework          | [Ractor](https://github.com/slawlor/ractor)                                               |
+| Concurrency Model        | Tokio tasks + channels                                                                    |
 | WebSocket Client (Agent) | [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)                        |
 | Serialization            | [serde](https://serde.rs/) + serde_json                                                   |
 | TypeScript Codegen       | [ts-rs](https://github.com/Aleph-Alpha/ts-rs)                                             |

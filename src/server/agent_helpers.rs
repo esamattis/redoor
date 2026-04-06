@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ractor::call_t;
 use redoor::{
     actors,
     commands::{AgentDetailsResponse, Command, CommandResult, ErrorResponse},
@@ -24,17 +23,17 @@ pub(crate) async fn get_agent_details(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<AgentDetailsResponse, Response> {
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
+    match state
+        .router_ref
+        .call(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::GetAgentDetails,
                 reply,
-            }
-        ),
-        30000
-    ) {
+            })
+        })
+        .await
+    {
         Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
         Ok(CommandResult::Error { kind, message }) => {
             let status = command_error_status(&kind);

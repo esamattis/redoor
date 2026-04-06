@@ -6,9 +6,9 @@ pub(crate) mod state;
 mod transfers;
 mod ws;
 
-use ractor::Actor;
 use redoor::{Level, log, types::AgentId};
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
@@ -58,7 +58,29 @@ impl From<AgentCommandError> for redoor::commands::CommandResult {
     }
 }
 
+/// Runtime handle used to send control events into the agent task.
+#[derive(Clone)]
+pub(crate) struct AgentHandle {
+    sender: mpsc::Sender<AgentMsg>,
+}
+
+impl AgentHandle {
+    /// Queues one control event for the agent runtime.
+    pub(crate) fn send(
+        &self,
+        message: AgentMsg,
+    ) -> Result<(), mpsc::error::TrySendError<AgentMsg>> {
+        self.sender.try_send(message)
+    }
+}
+
+/// Stateless helper namespace for agent protocol and transfer operations.
 pub(crate) struct AgentActor;
+
+/// Long-lived agent runtime that owns connection lifecycle and transfer registries.
+pub(crate) struct AgentRuntime {
+    pub(crate) state: AgentState,
+}
 
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let server_url = args.ws_address;
@@ -70,10 +92,11 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     redoor::logging::init(log_file);
     log!(Level::Info, "Starting agent '{}'", agent_name);
 
-    let (_, agent_handle) =
-        AgentActor::spawn(None, AgentActor, (agent_id, agent_name, server_url)).await?;
+    let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
+    let handle = AgentHandle { sender };
+    let runtime = AgentRuntime::new(agent_id, agent_name, server_url);
 
-    agent_handle.await?;
+    runtime.run(receiver, handle).await;
 
     Ok(())
 }

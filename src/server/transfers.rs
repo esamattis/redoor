@@ -1,5 +1,4 @@
 use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
-use ractor::call_t;
 use redoor::{
     actors,
     commands::{Command, CommandResult, CopyFileRequest, CopyFileResponse, ErrorResponse},
@@ -15,11 +14,13 @@ use super::{
 pub(crate) async fn list_transfer_progress_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::GetTransferProgress { reply },
-        5000
-    ) {
+    match state
+        .router_ref
+        .call(5000, |reply| {
+            actors::router::RouterMsg::GetTransferProgress { reply }
+        })
+        .await
+    {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => {
             let error_msg = format!("Failed to get transfer progress: {:?}", error);
@@ -64,19 +65,19 @@ pub(crate) async fn copy_file_handler(
             .into_response();
     }
 
-    let source_metadata = match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
+    let source_metadata = match state
+        .router_ref
+        .call(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: payload.source.agent.clone(),
                 command: Command::Metadata {
                     path: source_path.clone(),
                 },
                 reply,
-            }
-        ),
-        30000
-    ) {
+            })
+        })
+        .await
+    {
         Ok(CommandResult::Metadata(metadata)) => metadata,
         Ok(CommandResult::Error { kind, message }) => {
             let status = command_error_status(&kind);
@@ -119,19 +120,21 @@ pub(crate) async fn copy_file_handler(
             .into_response();
     };
 
-    let copy_request_id = match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
-            source_agent_id: payload.source.agent.clone(),
-            source_path: source_path.clone(),
-            dest_agent_id: payload.dest.agent.clone(),
-            dest_path: dest_path.clone(),
-            total_bytes,
-            content_kind,
-            reply,
-        }),
-        30000
-    ) {
+    let copy_request_id = match state
+        .router_ref
+        .call(30000, |reply| {
+            actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
+                source_agent_id: payload.source.agent.clone(),
+                source_path: source_path.clone(),
+                dest_agent_id: payload.dest.agent.clone(),
+                dest_path: dest_path.clone(),
+                total_bytes,
+                content_kind,
+                reply,
+            })
+        })
+        .await
+    {
         Ok(Ok(copy_request_id)) => copy_request_id,
         Ok(Err(error)) => {
             return router_error_response(error);

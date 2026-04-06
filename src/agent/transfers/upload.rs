@@ -48,8 +48,6 @@ pub(crate) enum TarUploadError {
     UnpackTarEntry(String),
     #[error("Tar extraction worker failed: {0}")]
     ExtractionWorkerFailed(String),
-    #[error("Failed to finalize uploaded directory: {0}")]
-    FinalizeUploadedDirectory(#[source] std::io::Error),
 }
 
 impl TarUploadError {
@@ -58,8 +56,7 @@ impl TarUploadError {
         match self {
             Self::AccessDestinationParent(error)
             | Self::CheckDestinationPath(error)
-            | Self::CreateTempDirectory(error)
-            | Self::FinalizeUploadedDirectory(error) => CommandErrorKind::from_io_error(error),
+            | Self::CreateTempDirectory(error) => CommandErrorKind::from_io_error(error),
             Self::DestinationParentNotDirectory(_) => CommandErrorKind::NotADirectory,
             Self::DestinationAlreadyExists(_) => CommandErrorKind::AlreadyExists,
             Self::EscapingTarEntryPath(_)

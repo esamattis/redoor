@@ -4,7 +4,6 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use ractor::call_t;
 use redoor::{
     actors,
     commands::{Command, CommandResult, CreateDirectoryResponse, ErrorResponse, RawDeleteResponse},
@@ -26,19 +25,19 @@ pub(crate) async fn raw_agent_delete_handler(
         Err(response) => return response,
     };
 
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
+    match state
+        .router_ref
+        .call(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::RawDelete {
                     path: resolved_path.clone(),
                 },
                 reply,
-            }
-        ),
-        30000
-    ) {
+            })
+        })
+        .await
+    {
         Ok(CommandResult::RawDelete) => (
             StatusCode::OK,
             Json(RawDeleteResponse {
@@ -78,19 +77,19 @@ pub(crate) async fn create_directory_handler(
         Err(response) => return response,
     };
 
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
+    match state
+        .router_ref
+        .call(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::CreateDirectory {
                     path: resolved_path.clone(),
                 },
                 reply,
-            }
-        ),
-        30000
-    ) {
+            })
+        })
+        .await
+    {
         Ok(CommandResult::CreateDirectory) => (
             StatusCode::OK,
             Json(CreateDirectoryResponse {

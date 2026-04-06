@@ -45,6 +45,26 @@ type CreateDirectoryState =
     | { type: "creating" }
     | { type: "error"; message: string };
 
+function getImmediateParentPath(path: string): string | null {
+    const normalizedPath = path.replace(/\/+$/, "");
+    if (normalizedPath === "") {
+        return null;
+    }
+
+    const parts = normalizedPath.split("/").filter((part) => part !== "");
+    if (parts.length <= 1) {
+        return null;
+    }
+
+    return parts.slice(0, -1).join("/");
+}
+
+function getBrowserPathHref(agentId: string, relativePath: string | null) {
+    return relativePath
+        ? `/agents/${agentId}/browser/${relativePath}`
+        : `/agents/${agentId}/browser`;
+}
+
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -88,7 +108,7 @@ function FileBrowser() {
     const { agent, agentId, agentName, relativePath, lsResult } = data;
 
     const isAtCwd = relativePath === "";
-    const parentPath = getParentPath(relativePath);
+    const parentPath = getImmediateParentPath(relativePath);
 
     if (isLsDirectoryResponse(lsResult)) {
         const directories = lsResult.files.filter(
@@ -474,11 +494,7 @@ function BrowserHeader(props: {
                         directoryPath={props.directoryPath}
                     />
                     <Link
-                        to="/agents/$agentId/browser/$"
-                        params={{
-                            agentId: props.agentId,
-                            _splat: props.parentPath ?? undefined,
-                        }}
+                        to={getBrowserPathHref(props.agentId, props.parentPath)}
                         className="flex items-center gap-2 rounded bg-gray-100 px-4 py-2 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={props.isAtCwd}
                     >
@@ -709,7 +725,7 @@ function FileDetailView(props: {
     downloadUrl: string;
 }) {
     const navigate = useNavigate();
-    const parentPath = getParentPath(props.relativePath);
+    const parentPath = getImmediateParentPath(props.relativePath);
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
@@ -769,11 +785,7 @@ function FileDetailView(props: {
                     />
                     <div className="flex gap-2">
                         <Link
-                            to="/agents/$agentId/browser/$"
-                            params={{
-                                agentId: props.agentId,
-                                _splat: parentPath ?? undefined,
-                            }}
+                            to={getBrowserPathHref(props.agentId, parentPath)}
                             className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
                         >
                             <ArrowLeft className="h-4 w-4" />

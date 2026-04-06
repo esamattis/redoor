@@ -152,6 +152,14 @@ test.describe.serial("File Browser Navigation", () => {
         await page.getByRole("link", { name: "subdir2", exact: true }).click();
         await page.getByRole("link", { name: "deep", exact: true }).click();
 
+        // Waiting for deep-directory content ensures the next Up click runs
+        // after the route loader has rendered the nested page rather than
+        // racing with the intermediate URL change.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agentId}/browser/${testDirName}/subdir2/deep`,
+        );
+        await expect(page.getByText("nested3.txt")).toBeVisible();
+
         await page.getByRole("link", { name: "Up", exact: true }).click();
 
         // One Up click should remove only the deepest path segment.

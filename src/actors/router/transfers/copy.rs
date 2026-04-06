@@ -1,4 +1,5 @@
 use super::super::RouterError;
+use super::super::RouterHandle;
 use super::super::agents;
 use super::super::cleanup;
 use super::super::messages::{
@@ -13,7 +14,6 @@ use crate::logging::Level;
 use crate::streaming::StreamChunkFrameRequest;
 use crate::types::Message;
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
-use ractor::ActorRef;
 
 /// Reframes one source chunk into destination-sized frames and forwards them incrementally.
 pub(crate) async fn send_framed_copy_chunk(
@@ -269,7 +269,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
 /// Forwards one remote-copy source chunk to the destination agent incrementally.
 pub(crate) fn route_chunk(
     state: &mut RouterState,
-    myself: &ActorRef<RouterMsg>,
+    myself: &RouterHandle,
     request: RouteStreamChunkRequest,
 ) {
     let agent_id = request.agent_id;
@@ -377,7 +377,7 @@ pub(crate) fn route_chunk(
         )
         .await;
 
-        let send_result = myself.cast(RouterMsg::FinishRoutedCopyChunk(FinishCopyChunkRoute {
+        let send_result = myself.send(RouterMsg::FinishRoutedCopyChunk(FinishCopyChunkRoute {
             source_agent_id: agent_id,
             public_request_id,
             source_request_id,
@@ -388,7 +388,7 @@ pub(crate) fn route_chunk(
             reply,
         }));
 
-        if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
+        if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result {
             if let RouterMsg::FinishRoutedCopyChunk(route) = message {
                 let _ = route.reply.send(());
             }
