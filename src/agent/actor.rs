@@ -1,4 +1,7 @@
-use super::{AgentActor, AgentMsg, AgentState};
+use super::{
+    AgentActor, AgentMsg, AgentState,
+    ws::{spawn_read_task, spawn_stdin_task},
+};
 use futures_util::{SinkExt, StreamExt};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use redoor::{
@@ -9,19 +12,14 @@ use sysinfo::System;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
-impl AgentActor {
-    /// Converts a channel receive result into the next outbound websocket frame
-    /// while marking the lane closed once its sender side is gone.
-    fn take_outbound_message(
-        message: Option<WsMessage>,
-        lane_closed: &mut bool,
-    ) -> Option<WsMessage> {
-        match message {
-            Some(message) => Some(message),
-            None => {
-                *lane_closed = true;
-                None
-            }
+/// Converts a channel receive result into the next outbound websocket frame
+/// while marking the lane closed once its sender side is gone.
+fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> Option<WsMessage> {
+    match message {
+        Some(message) => Some(message),
+        None => {
+            *lane_closed = true;
+            None
         }
     }
 }
@@ -45,7 +43,7 @@ impl Actor for AgentActor {
             agent_name
         );
 
-        Self::spawn_stdin_task(myself.clone()).await;
+        spawn_stdin_task(myself.clone()).await;
 
         let _ = myself.cast(AgentMsg::Connect);
 
@@ -85,7 +83,7 @@ impl Actor for AgentActor {
                         state.ws_text_tx = Some(text_tx.clone());
                         state.ws_binary_tx = Some(binary_tx.clone());
 
-                        Self::spawn_read_task(read, myself.clone()).await;
+                        spawn_read_task(read, myself.clone()).await;
 
                         let mut write = write;
                         tokio::spawn(async move {
@@ -95,8 +93,8 @@ impl Actor for AgentActor {
                             loop {
                                 let next_message = tokio::select! {
                                     biased;
-                                    message = text_rx.recv(), if !text_closed => Self::take_outbound_message(message, &mut text_closed),
-                                    message = binary_rx.recv(), if !binary_closed => Self::take_outbound_message(message, &mut binary_closed),
+                                    message = text_rx.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
+                                    message = binary_rx.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
                                     else => break,
                                 };
 

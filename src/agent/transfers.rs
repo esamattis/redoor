@@ -1,4 +1,6 @@
-use super::{ActiveDownloads, ActiveUploads, AgentActor, UploadSessionHandle};
+use super::{
+    ActiveDownloads, ActiveUploads, AgentActor, UploadSessionHandle, raw::send_framed_stream_bytes,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use redoor::{
     Level,
@@ -18,6 +20,519 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+
+/// Removes an abandoned upload temp directory so failed tar uploads do not leave partial trees behind.
+async fn remove_upload_temp_directory(temp_path: &Path) {
+    if let Err(error) = tokio::fs::remove_dir_all(temp_path).await {
+        log!(
+            Level::Warning,
+            "Failed to remove upload temp directory: path={}, error={}",
+            temp_path.display(),
+            error
+        );
+    }
+}
+
+/// Builds the hidden temp directory path used while a tar upload is still incomplete.
+fn temp_upload_dir_path(path: &str) -> PathBuf {
+    let destination = Path::new(path);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("upload-dir");
+    let temp_name = format!(".{}.redoor-upload-dir-{}", file_name, fastrand::u64(..));
+
+    match destination.parent() {
+        Some(parent) => parent.join(temp_name),
+        None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Rejects tar entry paths that could escape the destination directory during extraction.
+fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf> {
+    let mut sanitized = PathBuf::new();
+
+    for component in entry_path.components() {
+        match component {
+            Component::Normal(part) => sanitized.push(part),
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                bail!(
+                    "Tar entry path escapes destination: {}",
+                    entry_path.display()
+                );
+            }
+        }
+    }
+
+    if sanitized.as_os_str().is_empty() {
+        bail!("Tar entry path cannot be empty");
+    }
+
+    Ok(sanitized)
+}
+
+/// Builds the hidden temp file path used while a local file copy is still incomplete.
+fn temp_local_copy_path(path: &str) -> PathBuf {
+    let destination = Path::new(path);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("copy");
+    let temp_name = format!(".{}.redoor-local-copy-{}", file_name, fastrand::u64(..));
+
+    match destination.parent() {
+        Some(parent) => parent.join(temp_name),
+        None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Builds the hidden temp directory path used while a local directory copy is still incomplete.
+fn temp_local_copy_dir_path(path: &str) -> PathBuf {
+    let destination = Path::new(path);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("copy-dir");
+    let temp_name = format!(".{}.redoor-local-copy-dir-{}", file_name, fastrand::u64(..));
+
+    match destination.parent() {
+        Some(parent) => parent.join(temp_name),
+        None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Verifies the copy destination differs from the source and does not recurse into it.
+fn validate_local_copy_destination(
+    source_path: &Path,
+    dest_path: &Path,
+    source_is_dir: bool,
+) -> Result<()> {
+    let source_parent = source_path
+        .parent()
+        .with_context(|| format!("Source parent not found for {}", source_path.display()))?;
+    let dest_parent = dest_path
+        .parent()
+        .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
+
+    let canonical_source_parent = std::fs::canonicalize(source_parent).with_context(|| {
+        format!(
+            "Failed to access source parent: {}",
+            source_parent.display()
+        )
+    })?;
+    let canonical_dest_parent = std::fs::canonicalize(dest_parent).with_context(|| {
+        format!(
+            "Failed to access destination parent: {}",
+            dest_parent.display()
+        )
+    })?;
+
+    let source_canonical = if source_path.is_absolute() {
+        std::fs::canonicalize(source_path)
+            .with_context(|| format!("Failed to access source path: {}", source_path.display()))?
+    } else {
+        canonical_source_parent.join(
+            source_path
+                .file_name()
+                .with_context(|| format!("Invalid source path: {}", source_path.display()))?,
+        )
+    };
+
+    let dest_effective = canonical_dest_parent.join(
+        dest_path
+            .file_name()
+            .with_context(|| format!("Invalid destination path: {}", dest_path.display()))?,
+    );
+
+    if source_canonical == dest_effective {
+        bail!("Source and destination must be different");
+    }
+
+    if source_is_dir && dest_effective.starts_with(&source_canonical) {
+        bail!("Destination directory cannot be inside the source directory");
+    }
+
+    Ok(())
+}
+
+/// Verifies the destination parent exists and is a directory before copy work begins.
+async fn validate_local_copy_parent(dest_path: &Path) -> Result<()> {
+    let parent = dest_path
+        .parent()
+        .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
+    let parent_metadata = tokio::fs::metadata(parent)
+        .await
+        .with_context(|| format!("Failed to access destination parent: {}", parent.display()))?;
+    if !parent_metadata.is_dir() {
+        bail!(
+            "Destination parent is not a directory: {}",
+            parent.display()
+        );
+    }
+    Ok(())
+}
+
+/// Copies one file through a temp file so partially copied output is never exposed as final data.
+async fn copy_file_streaming(
+    source_path: &Path,
+    dest_path: &Path,
+    reporter: &mut LocalCopyProgressReporter,
+) -> Result<()> {
+    let mut source = File::open(source_path)
+        .await
+        .with_context(|| format!("Failed to open source file: {}", source_path.display()))?;
+    let temp_path = temp_local_copy_path(
+        dest_path
+            .to_str()
+            .with_context(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
+    );
+
+    let mut destination = File::create(&temp_path)
+        .await
+        .with_context(|| format!("Failed to create destination file: {}", temp_path.display()))?;
+
+    let mut buffer = vec![0u8; 1024 * 1024];
+
+    loop {
+        let bytes_read = source
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("Failed to read source file: {}", source_path.display()))?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        destination
+            .write_all(&buffer[..bytes_read])
+            .await
+            .with_context(|| {
+                format!("Failed to write destination file: {}", temp_path.display())
+            })?;
+
+        reporter.advance(bytes_read as u64).await;
+    }
+
+    destination
+        .flush()
+        .await
+        .with_context(|| format!("Failed to flush destination file: {}", temp_path.display()))?;
+    drop(destination);
+
+    tokio::fs::rename(&temp_path, dest_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to finalize copied file from {} to {}",
+                temp_path.display(),
+                dest_path.display()
+            )
+        })?;
+
+    Ok(())
+}
+
+/// Builds the deterministic directory traversal plan used to copy trees without loading file data eagerly.
+fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
+    fn walk(source_root: &Path, current_path: &Path, plan: &mut DirectoryCopyPlan) -> Result<()> {
+        let mut entries = std::fs::read_dir(current_path)
+            .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .with_context(|| {
+                format!("Failed to read directory entry: {}", current_path.display())
+            })?;
+
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            let entry_path = entry.path();
+            let relative_path = entry_path
+                .strip_prefix(source_root)
+                .with_context(|| {
+                    format!(
+                        "Failed to strip source prefix {} from {}",
+                        source_root.display(),
+                        entry_path.display()
+                    )
+                })?
+                .to_path_buf();
+            let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
+                format!("Failed to read entry metadata: {}", entry_path.display())
+            })?;
+
+            if metadata.is_dir() {
+                plan.directories.push(relative_path.clone());
+                walk(source_root, &entry_path, plan)?;
+            } else if metadata.is_file() {
+                plan.total_bytes = plan.total_bytes.saturating_add(metadata.len());
+                plan.files.push(relative_path);
+            } else {
+                bail!(
+                    "Unsupported directory entry type in copy source: {}",
+                    entry_path.display()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    let source_metadata = std::fs::symlink_metadata(source_root)
+        .with_context(|| format!("Failed to read source metadata: {}", source_root.display()))?;
+    if !source_metadata.is_dir() {
+        bail!("Source path is not a directory: {}", source_root.display());
+    }
+
+    let mut plan = DirectoryCopyPlan {
+        total_bytes: 0,
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    walk(source_root, source_root, &mut plan)?;
+    Ok(plan)
+}
+
+/// Executes a prepared directory copy plan so planning and streaming work remain separate.
+async fn copy_directory_from_plan(
+    source_root: &Path,
+    temp_dest_root: &Path,
+    plan: &DirectoryCopyPlan,
+    reporter: &mut LocalCopyProgressReporter,
+) -> Result<()> {
+    for directory in &plan.directories {
+        let destination_directory = temp_dest_root.join(directory);
+        tokio::fs::create_dir_all(&destination_directory)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to create destination directory: {}",
+                    destination_directory.display()
+                )
+            })?;
+    }
+
+    for relative_path in &plan.files {
+        let source_path = source_root.join(relative_path);
+        let dest_path = temp_dest_root.join(relative_path);
+
+        if let Some(parent) = dest_path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create destination directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        copy_file_streaming(&source_path, &dest_path, reporter).await?;
+    }
+
+    Ok(())
+}
+
+/// Creates the temp destination and background unpack worker for one tar upload request.
+async fn create_tar_upload_session(path: String) -> Result<TarUploadSession> {
+    let destination = PathBuf::from(&path);
+    let parent = destination
+        .parent()
+        .with_context(|| format!("Destination parent not found for {}", path))?
+        .to_path_buf();
+
+    let parent_metadata = tokio::fs::metadata(&parent)
+        .await
+        .with_context(|| format!("Failed to access destination parent: {}", parent.display()))?;
+    if !parent_metadata.is_dir() {
+        bail!(
+            "Destination parent is not a directory: {}",
+            parent.display()
+        );
+    }
+
+    if tokio::fs::try_exists(&destination).await.with_context(|| {
+        format!(
+            "Failed to check destination path: {}",
+            destination.display()
+        )
+    })? {
+        bail!("Destination already exists: {}", destination.display());
+    }
+
+    let temp_path = temp_upload_dir_path(&path);
+    tokio::fs::create_dir(&temp_path)
+        .await
+        .with_context(|| format!("Failed to create temp directory: {}", temp_path.display()))?;
+
+    let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
+    let (completion_sender, completion_receiver) = oneshot::channel::<Result<()>>();
+    let temp_path_for_worker = temp_path.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let unpack_result = unpack_tar_stream_into_directory(chunk_receiver, &temp_path_for_worker);
+        let _ = completion_sender.send(unpack_result);
+    });
+
+    Ok(TarUploadSession {
+        path,
+        temp_path,
+        chunk_sender,
+        completion_receiver,
+        bytes_written: 0,
+    })
+}
+
+/// Extracts tar bytes from the sync chunk channel into the temp destination directory.
+fn unpack_tar_stream_into_directory(
+    chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+    destination_root: &Path,
+) -> Result<()> {
+    struct ChannelTarReader {
+        chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+        current_chunk: Vec<u8>,
+        offset: usize,
+        finished: bool,
+    }
+
+    impl std::io::Read for ChannelTarReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+
+            loop {
+                if self.offset < self.current_chunk.len() {
+                    let remaining = self.current_chunk.len() - self.offset;
+                    let bytes_to_copy = remaining.min(buf.len());
+                    buf[..bytes_to_copy].copy_from_slice(
+                        &self.current_chunk[self.offset..self.offset + bytes_to_copy],
+                    );
+                    self.offset += bytes_to_copy;
+                    return Ok(bytes_to_copy);
+                }
+
+                if self.finished {
+                    return Ok(0);
+                }
+
+                match self.chunk_receiver.recv() {
+                    Ok(chunk) => {
+                        self.current_chunk = chunk;
+                        self.offset = 0;
+                    }
+                    Err(_) => {
+                        self.finished = true;
+                        return Ok(0);
+                    }
+                }
+            }
+        }
+    }
+
+    let reader = ChannelTarReader {
+        chunk_receiver,
+        current_chunk: Vec::new(),
+        offset: 0,
+        finished: false,
+    };
+    let mut archive = tar::Archive::new(reader);
+    let entries = archive.entries().context("Failed to read tar entries")?;
+
+    for entry_result in entries {
+        let mut entry = entry_result.context("Failed to read tar entry")?;
+
+        let entry_type = entry.header().entry_type();
+        if !(entry_type.is_dir() || entry_type.is_file()) {
+            bail!("Unsupported tar entry type: {:?}", entry_type);
+        }
+
+        let entry_path = entry.path().context("Failed to read tar entry path")?;
+        let sanitized_path = sanitize_tar_entry_path(&entry_path)?;
+        let output_path = destination_root.join(&sanitized_path);
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create destination directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        if entry_type.is_dir() {
+            std::fs::create_dir_all(&output_path).with_context(|| {
+                format!(
+                    "Failed to create destination directory: {}",
+                    output_path.display()
+                )
+            })?;
+            continue;
+        }
+
+        entry
+            .unpack(&output_path)
+            .with_context(|| format!("Failed to unpack tar entry to {}", output_path.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Appends a directory tree into a tar builder in stable order so streams are deterministic.
+fn append_directory_entries(
+    builder: &mut tar::Builder<ChannelTarWriter>,
+    source_root: &Path,
+    current_path: &Path,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(current_path)
+        .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("Failed to read directory entry: {}", current_path.display()))?;
+
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let entry_path = entry.path();
+        let relative_path = entry_path
+            .strip_prefix(source_root)
+            .with_context(|| {
+                format!(
+                    "Failed to strip source prefix {} from {}",
+                    source_root.display(),
+                    entry_path.display()
+                )
+            })?
+            .to_path_buf();
+        let metadata = std::fs::symlink_metadata(&entry_path)
+            .with_context(|| format!("Failed to read entry metadata: {}", entry_path.display()))?;
+
+        if metadata.is_dir() {
+            builder
+                .append_dir(&relative_path, &entry_path)
+                .with_context(|| {
+                    format!(
+                        "Failed to append directory to tar: {}",
+                        entry_path.display()
+                    )
+                })?;
+            append_directory_entries(builder, source_root, &entry_path)?;
+        } else if metadata.is_file() {
+            let mut file = std::fs::File::open(&entry_path).with_context(|| {
+                format!("Failed to open file for tar: {}", entry_path.display())
+            })?;
+            builder
+                .append_file(&relative_path, &mut file)
+                .with_context(|| {
+                    format!("Failed to append file to tar: {}", entry_path.display())
+                })?;
+        } else {
+            bail!(
+                "Unsupported directory entry type in copy source: {}",
+                entry_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
 
 /// Bridges synchronous `tar::Builder` writes into the async websocket sender.
 ///
@@ -96,7 +611,7 @@ impl TarDownloadWorker {
 
     /// Frames and forwards one tar payload over the websocket.
     async fn send_chunk(&mut self, request: StreamChunkFrameRequest<'_>) -> bool {
-        AgentActor::send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
+        send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
     }
 
     /// Unregisters the download worker from the active download registry.
@@ -171,7 +686,7 @@ impl TarDownloadWorker {
             };
             let mut builder = tar::Builder::new(writer);
 
-            let result = AgentActor::append_directory_entries(
+            let result = append_directory_entries(
                 &mut builder,
                 &source_path_for_worker,
                 &source_path_for_worker,
@@ -285,7 +800,7 @@ impl TarUploadWorker {
 
     /// Removes the temporary directory and unregisters the upload worker.
     async fn cleanup(&self) {
-        AgentActor::remove_upload_temp_directory(&self.session.temp_path).await;
+        remove_upload_temp_directory(&self.session.temp_path).await;
         self.active_uploads.remove(self.request_id);
     }
 
@@ -336,9 +851,7 @@ impl TarUploadWorker {
             ..
         } = self;
 
-        AgentActor
-            .finalize_tar_upload(session, &tx, &agent_id, request_id)
-            .await;
+        finalize_tar_upload(&tx, &agent_id, request_id, session).await;
         active_uploads.remove(request_id);
     }
 
@@ -500,82 +1013,6 @@ impl LocalCopyProgressReporter {
 }
 
 impl AgentActor {
-    async fn remove_upload_temp_directory(temp_path: &Path) {
-        if let Err(error) = tokio::fs::remove_dir_all(temp_path).await {
-            log!(
-                Level::Warning,
-                "Failed to remove upload temp directory: path={}, error={}",
-                temp_path.display(),
-                error
-            );
-        }
-    }
-
-    fn temp_upload_dir_path(path: &str) -> PathBuf {
-        let destination = Path::new(path);
-        let file_name = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("upload-dir");
-        let temp_name = format!(".{}.redoor-upload-dir-{}", file_name, fastrand::u64(..));
-
-        match destination.parent() {
-            Some(parent) => parent.join(temp_name),
-            None => PathBuf::from(format!("./{}", temp_name)),
-        }
-    }
-
-    fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf> {
-        let mut sanitized = PathBuf::new();
-
-        for component in entry_path.components() {
-            match component {
-                Component::Normal(part) => sanitized.push(part),
-                Component::CurDir => {}
-                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                    bail!(
-                        "Tar entry path escapes destination: {}",
-                        entry_path.display()
-                    );
-                }
-            }
-        }
-
-        if sanitized.as_os_str().is_empty() {
-            bail!("Tar entry path cannot be empty");
-        }
-
-        Ok(sanitized)
-    }
-
-    fn temp_local_copy_path(path: &str) -> PathBuf {
-        let destination = Path::new(path);
-        let file_name = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("copy");
-        let temp_name = format!(".{}.redoor-local-copy-{}", file_name, fastrand::u64(..));
-
-        match destination.parent() {
-            Some(parent) => parent.join(temp_name),
-            None => PathBuf::from(format!("./{}", temp_name)),
-        }
-    }
-
-    fn temp_local_copy_dir_path(path: &str) -> PathBuf {
-        let destination = Path::new(path);
-        let file_name = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("copy-dir");
-        let temp_name = format!(".{}.redoor-local-copy-dir-{}", file_name, fastrand::u64(..));
-
-        match destination.parent() {
-            Some(parent) => parent.join(temp_name),
-            None => PathBuf::from(format!("./{}", temp_name)),
-        }
-    }
-
     async fn send_local_copy_error(
         &self,
         write: &mpsc::Sender<WsMessage>,
@@ -590,234 +1027,6 @@ impl AgentActor {
             CommandResult::Error { message },
         )
         .await;
-    }
-
-    fn validate_local_copy_destination(
-        source_path: &Path,
-        dest_path: &Path,
-        source_is_dir: bool,
-    ) -> Result<()> {
-        let source_parent = source_path
-            .parent()
-            .with_context(|| format!("Source parent not found for {}", source_path.display()))?;
-        let dest_parent = dest_path
-            .parent()
-            .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
-
-        let canonical_source_parent = std::fs::canonicalize(source_parent).with_context(|| {
-            format!(
-                "Failed to access source parent: {}",
-                source_parent.display()
-            )
-        })?;
-        let canonical_dest_parent = std::fs::canonicalize(dest_parent).with_context(|| {
-            format!(
-                "Failed to access destination parent: {}",
-                dest_parent.display()
-            )
-        })?;
-
-        let source_canonical = if source_path.is_absolute() {
-            std::fs::canonicalize(source_path).with_context(|| {
-                format!("Failed to access source path: {}", source_path.display())
-            })?
-        } else {
-            canonical_source_parent.join(
-                source_path
-                    .file_name()
-                    .with_context(|| format!("Invalid source path: {}", source_path.display()))?,
-            )
-        };
-
-        let dest_effective = canonical_dest_parent.join(
-            dest_path
-                .file_name()
-                .with_context(|| format!("Invalid destination path: {}", dest_path.display()))?,
-        );
-
-        if source_canonical == dest_effective {
-            bail!("Source and destination must be different");
-        }
-
-        if source_is_dir && dest_effective.starts_with(&source_canonical) {
-            bail!("Destination directory cannot be inside the source directory");
-        }
-
-        Ok(())
-    }
-
-    async fn validate_local_copy_parent(dest_path: &Path) -> Result<()> {
-        let parent = dest_path
-            .parent()
-            .with_context(|| format!("Destination parent not found for {}", dest_path.display()))?;
-        let parent_metadata = tokio::fs::metadata(parent).await.with_context(|| {
-            format!("Failed to access destination parent: {}", parent.display())
-        })?;
-        if !parent_metadata.is_dir() {
-            bail!(
-                "Destination parent is not a directory: {}",
-                parent.display()
-            );
-        }
-        Ok(())
-    }
-
-    async fn copy_file_streaming(
-        source_path: &Path,
-        dest_path: &Path,
-        reporter: &mut LocalCopyProgressReporter,
-    ) -> Result<()> {
-        let mut source = File::open(source_path)
-            .await
-            .with_context(|| format!("Failed to open source file: {}", source_path.display()))?;
-        let temp_path = Self::temp_local_copy_path(
-            dest_path
-                .to_str()
-                .with_context(|| format!("Non-utf8 destination path: {}", dest_path.display()))?,
-        );
-
-        let mut destination = File::create(&temp_path).await.with_context(|| {
-            format!("Failed to create destination file: {}", temp_path.display())
-        })?;
-
-        let mut buffer = vec![0u8; 1024 * 1024];
-
-        loop {
-            let bytes_read = source.read(&mut buffer).await.with_context(|| {
-                format!("Failed to read source file: {}", source_path.display())
-            })?;
-
-            if bytes_read == 0 {
-                break;
-            }
-
-            destination
-                .write_all(&buffer[..bytes_read])
-                .await
-                .with_context(|| {
-                    format!("Failed to write destination file: {}", temp_path.display())
-                })?;
-
-            reporter.advance(bytes_read as u64).await;
-        }
-
-        destination.flush().await.with_context(|| {
-            format!("Failed to flush destination file: {}", temp_path.display())
-        })?;
-        drop(destination);
-
-        tokio::fs::rename(&temp_path, dest_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to finalize copied file from {} to {}",
-                    temp_path.display(),
-                    dest_path.display()
-                )
-            })?;
-
-        Ok(())
-    }
-
-    fn build_directory_copy_plan(source_root: &Path) -> Result<DirectoryCopyPlan> {
-        fn walk(
-            source_root: &Path,
-            current_path: &Path,
-            plan: &mut DirectoryCopyPlan,
-        ) -> Result<()> {
-            let mut entries = std::fs::read_dir(current_path)
-                .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .with_context(|| {
-                    format!("Failed to read directory entry: {}", current_path.display())
-                })?;
-
-            entries.sort_by_key(|entry| entry.file_name());
-
-            for entry in entries {
-                let entry_path = entry.path();
-                let relative_path = entry_path
-                    .strip_prefix(source_root)
-                    .with_context(|| {
-                        format!(
-                            "Failed to strip source prefix {} from {}",
-                            source_root.display(),
-                            entry_path.display()
-                        )
-                    })?
-                    .to_path_buf();
-                let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
-                    format!("Failed to read entry metadata: {}", entry_path.display())
-                })?;
-
-                if metadata.is_dir() {
-                    plan.directories.push(relative_path.clone());
-                    walk(source_root, &entry_path, plan)?;
-                } else if metadata.is_file() {
-                    plan.total_bytes = plan.total_bytes.saturating_add(metadata.len());
-                    plan.files.push(relative_path);
-                } else {
-                    bail!(
-                        "Unsupported directory entry type in copy source: {}",
-                        entry_path.display()
-                    );
-                }
-            }
-
-            Ok(())
-        }
-
-        let source_metadata = std::fs::symlink_metadata(source_root).with_context(|| {
-            format!("Failed to read source metadata: {}", source_root.display())
-        })?;
-        if !source_metadata.is_dir() {
-            bail!("Source path is not a directory: {}", source_root.display());
-        }
-
-        let mut plan = DirectoryCopyPlan {
-            total_bytes: 0,
-            directories: Vec::new(),
-            files: Vec::new(),
-        };
-        walk(source_root, source_root, &mut plan)?;
-        Ok(plan)
-    }
-
-    async fn copy_directory_from_plan(
-        source_root: &Path,
-        temp_dest_root: &Path,
-        plan: &DirectoryCopyPlan,
-        reporter: &mut LocalCopyProgressReporter,
-    ) -> Result<()> {
-        for directory in &plan.directories {
-            let destination_directory = temp_dest_root.join(directory);
-            tokio::fs::create_dir_all(&destination_directory)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to create destination directory: {}",
-                        destination_directory.display()
-                    )
-                })?;
-        }
-
-        for relative_path in &plan.files {
-            let source_path = source_root.join(relative_path);
-            let dest_path = temp_dest_root.join(relative_path);
-
-            if let Some(parent) = dest_path.parent() {
-                tokio::fs::create_dir_all(parent).await.with_context(|| {
-                    format!(
-                        "Failed to create destination directory: {}",
-                        parent.display()
-                    )
-                })?;
-            }
-
-            Self::copy_file_streaming(&source_path, &dest_path, reporter).await?;
-        }
-
-        Ok(())
     }
 
     pub(crate) async fn local_copy_file(
@@ -856,15 +1065,14 @@ impl AgentActor {
             return;
         }
 
-        if let Err(error) =
-            Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
+        if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
         {
             self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
 
-        if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
+        if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
             self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
@@ -903,7 +1111,7 @@ impl AgentActor {
 
         reporter.report(true).await;
 
-        match Self::copy_file_streaming(&source_path_buf, &dest_path_buf, &mut reporter).await {
+        match copy_file_streaming(&source_path_buf, &dest_path_buf, &mut reporter).await {
             Ok(()) => {
                 reporter.finish().await;
                 self.send_command_response(
@@ -915,7 +1123,7 @@ impl AgentActor {
                 .await;
             }
             Err(error) => {
-                let temp_path = Self::temp_local_copy_path(&dest_path);
+                let temp_path = temp_local_copy_path(&dest_path);
                 let _ = tokio::fs::remove_file(&temp_path).await;
                 self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                     .await;
@@ -959,15 +1167,14 @@ impl AgentActor {
             return;
         }
 
-        if let Err(error) =
-            Self::validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
+        if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
         {
             self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
         }
 
-        if let Err(error) = Self::validate_local_copy_parent(&dest_path_buf).await {
+        if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
             self.send_local_copy_error(write, agent_id, request_id, error.to_string())
                 .await;
             return;
@@ -999,7 +1206,7 @@ impl AgentActor {
 
         let plan = match tokio::task::spawn_blocking({
             let source_path_buf = source_path_buf.clone();
-            move || Self::build_directory_copy_plan(&source_path_buf)
+            move || build_directory_copy_plan(&source_path_buf)
         })
         .await
         {
@@ -1021,7 +1228,7 @@ impl AgentActor {
             }
         };
 
-        let temp_dest_root = Self::temp_local_copy_dir_path(&dest_path);
+        let temp_dest_root = temp_local_copy_dir_path(&dest_path);
 
         if let Err(error) = tokio::fs::create_dir(&temp_dest_root).await {
             self.send_local_copy_error(
@@ -1043,13 +1250,8 @@ impl AgentActor {
 
         reporter.report(true).await;
 
-        match Self::copy_directory_from_plan(
-            &source_path_buf,
-            &temp_dest_root,
-            &plan,
-            &mut reporter,
-        )
-        .await
+        match copy_directory_from_plan(&source_path_buf, &temp_dest_root, &plan, &mut reporter)
+            .await
         {
             Ok(()) => {
                 if let Err(error) = tokio::fs::rename(&temp_dest_root, &dest_path_buf).await {
@@ -1081,210 +1283,6 @@ impl AgentActor {
         }
     }
 
-    async fn create_tar_upload_session(path: String) -> Result<TarUploadSession> {
-        let destination = PathBuf::from(&path);
-        let parent = destination
-            .parent()
-            .with_context(|| format!("Destination parent not found for {}", path))?
-            .to_path_buf();
-
-        let parent_metadata = tokio::fs::metadata(&parent).await.with_context(|| {
-            format!("Failed to access destination parent: {}", parent.display())
-        })?;
-        if !parent_metadata.is_dir() {
-            bail!(
-                "Destination parent is not a directory: {}",
-                parent.display()
-            );
-        }
-
-        if tokio::fs::try_exists(&destination).await.with_context(|| {
-            format!(
-                "Failed to check destination path: {}",
-                destination.display()
-            )
-        })? {
-            bail!("Destination already exists: {}", destination.display());
-        }
-
-        let temp_path = Self::temp_upload_dir_path(&path);
-        tokio::fs::create_dir(&temp_path)
-            .await
-            .with_context(|| format!("Failed to create temp directory: {}", temp_path.display()))?;
-
-        let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
-        let (completion_sender, completion_receiver) = oneshot::channel::<Result<()>>();
-        let temp_path_for_worker = temp_path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let unpack_result =
-                Self::unpack_tar_stream_into_directory(chunk_receiver, &temp_path_for_worker);
-            let _ = completion_sender.send(unpack_result);
-        });
-
-        Ok(TarUploadSession {
-            path,
-            temp_path,
-            chunk_sender,
-            completion_receiver,
-            bytes_written: 0,
-        })
-    }
-
-    fn unpack_tar_stream_into_directory(
-        chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
-        destination_root: &Path,
-    ) -> Result<()> {
-        struct ChannelTarReader {
-            chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
-            current_chunk: Vec<u8>,
-            offset: usize,
-            finished: bool,
-        }
-
-        impl std::io::Read for ChannelTarReader {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                if buf.is_empty() {
-                    return Ok(0);
-                }
-
-                loop {
-                    if self.offset < self.current_chunk.len() {
-                        let remaining = self.current_chunk.len() - self.offset;
-                        let bytes_to_copy = remaining.min(buf.len());
-                        buf[..bytes_to_copy].copy_from_slice(
-                            &self.current_chunk[self.offset..self.offset + bytes_to_copy],
-                        );
-                        self.offset += bytes_to_copy;
-                        return Ok(bytes_to_copy);
-                    }
-
-                    if self.finished {
-                        return Ok(0);
-                    }
-
-                    match self.chunk_receiver.recv() {
-                        Ok(chunk) => {
-                            self.current_chunk = chunk;
-                            self.offset = 0;
-                        }
-                        Err(_) => {
-                            self.finished = true;
-                            return Ok(0);
-                        }
-                    }
-                }
-            }
-        }
-
-        let reader = ChannelTarReader {
-            chunk_receiver,
-            current_chunk: Vec::new(),
-            offset: 0,
-            finished: false,
-        };
-        let mut archive = tar::Archive::new(reader);
-        let entries = archive.entries().context("Failed to read tar entries")?;
-
-        for entry_result in entries {
-            let mut entry = entry_result.context("Failed to read tar entry")?;
-
-            let entry_type = entry.header().entry_type();
-            if !(entry_type.is_dir() || entry_type.is_file()) {
-                bail!("Unsupported tar entry type: {:?}", entry_type);
-            }
-
-            let entry_path = entry.path().context("Failed to read tar entry path")?;
-            let sanitized_path = Self::sanitize_tar_entry_path(&entry_path)?;
-            let output_path = destination_root.join(&sanitized_path);
-
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Failed to create destination directory: {}",
-                        parent.display()
-                    )
-                })?;
-            }
-
-            if entry_type.is_dir() {
-                std::fs::create_dir_all(&output_path).with_context(|| {
-                    format!(
-                        "Failed to create destination directory: {}",
-                        output_path.display()
-                    )
-                })?;
-                continue;
-            }
-
-            entry.unpack(&output_path).with_context(|| {
-                format!("Failed to unpack tar entry to {}", output_path.display())
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn append_directory_entries(
-        builder: &mut tar::Builder<ChannelTarWriter>,
-        source_root: &Path,
-        current_path: &Path,
-    ) -> Result<()> {
-        let mut entries = std::fs::read_dir(current_path)
-            .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| {
-                format!("Failed to read directory entry: {}", current_path.display())
-            })?;
-
-        entries.sort_by_key(|entry| entry.file_name());
-
-        for entry in entries {
-            let entry_path = entry.path();
-            let relative_path = entry_path
-                .strip_prefix(source_root)
-                .with_context(|| {
-                    format!(
-                        "Failed to strip source prefix {} from {}",
-                        source_root.display(),
-                        entry_path.display()
-                    )
-                })?
-                .to_path_buf();
-            let metadata = std::fs::symlink_metadata(&entry_path).with_context(|| {
-                format!("Failed to read entry metadata: {}", entry_path.display())
-            })?;
-
-            if metadata.is_dir() {
-                builder
-                    .append_dir(&relative_path, &entry_path)
-                    .with_context(|| {
-                        format!(
-                            "Failed to append directory to tar: {}",
-                            entry_path.display()
-                        )
-                    })?;
-                Self::append_directory_entries(builder, source_root, &entry_path)?;
-            } else if metadata.is_file() {
-                let mut file = std::fs::File::open(&entry_path).with_context(|| {
-                    format!("Failed to open file for tar: {}", entry_path.display())
-                })?;
-                builder
-                    .append_file(&relative_path, &mut file)
-                    .with_context(|| {
-                        format!("Failed to append file to tar: {}", entry_path.display())
-                    })?;
-            } else {
-                bail!(
-                    "Unsupported directory entry type in copy source: {}",
-                    entry_path.display()
-                );
-            }
-        }
-
-        Ok(())
-    }
-
     pub(crate) async fn start_tar_upload_session(
         &self,
         active_uploads: ActiveUploads,
@@ -1311,7 +1309,7 @@ impl AgentActor {
             return;
         }
 
-        match Self::create_tar_upload_session(path.clone()).await {
+        match create_tar_upload_session(path.clone()).await {
             Ok(session) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
@@ -1378,32 +1376,34 @@ impl AgentActor {
         .process()
         .await;
     }
+}
 
-    async fn finalize_tar_upload(
-        &self,
-        session: TarUploadSession,
-        tx: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
-        request_id: RequestId,
-    ) {
-        let final_path = session.path.clone();
-        let temp_path = session.temp_path.clone();
-        let bytes_written = session.bytes_written;
+/// Finalizes a tar upload by waiting for extraction, renaming the temp tree, and reporting the result.
+async fn finalize_tar_upload(
+    tx: &mpsc::Sender<WsMessage>,
+    agent_id: &AgentId,
+    request_id: RequestId,
+    session: TarUploadSession,
+) {
+    let final_path = session.path.clone();
+    let temp_path = session.temp_path.clone();
+    let bytes_written = session.bytes_written;
 
-        drop(session.chunk_sender);
+    drop(session.chunk_sender);
 
-        let unpack_result = match session.completion_receiver.await {
-            Ok(result) => result,
-            Err(error) => Err(anyhow!("Tar extraction worker failed: {}", error)),
-        };
+    let unpack_result = match session.completion_receiver.await {
+        Ok(result) => result,
+        Err(error) => Err(anyhow!("Tar extraction worker failed: {}", error)),
+    };
 
-        match unpack_result {
-            Ok(()) => {
-                if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
-                    let error_message = format!("Failed to finalize uploaded directory: {}", error);
-                    let _ = tokio::fs::remove_dir_all(&temp_path).await;
+    match unpack_result {
+        Ok(()) => {
+            if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+                let error_message = format!("Failed to finalize uploaded directory: {}", error);
+                let _ = tokio::fs::remove_dir_all(&temp_path).await;
 
-                    self.send_command_response(
+                AgentActor
+                    .send_command_response(
                         tx,
                         agent_id,
                         request_id,
@@ -1412,23 +1412,25 @@ impl AgentActor {
                         },
                     )
                     .await;
-                    return;
-                }
-
-                log!(
-                    Level::Info,
-                    "Tar upload complete: request_id={}, path={}, bytes_written={}",
-                    request_id,
-                    final_path,
-                    bytes_written
-                );
-
-                self.send_command_response(tx, agent_id, request_id, CommandResult::TarUpload)
-                    .await;
+                return;
             }
-            Err(error_message) => {
-                let _ = tokio::fs::remove_dir_all(&temp_path).await;
-                self.send_command_response(
+
+            log!(
+                Level::Info,
+                "Tar upload complete: request_id={}, path={}, bytes_written={}",
+                request_id,
+                final_path,
+                bytes_written
+            );
+
+            AgentActor
+                .send_command_response(tx, agent_id, request_id, CommandResult::TarUpload)
+                .await;
+        }
+        Err(error_message) => {
+            let _ = tokio::fs::remove_dir_all(&temp_path).await;
+            AgentActor
+                .send_command_response(
                     tx,
                     agent_id,
                     request_id,
@@ -1437,7 +1439,6 @@ impl AgentActor {
                     },
                 )
                 .await;
-            }
         }
     }
 }

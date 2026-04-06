@@ -14,6 +14,59 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
+/// Removes an abandoned upload temp file so failed uploads do not leave partial output behind.
+async fn remove_upload_temp_file(temp_path: &Path) {
+    if let Err(error) = tokio::fs::remove_file(temp_path).await {
+        log!(
+            Level::Warning,
+            "Failed to remove upload temp file: path={}, error={}",
+            temp_path.display(),
+            error
+        );
+    }
+}
+
+/// Builds the hidden temp file path used while a raw upload is still incomplete.
+fn temp_upload_path(path: &str) -> PathBuf {
+    let destination = Path::new(path);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("upload");
+    let temp_name = format!(".{}.redoor-upload-{}", file_name, fastrand::u64(..));
+
+    match destination.parent() {
+        Some(parent) => parent.join(temp_name),
+        None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Reframes one logical stream chunk into websocket-sized binary frames while preserving chunk order.
+pub(super) async fn send_framed_stream_bytes(
+    write: &mpsc::Sender<WsMessage>,
+    chunk_index: &mut ChunkIndex,
+    request: StreamChunkFrameRequest<'_>,
+) -> bool {
+    let mut frames = streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
+
+    while let Some(chunk) = frames.next() {
+        let next_chunk_index = frames.next_chunk_index();
+        if write
+            .send(WsMessage::Binary(chunk.to_bytes().into()))
+            .await
+            .is_err()
+        {
+            *chunk_index = next_chunk_index;
+            return false;
+        }
+
+        tokio::task::yield_now().await;
+    }
+
+    *chunk_index = frames.next_chunk_index();
+    true
+}
+
 struct RawUploadSession {
     path: String,
     temp_path: PathBuf,
@@ -72,7 +125,7 @@ impl RawUploadWorker {
 
     /// Removes the temporary file and unregisters the upload worker.
     async fn cleanup(&self) {
-        AgentActor::remove_upload_temp_file(&self.session.temp_path).await;
+        remove_upload_temp_file(&self.session.temp_path).await;
         self.active_uploads.remove(self.request_id);
     }
 
@@ -133,7 +186,7 @@ impl RawUploadWorker {
                 error_message
             );
 
-            AgentActor::remove_upload_temp_file(&temp_path).await;
+            remove_upload_temp_file(&temp_path).await;
             AgentActor
                 .send_command_response(
                     &tx,
@@ -291,7 +344,7 @@ impl RawDownloadWorker {
 
     /// Frames and forwards one raw download payload over the websocket.
     async fn send_chunk(&mut self, request: StreamChunkFrameRequest<'_>) -> bool {
-        AgentActor::send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
+        send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
     }
 
     /// Unregisters the download worker from the active download registry.
@@ -449,57 +502,6 @@ impl RawDownloadWorker {
 }
 
 impl AgentActor {
-    async fn remove_upload_temp_file(temp_path: &Path) {
-        if let Err(error) = tokio::fs::remove_file(temp_path).await {
-            log!(
-                Level::Warning,
-                "Failed to remove upload temp file: path={}, error={}",
-                temp_path.display(),
-                error
-            );
-        }
-    }
-
-    fn temp_upload_path(path: &str) -> PathBuf {
-        let destination = Path::new(path);
-        let file_name = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("upload");
-        let temp_name = format!(".{}.redoor-upload-{}", file_name, fastrand::u64(..));
-
-        match destination.parent() {
-            Some(parent) => parent.join(temp_name),
-            None => PathBuf::from(format!("./{}", temp_name)),
-        }
-    }
-
-    pub(crate) async fn send_framed_stream_bytes(
-        write: &mpsc::Sender<WsMessage>,
-        chunk_index: &mut ChunkIndex,
-        request: StreamChunkFrameRequest<'_>,
-    ) -> bool {
-        let mut frames =
-            streaming::StreamChunkFrames::new(request.starting_chunk_index(*chunk_index));
-
-        while let Some(chunk) = frames.next() {
-            let next_chunk_index = frames.next_chunk_index();
-            if write
-                .send(WsMessage::Binary(chunk.to_bytes().into()))
-                .await
-                .is_err()
-            {
-                *chunk_index = next_chunk_index;
-                return false;
-            }
-
-            tokio::task::yield_now().await;
-        }
-
-        *chunk_index = frames.next_chunk_index();
-        true
-    }
-
     pub(crate) async fn start_raw_upload_session(
         &self,
         active_uploads: ActiveUploads,
@@ -526,7 +528,7 @@ impl AgentActor {
             return;
         }
 
-        let temp_path = Self::temp_upload_path(&path);
+        let temp_path = temp_upload_path(&path);
         match File::create(&temp_path).await {
             Ok(file) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
