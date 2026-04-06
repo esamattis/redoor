@@ -149,8 +149,8 @@ pub(crate) fn cancel_transfer(
             }
 
             transfer.canceled_by_rest = true;
-            if let Some(agent_info) = state.agents.by_id.get(&agent_id) {
-                agents::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+            if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
+                agent_connection.send_message(Message::CancelTransfer { request_id });
             }
             // Downloads report cancellation immediately because the client has
             // already stopped consuming the stream at this point.
@@ -186,14 +186,14 @@ pub(crate) fn cancel_transfer(
                     request_id.as_transfer_id(),
                     "Upload stream canceled by client".to_string(),
                 );
-                if let Some(agent_info) = state.agents.by_id.get(&agent_id) {
+                if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
                     log!(
                         Level::Info,
                         "Sending upload cancel to agent: agent_id={}, request_id={}",
                         agent_id,
                         request_id
                     );
-                    agents::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+                    agent_connection.send_message(Message::CancelTransfer { request_id });
                 }
             }
             None => {

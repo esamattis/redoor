@@ -1,6 +1,5 @@
 use super::super::RouterError;
 use super::super::RouterHandle;
-use super::super::agents;
 use super::super::messages::{
     ExecuteStreamRequest, FinishDownloadChunkRoute, RouteStreamChunkRequest, RouterMsg,
 };
@@ -23,7 +22,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
         request.command
     );
 
-    if let Some(agent_info) = state.agents.by_id.get(&request.agent_id).cloned() {
+    if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
         progress::record_download_start(
             state,
             DownloadStartContext {
@@ -35,14 +34,11 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             },
         );
 
-        agents::send_agent_message(
-            &agent_info,
-            Message::Command {
-                agent_id: request.agent_id,
-                request_id,
-                command: request.command,
-            },
-        );
+        agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id,
+            request_id,
+            command: request.command,
+        });
         let _ = request.reply.send(Ok(()));
     } else {
         log!(
@@ -194,19 +190,16 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                 transfer_id,
                 "Download canceled by client".to_string(),
             );
-            if let Some(agent_info) = state.agents.by_id.get(&route.agent_id) {
+            if let Some(agent_connection) = state.agents.by_id.get(&route.agent_id) {
                 log!(
                     Level::Info,
                     "Sending download cancel to agent: agent_id={}, request_id={}",
                     route.agent_id,
                     route.request_id
                 );
-                agents::send_agent_message(
-                    agent_info,
-                    Message::CancelTransfer {
-                        request_id: route.request_id,
-                    },
-                );
+                agent_connection.send_message(Message::CancelTransfer {
+                    request_id: route.request_id,
+                });
             }
             ui::notify_refresh(state);
         }

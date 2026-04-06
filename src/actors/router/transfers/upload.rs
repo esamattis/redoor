@@ -1,6 +1,5 @@
 use super::super::RouterError;
 use super::super::RouterHandle;
-use super::super::agents;
 use super::super::messages::{
     FinishUploadChunkRoute, RouterMsg, SendStreamChunkRequest, StartUploadRequest,
 };
@@ -24,7 +23,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
         request.command
     );
 
-    if let Some(agent_info) = state.agents.by_id.get(&request.agent_id).cloned() {
+    if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
         progress::record_upload_start(
             state,
             UploadStartContext {
@@ -36,14 +35,11 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             },
         );
 
-        agents::send_agent_message(
-            &agent_info,
-            Message::Command {
-                agent_id: request.agent_id,
-                request_id,
-                command: request.command,
-            },
-        );
+        agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id,
+            request_id,
+            command: request.command,
+        });
         let _ = request.reply.send(Ok(request_id));
     } else {
         log!(
@@ -102,7 +98,7 @@ pub(crate) fn route_chunk(
         return;
     }
 
-    if let Some(agent_info) = state.agents.by_id.get(&request.agent_id).cloned() {
+    if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
         let bytes = request.chunk.data.len() as u64;
         let is_error = request.chunk.is_error;
         let payload = request.chunk.to_bytes();
@@ -121,7 +117,7 @@ pub(crate) fn route_chunk(
         }
 
         tokio::spawn(async move {
-            let send_succeeded = agents::send_agent_binary(&agent_info, payload).await;
+            let send_succeeded = agent_connection.send_binary(payload).await;
             let send_result =
                 myself.send(RouterMsg::FinishRoutedUploadChunk(FinishUploadChunkRoute {
                     agent_id,
@@ -224,19 +220,16 @@ pub(crate) fn finish_routed_chunk(
         );
 
         if should_cancel_agent {
-            if let Some(agent_info) = state.agents.by_id.get(&route.agent_id) {
+            if let Some(agent_connection) = state.agents.by_id.get(&route.agent_id) {
                 log!(
                     Level::Info,
                     "Sending upload cancel to agent: agent_id={}, request_id={}",
                     route.agent_id,
                     route.request_id
                 );
-                agents::send_agent_message(
-                    agent_info,
-                    Message::CancelTransfer {
-                        request_id: route.request_id,
-                    },
-                );
+                agent_connection.send_message(Message::CancelTransfer {
+                    request_id: route.request_id,
+                });
             }
         }
 

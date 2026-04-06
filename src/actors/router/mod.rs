@@ -111,17 +111,17 @@ fn route_response(state: &mut RouterState, response: RouteResponse) {
         .remove(&response.request_id)
     {
         let result_to_send = match (&response.result, state.agents.by_id.get(&stored_agent_id)) {
-            (CommandResult::GetAgentDetails(details), Some(agent_info)) => {
+            (CommandResult::GetAgentDetails(details), Some(agent_connection)) => {
                 // Registration owns the connection-scoped identity fields, so the
                 // router rewrites them from its authoritative registry snapshot.
                 let mut details = details.clone();
                 details.id = stored_agent_id.clone();
-                details.name = agent_info.agent_name.clone();
-                details.connected_at = agent_info.connected_at;
-                details.os = agent_info.os.clone();
-                details.arch = agent_info.arch.clone();
-                details.hostname = agent_info.hostname.clone();
-                details.username = agent_info.username.clone();
+                details.name = agent_connection.agent_name.clone();
+                details.connected_at = agent_connection.connected_at;
+                details.os = agent_connection.os.clone();
+                details.arch = agent_connection.arch.clone();
+                details.hostname = agent_connection.hostname.clone();
+                details.username = agent_connection.username.clone();
                 CommandResult::GetAgentDetails(details)
             }
             _ => response.result.clone(),

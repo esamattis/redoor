@@ -8,7 +8,7 @@ use std::time::Instant;
 
 #[derive(Clone, Debug)]
 /// Registration metadata and websocket send handles for one connected agent.
-pub struct AgentInfo {
+pub struct AgentConnection {
     /// Human-readable name shown in the UI.
     pub agent_name: String,
     /// Unique websocket session identifier for logging.
@@ -33,7 +33,7 @@ pub struct AgentInfo {
 /// Registry of currently connected agents keyed by agent id.
 pub struct AgentRegistry {
     /// Connected agents addressable by their stable agent id.
-    pub(crate) by_id: HashMap<AgentId, AgentInfo>,
+    pub(crate) by_id: HashMap<AgentId, AgentConnection>,
 }
 
 #[derive(Default)]

@@ -1,5 +1,5 @@
 use super::messages::{ExecuteCommandRequest, RegisterAgentRequest};
-use super::state::{AgentInfo, RouterState};
+use super::state::{AgentConnection, RouterState};
 use super::ui;
 use crate::commands::CommandResult;
 use crate::log;
@@ -8,49 +8,51 @@ use crate::types::{AgentId, Message};
 use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
 
-/// Serializes and queues one control-plane message onto an agent's text lane.
-pub(crate) fn send_agent_message(agent_info: &AgentInfo, message: Message) {
-    match serde_json::to_string(&message) {
-        Ok(json) => {
-            if agent_info
-                .outgoing_text
-                .send(WsMessage::Text(json.into()))
-                .is_err()
-            {
+impl AgentConnection {
+    /// Serializes and queues one control-plane message onto this agent's text lane.
+    pub(crate) fn send_message(&self, message: Message) {
+        match serde_json::to_string(&message) {
+            Ok(json) => {
+                if self
+                    .outgoing_text
+                    .send(WsMessage::Text(json.into()))
+                    .is_err()
+                {
+                    log!(
+                        Level::Warning,
+                        "Failed to queue text message for agent: socket_id={}",
+                        self.socket_id
+                    );
+                }
+            }
+            Err(error) => {
                 log!(
-                    Level::Warning,
-                    "Failed to queue text message for agent: socket_id={}",
-                    agent_info.socket_id
+                    Level::Error,
+                    "Failed to serialize message for agent: socket_id={}, error={}",
+                    self.socket_id,
+                    error
                 );
             }
         }
-        Err(error) => {
-            log!(
-                Level::Error,
-                "Failed to serialize message for agent: socket_id={}, error={}",
-                agent_info.socket_id,
-                error
-            );
-        }
     }
-}
 
-/// Queues one binary websocket frame while preserving bounded backpressure.
-pub(crate) async fn send_agent_binary(agent_info: &AgentInfo, bytes: Vec<u8>) -> bool {
-    if agent_info
-        .outgoing_binary
-        .send(WsMessage::Binary(bytes.into()))
-        .await
-        .is_err()
-    {
-        log!(
-            Level::Warning,
-            "Failed to queue binary message for agent: socket_id={}",
-            agent_info.socket_id
-        );
-        false
-    } else {
-        true
+    /// Queues one binary websocket frame while preserving bounded backpressure.
+    pub(crate) async fn send_binary(&self, bytes: Vec<u8>) -> bool {
+        if self
+            .outgoing_binary
+            .send(WsMessage::Binary(bytes.into()))
+            .await
+            .is_err()
+        {
+            log!(
+                Level::Warning,
+                "Failed to queue binary message for agent: socket_id={}",
+                self.socket_id
+            );
+            false
+        } else {
+            true
+        }
     }
 }
 
@@ -71,7 +73,7 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
         let duplicate_error = Message::Error {
             message: format!("Agent with name '{}' already connected", request.agent_name),
         };
-        let duplicate_agent_info = AgentInfo {
+        let duplicate_agent_connection = AgentConnection {
             agent_name: request.agent_name,
             socket_id: request.socket_id,
             outgoing_text: request.outgoing_text,
@@ -82,7 +84,7 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
             hostname: request.hostname,
             username: request.username,
         };
-        send_agent_message(&duplicate_agent_info, duplicate_error);
+        duplicate_agent_connection.send_message(duplicate_error);
         return;
     }
 
@@ -96,7 +98,7 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
     let connected_at = crate::types::UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
     state.agents.by_id.insert(
         request.agent_id,
-        AgentInfo {
+        AgentConnection {
             agent_name: request.agent_name,
             socket_id: request.socket_id,
             outgoing_text: request.outgoing_text,
@@ -132,19 +134,16 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
         request_id,
         request.command
     );
-    if let Some(agent_info) = state.agents.by_id.get(&request.agent_id) {
+    if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id) {
         state
             .pending_rest
             .by_request_id
             .insert(request_id, (request.reply, request.agent_id.clone()));
-        send_agent_message(
-            agent_info,
-            Message::Command {
-                agent_id: request.agent_id,
-                request_id,
-                command: request.command,
-            },
-        );
+        agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id,
+            request_id,
+            command: request.command,
+        });
     } else {
         let _ = request.reply.send(CommandResult::error(
             crate::commands::CommandErrorKind::NotFound,
