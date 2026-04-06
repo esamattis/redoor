@@ -228,8 +228,8 @@ pub enum Message {
     /// stream for the given request id.
     ///
     /// This is used when the REST-side consumer goes away or router cleanup
-    /// cancels the transfer; the agent currently applies it to active
-    /// downloads, not uploads.
+    /// cancels the transfer; the agent applies it to active uploads and
+    /// downloads.
     #[serde(rename = "cancel_transfer")]
     CancelTransfer { request_id: RequestId },
 

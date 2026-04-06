@@ -22,9 +22,13 @@ pub(crate) struct AgentArgs {
 }
 
 #[derive(Clone)]
+/// Agent-side state for one active upload worker.
 pub(crate) struct UploadSessionHandle {
     pub(crate) path: String,
     pub(crate) chunk_sender: mpsc::Sender<streaming::StreamChunk>,
+    /// Signals cooperative shutdown so upload workers can remove temp output
+    /// immediately when the router cancels the transfer.
+    pub(crate) cancel_sender: watch::Sender<bool>,
 }
 
 pub(crate) type ActiveUploads = Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>;
@@ -72,10 +76,15 @@ impl AgentActor {
     }
 
     pub(crate) async fn clear_active_uploads(active_uploads: &ActiveUploads) {
-        active_uploads
+        let mut active_uploads = active_uploads
             .lock()
-            .expect("active uploads mutex poisoned")
-            .clear();
+            .expect("active uploads mutex poisoned");
+        // Fan out cancellation before clearing the registry so workers exit and
+        // clean up temp files/directories instead of waiting for dropped senders.
+        for upload in active_uploads.values() {
+            let _ = upload.cancel_sender.send(true);
+        }
+        active_uploads.clear();
     }
 
     pub(crate) async fn remove_active_download(

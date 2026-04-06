@@ -125,7 +125,10 @@ pub(crate) async fn cleanup_agent_requests(
     }
 }
 
-/// Marks a direct download as canceled by REST and forwards cancel to the agent.
+/// Marks a direct upload or download as canceled by REST and forwards cancel.
+///
+/// This is used both for explicit REST-side cancellation and implicit request
+/// teardown such as a disconnected upload or download client.
 pub(crate) fn cancel_transfer(
     state: &mut RouterState,
     request_id: crate::types::RequestId,
@@ -152,21 +155,57 @@ pub(crate) fn cancel_transfer(
             if let Some(agent_info) = state.agents.by_id.get(&agent_id) {
                 agents::send_agent_message(agent_info, Message::CancelTransfer { request_id });
             }
+            // Downloads report cancellation immediately because the client has
+            // already stopped consuming the stream at this point.
+            progress::mark_transfer_errored(
+                state,
+                request_id.as_transfer_id(),
+                "Download canceled by client".to_string(),
+            );
         }
-        None => {
-            if state.streams.uploads.contains_key(&request_id) {
-                log!(
-                    Level::Warning,
-                    "Received cancel request for upload transfer: request_id={}",
-                    request_id
+        None => match state.streams.uploads.get_mut(&request_id) {
+            Some(transfer) => {
+                if transfer.agent_id != agent_id {
+                    log!(
+                        Level::Warning,
+                        "Transfer cancel agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+                        request_id,
+                        transfer.agent_id,
+                        agent_id
+                    );
+                    return;
+                }
+
+                if transfer.canceled_by_rest {
+                    return;
+                }
+
+                transfer.canceled_by_rest = true;
+                // Uploads follow the same rule: once the HTTP request is gone,
+                // progress should settle into a terminal canceled state even if
+                // the agent's cleanup ack arrives slightly later.
+                progress::mark_transfer_errored(
+                    state,
+                    request_id.as_transfer_id(),
+                    "Upload stream canceled by client".to_string(),
                 );
-            } else {
+                if let Some(agent_info) = state.agents.by_id.get(&agent_id) {
+                    log!(
+                        Level::Info,
+                        "Sending upload cancel to agent: agent_id={}, request_id={}",
+                        agent_id,
+                        request_id
+                    );
+                    agents::send_agent_message(agent_info, Message::CancelTransfer { request_id });
+                }
+            }
+            None => {
                 log!(
                     Level::Warning,
                     "Transfer not found for cancel request: request_id={}",
                     request_id
                 );
             }
-        }
+        },
     }
 }

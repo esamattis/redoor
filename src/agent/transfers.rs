@@ -950,6 +950,7 @@ impl AgentActor {
         match Self::create_tar_upload_session(path.clone()).await {
             Ok(session) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
+                let (cancel_sender, cancel_receiver) = watch::channel(false);
                 log!(
                     Level::Info,
                     "Started tar upload: request_id={}, path={}, temp_path={}",
@@ -965,11 +966,13 @@ impl AgentActor {
                         UploadSessionHandle {
                             path: path.clone(),
                             chunk_sender,
+                            cancel_sender,
                         },
                     );
                 tokio::spawn(Self::process_tar_upload(
                     active_uploads,
                     chunk_receiver,
+                    cancel_receiver,
                     session,
                     write.clone(),
                     agent_id.clone(),
@@ -1203,15 +1206,65 @@ impl AgentActor {
         }
     }
 
+    /// Waits for tar upload chunks or cancellation and tears down the temp
+    /// directory unless a full tar stream is finalized successfully.
     async fn process_tar_upload(
         active_uploads: ActiveUploads,
         mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
+        mut cancel_receiver: watch::Receiver<bool>,
         mut session: TarUploadSession,
         tx: mpsc::Sender<WsMessage>,
         agent_id: AgentId,
         request_id: RequestId,
     ) {
-        while let Some(chunk) = chunk_receiver.recv().await {
+        loop {
+            let next_chunk = tokio::select! {
+                changed = cancel_receiver.changed() => {
+                    match changed {
+                        Ok(()) if *cancel_receiver.borrow() => {
+                            let error_message = "Upload canceled by server".to_string();
+                            log!(
+                                Level::Info,
+                                "Stopping tar upload after cancel: request_id={}, path={}",
+                                request_id,
+                                session.path
+                            );
+                            AgentActor
+                                .send_command_response(
+                                    &tx,
+                                    &agent_id,
+                                    request_id,
+                                    CommandResult::Error {
+                                        message: error_message,
+                                    },
+                                )
+                                .await;
+                            drop(session.chunk_sender);
+                            Self::remove_upload_temp_directory(&session.temp_path).await;
+                            Self::remove_active_upload(&active_uploads, request_id).await;
+                            return;
+                        }
+                        Ok(()) => continue,
+                        Err(_) => {
+                            // Registry teardown drops the watch sender before
+                            // the chunk receiver necessarily closes, so treat it
+                            // as an instruction to stop and clean up now.
+                            drop(session.chunk_sender);
+                            Self::remove_upload_temp_directory(&session.temp_path).await;
+                            Self::remove_active_upload(&active_uploads, request_id).await;
+                            return;
+                        }
+                    }
+                }
+                chunk = chunk_receiver.recv() => chunk,
+            };
+
+            let Some(chunk) = next_chunk else {
+                break;
+            };
+
+            // Tar uploads must remain tar-framed end-to-end because the unpack
+            // worker consumes a tar byte stream from the chunk channel.
             if chunk.payload_kind != StreamPayloadKind::Tar {
                 let error_message = format!(
                     "Upload payload kind mismatch: expected {:?}, got {:?}",

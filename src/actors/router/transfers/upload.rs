@@ -11,6 +11,10 @@ use crate::logging::Level;
 use crate::types::{AgentId, Message};
 use ractor::ActorRef;
 
+/// Canonical error surfaced once the REST caller has already torn down the
+/// upload, regardless of which later ack or transport error arrives.
+const CLIENT_CANCELED_ERROR: &str = "Upload stream canceled by client";
+
 /// Starts a direct upload stream and records its progress entry.
 pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
     let request_id = state.next_id();
@@ -62,23 +66,46 @@ pub(crate) fn route_chunk(
     myself: &ActorRef<RouterMsg>,
     request: SendStreamChunkRequest,
 ) {
-    let has_matching_upload = matches!(
-        state.streams.uploads.get(&request.request_id),
-        Some(transfer) if transfer.agent_id == request.agent_id
-    );
+    let transfer = match state.streams.uploads.get(&request.request_id) {
+        Some(transfer) => transfer,
+        None => {
+            log!(
+                Level::Warning,
+                "Upload stream not found for forwarded chunk: agent_id={}, request_id={}",
+                request.agent_id,
+                request.request_id
+            );
+            let _ = request.reply.send(Err(format!(
+                "Upload stream not found: agent_id={}, request_id={}",
+                request.agent_id, request.request_id
+            )));
+            return;
+        }
+    };
 
-    if !has_matching_upload {
+    if transfer.agent_id != request.agent_id {
         log!(
             Level::Warning,
-            "Upload stream not found for forwarded chunk: agent_id={}, request_id={}",
-            request.agent_id,
-            request.request_id
+            "Upload response agent mismatch: request_id={}, expected_agent_id={}, actual_agent_id={}",
+            request.request_id,
+            transfer.agent_id,
+            request.agent_id
         );
         let _ = request.reply.send(Err(format!(
             "Upload stream not found: agent_id={}, request_id={}",
             request.agent_id, request.request_id
         )));
-    } else if let Some(agent_info) = state.agents.by_id.get(&request.agent_id).cloned() {
+        return;
+    }
+
+    if transfer.canceled_by_rest {
+        // Once REST has canceled the upload, later body frames should be
+        // rejected instead of reviving the transfer state.
+        let _ = request.reply.send(Err(CLIENT_CANCELED_ERROR.to_string()));
+        return;
+    }
+
+    if let Some(agent_info) = state.agents.by_id.get(&request.agent_id).cloned() {
         let bytes = request.chunk.data.len() as u64;
         let is_error = request.chunk.is_error;
         let payload = request.chunk.to_bytes();
@@ -139,19 +166,55 @@ pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
     route: &FinishUploadChunkRoute,
 ) -> Result<(), String> {
-    let has_matching_upload = matches!(
-        state.streams.uploads.get(&route.request_id),
-        Some(transfer) if transfer.agent_id == route.agent_id
-    );
+    match state.streams.uploads.get(&route.request_id) {
+        Some(transfer) => {
+            if transfer.agent_id != route.agent_id {
+                return Err(format!(
+                    "Upload stream not found: agent_id={}, request_id={}",
+                    route.agent_id, route.request_id
+                ));
+            }
 
-    if !has_matching_upload {
-        return Err(format!(
-            "Upload stream not found: agent_id={}, request_id={}",
-            route.agent_id, route.request_id
-        ));
+            if transfer.canceled_by_rest {
+                return Ok(());
+            }
+        }
+        None => {
+            return Err(format!(
+                "Upload stream not found: agent_id={}, request_id={}",
+                route.agent_id, route.request_id
+            ));
+        }
     }
 
     if !route.send_succeeded {
+        let should_cancel_agent = match state.streams.uploads.get_mut(&route.request_id) {
+            Some(transfer) => {
+                if transfer.agent_id != route.agent_id {
+                    return Err(format!(
+                        "Upload stream not found: agent_id={}, request_id={}",
+                        route.agent_id, route.request_id
+                    ));
+                }
+
+                if transfer.canceled_by_rest {
+                    return Ok(());
+                }
+
+                // The router could not push a chunk into the agent's bounded
+                // websocket lane, so the agent-side upload worker must be told
+                // to discard its temp output.
+                transfer.canceled_by_rest = true;
+                true
+            }
+            None => {
+                return Err(format!(
+                    "Upload stream not found: agent_id={}, request_id={}",
+                    route.agent_id, route.request_id
+                ));
+            }
+        };
+
         let error_message = format!(
             "Failed to forward upload chunk to agent: agent_id={}, request_id={}",
             route.agent_id, route.request_id
@@ -163,16 +226,21 @@ pub(crate) fn finish_routed_chunk(
             error_message.clone(),
         );
 
-        let completion_sender = state
-            .streams
-            .uploads
-            .remove(&route.request_id)
-            .and_then(|transfer| transfer.completion_sender);
-
-        ui::notify_refresh(state);
-
-        if let Some(sender) = completion_sender {
-            let _ = sender.send(Err(error_message.clone()));
+        if should_cancel_agent {
+            if let Some(agent_info) = state.agents.by_id.get(&route.agent_id) {
+                log!(
+                    Level::Info,
+                    "Sending upload cancel to agent: agent_id={}, request_id={}",
+                    route.agent_id,
+                    route.request_id
+                );
+                agents::send_agent_message(
+                    agent_info,
+                    Message::CancelTransfer {
+                        request_id: route.request_id,
+                    },
+                );
+            }
         }
 
         return Err(error_message);
@@ -192,7 +260,7 @@ pub(crate) fn finish_transfer(
     request_id: crate::types::RequestId,
     result: CommandResult,
 ) {
-    let completion_sender = match state.streams.uploads.get_mut(&request_id) {
+    let transfer_state = match state.streams.uploads.get_mut(&request_id) {
         Some(transfer) => {
             if transfer.agent_id != agent_id {
                 log!(
@@ -204,7 +272,7 @@ pub(crate) fn finish_transfer(
                 );
                 return;
             }
-            transfer.completion_sender.take()
+            (transfer.canceled_by_rest, transfer.completion_sender.take())
         }
         None => {
             if state.streams.downloads.contains_key(&request_id) {
@@ -224,6 +292,28 @@ pub(crate) fn finish_transfer(
             return;
         }
     };
+
+    let (canceled_by_rest, completion_sender) = transfer_state;
+
+    if canceled_by_rest {
+        // After REST has already gone away, the agent response only acts as a
+        // cleanup ack. The user-visible error stays the standardized cancel
+        // message stored when cancellation was initiated.
+        log!(
+            Level::Info,
+            "Received canceled upload ack from agent: agent_id={}, request_id={}, is_error={}",
+            agent_id,
+            request_id,
+            matches!(result, CommandResult::Error { .. })
+        );
+        state.streams.uploads.remove(&request_id);
+        ui::notify_refresh(state);
+
+        if let Some(sender) = completion_sender {
+            let _ = sender.send(Err(CLIENT_CANCELED_ERROR.to_string()));
+        }
+        return;
+    }
 
     let completion_result = match &result {
         CommandResult::RawUpload => {

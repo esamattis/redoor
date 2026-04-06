@@ -57,11 +57,22 @@ impl AgentActor {
                     }
                 }
                 Message::CancelTransfer { request_id } => {
+                    // The router uses the same cancel message for both transfer
+                    // directions, so the agent checks downloads and uploads.
                     let download_handle = {
                         state
                             .active_downloads
                             .lock()
                             .expect("active downloads mutex poisoned")
+                            .get(&request_id)
+                            .cloned()
+                    };
+
+                    let upload_handle = {
+                        state
+                            .active_uploads
+                            .lock()
+                            .expect("active uploads mutex poisoned")
                             .get(&request_id)
                             .cloned()
                     };
@@ -73,10 +84,17 @@ impl AgentActor {
                             request_id
                         );
                         let _ = download_handle.cancel_sender.send(true);
+                    } else if let Some(upload_handle) = upload_handle {
+                        log!(
+                            Level::Info,
+                            "Received upload cancel from server: request_id={}",
+                            request_id
+                        );
+                        let _ = upload_handle.cancel_sender.send(true);
                     } else {
                         log!(
                             Level::Warning,
-                            "Received transfer cancel for unknown download: request_id={}",
+                            "Received transfer cancel for unknown transfer: request_id={}",
                             request_id
                         );
                     }

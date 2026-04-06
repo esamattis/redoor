@@ -7,12 +7,12 @@ use axum::{
 };
 use futures_util::StreamExt;
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
-use ractor::call_t;
+use ractor::{ActorRef, call_t};
 use redoor::{
     actors,
     commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
     streaming::StreamChunkFrameRequest,
-    types::{AgentId, ChunkIndex},
+    types::{AgentId, ChunkIndex, RequestId},
 };
 use serde::Deserialize;
 
@@ -21,6 +21,52 @@ use super::{agent_helpers::resolve_agent_path, state::ServerState};
 #[derive(Deserialize)]
 pub(crate) struct RawQueryParams {
     download: Option<String>,
+}
+
+/// Triggers router-side upload cancellation if the HTTP handler exits before the
+/// upload reaches a terminal state.
+struct UploadCancelGuard {
+    router_ref: ActorRef<actors::router::RouterMsg>,
+    agent_id: AgentId,
+    request_id: RequestId,
+    active: bool,
+}
+
+impl UploadCancelGuard {
+    /// Arms a new guard for one active upload request.
+    fn new(
+        router_ref: ActorRef<actors::router::RouterMsg>,
+        agent_id: AgentId,
+        request_id: RequestId,
+    ) -> Self {
+        Self {
+            router_ref,
+            agent_id,
+            request_id,
+            active: true,
+        }
+    }
+
+    /// Disables drop-driven cancellation once the upload has already been
+    /// finalized or explicitly aborted through the normal chunk flow.
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for UploadCancelGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+
+        let _ = self
+            .router_ref
+            .cast(actors::router::RouterMsg::CancelTransfer {
+                agent_id: self.agent_id.clone(),
+                request_id: self.request_id,
+            });
+    }
 }
 
 /// Reframes one upload-side payload into bounded transfer chunks and forwards
@@ -404,21 +450,15 @@ pub(crate) async fn raw_agent_put_handler(
     let mut body_stream = body.into_data_stream();
     let mut chunk_index = ChunkIndex::new(0);
     let mut bytes_written = 0u64;
+    // Any early return after this point means the client request ended before
+    // the agent saw a terminal chunk, so drop-driven cancel must clean up.
+    let mut cancel_guard =
+        UploadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
 
     while let Some(next_chunk) = body_stream.next().await {
         let data = match next_chunk {
             Ok(data) => data,
             Err(error) => {
-                let abort_message = format!("Failed to read request body: {}", error);
-                let _ = forward_split_stream_chunk(
-                    &state,
-                    &agent_id,
-                    &mut chunk_index,
-                    StreamChunkFrameRequest::new(request_id, abort_message.as_bytes())
-                        .is_error(true),
-                )
-                .await;
-
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -431,6 +471,35 @@ pub(crate) async fn raw_agent_put_handler(
 
         bytes_written += data.len() as u64;
 
+        if bytes_written > total_bytes {
+            let abort_message = format!(
+                "Upload exceeded Content-Length header: expected {} bytes, received {}",
+                total_bytes, bytes_written
+            );
+            let abort_result = forward_split_stream_chunk(
+                &state,
+                &agent_id,
+                &mut chunk_index,
+                StreamChunkFrameRequest::new(request_id, abort_message.as_bytes()).is_error(true),
+            )
+            .await;
+            cancel_guard.disarm();
+
+            if let Err(response) = abort_result {
+                return response;
+            }
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: abort_message,
+                }),
+            )
+                .into_response();
+        }
+
+        // Upload chunks are forwarded as non-terminal frames until the handler
+        // has seen exactly the declared Content-Length.
         if let Err(response) = forward_split_stream_chunk(
             &state,
             &agent_id,
@@ -443,6 +512,20 @@ pub(crate) async fn raw_agent_put_handler(
         }
     }
 
+    if bytes_written != total_bytes {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Upload stream ended before completion: expected {} bytes, received {}",
+                    total_bytes, bytes_written
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    // The final empty frame is the protocol-level completion marker for uploads.
     if let Err(response) = forward_split_stream_chunk(
         &state,
         &agent_id,
@@ -453,6 +536,10 @@ pub(crate) async fn raw_agent_put_handler(
     {
         return response;
     }
+
+    // Past this point the router or agent owns completion, so drop should no
+    // longer emit a redundant cancel request.
+    cancel_guard.disarm();
 
     match upload_completion_receiver.await {
         Ok(Ok(CommandResult::RawUpload)) => (

@@ -49,7 +49,8 @@ pub struct DirectDownload {
     pub(crate) agent_id: AgentId,
     /// Bounded REST-facing sink that receives forwarded chunks.
     pub(crate) chunk_sender: tokio::sync::mpsc::Sender<StreamChunk>,
-    /// Whether the REST side has already requested cancellation.
+    /// Whether REST-side teardown already triggered cancellation for this
+    /// upload, used to suppress duplicate forwarding and duplicate completion.
     pub(crate) canceled_by_rest: bool,
 }
 
@@ -60,6 +61,8 @@ pub struct DirectUpload {
     /// Optional final-result channel for REST uploads that expect completion.
     pub(crate) completion_sender:
         Option<tokio::sync::oneshot::Sender<Result<CommandResult, String>>>,
+    /// Whether the REST side has already requested cancellation.
+    pub(crate) canceled_by_rest: bool,
 }
 
 #[derive(Default)]

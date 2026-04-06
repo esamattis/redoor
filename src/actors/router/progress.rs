@@ -109,6 +109,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
         DirectUpload {
             agent_id: context.agent_id,
             completion_sender: Some(context.completion_sender),
+            canceled_by_rest: false,
         },
     );
     ui::notify_refresh(state);

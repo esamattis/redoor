@@ -158,6 +158,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     DirectUpload {
                         agent_id: request.source_agent_id.clone(),
                         completion_sender: None,
+                        canceled_by_rest: false,
                     },
                 );
 
@@ -225,6 +226,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 DirectUpload {
                     agent_id: request.dest_agent_id.clone(),
                     completion_sender: None,
+                    canceled_by_rest: false,
                 },
             );
 

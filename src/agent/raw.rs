@@ -107,6 +107,7 @@ impl AgentActor {
         match File::create(&temp_path).await {
             Ok(file) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
+                let (cancel_sender, cancel_receiver) = watch::channel(false);
                 log!(
                     Level::Info,
                     "Started raw upload: request_id={}, path={}, temp_path={}",
@@ -122,11 +123,13 @@ impl AgentActor {
                         UploadSessionHandle {
                             path: path.clone(),
                             chunk_sender,
+                            cancel_sender,
                         },
                     );
                 tokio::spawn(Self::process_raw_upload(
                     active_uploads,
                     chunk_receiver,
+                    cancel_receiver,
                     RawUploadSession {
                         path,
                         temp_path,
@@ -155,12 +158,58 @@ impl AgentActor {
     async fn process_raw_upload(
         active_uploads: ActiveUploads,
         mut chunk_receiver: mpsc::Receiver<streaming::StreamChunk>,
+        mut cancel_receiver: watch::Receiver<bool>,
         mut session: RawUploadSession,
         tx: mpsc::Sender<WsMessage>,
         agent_id: AgentId,
         request_id: RequestId,
     ) {
-        while let Some(chunk) = chunk_receiver.recv().await {
+        loop {
+            let next_chunk = tokio::select! {
+                changed = cancel_receiver.changed() => {
+                    match changed {
+                        Ok(()) if *cancel_receiver.borrow() => {
+                            let error_message = "Upload canceled by server".to_string();
+                            log!(
+                                Level::Info,
+                                "Stopping raw upload after cancel: request_id={}, path={}",
+                                request_id,
+                                session.path
+                            );
+                            AgentActor
+                                .send_command_response(
+                                    &tx,
+                                    &agent_id,
+                                    request_id,
+                                    CommandResult::Error {
+                                        message: error_message,
+                                    },
+                                )
+                                .await;
+                            Self::remove_upload_temp_file(&session.temp_path).await;
+                            Self::remove_active_upload(&active_uploads, request_id).await;
+                            return;
+                        }
+                        Ok(()) => continue,
+                        Err(_) => {
+                            // If the cancel sender disappears entirely the
+                            // upload registry is already being torn down, so
+                            // this worker should exit and discard its temp file.
+                            Self::remove_upload_temp_file(&session.temp_path).await;
+                            Self::remove_active_upload(&active_uploads, request_id).await;
+                            return;
+                        }
+                    }
+                }
+                chunk = chunk_receiver.recv() => chunk,
+            };
+
+            let Some(chunk) = next_chunk else {
+                break;
+            };
+
+            // Raw uploads accept only raw file payload frames; any other kind
+            // indicates protocol corruption and must fail the transfer.
             if chunk.payload_kind != StreamPayloadKind::RawFile {
                 let error_message = format!(
                     "Upload payload kind mismatch: expected {:?}, got {:?}",
@@ -314,6 +363,8 @@ impl AgentActor {
             return;
         }
 
+        // Reaching EOF on the chunk channel without an explicit final chunk
+        // means the upload ended unexpectedly before completion.
         let error_message = "Upload stream ended before completion".to_string();
         AgentActor
             .send_command_response(

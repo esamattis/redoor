@@ -26,6 +26,7 @@ describe("Raw Upload API", () => {
     const tempFiles = new TempFileManager();
     let apiClient: ApiClient;
     let serverPort: number;
+    let serverPid: number;
     let testAgent: Agent;
 
     afterEach(() => {
@@ -41,6 +42,7 @@ describe("Raw Upload API", () => {
 
         apiClient = setup.apiClient;
         serverPort = setup.serverPort;
+        serverPid = setup.serverPid;
         testAgent = setup.testAgent;
     }, 30000);
 
@@ -214,6 +216,111 @@ describe("Raw Upload API", () => {
         // Reading the file back ties the completed progress row to a real persisted upload.
         expect(downloadedContent).toBe(
             Buffer.concat([firstChunk, secondChunk]).toString("utf-8"),
+        );
+    });
+
+    it("should cancel upload cleanly when client aborts", async () => {
+        const firstChunk = Buffer.alloc(64 * 1024, "a");
+        const totalBytes = firstChunk.length * 2;
+        const uploadedFilePath = tempFiles.tempFile({ suffix: ".bin" });
+        const controller = new AbortController();
+        let streamController:
+            | ReadableStreamDefaultController<Uint8Array>
+            | undefined;
+
+        const uploadBody = new ReadableStream<Uint8Array>({
+            start(bodyController) {
+                streamController = bodyController;
+                bodyController.enqueue(firstChunk);
+            },
+        });
+
+        const uploadPromise = fetch(testAgent.getRawUrl(uploadedFilePath), {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": totalBytes.toString(),
+            },
+            body: uploadBody,
+            duplex: "half",
+            signal: controller.signal,
+        } as RequestInit & { duplex: "half" });
+
+        const activeTransfer = await waitForValue({
+            description: "active upload progress row before client abort",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === uploadedFilePath &&
+                        transfer.direction === "upload" &&
+                        transfer.state === "active" &&
+                        transfer.total_bytes === totalBytes &&
+                        transfer.transferred_bytes === firstChunk.length,
+                );
+            },
+        });
+
+        const serverLogBeforeAbort = processManager.getStdout(serverPid);
+
+        controller.abort();
+        streamController?.error(new Error("client aborted upload"));
+
+        // Rejecting the fetch proves the HTTP client observed its own cancellation instead of receiving a normal response.
+        await expect(uploadPromise).rejects.toThrow(
+            /abort|aborted|cancel|fetch failed/i,
+        );
+
+        const finishedTransfer = await waitForValue({
+            description: "errored upload progress row after client abort",
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "errored",
+                );
+            },
+        });
+
+        // The errored state proves the server surfaced client-side cancellation instead of leaving the upload active forever.
+        expect(finishedTransfer.state).toBe("errored");
+        // Keeping partial progress proves cancellation happened after real bytes were already forwarded to the agent.
+        expect(finishedTransfer.transferred_bytes).toBe(firstChunk.length);
+        // Remaining below the declared total confirms the upload stopped mid-stream rather than after completion.
+        expect(finishedTransfer.transferred_bytes).toBeLessThan(totalBytes);
+        // The cancellation text confirms the router attributed the failure to the disconnected client.
+        expect(finishedTransfer.error).toMatch(/canceled by client/i);
+
+        await waitForValue({
+            description: "server upload cancel logs after client abort",
+            predicate: async () => {
+                const stdout = processManager.getStdout(serverPid);
+                const newStdout = stdout.slice(serverLogBeforeAbort.length);
+
+                if (
+                    /No pending response found for request_id=/.test(newStdout)
+                ) {
+                    throw new Error(
+                        "Unexpected missing pending response warning after upload cancellation",
+                    );
+                }
+
+                return /Sending upload cancel to agent: agent_id=.*request_id=/.test(
+                    newStdout,
+                ) &&
+                    /Received canceled upload ack from agent: agent_id=.*request_id=.*is_error=true/.test(
+                        newStdout,
+                    )
+                    ? true
+                    : undefined;
+            },
+        });
+
+        // A missing final file proves the canceled upload never got finalized at the destination path.
+        await expect(testAgent.raw(uploadedFilePath)).rejects.toThrow(
+            /not found|no such file/i,
         );
     });
 
