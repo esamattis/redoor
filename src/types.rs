@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::sync::mpsc;
 use ts_rs::TS;
+use uuid::Uuid;
 
 /// Identifies one agent across the router, websocket protocol, and REST API.
 ///
@@ -31,6 +32,33 @@ impl From<&str> for AgentId {
 }
 
 impl fmt::Display for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Identifies one websocket session connected to the router.
+///
+/// This is used for logging and for distinguishing concurrent connections even
+/// when they belong to the same logical agent over time.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(type = "string")]
+pub struct SocketId(pub Uuid);
+
+impl SocketId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl From<Uuid> for SocketId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for SocketId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

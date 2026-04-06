@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use redoor::types::SocketId;
 use redoor::{Level, actors, commands::UiEvent, log};
 use uuid::Uuid;
 
@@ -28,7 +29,7 @@ pub(crate) async fn ui_websocket_handler(
 }
 
 async fn handle_socket(socket: WebSocket, router_ref: actors::router::RouterHandle) {
-    let socket_id = Uuid::new_v4().to_string();
+    let socket_id = SocketId::new();
     actors::session::handle_websocket(socket, socket_id, router_ref).await;
 }
 

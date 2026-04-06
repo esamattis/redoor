@@ -4,7 +4,7 @@ use crate::actors::router::{
 };
 use crate::log;
 use crate::logging::Level;
-use crate::types::{AgentId, Message};
+use crate::types::{AgentId, Message, SocketId};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -23,7 +23,7 @@ fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> 
 
 /// Runtime state held for one websocket-backed agent session.
 struct SessionRuntime {
-    socket_id: String,
+    socket_id: SocketId,
     router_ref: RouterHandle,
     agent_id: Option<AgentId>,
     outgoing_text: mpsc::UnboundedSender<WsMessage>,
@@ -135,7 +135,7 @@ impl SessionRuntime {
 
 /// Entry point for a new WebSocket connection. Splits the socket into send/receive
 /// halves and wires them to the router using explicit Tokio channels.
-pub async fn handle_websocket(socket: WebSocket, socket_id: String, router_ref: RouterHandle) {
+pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref: RouterHandle) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
     let (tx_out_binary, mut rx_out_binary) = mpsc::channel::<WsMessage>(1);

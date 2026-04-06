@@ -1,7 +1,7 @@
 use super::RouterError;
 use crate::commands::{Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
-use crate::types::{AgentId, ChunkIndex, RequestId, TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -12,7 +12,7 @@ pub struct AgentInfo {
     /// Human-readable name shown in the UI.
     pub agent_name: String,
     /// Unique websocket session identifier for logging.
-    pub socket_id: String,
+    pub socket_id: SocketId,
     /// Unbounded control-message lane for websocket text frames.
     pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
     /// Bounded binary-message lane for websocket streaming frames.

@@ -1,7 +1,7 @@
 use super::RouterError;
 use super::state::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
-use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
+use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId};
 use axum::extract::ws::Message as WsMessage;
 
 /// One-shot reply port used by router request/reply messages.
@@ -14,7 +14,7 @@ pub struct RegisterAgentRequest {
     /// Human-readable agent name shown in the UI.
     pub agent_name: String,
     /// Unique websocket session identifier for this connection.
-    pub socket_id: String,
+    pub socket_id: SocketId,
     /// Unbounded control-message lane for websocket text frames.
     pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
     /// Bounded binary-message lane for websocket streaming frames.

@@ -240,10 +240,11 @@ mod tests {
     use super::*;
     use crate::commands::Command;
     use crate::streaming::{StreamChunk, StreamPayloadKind};
-    use crate::types::AgentId;
+    use crate::types::{AgentId, SocketId};
     use axum::extract::ws::Message as WsMessage;
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::{Duration, timeout};
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn slow_upload_send_does_not_block_unrelated_router_work() {
@@ -258,7 +259,7 @@ mod tests {
             .send(RouterMsg::RegisterAgent(RegisterAgentRequest {
                 agent_id: AgentId::from("agent-1"),
                 agent_name: "agent-1".to_string(),
-                socket_id: "socket-1".to_string(),
+                socket_id: SocketId::from(Uuid::from_u128(1)),
                 outgoing_text: text_tx,
                 outgoing_binary: binary_tx,
                 os: "macos".to_string(),
