@@ -8,12 +8,55 @@ mod ws;
 
 use ractor::Actor;
 use redoor::{Level, log, types::AgentId};
+use thiserror::Error;
 
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
     ActiveDownloads, ActiveUploads, AgentArgs, AgentState, DownloadSessionHandle,
     UploadSessionHandle,
 };
+
+/// Wraps subsystem-specific agent command failures behind one protocol boundary type.
+#[derive(Debug, Error)]
+pub(crate) enum AgentCommandError {
+    #[error(transparent)]
+    LocalCopy(#[from] transfers::copy::LocalCopyError),
+    #[error(transparent)]
+    TarUpload(#[from] transfers::upload::TarUploadError),
+    #[error("{message}")]
+    RawUpload {
+        kind: redoor::commands::CommandErrorKind,
+        message: String,
+    },
+}
+
+impl AgentCommandError {
+    /// Returns the protocol-stable kind that the server maps into an HTTP status.
+    pub(crate) fn kind(&self) -> redoor::commands::CommandErrorKind {
+        match self {
+            Self::LocalCopy(error) => error.kind(),
+            Self::TarUpload(error) => error.kind(),
+            Self::RawUpload { kind, .. } => kind.clone(),
+        }
+    }
+
+    /// Builds one raw-upload boundary error without forcing a dedicated inner enum yet.
+    pub(crate) fn raw_upload(
+        kind: redoor::commands::CommandErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::RawUpload {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<AgentCommandError> for redoor::commands::CommandResult {
+    fn from(error: AgentCommandError) -> Self {
+        redoor::commands::CommandResult::error(error.kind(), error.to_string())
+    }
+}
 
 pub(crate) struct AgentActor;
 

@@ -1,6 +1,6 @@
-use super::super::AgentActor;
+use super::super::{AgentActor, AgentCommandError};
 use redoor::{
-    commands::{CommandErrorKind, CommandResult},
+    commands::CommandResult,
     types::{AgentId, Message, RequestId},
 };
 use std::{
@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Keeps local-copy failures typed so the HTTP layer never has to infer them from text.
 #[derive(Debug, Error)]
-enum LocalCopyError {
+pub(crate) enum LocalCopyError {
     #[error("Failed to access source file: {0}")]
     AccessSourceFile(#[source] std::io::Error),
     #[error("Failed to access source directory: {0}")]
@@ -89,17 +89,19 @@ enum LocalCopyError {
 
 impl LocalCopyError {
     /// Maps one local-copy failure to the stable command error kind carried over the protocol.
-    fn kind(&self) -> CommandErrorKind {
+    pub(crate) fn kind(&self) -> redoor::commands::CommandErrorKind {
         match self {
             Self::AccessSourceFile(error)
             | Self::AccessSourceDirectory(error)
             | Self::CheckDestinationPath(error)
             | Self::CreateTempDirectory(error)
-            | Self::FinalizeCopiedDirectory(error) => CommandErrorKind::from_io_error(error),
-            Self::SourceNotDirectory(_) | Self::DestinationParentNotDirectory(_) => {
-                CommandErrorKind::NotADirectory
+            | Self::FinalizeCopiedDirectory(error) => {
+                redoor::commands::CommandErrorKind::from_io_error(error)
             }
-            Self::DestinationAlreadyExists(_) => CommandErrorKind::AlreadyExists,
+            Self::SourceNotDirectory(_) | Self::DestinationParentNotDirectory(_) => {
+                redoor::commands::CommandErrorKind::NotADirectory
+            }
+            Self::DestinationAlreadyExists(_) => redoor::commands::CommandErrorKind::AlreadyExists,
             Self::SamePath
             | Self::DestinationInsideSource
             | Self::SourceNotFile(_)
@@ -107,7 +109,7 @@ impl LocalCopyError {
             | Self::InvalidSourcePath(_)
             | Self::InvalidDestinationPath(_)
             | Self::NonUtf8DestinationPath(_)
-            | Self::UnsupportedEntryType(_) => CommandErrorKind::InvalidInput,
+            | Self::UnsupportedEntryType(_) => redoor::commands::CommandErrorKind::InvalidInput,
             Self::AccessSourceParent(_)
             | Self::AccessAbsoluteSourcePath(_)
             | Self::AccessDestinationParent(_)
@@ -123,7 +125,7 @@ impl LocalCopyError {
             | Self::ReadEntryMetadata(_)
             | Self::ReadSourceMetadata(_)
             | Self::CreateDestinationDirectory(_)
-            | Self::PlannerFailed(_) => CommandErrorKind::Internal,
+            | Self::PlannerFailed(_) => redoor::commands::CommandErrorKind::Internal,
         }
     }
 }
@@ -459,12 +461,11 @@ impl AgentActor {
         request_id: RequestId,
         error: LocalCopyError,
     ) {
-        let message = error.to_string();
         self.send_command_response(
             write,
             agent_id,
             request_id,
-            CommandResult::error(error.kind(), message),
+            AgentCommandError::from(error).into(),
         )
         .await;
     }

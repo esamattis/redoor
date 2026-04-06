@@ -1,3 +1,3 @@
-mod copy;
+pub(super) mod copy;
 mod download;
-mod upload;
+pub(super) mod upload;

@@ -1,4 +1,4 @@
-use super::super::{ActiveUploads, AgentActor, UploadSessionHandle};
+use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
 use anyhow::Result;
 use redoor::{
     Level,
@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Keeps tar upload failures typed so the API layer never depends on parsing text.
 #[derive(Debug, Error)]
-enum TarUploadError {
+pub(crate) enum TarUploadError {
     #[error("Tar entry path escapes destination: {0}")]
     EscapingTarEntryPath(String),
     #[error("Tar entry path cannot be empty")]
@@ -54,7 +54,7 @@ enum TarUploadError {
 
 impl TarUploadError {
     /// Maps one tar-upload failure to the stable command error kind carried over the protocol.
-    fn kind(&self) -> CommandErrorKind {
+    pub(crate) fn kind(&self) -> CommandErrorKind {
         match self {
             Self::AccessDestinationParent(error)
             | Self::CheckDestinationPath(error)
@@ -311,7 +311,7 @@ impl TarUploadWorker {
                 &self.tx,
                 &self.agent_id,
                 self.request_id,
-                CommandResult::error(kind, message),
+                AgentCommandError::raw_upload(kind, message).into(),
             )
             .await;
     }
@@ -479,13 +479,14 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                CommandResult::error(
+                AgentCommandError::raw_upload(
                     CommandErrorKind::AlreadyExists,
                     format!(
                         "Upload session already exists for request_id={}",
                         request_id
                     ),
-                ),
+                )
+                .into(),
             )
             .await;
             return;
@@ -528,7 +529,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    CommandResult::error(error.kind(), error.to_string()),
+                    AgentCommandError::from(error).into(),
                 )
                 .await;
             }
@@ -565,10 +566,11 @@ async fn finalize_tar_upload(
                         tx,
                         agent_id,
                         request_id,
-                        CommandResult::error(
+                        AgentCommandError::raw_upload(
                             CommandErrorKind::from_io_error(&error),
                             error_message,
-                        ),
+                        )
+                        .into(),
                     )
                     .await;
                 return;
@@ -593,7 +595,7 @@ async fn finalize_tar_upload(
                     tx,
                     agent_id,
                     request_id,
-                    CommandResult::error(error.kind(), error.to_string()),
+                    AgentCommandError::from(error).into(),
                 )
                 .await;
         }

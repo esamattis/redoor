@@ -1,4 +1,4 @@
-use super::{ActiveDownloads, ActiveUploads, AgentActor, UploadSessionHandle};
+use super::{ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
 use redoor::{
     Level,
     commands::{CommandErrorKind, CommandResult},
@@ -118,7 +118,7 @@ impl RawUploadWorker {
                 &self.tx,
                 &self.agent_id,
                 self.request_id,
-                CommandResult::error(kind, message),
+                AgentCommandError::raw_upload(kind, message).into(),
             )
             .await;
     }
@@ -195,7 +195,11 @@ impl RawUploadWorker {
                     &tx,
                     &agent_id,
                     request_id,
-                    CommandResult::error(CommandErrorKind::from_io_error(&error), error_message),
+                    AgentCommandError::raw_upload(
+                        CommandErrorKind::from_io_error(&error),
+                        error_message,
+                    )
+                    .into(),
                 )
                 .await;
             active_uploads.remove(request_id);
@@ -525,13 +529,14 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                CommandResult::error(
+                AgentCommandError::raw_upload(
                     CommandErrorKind::AlreadyExists,
                     format!(
                         "Upload session already exists for request_id={}",
                         request_id
                     ),
-                ),
+                )
+                .into(),
             )
             .await;
             return;
@@ -580,10 +585,11 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    CommandResult::error(
+                    AgentCommandError::raw_upload(
                         CommandErrorKind::from_io_error(&error),
                         format!("Failed to create file: {}", error),
-                    ),
+                    )
+                    .into(),
                 )
                 .await;
             }

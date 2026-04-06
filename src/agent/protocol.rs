@@ -1,5 +1,6 @@
 use super::{
-    ActiveDownloads, ActiveUploads, AgentActor, AgentMsg, AgentState, DownloadSessionHandle,
+    ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentMsg, AgentState,
+    DownloadSessionHandle,
 };
 use ractor::{ActorProcessingErr, ActorRef};
 use redoor::{
@@ -272,10 +273,11 @@ impl AgentActor {
                 &tx,
                 &state.agent_id,
                 request_id,
-                CommandResult::error(
+                AgentCommandError::raw_upload(
                     CommandErrorKind::Internal,
                     "Upload worker is no longer available",
-                ),
+                )
+                .into(),
             )
             .await;
         }
