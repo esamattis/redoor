@@ -6,11 +6,8 @@ pub(crate) enum AgentMsg {
     ConnectionEstablished,
     ConnectionFailed { error: String },
     WebSocketMessage { text: String },
-    WebSocketBinaryMessage { bytes: Vec<u8> },
     ConnectionLost { reason: String },
     Reconnect,
     SendWebSocketMessage { msg: WsMessage },
-    SendWebSocketBinary { bytes: Vec<u8> },
-    Shutdown,
     ExitWithError,
 }

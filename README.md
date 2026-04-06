@@ -47,16 +47,15 @@ graph TB
 
 ## Actor System
 
-The server uses the [Ractor](https://github.com/slawlor/ractor) actor framework to manage concurrent connections and command routing.
+The server keeps an actor-style architecture using plain Tokio tasks and channels.
 
 ### Actors
 
-| Actor                           | Cardinality                  | Responsibility                                                                                                        |
-| ------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **RouterActor**                 | Singleton                    | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs.                  |
-| **SessionActor**                | One per WebSocket connection | Bridges a single WebSocket connection to the actor system. Deserializes inbound frames, serializes outbound messages. |
-| **CommandExecutorActor**        | Singleton                    | Executes commands locally on the server side.                                                                         |
-| **AgentActor** _(agent binary)_ | One per agent process        | Manages the agent's WebSocket connection, executes commands locally, and streams results back.                        |
+| Runtime                         | Cardinality                  | Responsibility                                                                                                     |
+| ------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Router Task**                 | Singleton                    | Central hub. Maintains agent registry, routes commands to agents, correlates request/response pairs.               |
+| **Session Task**                | One per WebSocket connection | Bridges a single WebSocket connection to the router. Deserializes inbound frames and serializes outbound messages. |
+| **Agent Runtime** _(agent bin)_ | One per agent process        | Manages the agent's WebSocket connection, executes commands locally, and streams results back.                     |
 
 ### Message Flow: REST Command Execution
 
@@ -64,10 +63,10 @@ The server uses the [Ractor](https://github.com/slawlor/ractor) actor framework 
 sequenceDiagram
     participant Client as REST Client / UI
     participant API as Axum REST API
-    participant Router as RouterActor
-    participant Session as SessionActor
+    participant Router as Router Task
+    participant Session as Session Task
     participant WS as WebSocket
-    participant Agent as AgentActor
+    participant Agent as Agent Runtime
 
     Client->>API: GET /api/v1/agents/{id}/ls/path
     API->>Router: ExecuteCommandRest { agent_id, command, reply }
@@ -80,7 +79,7 @@ sequenceDiagram
     WS->>Session: IncomingMessage(CommandResponse)
     Session->>Router: RouteResponse { request_id, result }
     Router->>Router: Match request_id to stored reply port
-    Router->>API: Send result via RpcReplyPort
+    Router->>API: Send result via oneshot reply
     API->>Client: JSON response
 ```
 
@@ -92,10 +91,10 @@ Large file downloads use a custom binary streaming protocol to avoid loading ent
 sequenceDiagram
     participant Client as REST Client / UI
     participant API as Axum REST API
-    participant Router as RouterActor
-    participant Session as SessionActor
+    participant Router as Router Task
+    participant Session as Session Task
     participant WS as WebSocket
-    participant Agent as AgentActor
+    participant Agent as Agent Runtime
 
     Client->>API: GET /api/v1/agents/{id}/raw/path
     API->>Router: Metadata command (get MIME type + size)
@@ -260,7 +259,7 @@ pnpm run dev
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | Runtime                  | [Tokio](https://tokio.rs/)                                                                |
 | HTTP / WebSocket Server  | [Axum](https://github.com/tokio-rs/axum)                                                  |
-| Actor Framework          | [Ractor](https://github.com/slawlor/ractor)                                               |
+| Concurrency Model        | Tokio tasks + channels                                                                    |
 | WebSocket Client (Agent) | [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)                        |
 | Serialization            | [serde](https://serde.rs/) + serde_json                                                   |
 | TypeScript Codegen       | [ts-rs](https://github.com/Aleph-Alpha/ts-rs)                                             |

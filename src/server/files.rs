@@ -4,12 +4,12 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use ractor::call_t;
 use redoor::{
     actors,
     commands::{Command, CommandResult, CreateDirectoryResponse, ErrorResponse, RawDeleteResponse},
     types::AgentId,
 };
+use std::time::Duration;
 
 use super::{
     agent_helpers::resolve_agent_path, responses::command_error_status, state::ServerState,
@@ -26,19 +26,24 @@ pub(crate) async fn raw_agent_delete_handler(
         Err(response) => return response,
     };
 
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::RawDelete {
-                    path: resolved_path.clone(),
-                },
-                reply,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::RawDelete {
+                            path: resolved_path.clone(),
+                        },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(CommandResult::RawDelete) => (
             StatusCode::OK,
             Json(RawDeleteResponse {
@@ -78,19 +83,24 @@ pub(crate) async fn create_directory_handler(
         Err(response) => return response,
     };
 
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::CreateDirectory {
-                    path: resolved_path.clone(),
-                },
-                reply,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::CreateDirectory {
+                            path: resolved_path.clone(),
+                        },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(CommandResult::CreateDirectory) => (
             StatusCode::OK,
             Json(CreateDirectoryResponse {

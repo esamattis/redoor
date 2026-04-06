@@ -1,9 +1,9 @@
+use super::RouterHandle;
 use super::messages::{RegisterUiSubscriberRequest, RouterMsg};
 use super::state::RouterState;
 use crate::commands::UiEvent;
 use crate::log;
 use crate::logging::Level;
-use ractor::ActorRef;
 use std::time::{Duration, Instant};
 
 /// Minimum gap between broadcast refresh events to avoid UI invalidation storms.
@@ -12,16 +12,18 @@ pub(crate) const UI_REFRESH_THROTTLE_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const UI_REFRESH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Starts the periodic task that asks the router when a trailing refresh is due.
-pub(crate) fn start_refresh_check_task(
-    router_ref: ActorRef<RouterMsg>,
-) -> tokio::task::JoinHandle<()> {
+pub(crate) fn start_refresh_check_task(router_ref: RouterHandle) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(UI_REFRESH_CHECK_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             interval.tick().await;
-            if router_ref.cast(RouterMsg::CheckPendingUiRefresh).is_err() {
+            if router_ref
+                .send(RouterMsg::CheckPendingUiRefresh)
+                .await
+                .is_err()
+            {
                 break;
             }
         }

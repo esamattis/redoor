@@ -6,7 +6,6 @@ pub(crate) mod state;
 mod transfers;
 mod ws;
 
-use ractor::Actor;
 use redoor::{Level, log, types::AgentId};
 use thiserror::Error;
 
@@ -70,10 +69,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     redoor::logging::init(log_file);
     log!(Level::Info, "Starting agent '{}'", agent_name);
 
-    let (_, agent_handle) =
-        AgentActor::spawn(None, AgentActor, (agent_id, agent_name, server_url)).await?;
-
-    agent_handle.await?;
+    AgentActor.run(agent_id, agent_name, server_url).await?;
 
     Ok(())
 }

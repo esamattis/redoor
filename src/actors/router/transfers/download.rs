@@ -1,4 +1,5 @@
 use super::super::RouterError;
+use super::super::RouterHandle;
 use super::super::agents;
 use super::super::messages::{
     ExecuteStreamRequest, FinishDownloadChunkRoute, RouteStreamChunkRequest, RouterMsg,
@@ -9,7 +10,6 @@ use super::super::ui;
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
-use ractor::ActorRef;
 
 /// Starts a direct download stream and records its progress entry.
 pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
@@ -59,7 +59,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
 /// Forwards one inbound direct-download chunk to the waiting REST stream.
 pub(crate) fn route_chunk(
     state: &mut RouterState,
-    myself: &ActorRef<RouterMsg>,
+    myself: &RouterHandle,
     request: RouteStreamChunkRequest,
 ) {
     let agent_id = request.agent_id;
@@ -135,19 +135,20 @@ pub(crate) fn route_chunk(
     let myself = myself.clone();
     tokio::spawn(async move {
         let send_succeeded = chunk_sender.send(chunk).await.is_ok();
-        let send_result = myself.cast(RouterMsg::FinishRoutedDownloadChunk(
-            FinishDownloadChunkRoute {
-                agent_id,
-                request_id,
-                chunk_index,
-                is_last,
-                error_message,
-                send_succeeded,
-                reply,
-            },
-        ));
-        if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
-            if let RouterMsg::FinishRoutedDownloadChunk(route) = message {
+        let route = FinishDownloadChunkRoute {
+            agent_id,
+            request_id,
+            chunk_index,
+            is_last,
+            error_message,
+            send_succeeded,
+            reply,
+        };
+        if let Err(error) = myself
+            .send(RouterMsg::FinishRoutedDownloadChunk(route))
+            .await
+        {
+            if let RouterMsg::FinishRoutedDownloadChunk(route) = error.0 {
                 let _ = route.reply.send(());
             }
         }

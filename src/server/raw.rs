@@ -7,7 +7,6 @@ use axum::{
 };
 use futures_util::StreamExt;
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
-use ractor::{ActorRef, call_t};
 use redoor::{
     actors,
     commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
@@ -15,6 +14,7 @@ use redoor::{
     types::{AgentId, ChunkIndex, RequestId},
 };
 use serde::Deserialize;
+use std::time::Duration;
 
 use super::{
     agent_helpers::resolve_agent_path,
@@ -30,7 +30,7 @@ pub(crate) struct RawQueryParams {
 /// Triggers router-side upload cancellation if the HTTP handler exits before the
 /// upload reaches a terminal state.
 struct UploadCancelGuard {
-    router_ref: ActorRef<actors::router::RouterMsg>,
+    router_ref: actors::router::RouterHandle,
     agent_id: AgentId,
     request_id: RequestId,
     active: bool,
@@ -39,7 +39,7 @@ struct UploadCancelGuard {
 impl UploadCancelGuard {
     /// Arms a new guard for one active upload request.
     fn new(
-        router_ref: ActorRef<actors::router::RouterMsg>,
+        router_ref: actors::router::RouterHandle,
         agent_id: AgentId,
         request_id: RequestId,
     ) -> Self {
@@ -64,9 +64,8 @@ impl Drop for UploadCancelGuard {
             return;
         }
 
-        let _ = self
-            .router_ref
-            .cast(actors::router::RouterMsg::CancelTransfer {
+        self.router_ref
+            .send_detached(actors::router::RouterMsg::CancelTransfer {
                 agent_id: self.agent_id.clone(),
                 request_id: self.request_id,
             });
@@ -88,18 +87,23 @@ async fn forward_split_stream_chunk(
 
     while let Some(chunk) = frames.next() {
         let next_chunk_index = frames.next_chunk_index();
-        match call_t!(
-            &state.router_ref,
-            |reply| actors::router::RouterMsg::SendStreamChunkToAgent(
-                actors::router::SendStreamChunkRequest {
-                    agent_id: agent_id.clone(),
-                    request_id: chunk.request_id,
-                    chunk,
-                    reply,
-                }
-            ),
-            30000
-        ) {
+        match state
+            .router_ref
+            .call(
+                |reply| {
+                    actors::router::RouterMsg::SendStreamChunkToAgent(
+                        actors::router::SendStreamChunkRequest {
+                            agent_id: agent_id.clone(),
+                            request_id: chunk.request_id,
+                            chunk,
+                            reply,
+                        },
+                    )
+                },
+                Duration::from_millis(30000),
+            )
+            .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 *chunk_index = next_chunk_index;
@@ -166,17 +170,22 @@ pub(crate) async fn raw_agent_handler(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    let metadata = match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::Metadata { path: path.clone() },
-                reply,
-            }
-        ),
-        5000
-    ) {
+    let metadata = match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::Metadata { path: path.clone() },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(5000),
+        )
+        .await
+    {
         Ok(CommandResult::Metadata(metadata)) => metadata,
         Ok(CommandResult::Error { kind, message }) => {
             return (
@@ -238,24 +247,29 @@ pub(crate) async fn raw_agent_handler(
     let (response_sender, mut response_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
 
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteStreamCommandRest(
-            actors::router::ExecuteStreamRequest {
-                agent_id: agent_id.clone(),
-                command: Command::RawDownload {
-                    path: path.clone(),
-                    range_start,
-                    range_end,
-                },
-                path: path.clone(),
-                total_bytes: content_length,
-                reply,
-                chunk_sender: response_sender,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteStreamCommandRest(
+                    actors::router::ExecuteStreamRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::RawDownload {
+                            path: path.clone(),
+                            range_start,
+                            range_end,
+                        },
+                        path: path.clone(),
+                        total_bytes: content_length,
+                        reply,
+                        chunk_sender: response_sender,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             return router_error_response(error);
@@ -415,22 +429,27 @@ pub(crate) async fn raw_agent_put_handler(
     let (upload_completion_sender, upload_completion_receiver) =
         tokio::sync::oneshot::channel::<Result<CommandResult, actors::router::RouterError>>();
 
-    let request_id = match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::StartUploadStreamRest(
-            actors::router::StartUploadRequest {
-                agent_id: agent_id.clone(),
-                command: Command::RawUpload {
-                    path: resolved_path.clone(),
-                },
-                path: resolved_path.clone(),
-                total_bytes,
-                completion_sender: upload_completion_sender,
-                reply,
-            }
-        ),
-        30000
-    ) {
+    let request_id = match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::StartUploadStreamRest(
+                    actors::router::StartUploadRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::RawUpload {
+                            path: resolved_path.clone(),
+                        },
+                        path: resolved_path.clone(),
+                        total_bytes,
+                        completion_sender: upload_completion_sender,
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(Ok(request_id)) => request_id,
         Ok(Err(error)) => {
             return router_error_response(error);

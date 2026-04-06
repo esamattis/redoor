@@ -2,7 +2,6 @@ mod agent;
 mod server;
 
 use clap::{Parser, Subcommand};
-use ractor::Actor;
 use redoor::{actors, logging};
 
 #[derive(Parser)]
@@ -35,11 +34,9 @@ async fn main() {
 async fn run_server(args: server::CoordinatorArgs) {
     logging::init(args.log.clone());
 
-    let (router_ref, _) = actors::router::RouterActor::spawn(None, actors::router::RouterActor, ())
-        .await
-        .expect("Failed to spawn RouterActor");
+    let router = actors::router::start();
 
-    let app = server::build_app(server::ServerState::new(router_ref));
+    let app = server::build_app(server::ServerState::new(router.handle));
 
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr)

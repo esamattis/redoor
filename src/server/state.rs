@@ -1,14 +1,13 @@
 use clap::Args;
-use ractor::ActorRef;
 use redoor::actors;
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
-    pub(crate) router_ref: ActorRef<actors::router::RouterMsg>,
+    pub(crate) router_ref: actors::router::RouterHandle,
 }
 
 impl ServerState {
-    pub(crate) fn new(router_ref: ActorRef<actors::router::RouterMsg>) -> Self {
+    pub(crate) fn new(router_ref: actors::router::RouterHandle) -> Self {
         Self { router_ref }
     }
 }

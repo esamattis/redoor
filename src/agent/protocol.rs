@@ -2,7 +2,6 @@ use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentMsg, AgentState,
     DownloadSessionHandle,
 };
-use ractor::{ActorProcessingErr, ActorRef};
 use redoor::{
     Level,
     commands::{Command, CommandErrorKind, CommandHandler, CommandResult},
@@ -111,7 +110,7 @@ impl AgentActor {
         state: &mut AgentState,
         write_text: &mpsc::Sender<WsMessage>,
         write_binary: &mpsc::Sender<WsMessage>,
-        agent_ref: ActorRef<AgentMsg>,
+        control_tx: mpsc::Sender<AgentMsg>,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
             match redoor_msg {
@@ -178,7 +177,7 @@ impl AgentActor {
                 }
                 Message::Error { message } => {
                     log!(Level::Error, "Server error: {}", message);
-                    let _ = agent_ref.cast(AgentMsg::ExitWithError);
+                    let _ = control_tx.send(AgentMsg::ExitWithError).await;
                 }
                 _ => {}
             }
@@ -227,11 +226,7 @@ impl AgentActor {
         }
     }
 
-    pub(crate) async fn handle_upload_chunk(
-        &self,
-        state: &mut AgentState,
-        bytes: Vec<u8>,
-    ) -> std::result::Result<(), ActorProcessingErr> {
+    pub(crate) async fn handle_upload_chunk(&self, state: &mut AgentState, bytes: Vec<u8>) {
         let chunk = match streaming::StreamChunk::from_bytes(&bytes) {
             Ok(chunk) => chunk,
             Err(error) => {
@@ -240,7 +235,7 @@ impl AgentActor {
                     "Failed to parse binary stream chunk: {}",
                     error
                 );
-                return Ok(());
+                return;
             }
         };
 
@@ -252,13 +247,13 @@ impl AgentActor {
                 request_id
             );
             state.active_uploads.remove(request_id);
-            return Ok(());
+            return;
         };
 
         let upload_handle = state.active_uploads.get(request_id);
 
         let Some(upload_handle) = upload_handle else {
-            return Ok(());
+            return;
         };
 
         if upload_handle.chunk_sender.send(chunk).await.is_err() {
@@ -281,7 +276,5 @@ impl AgentActor {
             )
             .await;
         }
-
-        Ok(())
     }
 }

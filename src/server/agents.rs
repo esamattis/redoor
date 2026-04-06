@@ -4,7 +4,6 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use ractor::call_t;
 use redoor::{
     actors,
     commands::{
@@ -13,6 +12,7 @@ use redoor::{
     },
     types::AgentId,
 };
+use std::time::Duration;
 
 use super::{
     agent_helpers::get_agent_details, responses::command_error_status, state::ServerState,
@@ -22,11 +22,14 @@ use super::{
 pub(crate) async fn list_agents_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::GetAgentList { reply },
-        5000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| actors::router::RouterMsg::GetAgentList { reply },
+            Duration::from_millis(5000),
+        )
+        .await
+    {
         Ok(agents) => {
             let response = AgentListResponse {
                 agents: agents
@@ -78,17 +81,22 @@ pub(crate) async fn ls_agent_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::Ls { path: Some(path) },
-                reply,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::Ls { path: Some(path) },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(result) => match result {
             CommandResult::LsDirectory(ls_result) => (
                 StatusCode::OK,
@@ -138,17 +146,22 @@ pub(crate) async fn cat_agent_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::Cat { path },
-                reply,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::Cat { path },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(result) => match result {
             CommandResult::Cat(cat_result) => (
                 StatusCode::OK,
@@ -188,19 +201,24 @@ pub(crate) async fn echo_agent_handler(
     Json(payload): Json<EchoRequest>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    match call_t!(
-        &state.router_ref,
-        |reply| actors::router::RouterMsg::ExecuteCommandRest(
-            actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::Echo {
-                    request: payload.clone(),
-                },
-                reply,
-            }
-        ),
-        30000
-    ) {
+    match state
+        .router_ref
+        .call(
+            |reply| {
+                actors::router::RouterMsg::ExecuteCommandRest(
+                    actors::router::ExecuteCommandRequest {
+                        agent_id: agent_id.clone(),
+                        command: Command::Echo {
+                            request: payload.clone(),
+                        },
+                        reply,
+                    },
+                )
+            },
+            Duration::from_millis(30000),
+        )
+        .await
+    {
         Ok(result) => match result {
             CommandResult::Echo(echo_result) => (
                 StatusCode::OK,

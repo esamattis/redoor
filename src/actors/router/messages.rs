@@ -3,7 +3,7 @@ use super::state::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
 use axum::extract::ws::Message as WsMessage;
-use ractor::RpcReplyPort;
+use tokio::sync::oneshot;
 
 /// Payload for registering one websocket-backed agent session with the router.
 pub struct RegisterAgentRequest {
@@ -52,7 +52,7 @@ pub struct ExecuteCommandRequest {
     /// One-shot command to run on the agent.
     pub command: Command,
     /// Reply port that receives the final command result.
-    pub reply: RpcReplyPort<CommandResult>,
+    pub reply: oneshot::Sender<CommandResult>,
 }
 
 /// Routes one inbound streaming chunk from an agent into the matching transfer flow.
@@ -62,7 +62,7 @@ pub struct RouteStreamChunkRequest {
     /// Parsed stream chunk received from the websocket binary lane.
     pub chunk: crate::streaming::StreamChunk,
     /// Reply port used to acknowledge chunk handling back to the session actor.
-    pub reply: RpcReplyPort<()>,
+    pub reply: oneshot::Sender<()>,
 }
 
 /// Completes one bounded direct-download chunk forward after the REST receiver accepts it.
@@ -80,7 +80,7 @@ pub struct FinishDownloadChunkRoute {
     /// Whether the bounded send to the REST consumer succeeded.
     pub send_succeeded: bool,
     /// Reply port that must be completed only after downstream acceptance is known.
-    pub reply: RpcReplyPort<()>,
+    pub reply: oneshot::Sender<()>,
 }
 
 /// Completes one bounded direct-upload chunk forward after the agent binary lane accepts it.
@@ -96,7 +96,7 @@ pub struct FinishUploadChunkRoute {
     /// Whether the bounded send to the agent succeeded.
     pub send_succeeded: bool,
     /// Reply port that completes the REST-side chunk handoff.
-    pub reply: RpcReplyPort<Result<(), RouterError>>,
+    pub reply: oneshot::Sender<Result<(), RouterError>>,
 }
 
 /// Completes one remote-copy chunk forward after all derived destination frames are queued.
@@ -116,7 +116,7 @@ pub struct FinishCopyChunkRoute {
     /// Whether all derived destination frames were queued successfully.
     pub send_succeeded: bool,
     /// Reply port that acknowledges the source chunk back to the session actor.
-    pub reply: RpcReplyPort<()>,
+    pub reply: oneshot::Sender<()>,
 }
 
 /// Starts a direct download-style streaming command for a REST caller.
@@ -130,7 +130,7 @@ pub struct ExecuteStreamRequest {
     /// Expected total byte count used for progress reporting.
     pub total_bytes: u64,
     /// Reply port that confirms whether the stream started successfully.
-    pub reply: RpcReplyPort<Result<(), RouterError>>,
+    pub reply: oneshot::Sender<Result<(), RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
 }
@@ -148,7 +148,7 @@ pub struct StartUploadRequest {
     /// Completion channel for the final upload result.
     pub completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>,
     /// Reply port that returns the allocated internal request id.
-    pub reply: RpcReplyPort<Result<RequestId, RouterError>>,
+    pub reply: oneshot::Sender<Result<RequestId, RouterError>>,
 }
 
 /// Forwards one upload chunk from the REST layer to the target agent.
@@ -160,7 +160,7 @@ pub struct SendStreamChunkRequest {
     /// Chunk payload to forward over the websocket binary lane.
     pub chunk: crate::streaming::StreamChunk,
     /// Reply port that completes once downstream acceptance is known.
-    pub reply: RpcReplyPort<Result<(), RouterError>>,
+    pub reply: oneshot::Sender<Result<(), RouterError>>,
 }
 
 /// Starts a local or remote copy operation managed by the router.
@@ -178,7 +178,7 @@ pub struct StartCopyRequest {
     /// Copy mode determining command/result mapping and payload kind.
     pub content_kind: CopyContentKind,
     /// Reply port that returns the public transfer id.
-    pub reply: RpcReplyPort<Result<TransferId, RouterError>>,
+    pub reply: oneshot::Sender<Result<TransferId, RouterError>>,
 }
 
 /// Progress notification emitted by an agent for copy-style transfers.
@@ -200,10 +200,10 @@ pub enum RouterMsg {
     },
     RouteResponse(RouteResponse),
     GetAgentList {
-        reply: RpcReplyPort<std::collections::HashMap<AgentId, String>>,
+        reply: oneshot::Sender<std::collections::HashMap<AgentId, String>>,
     },
     GetTransferProgress {
-        reply: RpcReplyPort<TransferProgressListResponse>,
+        reply: oneshot::Sender<TransferProgressListResponse>,
     },
     RegisterUiSubscriber(RegisterUiSubscriberRequest),
     UnregisterUiSubscriber {

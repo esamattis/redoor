@@ -8,16 +8,9 @@ use crate::commands::{CommandErrorKind, CommandResult};
 use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message};
-use ractor::ActorRef;
-
-use super::messages::RouterMsg;
 
 /// Cleans up all router-owned state associated with a disconnected agent.
-pub(crate) async fn cleanup_agent_requests(
-    state: &mut RouterState,
-    _myself: &ActorRef<RouterMsg>,
-    agent_id: &AgentId,
-) {
+pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &AgentId) {
     let orphaned_oneshot: Vec<_> = state
         .pending_rest
         .by_request_id

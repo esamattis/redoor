@@ -3,9 +3,9 @@ use crate::commands::{Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
-use ractor::RpcReplyPort;
 use std::collections::HashMap;
 use std::time::Instant;
+use tokio::sync::oneshot;
 
 #[derive(Clone, Debug)]
 /// Registration metadata and websocket send handles for one connected agent.
@@ -41,7 +41,7 @@ pub struct AgentRegistry {
 /// Pending one-shot REST replies waiting for a final command response.
 pub struct PendingRestReplies {
     /// Reply ports plus owning agent ids keyed by internal request id.
-    pub(crate) by_request_id: HashMap<RequestId, (RpcReplyPort<CommandResult>, AgentId)>,
+    pub(crate) by_request_id: HashMap<RequestId, (oneshot::Sender<CommandResult>, AgentId)>,
 }
 
 /// State tracked for one direct download stream flowing from agent to REST.
