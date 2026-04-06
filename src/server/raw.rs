@@ -16,7 +16,11 @@ use redoor::{
 };
 use serde::Deserialize;
 
-use super::{agent_helpers::resolve_agent_path, state::ServerState};
+use super::{
+    agent_helpers::resolve_agent_path,
+    responses::{command_error_status, router_error_response},
+    state::ServerState,
+};
 
 #[derive(Deserialize)]
 pub(crate) struct RawQueryParams {
@@ -97,17 +101,9 @@ async fn forward_split_stream_chunk(
             30000
         ) {
             Ok(Ok(())) => {}
-            Ok(Err(error_msg)) => {
+            Ok(Err(error)) => {
                 *chunk_index = next_chunk_index;
-                let status = if error_msg.contains("not found") {
-                    StatusCode::NOT_FOUND
-                } else if error_msg.contains("Permission denied") {
-                    StatusCode::FORBIDDEN
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-
-                return Err((status, Json(ErrorResponse { error: error_msg })).into_response());
+                return Err(router_error_response(error));
             }
             Err(error) => {
                 *chunk_index = next_chunk_index;
@@ -261,12 +257,8 @@ pub(crate) async fn raw_agent_handler(
         30000
     ) {
         Ok(Ok(())) => {}
-        Ok(Err(error_msg)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse { error: error_msg }),
-            )
-                .into_response();
+        Ok(Err(error)) => {
+            return router_error_response(error);
         }
         Err(_) => {
             return (
@@ -421,7 +413,7 @@ pub(crate) async fn raw_agent_put_handler(
     };
 
     let (upload_completion_sender, upload_completion_receiver) =
-        tokio::sync::oneshot::channel::<Result<CommandResult, String>>();
+        tokio::sync::oneshot::channel::<Result<CommandResult, actors::router::RouterError>>();
 
     let request_id = match call_t!(
         &state.router_ref,
@@ -440,16 +432,8 @@ pub(crate) async fn raw_agent_put_handler(
         30000
     ) {
         Ok(Ok(request_id)) => request_id,
-        Ok(Err(error_msg)) => {
-            let status = if error_msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if error_msg.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-
-            return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        Ok(Err(error)) => {
+            return router_error_response(error);
         }
         Err(error) => {
             return (
@@ -566,13 +550,7 @@ pub(crate) async fn raw_agent_put_handler(
         )
             .into_response(),
         Ok(Ok(CommandResult::Error { message })) => {
-            let status = if message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if message.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+            let status = command_error_status(&message);
 
             (status, Json(ErrorResponse { error: message })).into_response()
         }
@@ -583,17 +561,7 @@ pub(crate) async fn raw_agent_put_handler(
             }),
         )
             .into_response(),
-        Ok(Err(error_msg)) => {
-            let status = if error_msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if error_msg.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-
-            (status, Json(ErrorResponse { error: error_msg })).into_response()
-        }
+        Ok(Err(error)) => router_error_response(error),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

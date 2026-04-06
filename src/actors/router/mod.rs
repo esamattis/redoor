@@ -1,11 +1,13 @@
 mod agents;
 mod cleanup;
+mod error;
 mod messages;
 mod progress;
 mod state;
 mod transfers;
 mod ui;
 
+pub use error::RouterError;
 pub use messages::{
     ExecuteCommandRequest, ExecuteStreamRequest, RegisterAgentRequest, RegisterUiSubscriberRequest,
     RouteResponse, RouteStreamChunkRequest, RouterMsg, SendStreamChunkRequest, StartCopyRequest,

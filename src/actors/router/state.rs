@@ -1,3 +1,4 @@
+use super::RouterError;
 use crate::commands::{Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId, UnixTimestampSeconds};
@@ -60,7 +61,7 @@ pub struct DirectUpload {
     pub(crate) agent_id: AgentId,
     /// Optional final-result channel for REST uploads that expect completion.
     pub(crate) completion_sender:
-        Option<tokio::sync::oneshot::Sender<Result<CommandResult, String>>>,
+        Option<tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>>,
     /// Whether the REST side has already requested cancellation.
     pub(crate) canceled_by_rest: bool,
 }

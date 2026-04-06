@@ -1,3 +1,4 @@
+use super::super::RouterError;
 use super::super::agents;
 use super::super::cleanup;
 use super::super::messages::{
@@ -73,12 +74,11 @@ pub(crate) fn abort_copy_upload(
     state: &mut RouterState,
     public_request_id: TransferId,
     error_message: String,
-) -> Result<(), String> {
+) -> Result<(), RouterError> {
     let Some(copy_request) = state.copies.by_public_id.get_mut(&public_request_id) else {
-        return Err(format!(
-            "Copy stream not found: request_id={}",
-            public_request_id
-        ));
+        return Err(RouterError::CopyStreamNotFound {
+            request_id: public_request_id.to_string(),
+        });
     };
 
     let CopyExecution::RemoteStream {
@@ -91,7 +91,9 @@ pub(crate) fn abort_copy_upload(
     };
 
     let Some(agent_info) = state.agents.by_id.get(&copy_request.dest_agent_id).cloned() else {
-        return Err(format!("Agent not found: {}", copy_request.dest_agent_id));
+        return Err(RouterError::AgentNotFound {
+            agent_id: copy_request.dest_agent_id.to_string(),
+        });
     };
 
     let dest_request_id = *dest_request_id;
@@ -252,14 +254,14 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
             let _ = request.reply.send(Ok(public_request_id));
         }
         (None, _) => {
-            let _ = request
-                .reply
-                .send(Err(format!("Agent not found: {}", request.source_agent_id)));
+            let _ = request.reply.send(Err(RouterError::AgentNotFound {
+                agent_id: request.source_agent_id.to_string(),
+            }));
         }
         (_, None) => {
-            let _ = request
-                .reply
-                .send(Err(format!("Agent not found: {}", request.dest_agent_id)));
+            let _ = request.reply.send(Err(RouterError::AgentNotFound {
+                agent_id: request.dest_agent_id.to_string(),
+            }));
         }
     }
 }

@@ -1,3 +1,4 @@
+use super::RouterError;
 use super::agents;
 use super::progress;
 use super::state::{CopyExecution, RouterState};
@@ -112,7 +113,9 @@ pub(crate) async fn cleanup_agent_requests(
                 agent_id
             );
             if let Some(sender) = transfer.completion_sender {
-                let _ = sender.send(Err(disconnect_message));
+                let _ = sender.send(Err(RouterError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                }));
             }
         }
     }

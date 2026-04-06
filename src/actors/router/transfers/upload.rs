@@ -1,3 +1,4 @@
+use super::super::RouterError;
 use super::super::agents;
 use super::super::messages::{
     FinishUploadChunkRoute, RouterMsg, SendStreamChunkRequest, StartUploadRequest,
@@ -10,10 +11,6 @@ use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message};
 use ractor::ActorRef;
-
-/// Canonical error surfaced once the REST caller has already torn down the
-/// upload, regardless of which later ack or transport error arrives.
-const CLIENT_CANCELED_ERROR: &str = "Upload stream canceled by client";
 
 /// Starts a direct upload stream and records its progress entry.
 pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
@@ -54,9 +51,9 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             "Agent not found for upload command: agent_id={}",
             request.agent_id
         );
-        let _ = request
-            .reply
-            .send(Err(format!("Agent not found: {}", request.agent_id)));
+        let _ = request.reply.send(Err(RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        }));
     }
 }
 
@@ -75,10 +72,10 @@ pub(crate) fn route_chunk(
                 request.agent_id,
                 request.request_id
             );
-            let _ = request.reply.send(Err(format!(
-                "Upload stream not found: agent_id={}, request_id={}",
-                request.agent_id, request.request_id
-            )));
+            let _ = request.reply.send(Err(RouterError::StreamNotFound {
+                agent_id: request.agent_id.to_string(),
+                request_id: request.request_id.to_string(),
+            }));
             return;
         }
     };
@@ -91,17 +88,17 @@ pub(crate) fn route_chunk(
             transfer.agent_id,
             request.agent_id
         );
-        let _ = request.reply.send(Err(format!(
-            "Upload stream not found: agent_id={}, request_id={}",
-            request.agent_id, request.request_id
-        )));
+        let _ = request.reply.send(Err(RouterError::StreamNotFound {
+            agent_id: request.agent_id.to_string(),
+            request_id: request.request_id.to_string(),
+        }));
         return;
     }
 
     if transfer.canceled_by_rest {
         // Once REST has canceled the upload, later body frames should be
         // rejected instead of reviving the transfer state.
-        let _ = request.reply.send(Err(CLIENT_CANCELED_ERROR.to_string()));
+        let _ = request.reply.send(Err(RouterError::ClientCanceledUpload));
         return;
     }
 
@@ -137,9 +134,9 @@ pub(crate) fn route_chunk(
 
             if let Err(ractor::MessagingErr::SendErr(message)) = send_result {
                 if let RouterMsg::FinishRoutedUploadChunk(route) = message {
-                    let _ = route.reply.send(Err(
-                        "Router stopped before upload chunk forwarding completed".to_string(),
-                    ));
+                    let _ = route.reply.send(Err(RouterError::RouterStopped {
+                        operation: "upload chunk forwarding",
+                    }));
                 }
             }
         });
@@ -155,9 +152,9 @@ pub(crate) fn route_chunk(
             request.agent_id,
             request.request_id
         );
-        let _ = request
-            .reply
-            .send(Err(format!("Agent not found: {}", request.agent_id)));
+        let _ = request.reply.send(Err(RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        }));
     }
 }
 
@@ -165,14 +162,14 @@ pub(crate) fn route_chunk(
 pub(crate) fn finish_routed_chunk(
     state: &mut RouterState,
     route: &FinishUploadChunkRoute,
-) -> Result<(), String> {
+) -> Result<(), RouterError> {
     match state.streams.uploads.get(&route.request_id) {
         Some(transfer) => {
             if transfer.agent_id != route.agent_id {
-                return Err(format!(
-                    "Upload stream not found: agent_id={}, request_id={}",
-                    route.agent_id, route.request_id
-                ));
+                return Err(RouterError::StreamNotFound {
+                    agent_id: route.agent_id.to_string(),
+                    request_id: route.request_id.to_string(),
+                });
             }
 
             if transfer.canceled_by_rest {
@@ -180,10 +177,10 @@ pub(crate) fn finish_routed_chunk(
             }
         }
         None => {
-            return Err(format!(
-                "Upload stream not found: agent_id={}, request_id={}",
-                route.agent_id, route.request_id
-            ));
+            return Err(RouterError::StreamNotFound {
+                agent_id: route.agent_id.to_string(),
+                request_id: route.request_id.to_string(),
+            });
         }
     }
 
@@ -191,10 +188,10 @@ pub(crate) fn finish_routed_chunk(
         let should_cancel_agent = match state.streams.uploads.get_mut(&route.request_id) {
             Some(transfer) => {
                 if transfer.agent_id != route.agent_id {
-                    return Err(format!(
-                        "Upload stream not found: agent_id={}, request_id={}",
-                        route.agent_id, route.request_id
-                    ));
+                    return Err(RouterError::StreamNotFound {
+                        agent_id: route.agent_id.to_string(),
+                        request_id: route.request_id.to_string(),
+                    });
                 }
 
                 if transfer.canceled_by_rest {
@@ -208,22 +205,22 @@ pub(crate) fn finish_routed_chunk(
                 true
             }
             None => {
-                return Err(format!(
-                    "Upload stream not found: agent_id={}, request_id={}",
-                    route.agent_id, route.request_id
-                ));
+                return Err(RouterError::StreamNotFound {
+                    agent_id: route.agent_id.to_string(),
+                    request_id: route.request_id.to_string(),
+                });
             }
         };
 
-        let error_message = format!(
-            "Failed to forward upload chunk to agent: agent_id={}, request_id={}",
-            route.agent_id, route.request_id
-        );
+        let error = RouterError::UploadForwardFailed {
+            agent_id: route.agent_id.to_string(),
+            request_id: route.request_id.to_string(),
+        };
 
         progress::mark_transfer_errored(
             state,
             route.request_id.as_transfer_id(),
-            error_message.clone(),
+            error.to_string(),
         );
 
         if should_cancel_agent {
@@ -243,7 +240,7 @@ pub(crate) fn finish_routed_chunk(
             }
         }
 
-        return Err(error_message);
+        return Err(error);
     }
 
     if !route.is_error {
@@ -310,7 +307,7 @@ pub(crate) fn finish_transfer(
         ui::notify_refresh(state);
 
         if let Some(sender) = completion_sender {
-            let _ = sender.send(Err(CLIENT_CANCELED_ERROR.to_string()));
+            let _ = sender.send(Err(RouterError::ClientCanceledUpload));
         }
         return;
     }
@@ -336,7 +333,7 @@ pub(crate) fn finish_transfer(
                 request_id,
                 message
             );
-            Err(message.clone())
+            Ok(result)
         }
         _ => {
             progress::mark_transfer_errored(
@@ -351,7 +348,9 @@ pub(crate) fn finish_transfer(
                 request_id,
                 result
             );
-            Err("Unexpected upload response type".to_string())
+            Err(RouterError::UnexpectedResponseType {
+                operation: "handling upload completion response",
+            })
         }
     };
 

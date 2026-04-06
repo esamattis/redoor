@@ -1,3 +1,4 @@
+use super::RouterError;
 use super::state::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
 use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
@@ -95,7 +96,7 @@ pub struct FinishUploadChunkRoute {
     /// Whether the bounded send to the agent succeeded.
     pub send_succeeded: bool,
     /// Reply port that completes the REST-side chunk handoff.
-    pub reply: RpcReplyPort<Result<(), String>>,
+    pub reply: RpcReplyPort<Result<(), RouterError>>,
 }
 
 /// Completes one remote-copy chunk forward after all derived destination frames are queued.
@@ -129,7 +130,7 @@ pub struct ExecuteStreamRequest {
     /// Expected total byte count used for progress reporting.
     pub total_bytes: u64,
     /// Reply port that confirms whether the stream started successfully.
-    pub reply: RpcReplyPort<Result<(), String>>,
+    pub reply: RpcReplyPort<Result<(), RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
 }
@@ -145,9 +146,9 @@ pub struct StartUploadRequest {
     /// Expected total byte count used for progress reporting.
     pub total_bytes: u64,
     /// Completion channel for the final upload result.
-    pub completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, String>>,
+    pub completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>,
     /// Reply port that returns the allocated internal request id.
-    pub reply: RpcReplyPort<Result<RequestId, String>>,
+    pub reply: RpcReplyPort<Result<RequestId, RouterError>>,
 }
 
 /// Forwards one upload chunk from the REST layer to the target agent.
@@ -159,7 +160,7 @@ pub struct SendStreamChunkRequest {
     /// Chunk payload to forward over the websocket binary lane.
     pub chunk: crate::streaming::StreamChunk,
     /// Reply port that completes once downstream acceptance is known.
-    pub reply: RpcReplyPort<Result<(), String>>,
+    pub reply: RpcReplyPort<Result<(), RouterError>>,
 }
 
 /// Starts a local or remote copy operation managed by the router.
@@ -177,7 +178,7 @@ pub struct StartCopyRequest {
     /// Copy mode determining command/result mapping and payload kind.
     pub content_kind: CopyContentKind,
     /// Reply port that returns the public transfer id.
-    pub reply: RpcReplyPort<Result<TransferId, String>>,
+    pub reply: RpcReplyPort<Result<TransferId, RouterError>>,
 }
 
 /// Progress notification emitted by an agent for copy-style transfers.

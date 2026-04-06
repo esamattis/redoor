@@ -1,3 +1,4 @@
+use super::RouterError;
 use super::state::{DirectDownload, DirectUpload, RouterState};
 use super::ui;
 use crate::commands::{
@@ -32,7 +33,7 @@ pub(crate) struct UploadStartContext {
     pub(crate) total_bytes: u64,
     /// Final completion channel for the upload result.
     pub(crate) completion_sender:
-        tokio::sync::oneshot::Sender<Result<crate::commands::CommandResult, String>>,
+        tokio::sync::oneshot::Sender<Result<crate::commands::CommandResult, RouterError>>,
 }
 
 /// Inputs needed to register a new copy transfer in progress tracking.

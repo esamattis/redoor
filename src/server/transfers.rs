@@ -5,7 +5,11 @@ use redoor::{
     commands::{Command, CommandResult, CopyFileRequest, CopyFileResponse, ErrorResponse},
 };
 
-use super::{agent_helpers::resolve_agent_path, state::ServerState};
+use super::{
+    agent_helpers::resolve_agent_path,
+    responses::{command_error_status, router_error_response},
+    state::ServerState,
+};
 
 /// Route: `GET /api/v1/transfers/progress`
 pub(crate) async fn list_transfer_progress_handler(
@@ -75,11 +79,7 @@ pub(crate) async fn copy_file_handler(
     ) {
         Ok(CommandResult::Metadata(metadata)) => metadata,
         Ok(CommandResult::Error { message }) => {
-            let status = if message.contains("No such file") || message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_REQUEST
-            };
+            let status = command_error_status(&message);
             return (status, Json(ErrorResponse { error: message })).into_response();
         }
         Ok(_) => {
@@ -133,15 +133,8 @@ pub(crate) async fn copy_file_handler(
         30000
     ) {
         Ok(Ok(copy_request_id)) => copy_request_id,
-        Ok(Err(error_msg)) => {
-            let status = if error_msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if error_msg.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        Ok(Err(error)) => {
+            return router_error_response(error);
         }
         Err(error) => {
             return (

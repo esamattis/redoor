@@ -1,3 +1,4 @@
+use super::super::RouterError;
 use super::super::agents;
 use super::super::messages::{
     ExecuteStreamRequest, FinishDownloadChunkRoute, RouteStreamChunkRequest, RouterMsg,
@@ -49,9 +50,9 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             "Agent not found for streaming command: agent_id={}",
             request.agent_id
         );
-        let _ = request
-            .reply
-            .send(Err(format!("Agent not found: {}", request.agent_id)));
+        let _ = request.reply.send(Err(RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        }));
     }
 }
 
