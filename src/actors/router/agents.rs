@@ -9,6 +9,21 @@ use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
 
 impl AgentConnection {
+    /// Builds one live router connection entry from the agent registration payload.
+    pub(crate) fn from_register_request(request: RegisterAgentRequest) -> Self {
+        Self {
+            agent_name: request.agent_name,
+            socket_id: request.socket_id,
+            outgoing_text: request.outgoing_text,
+            outgoing_binary: request.outgoing_binary,
+            connected_at: crate::types::UnixTimestampSeconds::new(chrono::Utc::now().timestamp()),
+            os: request.os,
+            arch: request.arch,
+            hostname: request.hostname,
+            username: request.username,
+        }
+    }
+
     /// Serializes and queues one control-plane message onto this agent's text lane.
     pub(crate) fn send_message(&self, message: Message) {
         match serde_json::to_string(&message) {
@@ -73,17 +88,7 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
         let duplicate_error = Message::Error {
             message: format!("Agent with name '{}' already connected", request.agent_name),
         };
-        let duplicate_agent_connection = AgentConnection {
-            agent_name: request.agent_name,
-            socket_id: request.socket_id,
-            outgoing_text: request.outgoing_text,
-            outgoing_binary: request.outgoing_binary,
-            connected_at: crate::types::UnixTimestampSeconds::new(chrono::Utc::now().timestamp()),
-            os: request.os,
-            arch: request.arch,
-            hostname: request.hostname,
-            username: request.username,
-        };
+        let duplicate_agent_connection = AgentConnection::from_register_request(request);
         duplicate_agent_connection.send_message(duplicate_error);
         return;
     }
@@ -95,21 +100,11 @@ pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
         request.agent_name,
         request.socket_id
     );
-    let connected_at = crate::types::UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
-    state.agents.by_id.insert(
-        request.agent_id,
-        AgentConnection {
-            agent_name: request.agent_name,
-            socket_id: request.socket_id,
-            outgoing_text: request.outgoing_text,
-            outgoing_binary: request.outgoing_binary,
-            connected_at,
-            os: request.os,
-            arch: request.arch,
-            hostname: request.hostname,
-            username: request.username,
-        },
-    );
+    let agent_id = request.agent_id.clone();
+    state
+        .agents
+        .by_id
+        .insert(agent_id, AgentConnection::from_register_request(request));
     ui::notify_refresh(state);
 }
 

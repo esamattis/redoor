@@ -1,5 +1,4 @@
 use super::RouterError;
-use super::agents;
 use super::progress;
 use super::state::{CopyExecution, RouterState};
 use super::transfers::copy;
