@@ -14,7 +14,9 @@ use redoor::{
     types::AgentId,
 };
 
-use super::{agent_helpers::get_agent_details, state::ServerState};
+use super::{
+    agent_helpers::get_agent_details, responses::command_error_status, state::ServerState,
+};
 
 /// Route: `GET /api/v1/agents`
 pub(crate) async fn list_agents_handler(
@@ -107,15 +109,8 @@ pub(crate) async fn ls_agent_handler(
                 }),
             )
                 .into_response(),
-            CommandResult::Error { message } => {
-                let status = if message.contains("not found")
-                    || message.contains("No such file")
-                    || message.contains("not a directory")
-                {
-                    StatusCode::NOT_FOUND
-                } else {
-                    StatusCode::BAD_REQUEST
-                };
+            CommandResult::Error { kind, message } => {
+                let status = command_error_status(&kind);
                 (status, Json(ErrorResponse { error: message })).into_response()
             }
             _ => (
@@ -163,15 +158,8 @@ pub(crate) async fn cat_agent_handler(
                 }),
             )
                 .into_response(),
-            CommandResult::Error { message } => {
-                let status = if message.contains("not found")
-                    || message.contains("No such file")
-                    || message.contains("not a directory")
-                {
-                    StatusCode::NOT_FOUND
-                } else {
-                    StatusCode::BAD_REQUEST
-                };
+            CommandResult::Error { kind, message } => {
+                let status = command_error_status(&kind);
                 (status, Json(ErrorResponse { error: message })).into_response()
             }
             _ => (
@@ -221,8 +209,8 @@ pub(crate) async fn echo_agent_handler(
                 }),
             )
                 .into_response(),
-            CommandResult::Error { message } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
+            CommandResult::Error { kind, message } => (
+                command_error_status(&kind),
                 Json(ErrorResponse { error: message }),
             )
                 .into_response(),

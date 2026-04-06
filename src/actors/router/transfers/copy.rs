@@ -477,7 +477,7 @@ pub(crate) fn finish_transfer(
     }
 
     match result {
-        CommandResult::Error { message } => {
+        CommandResult::Error { message, .. } => {
             progress::mark_transfer_errored(state, public_request_id, message);
         }
         CommandResult::LocalCopyFile

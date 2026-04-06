@@ -10,7 +10,7 @@ use redoor::{
     types::AgentId,
 };
 
-use super::state::ServerState;
+use super::{responses::command_error_status, state::ServerState};
 
 fn join_agent_path(cwd: &str, path: &str) -> String {
     format!(
@@ -36,12 +36,8 @@ pub(crate) async fn get_agent_details(
         30000
     ) {
         Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
-        Ok(CommandResult::Error { message }) => {
-            let status = if message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+        Ok(CommandResult::Error { kind, message }) => {
+            let status = command_error_status(&kind);
             Err((status, Json(ErrorResponse { error: message })).into_response())
         }
         Ok(_) => Err((

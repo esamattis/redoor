@@ -11,7 +11,9 @@ use redoor::{
     types::AgentId,
 };
 
-use super::{agent_helpers::resolve_agent_path, state::ServerState};
+use super::{
+    agent_helpers::resolve_agent_path, responses::command_error_status, state::ServerState,
+};
 
 /// Route: `DELETE /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_delete_handler(
@@ -44,17 +46,8 @@ pub(crate) async fn raw_agent_delete_handler(
             }),
         )
             .into_response(),
-        Ok(CommandResult::Error { message }) => {
-            let status = if message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if message.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else if message.contains("Is a directory") {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-
+        Ok(CommandResult::Error { kind, message }) => {
+            let status = command_error_status(&kind);
             (status, Json(ErrorResponse { error: message })).into_response()
         }
         Ok(_) => (
@@ -105,15 +98,8 @@ pub(crate) async fn create_directory_handler(
             }),
         )
             .into_response(),
-        Ok(CommandResult::Error { message }) => {
-            let status = if message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if message.contains("Permission denied") {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-
+        Ok(CommandResult::Error { kind, message }) => {
+            let status = command_error_status(&kind);
             (status, Json(ErrorResponse { error: message })).into_response()
         }
         Ok(_) => (

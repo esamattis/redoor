@@ -1,7 +1,7 @@
 use super::{ActiveDownloads, ActiveUploads, AgentActor, UploadSessionHandle};
 use redoor::{
     Level,
-    commands::CommandResult,
+    commands::{CommandErrorKind, CommandResult},
     log,
     streaming::{self, StreamChunkFrameRequest, StreamPayloadKind},
     types::{AgentId, ChunkIndex, RequestId},
@@ -112,13 +112,13 @@ impl RawUploadWorker {
     }
 
     /// Sends an error command response for this upload request.
-    async fn send_error_response(&self, message: String) {
+    async fn send_error_response(&self, kind: CommandErrorKind, message: String) {
         AgentActor
             .send_command_response(
                 &self.tx,
                 &self.agent_id,
                 self.request_id,
-                CommandResult::Error { message },
+                CommandResult::error(kind, message),
             )
             .await;
     }
@@ -137,8 +137,11 @@ impl RawUploadWorker {
             self.request_id,
             self.session.path
         );
-        self.send_error_response("Upload canceled by server".to_string())
-            .await;
+        self.send_error_response(
+            CommandErrorKind::InvalidInput,
+            "Upload canceled by server".to_string(),
+        )
+        .await;
         self.cleanup().await;
     }
 
@@ -151,8 +154,8 @@ impl RawUploadWorker {
     }
 
     /// Reports a terminal upload error and cleans up temporary state.
-    async fn fail(self, message: String) {
-        self.send_error_response(message).await;
+    async fn fail(self, kind: CommandErrorKind, message: String) {
+        self.send_error_response(kind, message).await;
         self.cleanup().await;
     }
 
@@ -192,9 +195,7 @@ impl RawUploadWorker {
                     &tx,
                     &agent_id,
                     request_id,
-                    CommandResult::Error {
-                        message: error_message,
-                    },
+                    CommandResult::error(CommandErrorKind::from_io_error(&error), error_message),
                 )
                 .await;
             active_uploads.remove(request_id);
@@ -250,7 +251,8 @@ impl RawUploadWorker {
                     StreamPayloadKind::RawFile,
                     chunk.payload_kind
                 );
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::InvalidInput, error_message)
+                    .await;
                 return;
             }
 
@@ -269,7 +271,8 @@ impl RawUploadWorker {
                     error_message
                 );
 
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::InvalidInput, error_message)
+                    .await;
                 return;
             }
 
@@ -283,7 +286,8 @@ impl RawUploadWorker {
                     error_message
                 );
 
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::from_io_error(&error), error_message)
+                    .await;
                 return;
             }
 
@@ -303,7 +307,8 @@ impl RawUploadWorker {
                     error_message
                 );
 
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::from_io_error(&error), error_message)
+                    .await;
                 return;
             }
 
@@ -313,8 +318,11 @@ impl RawUploadWorker {
 
         // Reaching EOF on the chunk channel without an explicit final chunk
         // means the upload ended unexpectedly before completion.
-        self.fail("Upload stream ended before completion".to_string())
-            .await;
+        self.fail(
+            CommandErrorKind::Internal,
+            "Upload stream ended before completion".to_string(),
+        )
+        .await;
     }
 }
 
@@ -517,12 +525,13 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                CommandResult::Error {
-                    message: format!(
+                CommandResult::error(
+                    CommandErrorKind::AlreadyExists,
+                    format!(
                         "Upload session already exists for request_id={}",
                         request_id
                     ),
-                },
+                ),
             )
             .await;
             return;
@@ -571,9 +580,10 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    CommandResult::Error {
-                        message: format!("Failed to create file: {}", error),
-                    },
+                    CommandResult::error(
+                        CommandErrorKind::from_io_error(&error),
+                        format!("Failed to create file: {}", error),
+                    ),
                 )
                 .await;
             }

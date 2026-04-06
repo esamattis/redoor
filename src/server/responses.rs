@@ -3,7 +3,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use redoor::{RouterError, commands::ErrorResponse};
+use redoor::{
+    RouterError,
+    commands::{CommandErrorKind, ErrorResponse},
+};
 
 /// Converts one typed router boundary error into the standard JSON HTTP error body.
 pub(crate) fn router_error_response(error: RouterError) -> Response {
@@ -16,17 +19,13 @@ pub(crate) fn router_error_response(error: RouterError) -> Response {
         .into_response()
 }
 
-/// Maps one agent command failure string into the closest existing HTTP status.
-pub(crate) fn command_error_status(message: &str) -> StatusCode {
-    if message.contains("No such file") || message.contains("not found") {
-        StatusCode::NOT_FOUND
-    } else if message.contains("Permission denied") {
-        StatusCode::FORBIDDEN
-    } else if message.contains("not a directory") {
-        StatusCode::NOT_FOUND
-    } else if message.contains("Is a directory") {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+/// Maps one typed command failure into the HTTP status exposed by REST handlers.
+pub(crate) fn command_error_status(kind: &CommandErrorKind) -> StatusCode {
+    match kind {
+        CommandErrorKind::NotFound | CommandErrorKind::NotADirectory => StatusCode::NOT_FOUND,
+        CommandErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+        CommandErrorKind::IsDirectory | CommandErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
+        CommandErrorKind::AlreadyExists => StatusCode::CONFLICT,
+        CommandErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

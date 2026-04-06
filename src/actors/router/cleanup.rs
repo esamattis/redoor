@@ -4,7 +4,7 @@ use super::progress;
 use super::state::{CopyExecution, RouterState};
 use super::transfers::copy;
 use super::ui;
-use crate::commands::CommandResult;
+use crate::commands::{CommandErrorKind, CommandResult};
 use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message};
@@ -34,9 +34,10 @@ pub(crate) async fn cleanup_agent_requests(
                 request_id,
                 agent_id
             );
-            let _ = reply.send(CommandResult::Error {
-                message: format!("Agent disconnected: {}", agent_id),
-            });
+            let _ = reply.send(CommandResult::error(
+                CommandErrorKind::Internal,
+                format!("Agent disconnected: {}", agent_id),
+            ));
         }
     }
 

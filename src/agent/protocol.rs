@@ -4,7 +4,7 @@ use super::{
 use ractor::{ActorProcessingErr, ActorRef};
 use redoor::{
     Level,
-    commands::{Command, CommandHandler, CommandResult},
+    commands::{Command, CommandErrorKind, CommandHandler, CommandResult},
     log, streaming,
     types::{AgentId, Message, RequestId},
 };
@@ -272,9 +272,10 @@ impl AgentActor {
                 &tx,
                 &state.agent_id,
                 request_id,
-                CommandResult::Error {
-                    message: "Upload worker is no longer available".to_string(),
-                },
+                CommandResult::error(
+                    CommandErrorKind::Internal,
+                    "Upload worker is no longer available",
+                ),
             )
             .await;
         }

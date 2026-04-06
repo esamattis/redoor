@@ -1,7 +1,7 @@
 use super::super::AgentActor;
 use anyhow::{Context, Result, bail};
 use redoor::{
-    commands::CommandResult,
+    commands::{CommandErrorKind, CommandResult},
     types::{AgentId, Message, RequestId},
 };
 use std::{
@@ -369,7 +369,7 @@ impl AgentActor {
             write,
             agent_id,
             request_id,
-            CommandResult::Error { message },
+            CommandResult::error(CommandErrorKind::from_message(&message), message),
         )
         .await;
     }

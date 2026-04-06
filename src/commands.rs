@@ -94,14 +94,74 @@ pub struct AgentInfoResult {
     pub system_uptime: u64,
 }
 
+/// Classifies command failures so transports do not depend on OS-specific text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandErrorKind {
+    NotFound,
+    PermissionDenied,
+    NotADirectory,
+    IsDirectory,
+    AlreadyExists,
+    InvalidInput,
+    Internal,
+}
+
+impl CommandErrorKind {
+    /// Converts one I/O failure into a stable command error kind.
+    pub fn from_io_error(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::NotADirectory => Self::NotADirectory,
+            std::io::ErrorKind::IsADirectory => Self::IsDirectory,
+            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+                Self::InvalidInput
+            }
+            _ => Self::Internal,
+        }
+    }
+
+    /// Best-effort classification for domain errors that do not expose `std::io::ErrorKind`.
+    pub fn from_message(message: &str) -> Self {
+        let lower = message.to_ascii_lowercase();
+
+        if lower.contains("no such file") || lower.contains("not found") {
+            Self::NotFound
+        } else if lower.contains("permission denied") {
+            Self::PermissionDenied
+        } else if lower.contains("not a directory") {
+            Self::NotADirectory
+        } else if lower.contains("is a directory") {
+            Self::IsDirectory
+        } else if lower.contains("already exists") {
+            Self::AlreadyExists
+        } else if lower.contains("invalid")
+            || lower.contains("must be different")
+            || lower.contains("cannot be inside")
+            || lower.contains("payload kind mismatch")
+            || lower.contains("cannot be empty")
+        {
+            Self::InvalidInput
+        } else {
+            Self::Internal
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CommandResult {
     LsDirectory(LsDirectoryResult),
     LsFile(LsFileResult),
     Cat(CatResult),
-    RawDownload { path: String },
-    TarDownload { path: String },
+    RawDownload {
+        path: String,
+    },
+    TarDownload {
+        path: String,
+    },
     RawUpload,
     TarUpload,
     LocalCopyFile,
@@ -112,7 +172,10 @@ pub enum CommandResult {
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
-    Error { message: String },
+    Error {
+        kind: CommandErrorKind,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -310,6 +373,32 @@ pub enum TransferProgressState {
     Completed,
 }
 
+impl CommandResult {
+    /// Builds one structured command failure when the caller already knows the error kind.
+    pub fn error(kind: CommandErrorKind, message: impl Into<String>) -> Self {
+        Self::Error {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Builds one structured command failure from a free-form message.
+    pub fn error_from_message(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let kind = CommandErrorKind::from_message(&message);
+        Self::Error { kind, message }
+    }
+
+    /// Builds one structured command failure from an I/O error.
+    pub fn io_error(context: &str, error: std::io::Error) -> Self {
+        let kind = CommandErrorKind::from_io_error(&error);
+        Self::Error {
+            kind,
+            message: format!("{}: {}", context, error),
+        }
+    }
+}
+
 pub struct CommandHandler;
 
 impl CommandHandler {
@@ -329,12 +418,14 @@ impl CommandHandler {
             Command::TarDownload { path } => self.tar_download(path).await,
             Command::RawUpload { path } => self.raw_upload(path).await,
             Command::TarUpload { path } => self.tar_upload(path).await,
-            Command::LocalCopyFile { .. } => CommandResult::Error {
-                message: "LocalCopyFile is handled by the agent runtime".to_string(),
-            },
-            Command::LocalCopyDirectory { .. } => CommandResult::Error {
-                message: "LocalCopyDirectory is handled by the agent runtime".to_string(),
-            },
+            Command::LocalCopyFile { .. } => CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "LocalCopyFile is handled by the agent runtime",
+            ),
+            Command::LocalCopyDirectory { .. } => CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "LocalCopyDirectory is handled by the agent runtime",
+            ),
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::Metadata { path } => self.metadata(path).await,
@@ -391,9 +482,7 @@ impl CommandHandler {
 
                             CommandResult::LsDirectory(LsDirectoryResult { files })
                         }
-                        Err(e) => CommandResult::Error {
-                            message: format!("Failed to read directory: {}", e),
-                        },
+                        Err(error) => CommandResult::io_error("Failed to read directory", error),
                     }
                 } else {
                     let size = metadata.size();
@@ -420,18 +509,14 @@ impl CommandHandler {
                     })
                 }
             }
-            Err(e) => CommandResult::Error {
-                message: format!("Failed to get metadata: {}", e),
-            },
+            Err(error) => CommandResult::io_error("Failed to get metadata", error),
         }
     }
 
     async fn cat(&self, path: String) -> CommandResult {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => CommandResult::Cat(CatResult { content, path }),
-            Err(e) => CommandResult::Error {
-                message: format!("Failed to read file: {}", e),
-            },
+            Err(error) => CommandResult::io_error("Failed to read file", error),
         }
     }
 
@@ -467,23 +552,17 @@ impl CommandHandler {
 
                 match delete_result {
                     Ok(()) => CommandResult::RawDelete,
-                    Err(e) => CommandResult::Error {
-                        message: format!("Failed to delete path: {}", e),
-                    },
+                    Err(error) => CommandResult::io_error("Failed to delete path", error),
                 }
             }
-            Err(e) => CommandResult::Error {
-                message: format!("Failed to access path for deletion: {}", e),
-            },
+            Err(error) => CommandResult::io_error("Failed to access path for deletion", error),
         }
     }
 
     async fn create_directory(&self, path: String) -> CommandResult {
         match tokio::fs::create_dir_all(&path).await {
             Ok(()) => CommandResult::CreateDirectory,
-            Err(e) => CommandResult::Error {
-                message: format!("Failed to create directory: {}", e),
-            },
+            Err(error) => CommandResult::io_error("Failed to create directory", error),
         }
     }
 
@@ -611,9 +690,7 @@ impl CommandHandler {
                     is_dir: metadata.is_dir(),
                 })
             }
-            Err(e) => CommandResult::Error {
-                message: format!("Failed to get file metadata: {}", e),
-            },
+            Err(error) => CommandResult::io_error("Failed to get file metadata", error),
         }
     }
 
@@ -740,7 +817,9 @@ mod tests {
             .await;
 
         match result {
-            CommandResult::Error { message } => {
+            CommandResult::Error { kind, message } => {
+                // The typed kind keeps missing-file failures stable across OS error text changes.
+                assert_eq!(kind, CommandErrorKind::NotFound);
                 assert!(message.contains("Failed to read file"));
             }
             _ => panic!("Expected Error"),

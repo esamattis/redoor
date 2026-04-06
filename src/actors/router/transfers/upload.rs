@@ -324,7 +324,7 @@ pub(crate) fn finish_transfer(
             );
             Ok(result)
         }
-        CommandResult::Error { message } => {
+        CommandResult::Error { message, .. } => {
             progress::mark_transfer_errored(state, request_id.as_transfer_id(), message.clone());
             log!(
                 Level::Info,

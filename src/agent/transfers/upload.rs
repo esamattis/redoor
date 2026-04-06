@@ -2,7 +2,7 @@ use super::super::{ActiveUploads, AgentActor, UploadSessionHandle};
 use anyhow::{Context, Result, anyhow, bail};
 use redoor::{
     Level,
-    commands::CommandResult,
+    commands::{CommandErrorKind, CommandResult},
     log,
     streaming::{self, StreamPayloadKind},
     types::{AgentId, RequestId},
@@ -249,13 +249,13 @@ impl TarUploadWorker {
     }
 
     /// Sends an error command response for this tar upload request.
-    async fn send_error_response(&self, message: String) {
+    async fn send_error_response(&self, kind: CommandErrorKind, message: String) {
         AgentActor
             .send_command_response(
                 &self.tx,
                 &self.agent_id,
                 self.request_id,
-                CommandResult::Error { message },
+                CommandResult::error(kind, message),
             )
             .await;
     }
@@ -280,8 +280,11 @@ impl TarUploadWorker {
             self.request_id,
             self.session.path
         );
-        self.send_error_response("Upload canceled by server".to_string())
-            .await;
+        self.send_error_response(
+            CommandErrorKind::InvalidInput,
+            "Upload canceled by server".to_string(),
+        )
+        .await;
         self.stop_unpacker().await;
         self.cleanup().await;
     }
@@ -296,8 +299,8 @@ impl TarUploadWorker {
     }
 
     /// Reports a terminal upload error and cleans up temporary state.
-    async fn fail(mut self, message: String) {
-        self.send_error_response(message).await;
+    async fn fail(mut self, kind: CommandErrorKind, message: String) {
+        self.send_error_response(kind, message).await;
         self.stop_unpacker().await;
         self.cleanup().await;
     }
@@ -352,7 +355,8 @@ impl TarUploadWorker {
                     StreamPayloadKind::Tar,
                     chunk.payload_kind
                 );
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::InvalidInput, error_message)
+                    .await;
                 return;
             }
 
@@ -371,7 +375,8 @@ impl TarUploadWorker {
                     error_message
                 );
 
-                self.fail(error_message).await;
+                self.fail(CommandErrorKind::InvalidInput, error_message)
+                    .await;
                 return;
             }
 
@@ -379,7 +384,7 @@ impl TarUploadWorker {
                 if let Err(error) = self.session.chunk_sender.send(chunk.data.clone()) {
                     let error_message =
                         format!("Failed to forward tar upload chunk to unpacker: {}", error);
-                    self.fail(error_message).await;
+                    self.fail(CommandErrorKind::Internal, error_message).await;
                     return;
                 }
                 self.session.bytes_written += chunk.data.len() as u64;
@@ -393,8 +398,11 @@ impl TarUploadWorker {
             return;
         }
 
-        self.fail("Upload stream ended before completion".to_string())
-            .await;
+        self.fail(
+            CommandErrorKind::Internal,
+            "Upload stream ended before completion".to_string(),
+        )
+        .await;
     }
 }
 
@@ -415,12 +423,13 @@ impl AgentActor {
                 write,
                 agent_id,
                 request_id,
-                CommandResult::Error {
-                    message: format!(
+                CommandResult::error(
+                    CommandErrorKind::AlreadyExists,
+                    format!(
                         "Upload session already exists for request_id={}",
                         request_id
                     ),
-                },
+                ),
             )
             .await;
             return;
@@ -463,9 +472,7 @@ impl AgentActor {
                     write,
                     agent_id,
                     request_id,
-                    CommandResult::Error {
-                        message: error.to_string(),
-                    },
+                    CommandResult::error_from_message(error.to_string()),
                 )
                 .await;
             }
@@ -502,9 +509,10 @@ async fn finalize_tar_upload(
                         tx,
                         agent_id,
                         request_id,
-                        CommandResult::Error {
-                            message: error_message,
-                        },
+                        CommandResult::error(
+                            CommandErrorKind::from_io_error(&error),
+                            error_message,
+                        ),
                     )
                     .await;
                 return;
@@ -529,9 +537,7 @@ async fn finalize_tar_upload(
                     tx,
                     agent_id,
                     request_id,
-                    CommandResult::Error {
-                        message: error_message.to_string(),
-                    },
+                    CommandResult::error_from_message(error_message.to_string()),
                 )
                 .await;
         }

@@ -178,9 +178,9 @@ pub(crate) async fn raw_agent_handler(
         5000
     ) {
         Ok(CommandResult::Metadata(metadata)) => metadata,
-        Ok(CommandResult::Error { message }) => {
+        Ok(CommandResult::Error { kind, message }) => {
             return (
-                StatusCode::NOT_FOUND,
+                command_error_status(&kind),
                 Json(ErrorResponse { error: message }),
             )
                 .into_response();
@@ -549,8 +549,8 @@ pub(crate) async fn raw_agent_put_handler(
             }),
         )
             .into_response(),
-        Ok(Ok(CommandResult::Error { message })) => {
-            let status = command_error_status(&message);
+        Ok(Ok(CommandResult::Error { kind, message })) => {
+            let status = command_error_status(&kind);
 
             (status, Json(ErrorResponse { error: message })).into_response()
         }

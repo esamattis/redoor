@@ -78,8 +78,8 @@ pub(crate) async fn copy_file_handler(
         30000
     ) {
         Ok(CommandResult::Metadata(metadata)) => metadata,
-        Ok(CommandResult::Error { message }) => {
-            let status = command_error_status(&message);
+        Ok(CommandResult::Error { kind, message }) => {
+            let status = command_error_status(&kind);
             return (status, Json(ErrorResponse { error: message })).into_response();
         }
         Ok(_) => {

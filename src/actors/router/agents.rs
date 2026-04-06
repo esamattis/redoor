@@ -146,8 +146,9 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
             },
         );
     } else {
-        let _ = request.reply.send(CommandResult::Error {
-            message: format!("Agent not found: {}", request.agent_id),
-        });
+        let _ = request.reply.send(CommandResult::error(
+            crate::commands::CommandErrorKind::NotFound,
+            format!("Agent not found: {}", request.agent_id),
+        ));
     }
 }
