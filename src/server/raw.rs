@@ -313,12 +313,24 @@ pub(crate) async fn raw_agent_handler(
     use async_stream::stream;
 
     let stream = stream! {
+        // `first_chunk` was awaited before constructing the HTTP response so we could still
+        // return a normal JSON error response with an appropriate status code if the agent
+        // failed immediately. Once we start streaming the body, the headers and status code are
+        // already committed, so from this point forward we can only emit bytes or terminate the
+        // stream with an I/O error.
         if !first_chunk.data.is_empty() {
+            // `yield` produces one item from this async stream, which Axum forwards as the next
+            // chunk in the HTTP response body.
             yield Ok(bytes::Bytes::from(first_chunk.data));
         }
 
+        // Continue forwarding chunks from the agent to the HTTP client until the agent closes
+        // the channel or reports a read error.
         while let Some(parsed) = response_receiver.recv().await {
             if parsed.is_error {
+                // A later chunk can only fail after the response has already started. Convert the
+                // agent error into a stream error so Axum/Hyper stops the body stream and the
+                // client sees the download fail instead of silently receiving truncated data.
                 let error_msg = if parsed.data.is_empty() {
                     "File read error on agent".to_string()
                 } else {
@@ -327,10 +339,13 @@ pub(crate) async fn raw_agent_handler(
                 yield Err(std::io::Error::other(error_msg));
                 break;
             }
+
+            // Empty chunks carry no payload, so skip them and wait for the next message.
             if !parsed.data.is_empty() {
                 yield Ok(bytes::Bytes::from(parsed.data));
             }
         }
+        // Reaching the end of the channel cleanly ends the HTTP body stream.
     };
 
     let mut response_builder = Response::builder()
