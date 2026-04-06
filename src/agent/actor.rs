@@ -179,8 +179,8 @@ impl Actor for AgentActor {
                 );
                 state.ws_text_tx = None;
                 state.ws_binary_tx = None;
-                Self::clear_active_uploads(&state.active_uploads).await;
-                Self::clear_active_downloads(&state.active_downloads).await;
+                state.active_uploads.clear();
+                state.active_downloads.clear();
                 let agent_ref_clone = myself.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -227,8 +227,8 @@ impl Actor for AgentActor {
                 );
                 state.ws_text_tx = None;
                 state.ws_binary_tx = None;
-                Self::clear_active_uploads(&state.active_uploads).await;
-                Self::clear_active_downloads(&state.active_downloads).await;
+                state.active_uploads.clear();
+                state.active_downloads.clear();
                 myself.stop(None);
             }
 

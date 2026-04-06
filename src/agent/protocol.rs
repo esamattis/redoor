@@ -59,23 +59,9 @@ impl AgentActor {
                 Message::CancelTransfer { request_id } => {
                     // The router uses the same cancel message for both transfer
                     // directions, so the agent checks downloads and uploads.
-                    let download_handle = {
-                        state
-                            .active_downloads
-                            .lock()
-                            .expect("active downloads mutex poisoned")
-                            .get(&request_id)
-                            .cloned()
-                    };
+                    let download_handle = state.active_downloads.get(request_id);
 
-                    let upload_handle = {
-                        state
-                            .active_uploads
-                            .lock()
-                            .expect("active uploads mutex poisoned")
-                            .get(&request_id)
-                            .cloned()
-                    };
+                    let upload_handle = state.active_uploads.get(request_id);
 
                     if let Some(download_handle) = download_handle {
                         log!(
@@ -144,10 +130,7 @@ impl AgentActor {
                 range_end,
             } => {
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
-                active_downloads
-                    .lock()
-                    .expect("active downloads mutex poisoned")
-                    .insert(request_id, DownloadSessionHandle { cancel_sender });
+                active_downloads.insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
                     .raw_download(
                         path,
@@ -162,10 +145,7 @@ impl AgentActor {
             }
             Command::TarDownload { path } => {
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
-                active_downloads
-                    .lock()
-                    .expect("active downloads mutex poisoned")
-                    .insert(request_id, DownloadSessionHandle { cancel_sender });
+                active_downloads.insert(request_id, DownloadSessionHandle { cancel_sender });
                 AgentActor
                     .tar_download(
                         path,
@@ -276,18 +256,11 @@ impl AgentActor {
                 "Upload chunk received without active websocket sender: request_id={}",
                 request_id
             );
-            Self::remove_active_upload(&state.active_uploads, request_id).await;
+            state.active_uploads.remove(request_id);
             return Ok(());
         };
 
-        let upload_handle = {
-            state
-                .active_uploads
-                .lock()
-                .expect("active uploads mutex poisoned")
-                .get(&request_id)
-                .cloned()
-        };
+        let upload_handle = state.active_uploads.get(request_id);
 
         let Some(upload_handle) = upload_handle else {
             return Ok(());
@@ -300,7 +273,7 @@ impl AgentActor {
                 request_id,
                 upload_handle.path
             );
-            Self::remove_active_upload(&state.active_uploads, request_id).await;
+            state.active_uploads.remove(request_id);
             self.send_command_response(
                 &tx,
                 &state.agent_id,

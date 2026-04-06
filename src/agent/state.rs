@@ -1,4 +1,3 @@
-use super::AgentActor;
 use clap::Args;
 use redoor::{
     streaming,
@@ -31,14 +30,113 @@ pub(crate) struct UploadSessionHandle {
     pub(crate) cancel_sender: watch::Sender<bool>,
 }
 
-pub(crate) type ActiveUploads = Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>;
+#[derive(Clone, Default)]
+/// Tracks active upload workers so stream chunks and cancels can be routed by request id.
+pub(crate) struct ActiveUploads {
+    inner: Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>,
+}
+
+impl ActiveUploads {
+    /// Creates the shared upload registry used across protocol handlers and workers.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns whether an upload session already exists so duplicate starts can be rejected.
+    pub(crate) fn contains(&self, request_id: RequestId) -> bool {
+        self.inner
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .contains_key(&request_id)
+    }
+
+    /// Stores an upload handle so later chunks and cancels reach the correct worker.
+    pub(crate) fn insert(&self, request_id: RequestId, handle: UploadSessionHandle) {
+        self.inner
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .insert(request_id, handle);
+    }
+
+    /// Clones the upload handle so callers can act on it without holding the mutex across await points.
+    pub(crate) fn get(&self, request_id: RequestId) -> Option<UploadSessionHandle> {
+        self.inner
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .get(&request_id)
+            .cloned()
+    }
+
+    /// Removes a completed upload so stale sessions do not receive more chunks or cancels.
+    pub(crate) fn remove(&self, request_id: RequestId) {
+        self.inner
+            .lock()
+            .expect("active uploads mutex poisoned")
+            .remove(&request_id);
+    }
+
+    /// Cancels every upload before clearing the registry so workers can clean up temp outputs.
+    pub(crate) fn clear(&self) {
+        let mut active_uploads = self.inner.lock().expect("active uploads mutex poisoned");
+        for upload in active_uploads.values() {
+            let _ = upload.cancel_sender.send(true);
+        }
+        active_uploads.clear();
+    }
+}
 
 #[derive(Clone)]
+/// Agent-side state for one active download worker.
 pub(crate) struct DownloadSessionHandle {
     pub(crate) cancel_sender: watch::Sender<bool>,
 }
 
-pub(crate) type ActiveDownloads = Arc<Mutex<HashMap<RequestId, DownloadSessionHandle>>>;
+#[derive(Clone, Default)]
+/// Tracks active download workers so cancellation can target the right request id.
+pub(crate) struct ActiveDownloads {
+    inner: Arc<Mutex<HashMap<RequestId, DownloadSessionHandle>>>,
+}
+
+impl ActiveDownloads {
+    /// Creates the shared download registry used across protocol handlers and workers.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stores a download handle so later cancel messages can stop the correct worker.
+    pub(crate) fn insert(&self, request_id: RequestId, handle: DownloadSessionHandle) {
+        self.inner
+            .lock()
+            .expect("active downloads mutex poisoned")
+            .insert(request_id, handle);
+    }
+
+    /// Clones the download handle so callers can send cancellation without holding the mutex.
+    pub(crate) fn get(&self, request_id: RequestId) -> Option<DownloadSessionHandle> {
+        self.inner
+            .lock()
+            .expect("active downloads mutex poisoned")
+            .get(&request_id)
+            .cloned()
+    }
+
+    /// Removes a completed download so stale sessions do not receive more cancels.
+    pub(crate) fn remove(&self, request_id: RequestId) {
+        self.inner
+            .lock()
+            .expect("active downloads mutex poisoned")
+            .remove(&request_id);
+    }
+
+    /// Cancels every download before clearing the registry so workers exit promptly on shutdown.
+    pub(crate) fn clear(&self) {
+        let mut active_downloads = self.inner.lock().expect("active downloads mutex poisoned");
+        for download in active_downloads.values() {
+            let _ = download.cancel_sender.send(true);
+        }
+        active_downloads.clear();
+    }
+}
 
 pub(crate) struct AgentState {
     pub(crate) agent_id: AgentId,
@@ -58,52 +156,8 @@ impl AgentState {
             server_url,
             ws_text_tx: None,
             ws_binary_tx: None,
-            active_uploads: Arc::new(Mutex::new(HashMap::new())),
-            active_downloads: Arc::new(Mutex::new(HashMap::new())),
+            active_uploads: ActiveUploads::new(),
+            active_downloads: ActiveDownloads::new(),
         }
-    }
-}
-
-impl AgentActor {
-    pub(crate) async fn remove_active_upload(
-        active_uploads: &ActiveUploads,
-        request_id: RequestId,
-    ) {
-        active_uploads
-            .lock()
-            .expect("active uploads mutex poisoned")
-            .remove(&request_id);
-    }
-
-    pub(crate) async fn clear_active_uploads(active_uploads: &ActiveUploads) {
-        let mut active_uploads = active_uploads
-            .lock()
-            .expect("active uploads mutex poisoned");
-        // Fan out cancellation before clearing the registry so workers exit and
-        // clean up temp files/directories instead of waiting for dropped senders.
-        for upload in active_uploads.values() {
-            let _ = upload.cancel_sender.send(true);
-        }
-        active_uploads.clear();
-    }
-
-    pub(crate) async fn remove_active_download(
-        active_downloads: &ActiveDownloads,
-        request_id: RequestId,
-    ) {
-        active_downloads
-            .lock()
-            .expect("active downloads mutex poisoned")
-            .remove(&request_id);
-    }
-
-    pub(crate) async fn clear_active_downloads(active_downloads: &ActiveDownloads) {
-        let mut active_downloads = active_downloads
-            .lock()
-            .expect("active downloads mutex poisoned");
-        for download in active_downloads.values() {
-            let _ = download.cancel_sender.send(true);
-        }
-        active_downloads.clear();
     }
 }

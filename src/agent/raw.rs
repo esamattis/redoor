@@ -73,7 +73,7 @@ impl RawUploadWorker {
     /// Removes the temporary file and unregisters the upload worker.
     async fn cleanup(&self) {
         AgentActor::remove_upload_temp_file(&self.session.temp_path).await;
-        AgentActor::remove_active_upload(&self.active_uploads, self.request_id).await;
+        self.active_uploads.remove(self.request_id);
     }
 
     /// Handles an explicit server-side cancellation request.
@@ -144,7 +144,7 @@ impl RawUploadWorker {
                     },
                 )
                 .await;
-            AgentActor::remove_active_upload(&active_uploads, request_id).await;
+            active_uploads.remove(request_id);
             return;
         }
 
@@ -159,7 +159,7 @@ impl RawUploadWorker {
         AgentActor
             .send_command_response(&tx, &agent_id, request_id, CommandResult::RawUpload)
             .await;
-        AgentActor::remove_active_upload(&active_uploads, request_id).await;
+        active_uploads.remove(request_id);
     }
 
     /// Runs the raw upload loop until completion, cancellation, or failure.
@@ -296,7 +296,7 @@ impl RawDownloadWorker {
 
     /// Unregisters the download worker from the active download registry.
     async fn cleanup(&self) {
-        AgentActor::remove_active_download(&self.active_downloads, self.request_id).await;
+        self.active_downloads.remove(self.request_id);
     }
 
     /// Sends the cancellation frame expected by the server and exits.
@@ -508,10 +508,7 @@ impl AgentActor {
         request_id: RequestId,
         path: String,
     ) {
-        let upload_already_exists = active_uploads
-            .lock()
-            .expect("active uploads mutex poisoned")
-            .contains_key(&request_id);
+        let upload_already_exists = active_uploads.contains(request_id);
 
         if upload_already_exists {
             self.send_command_response(
@@ -541,17 +538,14 @@ impl AgentActor {
                     path,
                     temp_path.display()
                 );
-                active_uploads
-                    .lock()
-                    .expect("active uploads mutex poisoned")
-                    .insert(
-                        request_id,
-                        UploadSessionHandle {
-                            path: path.clone(),
-                            chunk_sender,
-                            cancel_sender,
-                        },
-                    );
+                active_uploads.insert(
+                    request_id,
+                    UploadSessionHandle {
+                        path: path.clone(),
+                        chunk_sender,
+                        cancel_sender,
+                    },
+                );
                 tokio::spawn(
                     RawUploadWorker {
                         active_uploads,
