@@ -6,15 +6,15 @@ Reviewed the direct raw upload/download paths, the tar directory upload/download
 
 ## Findings
 
-### High: Agent-side upload ingress breaks backpressure before the bounded upload queue
+### High: Agent-side upload ingress is bounded now, but it still drops frames instead of backpressuring
 
-Refs: `src/agent/ws.rs:23-26`, `src/agent/actor.rs:216-218`, `src/agent/protocol.rs:258-283`
+Refs: `src/agent/ws.rs:15-26`, `src/agent/mod.rs:69-74`, `src/agent/mod.rs:95`, `src/agent/protocol.rs:229-279`
 
-The server-side upload path is carefully backpressured up to the agent websocket boundary, but the agent then immediately forwards each binary frame with `AgentRef::cast(AgentMsg::WebSocketBinaryMessage { ... })`. In `ractor 0.15.10`, `cast` writes into an unbounded actor mailbox, and the actual bounded handoff only happens later when `handle_upload_chunk()` awaits `upload_handle.chunk_sender.send(chunk).await`.
+The old unbounded `ractor` mailbox is gone. The agent now routes websocket frames through a bounded `tokio::mpsc::channel::<AgentMsg>(256)`, and the raw and tar upload workers still use bounded per-upload chunk queues. However, the websocket read loop still calls `agent_ref.send(...)`, which is implemented with `try_send`, and then ignores the result.
 
-Impact: if file writes or tar extraction slow down, upload frames can accumulate in the agent actor mailbox as heap-allocated `Vec<u8>` buffers. That defeats the intended bounded-memory upload design. This affects raw uploads, tar uploads, and the destination side of remote copy uploads because they all reuse the same ingress path.
+Impact: when file writes or tar extraction slow down, `handle_upload_chunk()` can stall on the bounded per-upload queue as intended, but the websocket reader does not propagate that pressure to the socket. Instead it keeps reading until the shared 256-message agent queue fills, after which inbound binary frames are silently dropped. That makes uploads lossy under load rather than truly backpressured. This still affects raw uploads, tar uploads, and the destination side of remote copy uploads because they all reuse the same ingress path.
 
-Recommendation: mirror the server-side session pattern and make agent-side inbound binary handling acknowledged or otherwise bounded, so the websocket read loop does not read the next frame until the current one has been accepted by the per-upload worker.
+Recommendation: make agent-side inbound binary handling acknowledged or otherwise awaitable so the websocket read loop does not read the next frame until the current one has been accepted by the per-upload worker. At minimum, do not ignore `try_send` failures for transfer frames.
 
 ### High: Extensionless downloads read the whole file into memory before streaming starts
 
@@ -57,4 +57,4 @@ Recommendation: keep the bounded handoff, but switch to a Tokio channel on the p
 
 ## Assumption
 
-- The first finding assumes the current `ractor 0.15.10` mailbox behavior. I verified during the review that actor message mailboxes are currently backed by unbounded channels.
+- The first finding assumes dropped websocket binary frames are not tolerated by the upload protocol, which matches the current chunked transfer design.
