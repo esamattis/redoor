@@ -8,7 +8,6 @@ use ts_rs::TS;
 /// This is the stable key used to address a connected agent and to associate
 /// agent-originated messages with that agent.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
 #[ts(export)]
 #[ts(type = "string")]
 pub struct AgentId(pub String);
@@ -43,7 +42,6 @@ impl fmt::Display for AgentId {
 /// websocket protocol messages, stream uploads/downloads, and agent-side
 /// upload session tracking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
 #[ts(export)]
 #[ts(type = "number")]
 pub struct RequestId(pub u64);
@@ -82,7 +80,6 @@ impl fmt::Display for RequestId {
 /// Unlike `RequestId`, this represents the externally visible transfer job,
 /// not the internal per-agent request IDs that may be used to implement it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
 #[ts(export)]
 #[ts(type = "number")]
 pub struct TransferId(pub u64);
@@ -108,7 +105,6 @@ impl fmt::Display for TransferId {
 /// This is used in the binary streaming protocol to preserve chunk ordering
 /// across uploads, downloads, and agent-to-agent copy forwarding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
 #[ts(export)]
 #[ts(type = "number")]
 pub struct ChunkIndex(pub u64);
@@ -156,7 +152,6 @@ impl UnixTimestampSeconds {
 /// This is used for registration-time metadata such as when an agent
 /// connected to the router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
 #[ts(export)]
 #[ts(type = "number")]
 pub struct UnixTimestampSeconds(pub i64);
