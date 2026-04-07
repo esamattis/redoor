@@ -6,7 +6,7 @@ use super::super::messages::{
     TransferProgressUpdateRequest,
 };
 use super::super::progress::{self, CopyStartContext};
-use super::super::router::{CopyExecution, CopyRequest, DirectDownload, DirectUpload, Router};
+use super::super::state::{CopyExecution, CopyRequest, DirectDownload, DirectUpload, RouterState};
 use crate::commands::{Command, CommandResult};
 use crate::log;
 use crate::logging::Level;
@@ -16,7 +16,7 @@ use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
 
 /// Reframes one source chunk into destination-sized frames and forwards them incrementally.
 pub(crate) async fn send_framed_copy_chunk(
-    agent_connection: &super::super::router::AgentConnection,
+    agent_connection: &super::super::state::AgentConnection,
     chunk_index: &mut ChunkIndex,
     request: StreamChunkFrameRequest<'_>,
 ) -> (usize, bool) {
@@ -38,31 +38,31 @@ pub(crate) async fn send_framed_copy_chunk(
 }
 
 /// Removes all router bookkeeping associated with one logical copy request.
-pub(crate) fn cleanup_copy_tracking(router: &mut Router, public_request_id: TransferId) {
-    if let Some(copy_request) = router.copies.by_public_id.remove(&public_request_id) {
+pub(crate) fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: TransferId) {
+    if let Some(copy_request) = state.copies.by_public_id.remove(&public_request_id) {
         match copy_request.execution {
             CopyExecution::RemoteStream {
                 source_request_id,
                 dest_request_id,
                 ..
             } => {
-                router
+                state
                     .copies
                     .public_id_by_internal_request
                     .remove(&source_request_id);
-                router
+                state
                     .copies
                     .public_id_by_internal_request
                     .remove(&dest_request_id);
-                router.streams.downloads.remove(&source_request_id);
-                router.streams.uploads.remove(&dest_request_id);
+                state.streams.downloads.remove(&source_request_id);
+                state.streams.uploads.remove(&dest_request_id);
             }
             CopyExecution::LocalAgent { request_id, .. } => {
-                router
+                state
                     .copies
                     .public_id_by_internal_request
                     .remove(&request_id);
-                router.streams.uploads.remove(&request_id);
+                state.streams.uploads.remove(&request_id);
             }
         }
     }
@@ -70,11 +70,11 @@ pub(crate) fn cleanup_copy_tracking(router: &mut Router, public_request_id: Tran
 
 /// Sends an error frame to the destination side of a remote copy so it can terminate cleanly.
 pub(crate) fn abort_copy_upload(
-    router: &mut Router,
+    state: &mut RouterState,
     public_request_id: TransferId,
     error_message: String,
 ) -> Result<(), RouterError> {
-    let Some(copy_request) = router.copies.by_public_id.get_mut(&public_request_id) else {
+    let Some(copy_request) = state.copies.by_public_id.get_mut(&public_request_id) else {
         return Err(RouterError::CopyStreamNotFound {
             request_id: public_request_id.to_string(),
         });
@@ -89,11 +89,7 @@ pub(crate) fn abort_copy_upload(
         return Ok(());
     };
 
-    let Some(agent_connection) = router
-        .agents
-        .by_id
-        .get(&copy_request.dest_agent_id)
-        .cloned()
+    let Some(agent_connection) = state.agents.by_id.get(&copy_request.dest_agent_id).cloned()
     else {
         return Err(RouterError::AgentNotFound {
             agent_id: copy_request.dest_agent_id.to_string(),
@@ -120,16 +116,16 @@ pub(crate) fn abort_copy_upload(
 }
 
 /// Starts either a local-agent copy or a remote streamed copy between agents.
-pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
-    let source_agent_connection = router.agents.by_id.get(&request.source_agent_id).cloned();
-    let dest_agent_connection = router.agents.by_id.get(&request.dest_agent_id).cloned();
+pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
+    let source_agent_connection = state.agents.by_id.get(&request.source_agent_id).cloned();
+    let dest_agent_connection = state.agents.by_id.get(&request.dest_agent_id).cloned();
 
     match (source_agent_connection, dest_agent_connection) {
         (Some(source_agent_connection), Some(dest_agent_connection)) => {
-            let public_request_id = router.next_id().as_transfer_id();
+            let public_request_id = state.next_id().as_transfer_id();
 
             progress::record_copy_start(
-                router,
+                state,
                 CopyStartContext {
                     request_id: public_request_id,
                     source_agent_id: request.source_agent_id.clone(),
@@ -141,13 +137,13 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
             );
 
             if request.source_agent_id == request.dest_agent_id {
-                let local_request_id = router.next_id();
+                let local_request_id = state.next_id();
 
-                router
+                state
                     .copies
                     .public_id_by_internal_request
                     .insert(local_request_id, public_request_id);
-                router.copies.by_public_id.insert(
+                state.copies.by_public_id.insert(
                     public_request_id,
                     CopyRequest {
                         source_agent_id: request.source_agent_id.clone(),
@@ -159,7 +155,7 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
                         content_kind: request.content_kind,
                     },
                 );
-                router.streams.uploads.insert(
+                state.streams.uploads.insert(
                     local_request_id,
                     DirectUpload {
                         agent_id: request.source_agent_id.clone(),
@@ -169,11 +165,11 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
                 );
 
                 let command = match request.content_kind {
-                    super::super::router::CopyContentKind::RawFile => Command::LocalCopyFile {
+                    super::super::state::CopyContentKind::RawFile => Command::LocalCopyFile {
                         source_path: request.source_path.clone(),
                         dest_path: request.dest_path.clone(),
                     },
-                    super::super::router::CopyContentKind::TarDirectory => {
+                    super::super::state::CopyContentKind::TarDirectory => {
                         Command::LocalCopyDirectory {
                             source_path: request.source_path.clone(),
                             dest_path: request.dest_path.clone(),
@@ -191,18 +187,18 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
                 return;
             }
 
-            let dest_request_id = router.next_id();
-            let source_request_id = router.next_id();
+            let dest_request_id = state.next_id();
+            let source_request_id = state.next_id();
 
-            router
+            state
                 .copies
                 .public_id_by_internal_request
                 .insert(source_request_id, public_request_id);
-            router
+            state
                 .copies
                 .public_id_by_internal_request
                 .insert(dest_request_id, public_request_id);
-            router.copies.by_public_id.insert(
+            state.copies.by_public_id.insert(
                 public_request_id,
                 CopyRequest {
                     source_agent_id: request.source_agent_id.clone(),
@@ -216,7 +212,7 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
                 },
             );
 
-            router.streams.downloads.insert(
+            state.streams.downloads.insert(
                 source_request_id,
                 DirectDownload {
                     agent_id: request.source_agent_id.clone(),
@@ -224,7 +220,7 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
                     canceled_by_rest: false,
                 },
             );
-            router.streams.uploads.insert(
+            state.streams.uploads.insert(
                 dest_request_id,
                 DirectUpload {
                     agent_id: request.dest_agent_id.clone(),
@@ -263,20 +259,20 @@ pub(crate) fn start(router: &mut Router, request: StartCopyRequest) {
 
 /// Forwards one remote-copy source chunk to the destination agent incrementally.
 pub(crate) fn route_chunk(
-    router: &mut Router,
+    state: &mut RouterState,
     myself: &RouterHandle,
     request: RouteStreamChunkRequest,
 ) {
     let agent_id = request.agent_id;
     let chunk = request.chunk;
     let reply = request.reply;
-    let Some(public_request_id) = router.copies.public_id_for_internal(chunk.request_id) else {
+    let Some(public_request_id) = state.copies.public_id_for_internal(chunk.request_id) else {
         let _ = reply.send(());
         return;
     };
 
     let (source_agent_id, dest_agent_id, dest_request_id, mut chunk_index, content_kind) = {
-        let Some(copy_request) = router.copies.by_public_id.get_mut(&public_request_id) else {
+        let Some(copy_request) = state.copies.by_public_id.get_mut(&public_request_id) else {
             let _ = reply.send(());
             return;
         };
@@ -317,13 +313,13 @@ pub(crate) fn route_chunk(
         return;
     }
 
-    let Some(dest_agent_connection) = router.agents.by_id.get(&dest_agent_id).cloned() else {
+    let Some(dest_agent_connection) = state.agents.by_id.get(&dest_agent_id).cloned() else {
         progress::mark_transfer_errored(
-            router,
+            state,
             public_request_id,
             format!("Agent not found: {}", dest_agent_id),
         );
-        cleanup_copy_tracking(router, public_request_id);
+        cleanup_copy_tracking(state, public_request_id);
         let _ = reply.send(());
         return;
     };
@@ -335,9 +331,9 @@ pub(crate) fn route_chunk(
             String::from_utf8_lossy(&chunk.data).to_string()
         };
 
-        let _ = abort_copy_upload(router, public_request_id, error_message.clone());
-        progress::mark_transfer_errored(router, public_request_id, error_message);
-        cleanup_copy_tracking(router, public_request_id);
+        let _ = abort_copy_upload(state, public_request_id, error_message.clone());
+        progress::mark_transfer_errored(state, public_request_id, error_message);
+        cleanup_copy_tracking(state, public_request_id);
         let _ = reply.send(());
         return;
     }
@@ -348,9 +344,9 @@ pub(crate) fn route_chunk(
             content_kind.payload_kind(),
             chunk.payload_kind
         );
-        let _ = abort_copy_upload(router, public_request_id, error_message.clone());
-        progress::mark_transfer_errored(router, public_request_id, error_message);
-        cleanup_copy_tracking(router, public_request_id);
+        let _ = abort_copy_upload(state, public_request_id, error_message.clone());
+        progress::mark_transfer_errored(state, public_request_id, error_message);
+        cleanup_copy_tracking(state, public_request_id);
         let _ = reply.send(());
         return;
     }
@@ -392,8 +388,8 @@ pub(crate) fn route_chunk(
 }
 
 /// Finalizes one remote-copy chunk after all destination frames have been queued.
-pub(crate) fn finish_routed_chunk(router: &mut Router, route: &FinishCopyChunkRoute) {
-    let Some(copy_request) = router.copies.by_public_id.get_mut(&route.public_request_id) else {
+pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishCopyChunkRoute) {
+    let Some(copy_request) = state.copies.by_public_id.get_mut(&route.public_request_id) else {
         return;
     };
 
@@ -422,38 +418,38 @@ pub(crate) fn finish_routed_chunk(router: &mut Router, route: &FinishCopyChunkRo
 
     if !route.send_succeeded {
         cleanup::cancel_transfer(
-            router,
+            state,
             route.source_request_id,
             route.source_agent_id.clone(),
         );
         progress::mark_transfer_errored(
-            router,
+            state,
             route.public_request_id,
             "Failed to forward copy chunk to destination agent".to_string(),
         );
-        cleanup_copy_tracking(router, route.public_request_id);
+        cleanup_copy_tracking(state, route.public_request_id);
         return;
     }
 
     *stored_next_chunk_index = route.next_chunk_index;
 
     if route.bytes > 0 {
-        progress::increment_bytes(router, route.public_request_id, route.bytes);
+        progress::increment_bytes(state, route.public_request_id, route.bytes);
     }
 }
 
 /// Handles the final command response that completes a local or remote copy.
 pub(crate) fn finish_transfer(
-    router: &mut Router,
+    state: &mut RouterState,
     agent_id: AgentId,
     request_id: RequestId,
     result: CommandResult,
 ) -> bool {
-    let Some(public_request_id) = router.copies.public_id_for_internal(request_id) else {
+    let Some(public_request_id) = state.copies.public_id_for_internal(request_id) else {
         return false;
     };
 
-    let Some(copy_request) = router.copies.by_public_id.get(&public_request_id) else {
+    let Some(copy_request) = state.copies.by_public_id.get(&public_request_id) else {
         return false;
     };
 
@@ -473,18 +469,18 @@ pub(crate) fn finish_transfer(
 
     match result {
         CommandResult::Error { message, .. } => {
-            progress::mark_transfer_errored(router, public_request_id, message);
+            progress::mark_transfer_errored(state, public_request_id, message);
         }
         CommandResult::LocalCopyFile
-            if copy_request.content_kind == super::super::router::CopyContentKind::RawFile =>
+            if copy_request.content_kind == super::super::state::CopyContentKind::RawFile =>
         {
-            progress::mark_copy_transfer_completed(router, public_request_id, None);
+            progress::mark_copy_transfer_completed(state, public_request_id, None);
         }
         CommandResult::LocalCopyDirectory
-            if copy_request.content_kind == super::super::router::CopyContentKind::TarDirectory =>
+            if copy_request.content_kind == super::super::state::CopyContentKind::TarDirectory =>
         {
-            let total_bytes = progress::transferred_bytes(router, public_request_id);
-            progress::mark_copy_transfer_completed(router, public_request_id, total_bytes);
+            let total_bytes = progress::transferred_bytes(state, public_request_id);
+            progress::mark_copy_transfer_completed(state, public_request_id, total_bytes);
         }
         /* <CODEREVIEW>
         Remote directory copies also land in this branch via `TarUpload`, but their `total_bytes`
@@ -494,7 +490,7 @@ pub(crate) fn finish_transfer(
         tar stream was being forwarded.
         </CODEREVIEW> */
         other if copy_request.content_kind.completion_matches(&other) => {
-            progress::mark_copy_transfer_completed(router, public_request_id, None);
+            progress::mark_copy_transfer_completed(state, public_request_id, None);
         }
         other => {
             log!(
@@ -505,24 +501,24 @@ pub(crate) fn finish_transfer(
                 other
             );
             progress::mark_transfer_errored(
-                router,
+                state,
                 public_request_id,
                 "Unexpected copy completion response".to_string(),
             );
         }
     }
 
-    cleanup_copy_tracking(router, public_request_id);
+    cleanup_copy_tracking(state, public_request_id);
     true
 }
 
 /// Applies agent-reported progress updates for local-agent copy operations.
-pub(crate) fn update_progress(router: &mut Router, request: TransferProgressUpdateRequest) {
-    let Some(public_request_id) = router.copies.public_id_for_internal(request.request_id) else {
+pub(crate) fn update_progress(state: &mut RouterState, request: TransferProgressUpdateRequest) {
+    let Some(public_request_id) = state.copies.public_id_for_internal(request.request_id) else {
         return;
     };
 
-    let Some(copy_request) = router.copies.by_public_id.get(&public_request_id) else {
+    let Some(copy_request) = state.copies.by_public_id.get(&public_request_id) else {
         return;
     };
 
@@ -546,7 +542,7 @@ pub(crate) fn update_progress(router: &mut Router, request: TransferProgressUpda
     }
 
     progress::set_copy_progress(
-        router,
+        state,
         public_request_id,
         request.transferred_bytes,
         request.total_bytes,

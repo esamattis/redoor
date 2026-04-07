@@ -1,6 +1,6 @@
 use super::RouterHandle;
 use super::messages::{RegisterUiSubscriberRequest, RouterMsg};
-use super::router::Router;
+use super::state::RouterState;
 use crate::commands::UiEvent;
 use crate::log;
 use crate::logging::Level;
@@ -37,81 +37,81 @@ pub(crate) fn start_refresh_check_task(router_ref: RouterHandle) -> tokio::task:
 }
 
 /// Adds one UI subscriber to the router's refresh broadcast set.
-pub(crate) fn register_subscriber(router: &mut Router, request: RegisterUiSubscriberRequest) {
+pub(crate) fn register_subscriber(state: &mut RouterState, request: RegisterUiSubscriberRequest) {
     log!(
         Level::Info,
         "UI subscriber registered: subscriber_id={}",
         request.subscriber_id
     );
-    router
+    state
         .ui
         .subscribers
         .insert(request.subscriber_id, request.sender);
 }
 
 /// Removes one UI subscriber from the router's refresh broadcast set.
-pub(crate) fn unregister_subscriber(router: &mut Router, subscriber_id: &str) {
+pub(crate) fn unregister_subscriber(state: &mut RouterState, subscriber_id: &str) {
     log!(
         Level::Info,
         "UI subscriber unregistered: subscriber_id={}",
         subscriber_id
     );
-    router.ui.subscribers.remove(subscriber_id);
+    state.ui.subscribers.remove(subscriber_id);
 }
 
 /// Sends an immediate refresh when allowed or marks one trailing refresh as pending.
-pub(crate) fn notify_refresh(router: &mut Router) {
+pub(crate) fn notify_refresh(state: &mut RouterState) {
     let now = Instant::now();
 
-    match router.ui.last_refresh_sent_at {
+    match state.ui.last_refresh_sent_at {
         None => {
-            broadcast_event(router, UiEvent::Refresh);
-            router.ui.last_refresh_sent_at = Some(now);
-            router.ui.refresh_pending = false;
+            broadcast_event(state, UiEvent::Refresh);
+            state.ui.last_refresh_sent_at = Some(now);
+            state.ui.refresh_pending = false;
         }
         Some(last_sent_at) => {
             let elapsed = now.saturating_duration_since(last_sent_at);
 
             if elapsed >= UI_REFRESH_THROTTLE_WINDOW {
-                broadcast_event(router, UiEvent::Refresh);
-                router.ui.last_refresh_sent_at = Some(now);
-                router.ui.refresh_pending = false;
+                broadcast_event(state, UiEvent::Refresh);
+                state.ui.last_refresh_sent_at = Some(now);
+                state.ui.refresh_pending = false;
             } else {
-                router.ui.refresh_pending = true;
+                state.ui.refresh_pending = true;
             }
         }
     }
 }
 
 /// Broadcasts one refresh immediately and resets the trailing throttle state.
-pub(crate) fn notify_refresh_immediately(router: &mut Router) {
+pub(crate) fn notify_refresh_immediately(state: &mut RouterState) {
     let now = Instant::now();
-    broadcast_event(router, UiEvent::Refresh);
-    router.ui.last_refresh_sent_at = Some(now);
-    router.ui.refresh_pending = false;
+    broadcast_event(state, UiEvent::Refresh);
+    state.ui.last_refresh_sent_at = Some(now);
+    state.ui.refresh_pending = false;
 }
 
 /// Emits a throttled trailing refresh once the current throttle window has elapsed.
-pub(crate) fn check_pending_refresh(router: &mut Router) {
-    if !router.ui.refresh_pending {
+pub(crate) fn check_pending_refresh(state: &mut RouterState) {
+    if !state.ui.refresh_pending {
         return;
     }
 
     let now = Instant::now();
-    let Some(last_sent_at) = router.ui.last_refresh_sent_at else {
-        notify_refresh_immediately(router);
+    let Some(last_sent_at) = state.ui.last_refresh_sent_at else {
+        notify_refresh_immediately(state);
         return;
     };
 
     let elapsed = now.saturating_duration_since(last_sent_at);
     if elapsed >= UI_REFRESH_THROTTLE_WINDOW {
-        notify_refresh_immediately(router);
+        notify_refresh_immediately(state);
     }
 }
 
 /// Broadcasts one UI event to all live subscribers and drops closed senders.
-fn broadcast_event(router: &mut Router, event: UiEvent) {
-    router.ui.subscribers.retain(|subscriber_id, sender| {
+fn broadcast_event(state: &mut RouterState, event: UiEvent) {
+    state.ui.subscribers.retain(|subscriber_id, sender| {
         if sender.send(event.clone()).is_ok() {
             true
         } else {

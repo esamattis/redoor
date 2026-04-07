@@ -1,5 +1,5 @@
 use super::messages::{ExecuteCommandRequest, RegisterAgentRequest};
-use super::router::{AgentConnection, Router};
+use super::state::{AgentConnection, RouterState};
 use super::ui;
 use crate::commands::CommandResult;
 use crate::log;
@@ -72,8 +72,8 @@ impl AgentConnection {
 }
 
 /// Registers a connected agent unless another live agent already owns its name.
-pub(crate) fn register(router: &mut Router, request: RegisterAgentRequest) {
-    let duplicate_name = router
+pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
+    let duplicate_name = state
         .agents
         .by_id
         .values()
@@ -101,16 +101,16 @@ pub(crate) fn register(router: &mut Router, request: RegisterAgentRequest) {
         request.socket_id
     );
     let agent_id = request.agent_id.clone();
-    router
+    state
         .agents
         .by_id
         .insert(agent_id, AgentConnection::from_register_request(request));
-    ui::notify_refresh(router);
+    ui::notify_refresh(state);
 }
 
 /// Builds the agent id to agent name map returned by the REST API.
-pub(crate) fn list_agents(router: &Router) -> HashMap<AgentId, String> {
-    router
+pub(crate) fn list_agents(state: &RouterState) -> HashMap<AgentId, String> {
+    state
         .agents
         .by_id
         .iter()
@@ -119,8 +119,8 @@ pub(crate) fn list_agents(router: &Router) -> HashMap<AgentId, String> {
 }
 
 /// Allocates an internal request id and routes a one-shot command to an agent.
-pub(crate) fn execute_command_rest(router: &mut Router, request: ExecuteCommandRequest) {
-    let request_id = router.next_id();
+pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteCommandRequest) {
+    let request_id = state.next_id();
 
     log!(
         Level::Trace,
@@ -129,8 +129,8 @@ pub(crate) fn execute_command_rest(router: &mut Router, request: ExecuteCommandR
         request_id,
         request.command
     );
-    if let Some(agent_connection) = router.agents.by_id.get(&request.agent_id) {
-        router
+    if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id) {
+        state
             .pending_rest
             .by_request_id
             .insert(request_id, (request.reply, request.agent_id.clone()));

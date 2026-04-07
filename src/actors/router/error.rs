@@ -5,16 +5,16 @@ use thiserror::Error;
 /// HTTP layer chooses the final status code and response message.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RouterError {
-    /// The requested agent or transfer target no longer exists in the router.
+    /// The requested agent or transfer target no longer exists in router state.
     #[error("Agent not found: {agent_id}")]
     AgentNotFound { agent_id: String },
-    /// The requested upload or copy stream no longer exists in the router.
+    /// The requested upload or copy stream no longer exists in router state.
     #[error("Upload stream not found: agent_id={agent_id}, request_id={request_id}")]
     StreamNotFound {
         agent_id: String,
         request_id: String,
     },
-    /// The requested copy bookkeeping no longer exists in the router.
+    /// The requested copy bookkeeping no longer exists in router state.
     #[error("Copy stream not found: request_id={request_id}")]
     CopyStreamNotFound { request_id: String },
     /// The REST client already canceled the in-flight upload stream.
