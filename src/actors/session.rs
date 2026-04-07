@@ -23,10 +23,21 @@ fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> 
 
 /// Runtime state held for one websocket-backed agent session.
 struct SessionRuntime {
+    /// Identifies the websocket connection so the router can map routed work back
+    /// to this specific session.
     socket_id: SocketId,
+    /// Provides the actor handle used to register the session and forward control
+    /// and streaming messages into the routing layer.
     router_ref: RouterHandle,
+    /// Remains absent until the websocket sends `Message::AgentRegister`, because
+    /// the socket exists before the remote agent has announced which logical
+    /// agent identity it should be associated with.
     agent_id: Option<AgentId>,
+    /// Sends control and other small text frames without backpressure so router
+    /// notifications stay responsive.
     outgoing_text: mpsc::UnboundedSender<WsMessage>,
+    /// Sends binary frames on a bounded lane so large stream transfers apply
+    /// backpressure instead of growing memory usage without bound.
     outgoing_binary: mpsc::Sender<WsMessage>,
 }
 
