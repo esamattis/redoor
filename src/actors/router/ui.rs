@@ -73,6 +73,14 @@ pub(crate) fn notify_refresh(state: &mut RouterState) {
     }
 }
 
+/// Broadcasts one refresh immediately and resets the trailing throttle state.
+pub(crate) fn notify_refresh_immediately(state: &mut RouterState) {
+    let now = Instant::now();
+    broadcast_event(state, UiEvent::Refresh);
+    state.ui.last_refresh_sent_at = Some(now);
+    state.ui.refresh_pending = false;
+}
+
 /// Emits a throttled trailing refresh once the current throttle window has elapsed.
 pub(crate) fn check_pending_refresh(state: &mut RouterState) {
     if !state.ui.refresh_pending {
@@ -81,17 +89,13 @@ pub(crate) fn check_pending_refresh(state: &mut RouterState) {
 
     let now = Instant::now();
     let Some(last_sent_at) = state.ui.last_refresh_sent_at else {
-        broadcast_event(state, UiEvent::Refresh);
-        state.ui.last_refresh_sent_at = Some(now);
-        state.ui.refresh_pending = false;
+        notify_refresh_immediately(state);
         return;
     };
 
     let elapsed = now.saturating_duration_since(last_sent_at);
     if elapsed >= UI_REFRESH_THROTTLE_WINDOW {
-        broadcast_event(state, UiEvent::Refresh);
-        state.ui.last_refresh_sent_at = Some(now);
-        state.ui.refresh_pending = false;
+        notify_refresh_immediately(state);
     }
 }
 

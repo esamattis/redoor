@@ -191,7 +191,7 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         updated = true;
     }
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_refresh_immediately(state);
     }
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn mark_copy_transfer_completed(
         updated = true;
     }
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_refresh_immediately(state);
     }
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn mark_transfer_errored(
         updated = true;
     }
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_refresh_immediately(state);
     }
 }
 
@@ -249,4 +249,79 @@ pub(crate) fn list_transfer_progress(state: &RouterState) -> TransferProgressLis
     let mut transfers: Vec<_> = state.progress.entries.values().cloned().collect();
     transfers.sort_by(|left, right| right.request_id.cmp(&left.request_id));
     TransferProgressListResponse { transfers }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::{TransferDirection, TransferProgressState, UiEvent};
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn terminal_progress_updates_bypass_ui_refresh_throttle() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(refresh_check_task);
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+
+        let transfer_id = TransferId::new(7);
+        state.progress.entries.insert(
+            transfer_id,
+            TransferProgressEntry {
+                request_id: transfer_id,
+                agent_id: AgentId::from("agent-1"),
+                path: "/tmp/file.bin".to_string(),
+                source: None,
+                dest: None,
+                direction: TransferDirection::Download,
+                total_bytes: 16,
+                transferred_bytes: 4,
+                started_at: UnixTimestampSeconds::new(1),
+                ended_at: None,
+                state: TransferProgressState::Active,
+                error: None,
+            },
+        );
+
+        ui::notify_refresh(&mut state);
+        let first_event = ui_rx
+            .recv()
+            .await
+            .expect("initial refresh should reach subscribers");
+        assert!(
+            matches!(first_event, UiEvent::Refresh),
+            "the setup refresh should confirm the subscriber wiring before the terminal-state assertion"
+        );
+
+        state.ui.refresh_pending = true;
+        state.ui.last_refresh_sent_at = Some(Instant::now());
+
+        mark_transfer_completed(&mut state, transfer_id);
+
+        let terminal_event = ui_rx
+            .recv()
+            .await
+            .expect("completed transfers should trigger an immediate refresh");
+        assert!(
+            matches!(terminal_event, UiEvent::Refresh),
+            "terminal transfer updates should bypass the normal refresh throttle so the UI reflects completion immediately"
+        );
+        assert!(
+            !state.ui.refresh_pending,
+            "the immediate terminal refresh should clear any older trailing refresh instead of leaving a stale refresh queued"
+        );
+
+        let progress_entry = state
+            .progress
+            .entries
+            .get(&transfer_id)
+            .expect("completed transfer should remain in progress storage");
+        assert!(
+            matches!(progress_entry.state, TransferProgressState::Completed),
+            "the refresh should correspond to a terminal completed progress entry"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
 }
