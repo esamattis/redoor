@@ -482,13 +482,6 @@ pub(crate) fn finish_transfer(
             let total_bytes = progress::transferred_bytes(state, public_request_id);
             progress::mark_copy_transfer_completed(state, public_request_id, total_bytes);
         }
-        /* <CODEREVIEW>
-        Remote directory copies also land in this branch via `TarUpload`, but their `total_bytes`
-        starts at 0 and is never replaced with the streamed byte count. `mark_copy_transfer_completed`
-        then snaps `transferred_bytes` back to `total_bytes`, so a successful remote directory copy
-        finishes as `Completed` with 0 bytes transferred and loses the progress accumulated while the
-        tar stream was being forwarded.
-        </CODEREVIEW> */
         other if copy_request.content_kind.completion_matches(&other) => {
             progress::mark_copy_transfer_completed(state, public_request_id, None);
         }

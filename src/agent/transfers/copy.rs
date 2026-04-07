@@ -275,14 +275,6 @@ impl LocalCopyProgressReporter {
             total_bytes: Some(self.total_bytes),
         };
 
-        /* <CODEREVIEW>
-        Send failures are ignored here. For local copies that is more than a telemetry gap: if the
-        text/control lane dies after the copy starts, the agent stops delivering progress updates and
-        may also miss the final status response, but the filesystem copy keeps running because local
-        copy work has no cancellation path tied to connection health. The router can already mark the
-        transfer failed on disconnect while the agent still completes and renames the destination in
-        the background.
-        </CODEREVIEW> */
         if let Ok(json) = serde_json::to_string(&message) {
             let _ = self.write.send(WsMessage::text(json)).await;
         }
