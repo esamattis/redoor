@@ -6,6 +6,16 @@ use crate::log;
 use crate::logging::Level;
 use std::time::{Duration, Instant};
 
+/* <CODEREVIEW>
+Terminal states now bypass this throttle, but active copy progress still does not. Local copies emit
+progress every `250ms` and routed copies can request refreshes per chunk, yet `increment_bytes` and
+`set_copy_progress` still collapse those updates into one UI refresh every five seconds. That leaves
+active rows showing stale byte counts for long stretches even while the router has newer progress.
+
+Consider using a separate, shorter throttle window for active transfer progress refreshes instead of
+sharing the coarse five-second window with everything else. That would keep byte counts feeling live
+without reintroducing refresh storms from terminal-state churn.
+</CODEREVIEW> */
 /// Minimum gap between broadcast refresh events to avoid UI invalidation storms.
 pub(crate) const UI_REFRESH_THROTTLE_WINDOW: Duration = Duration::from_secs(5);
 /// Poll interval used by the background task that releases trailing refreshes.
