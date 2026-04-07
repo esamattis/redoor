@@ -28,6 +28,8 @@ Guidelines
 - On test failures see the ./log dir for related logs
 - When a single test needs cleanup, always use onTestFinished() instead of try-finally
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
+- If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
+- If you are asked to make a code review: Write the negative findings into a `<CODEREVIEW>comment</CODEREVIEW>` right into the code files
 
 
 # UI
