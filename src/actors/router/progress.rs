@@ -1,5 +1,5 @@
 use super::RouterError;
-use super::state::{DirectDownload, DirectUpload, RouterState};
+use super::router::{DirectDownload, DirectUpload, Router};
 use super::ui;
 use crate::commands::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
@@ -53,10 +53,10 @@ pub(crate) struct CopyStartContext {
 }
 
 /// Creates a progress entry and direct-download state for a newly started download.
-pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadStartContext) {
+pub(crate) fn record_download_start(router: &mut Router, context: DownloadStartContext) {
     let transfer_id = context.request_id.as_transfer_id();
     let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
-    state.progress.entries.insert(
+    router.progress.entries.insert(
         transfer_id,
         TransferProgressEntry {
             request_id: transfer_id,
@@ -73,7 +73,7 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
             error: None,
         },
     );
-    state.streams.downloads.insert(
+    router.streams.downloads.insert(
         context.request_id,
         DirectDownload {
             agent_id: context.agent_id,
@@ -81,14 +81,14 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
             canceled_by_rest: false,
         },
     );
-    ui::notify_refresh(state);
+    ui::notify_refresh(router);
 }
 
 /// Creates a progress entry and direct-upload state for a newly started upload.
-pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartContext) {
+pub(crate) fn record_upload_start(router: &mut Router, context: UploadStartContext) {
     let transfer_id = context.request_id.as_transfer_id();
     let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
-    state.progress.entries.insert(
+    router.progress.entries.insert(
         transfer_id,
         TransferProgressEntry {
             request_id: transfer_id,
@@ -105,7 +105,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             error: None,
         },
     );
-    state.streams.uploads.insert(
+    router.streams.uploads.insert(
         context.request_id,
         DirectUpload {
             agent_id: context.agent_id,
@@ -113,13 +113,13 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             canceled_by_rest: false,
         },
     );
-    ui::notify_refresh(state);
+    ui::notify_refresh(router);
 }
 
 /// Creates a progress entry for a newly started logical copy transfer.
-pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartContext) {
+pub(crate) fn record_copy_start(router: &mut Router, context: CopyStartContext) {
     let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
-    state.progress.entries.insert(
+    router.progress.entries.insert(
         context.request_id,
         TransferProgressEntry {
             request_id: context.request_id,
@@ -142,31 +142,31 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
             error: None,
         },
     );
-    ui::notify_refresh(state);
+    ui::notify_refresh(router);
 }
 
 /// Adds transferred bytes to an existing progress entry and clears stale errors.
-pub(crate) fn increment_bytes(state: &mut RouterState, transfer_id: TransferId, bytes: u64) {
+pub(crate) fn increment_bytes(router: &mut Router, transfer_id: TransferId, bytes: u64) {
     let mut updated = false;
-    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+    if let Some(progress) = router.progress.entries.get_mut(&transfer_id) {
         progress.transferred_bytes = progress.transferred_bytes.saturating_add(bytes);
         progress.error = None;
         updated = true;
     }
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_refresh(router);
     }
 }
 
 /// Replaces copy progress counts with the latest agent-reported values.
 pub(crate) fn set_copy_progress(
-    state: &mut RouterState,
+    router: &mut Router,
     transfer_id: TransferId,
     transferred_bytes: u64,
     total_bytes: Option<u64>,
 ) {
     let mut updated = false;
-    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+    if let Some(progress) = router.progress.entries.get_mut(&transfer_id) {
         progress.transferred_bytes = transferred_bytes;
         if let Some(total_bytes) = total_bytes {
             progress.total_bytes = total_bytes;
@@ -176,14 +176,14 @@ pub(crate) fn set_copy_progress(
     }
 
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_refresh(router);
     }
 }
 
 /// Marks a transfer as completed and snaps transferred bytes to the total.
-pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: TransferId) {
+pub(crate) fn mark_transfer_completed(router: &mut Router, transfer_id: TransferId) {
     let mut updated = false;
-    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+    if let Some(progress) = router.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Completed;
         progress.transferred_bytes = progress.total_bytes;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
@@ -191,18 +191,18 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         updated = true;
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_refresh_immediately(router);
     }
 }
 
 /// Marks a copy as completed, optionally updating its final total byte count first.
 pub(crate) fn mark_copy_transfer_completed(
-    state: &mut RouterState,
+    router: &mut Router,
     transfer_id: TransferId,
     total_bytes: Option<u64>,
 ) {
     let mut updated = false;
-    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+    if let Some(progress) = router.progress.entries.get_mut(&transfer_id) {
         if let Some(total_bytes) = total_bytes {
             progress.total_bytes = total_bytes;
         }
@@ -213,31 +213,31 @@ pub(crate) fn mark_copy_transfer_completed(
         updated = true;
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_refresh_immediately(router);
     }
 }
 
 /// Marks a transfer as failed and stores the surfaced error message.
 pub(crate) fn mark_transfer_errored(
-    state: &mut RouterState,
+    router: &mut Router,
     transfer_id: TransferId,
     error_message: String,
 ) {
     let mut updated = false;
-    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+    if let Some(progress) = router.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Errored;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = Some(error_message);
         updated = true;
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_refresh_immediately(router);
     }
 }
 
 /// Reads the currently recorded transferred byte count for one progress entry.
-pub(crate) fn transferred_bytes(state: &RouterState, transfer_id: TransferId) -> Option<u64> {
-    state
+pub(crate) fn transferred_bytes(router: &Router, transfer_id: TransferId) -> Option<u64> {
+    router
         .progress
         .entries
         .get(&transfer_id)
@@ -245,8 +245,8 @@ pub(crate) fn transferred_bytes(state: &RouterState, transfer_id: TransferId) ->
 }
 
 /// Returns all progress entries sorted newest-first for REST and UI consumers.
-pub(crate) fn list_transfer_progress(state: &RouterState) -> TransferProgressListResponse {
-    let mut transfers: Vec<_> = state.progress.entries.values().cloned().collect();
+pub(crate) fn list_transfer_progress(router: &Router) -> TransferProgressListResponse {
+    let mut transfers: Vec<_> = router.progress.entries.values().cloned().collect();
     transfers.sort_by(|left, right| right.request_id.cmp(&left.request_id));
     TransferProgressListResponse { transfers }
 }
@@ -260,12 +260,12 @@ mod tests {
     #[tokio::test]
     async fn terminal_progress_updates_bypass_ui_refresh_throttle() {
         let refresh_check_task = tokio::spawn(async {});
-        let mut state = RouterState::new(refresh_check_task);
+        let mut router = Router::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        router.ui.subscribers.insert("ui-1".to_string(), ui_tx);
 
         let transfer_id = TransferId::new(7);
-        state.progress.entries.insert(
+        router.progress.entries.insert(
             transfer_id,
             TransferProgressEntry {
                 request_id: transfer_id,
@@ -283,7 +283,7 @@ mod tests {
             },
         );
 
-        ui::notify_refresh(&mut state);
+        ui::notify_refresh(&mut router);
         let first_event = ui_rx
             .recv()
             .await
@@ -293,10 +293,10 @@ mod tests {
             "the setup refresh should confirm the subscriber wiring before the terminal-state assertion"
         );
 
-        state.ui.refresh_pending = true;
-        state.ui.last_refresh_sent_at = Some(Instant::now());
+        router.ui.refresh_pending = true;
+        router.ui.last_refresh_sent_at = Some(Instant::now());
 
-        mark_transfer_completed(&mut state, transfer_id);
+        mark_transfer_completed(&mut router, transfer_id);
 
         let terminal_event = ui_rx
             .recv()
@@ -307,11 +307,11 @@ mod tests {
             "terminal transfer updates should bypass the normal refresh throttle so the UI reflects completion immediately"
         );
         assert!(
-            !state.ui.refresh_pending,
+            !router.ui.refresh_pending,
             "the immediate terminal refresh should clear any older trailing refresh instead of leaving a stale refresh queued"
         );
 
-        let progress_entry = state
+        let progress_entry = router
             .progress
             .entries
             .get(&transfer_id)
@@ -321,6 +321,6 @@ mod tests {
             "the refresh should correspond to a terminal completed progress entry"
         );
 
-        state.ui.refresh_check_task.abort();
+        router.ui.refresh_check_task.abort();
     }
 }

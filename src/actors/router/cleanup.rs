@@ -1,6 +1,6 @@
 use super::RouterError;
 use super::progress;
-use super::state::{CopyExecution, RouterState};
+use super::router::{CopyExecution, Router};
 use super::transfers::copy;
 use super::ui;
 use crate::commands::{CommandErrorKind, CommandResult};
@@ -9,8 +9,8 @@ use crate::logging::Level;
 use crate::types::{AgentId, Message};
 
 /// Cleans up all router-owned state associated with a disconnected agent.
-pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &AgentId) {
-    let orphaned_oneshot: Vec<_> = state
+pub(crate) async fn cleanup_agent_requests(router: &mut Router, agent_id: &AgentId) {
+    let orphaned_oneshot: Vec<_> = router
         .pending_rest
         .by_request_id
         .iter()
@@ -19,7 +19,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         .collect();
 
     for request_id in &orphaned_oneshot {
-        if let Some((reply, _)) = state.pending_rest.by_request_id.remove(request_id) {
+        if let Some((reply, _)) = router.pending_rest.by_request_id.remove(request_id) {
             log!(
                 Level::Warning,
                 "Cleaning up orphaned pending response: request_id={}, agent_id={}",
@@ -33,7 +33,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         }
     }
 
-    let orphaned_copy_ids: Vec<_> = state
+    let orphaned_copy_ids: Vec<_> = router
         .copies
         .by_public_id
         .iter()
@@ -51,26 +51,26 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
 
     for request_id in &orphaned_copy_ids {
         let _ = copy::abort_copy_upload(
-            state,
+            router,
             *request_id,
             format!("Agent disconnected: {}", agent_id),
         );
         progress::mark_transfer_errored(
-            state,
+            router,
             *request_id,
             format!("Agent disconnected: {}", agent_id),
         );
-        copy::cleanup_copy_tracking(state, *request_id);
+        copy::cleanup_copy_tracking(router, *request_id);
     }
 
-    let orphaned_downloads: Vec<_> = state
+    let orphaned_downloads: Vec<_> = router
         .streams
         .downloads
         .iter()
         .filter(|(_, transfer)| &transfer.agent_id == agent_id)
         .map(|(request_id, _)| *request_id)
         .collect();
-    let orphaned_uploads: Vec<_> = state
+    let orphaned_uploads: Vec<_> = router
         .streams
         .uploads
         .iter()
@@ -79,9 +79,13 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         .collect();
 
     for request_id in &orphaned_downloads {
-        if state.streams.downloads.remove(request_id).is_some() {
+        if router.streams.downloads.remove(request_id).is_some() {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            progress::mark_transfer_errored(state, request_id.as_transfer_id(), disconnect_message);
+            progress::mark_transfer_errored(
+                router,
+                request_id.as_transfer_id(),
+                disconnect_message,
+            );
             log!(
                 Level::Warning,
                 "Cleaning up orphaned download stream: request_id={}, agent_id={}",
@@ -92,10 +96,10 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
     }
 
     for request_id in &orphaned_uploads {
-        if let Some(transfer) = state.streams.uploads.remove(request_id) {
+        if let Some(transfer) = router.streams.uploads.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
             progress::mark_transfer_errored(
-                state,
+                router,
                 request_id.as_transfer_id(),
                 disconnect_message.clone(),
             );
@@ -117,7 +121,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         || !orphaned_uploads.is_empty()
         || !orphaned_copy_ids.is_empty()
     {
-        ui::notify_refresh(state);
+        ui::notify_refresh(router);
     }
 }
 
@@ -126,11 +130,11 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
 /// This is used both for explicit REST-side cancellation and implicit request
 /// teardown such as a disconnected upload or download client.
 pub(crate) fn cancel_transfer(
-    state: &mut RouterState,
+    router: &mut Router,
     request_id: crate::types::RequestId,
     agent_id: AgentId,
 ) {
-    match state.streams.downloads.get_mut(&request_id) {
+    match router.streams.downloads.get_mut(&request_id) {
         Some(transfer) => {
             if transfer.agent_id != agent_id {
                 log!(
@@ -148,18 +152,18 @@ pub(crate) fn cancel_transfer(
             }
 
             transfer.canceled_by_rest = true;
-            if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
+            if let Some(agent_connection) = router.agents.by_id.get(&agent_id) {
                 agent_connection.send_message(Message::CancelTransfer { request_id });
             }
             // Downloads report cancellation immediately because the client has
             // already stopped consuming the stream at this point.
             progress::mark_transfer_errored(
-                state,
+                router,
                 request_id.as_transfer_id(),
                 "Download canceled by client".to_string(),
             );
         }
-        None => match state.streams.uploads.get_mut(&request_id) {
+        None => match router.streams.uploads.get_mut(&request_id) {
             Some(transfer) => {
                 if transfer.agent_id != agent_id {
                     log!(
@@ -181,11 +185,11 @@ pub(crate) fn cancel_transfer(
                 // progress should settle into a terminal canceled state even if
                 // the agent's cleanup ack arrives slightly later.
                 progress::mark_transfer_errored(
-                    state,
+                    router,
                     request_id.as_transfer_id(),
                     "Upload stream canceled by client".to_string(),
                 );
-                if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
+                if let Some(agent_connection) = router.agents.by_id.get(&agent_id) {
                     log!(
                         Level::Info,
                         "Sending upload cancel to agent: agent_id={}, request_id={}",

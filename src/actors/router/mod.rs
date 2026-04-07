@@ -3,7 +3,7 @@ mod cleanup;
 mod error;
 mod messages;
 mod progress;
-mod state;
+mod router;
 mod transfers;
 mod ui;
 
@@ -13,13 +13,9 @@ pub use messages::{
     RouteResponse, RouteStreamChunkRequest, RouterMsg, SendStreamChunkRequest, StartCopyRequest,
     StartUploadRequest, TransferProgressUpdateRequest,
 };
-pub use state::CopyContentKind;
+pub use router::CopyContentKind;
 
-use crate::commands::CommandResult;
-use crate::log;
-use crate::logging::Level;
-use crate::types::RequestId;
-use state::{CopyExecution, RouterState};
+use router::Router;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, error::Elapsed};
 
@@ -90,156 +86,9 @@ pub enum RouterCallError {
 pub fn spawn_router() -> (RouterHandle, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel::<RouterMsg>(ROUTER_MAILBOX_CAPACITY);
     let router_handle = RouterHandle::new(sender);
-    let task_handle = tokio::spawn(run_router(receiver, router_handle.clone()));
+    let router = Router::new(ui::start_refresh_check_task(router_handle.clone()));
+    let task_handle = tokio::spawn(router.run(receiver, router_handle.clone()));
     (router_handle, task_handle)
-}
-
-/// Checks whether an inbound stream chunk belongs to a remote copy flow.
-///
-/// TODO: This should be method of RouterState
-fn is_remote_copy_stream(state: &RouterState, request_id: RequestId) -> bool {
-    state
-        .copies
-        .public_id_for_internal(request_id)
-        .and_then(|public_request_id| state.copies.by_public_id.get(&public_request_id))
-        .map(|copy_request| matches!(copy_request.execution, CopyExecution::RemoteStream { .. }))
-        .unwrap_or(false)
-}
-
-/// Routes a final agent command response to one-shot, copy, or upload handlers.
-///
-/// TODO: This should be method of RouterState
-fn route_response(state: &mut RouterState, response: RouteResponse) {
-    if let Some((reply, stored_agent_id)) = state
-        .pending_rest
-        .by_request_id
-        .remove(&response.request_id)
-    {
-        let result_to_send = match (&response.result, state.agents.by_id.get(&stored_agent_id)) {
-            (CommandResult::GetAgentDetails(details), Some(agent_connection)) => {
-                // Registration owns the connection-scoped identity fields, so the
-                // router rewrites them from its authoritative registry snapshot.
-                let mut details = details.clone();
-                details.id = stored_agent_id.clone();
-                details.name = agent_connection.agent_name.clone();
-                details.connected_at = agent_connection.connected_at;
-                details.os = agent_connection.os.clone();
-                details.arch = agent_connection.arch.clone();
-                details.hostname = agent_connection.hostname.clone();
-                details.username = agent_connection.username.clone();
-                CommandResult::GetAgentDetails(details)
-            }
-            _ => response.result.clone(),
-        };
-
-        let _ = reply.send(result_to_send);
-        return;
-    }
-
-    if transfers::copy::finish_transfer(
-        state,
-        response.agent_id.clone(),
-        response.request_id,
-        response.result.clone(),
-    ) {
-        return;
-    }
-
-    transfers::upload::finish_transfer(
-        state,
-        response.agent_id,
-        response.request_id,
-        response.result,
-    );
-}
-
-/// Runs the router event loop so all correlated routing state stays single-owner.
-///
-/// TODO: This should be method of RouterState
-async fn run_router(mut receiver: mpsc::Receiver<RouterMsg>, router_handle: RouterHandle) {
-    log!(Level::Info, "Router task started");
-    let mut state = RouterState::new(ui::start_refresh_check_task(router_handle.clone()));
-
-    while let Some(message) = receiver.recv().await {
-        match message {
-            RouterMsg::RegisterAgent(request) => {
-                agents::register(&mut state, request);
-            }
-            RouterMsg::UnregisterAgent { agent_id } => {
-                log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
-                state.agents.by_id.remove(&agent_id);
-                ui::notify_refresh(&mut state);
-                cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
-            }
-            RouterMsg::RouteResponse(response) => {
-                route_response(&mut state, response);
-            }
-            RouterMsg::GetAgentList { reply } => {
-                let _ = reply.send(agents::list_agents(&state));
-            }
-            RouterMsg::GetTransferProgress { reply } => {
-                let _ = reply.send(progress::list_transfer_progress(&state));
-            }
-            RouterMsg::RegisterUiSubscriber(request) => {
-                ui::register_subscriber(&mut state, request);
-            }
-            RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
-                ui::unregister_subscriber(&mut state, &subscriber_id);
-            }
-            RouterMsg::ExecuteCommandRest(request) => {
-                agents::execute_command_rest(&mut state, request);
-            }
-            RouterMsg::RouteStreamChunk(request) => {
-                if is_remote_copy_stream(&state, request.chunk.request_id) {
-                    transfers::copy::route_chunk(&mut state, &router_handle, request);
-                } else {
-                    transfers::download::route_chunk(&mut state, &router_handle, request);
-                }
-            }
-            RouterMsg::FinishRoutedDownloadChunk(route) => {
-                transfers::download::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(());
-            }
-            RouterMsg::FinishRoutedUploadChunk(route) => {
-                let result = transfers::upload::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(result);
-            }
-            RouterMsg::FinishRoutedCopyChunk(route) => {
-                transfers::copy::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(());
-            }
-            RouterMsg::ExecuteStreamCommandRest(request) => {
-                transfers::download::start(&mut state, request);
-            }
-            RouterMsg::StartUploadStreamRest(request) => {
-                transfers::upload::start(&mut state, request);
-            }
-            RouterMsg::SendStreamChunkToAgent(request) => {
-                transfers::upload::route_chunk(&mut state, &router_handle, request);
-            }
-            RouterMsg::CancelTransfer {
-                agent_id,
-                request_id,
-            } => {
-                cleanup::cancel_transfer(&mut state, request_id, agent_id);
-            }
-            RouterMsg::StartCopyRest(request) => {
-                transfers::copy::start(&mut state, request);
-            }
-            RouterMsg::TransferProgressUpdate(request) => {
-                transfers::copy::update_progress(&mut state, request);
-            }
-            RouterMsg::CheckPendingUiRefresh => {
-                ui::check_pending_refresh(&mut state);
-            }
-            RouterMsg::Shutdown => {
-                break;
-            }
-        }
-    }
-
-    state.ui.refresh_check_task.abort();
-    log!(Level::Info, "Router task stopped");
 }
 
 #[cfg(test)]

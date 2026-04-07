@@ -1,5 +1,5 @@
 use super::RouterError;
-use super::state::CopyContentKind;
+use super::router::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId};
 use axum::extract::ws::Message as WsMessage;
