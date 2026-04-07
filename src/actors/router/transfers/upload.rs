@@ -128,12 +128,12 @@ pub(crate) fn route_chunk(
                     reply,
                 }));
 
-            if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result {
-                if let RouterMsg::FinishRoutedUploadChunk(route) = message {
-                    let _ = route.reply.send(Err(RouterError::RouterStopped {
-                        operation: "upload chunk forwarding",
-                    }));
-                }
+            if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result
+                && let RouterMsg::FinishRoutedUploadChunk(route) = message
+            {
+                let _ = route.reply.send(Err(RouterError::RouterStopped {
+                    operation: "upload chunk forwarding",
+                }));
             }
         });
     } else {
@@ -219,18 +219,18 @@ pub(crate) fn finish_routed_chunk(
             error.to_string(),
         );
 
-        if should_cancel_agent {
-            if let Some(agent_connection) = state.agents.by_id.get(&route.agent_id) {
-                log!(
-                    Level::Info,
-                    "Sending upload cancel to agent: agent_id={}, request_id={}",
-                    route.agent_id,
-                    route.request_id
-                );
-                agent_connection.send_message(Message::CancelTransfer {
-                    request_id: route.request_id,
-                });
-            }
+        if should_cancel_agent
+            && let Some(agent_connection) = state.agents.by_id.get(&route.agent_id)
+        {
+            log!(
+                Level::Info,
+                "Sending upload cancel to agent: agent_id={}, request_id={}",
+                route.agent_id,
+                route.request_id
+            );
+            agent_connection.send_message(Message::CancelTransfer {
+                request_id: route.request_id,
+            });
         }
 
         return Err(error);

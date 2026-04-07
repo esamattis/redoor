@@ -115,13 +115,13 @@ impl AgentRuntime {
                 });
             }
             AgentMsg::SendWebSocketMessage { msg } => {
-                if let Some(tx) = &self.state.ws_text_tx {
-                    if tx.send(msg).await.is_err() {
-                        log!(
-                            Level::Error,
-                            "Failed to send message, connection may be lost"
-                        );
-                    }
+                if let Some(tx) = &self.state.ws_text_tx
+                    && tx.send(msg).await.is_err()
+                {
+                    log!(
+                        Level::Error,
+                        "Failed to send message, connection may be lost"
+                    );
                 }
             }
             AgentMsg::ExitWithError => {

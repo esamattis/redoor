@@ -89,14 +89,14 @@ impl Logger {
 
         println!("{}", formatted);
 
-        if let Some(file) = self.log_file.as_mut() {
-            if let Err(error) = writeln!(file, "{}", formatted) {
-                let log_file_path = self.log_file_path.as_deref().unwrap_or("<unknown>");
-                eprintln!(
-                    "[{}] [ERROR] Failed to write log file '{}': {}",
-                    timestamp, log_file_path, error
-                );
-            }
+        if let Some(file) = self.log_file.as_mut()
+            && let Err(error) = writeln!(file, "{}", formatted)
+        {
+            let log_file_path = self.log_file_path.as_deref().unwrap_or("<unknown>");
+            eprintln!(
+                "[{}] [ERROR] Failed to write log file '{}': {}",
+                timestamp, log_file_path, error
+            );
         }
     }
 

@@ -244,22 +244,21 @@ impl TarDownloadWorker {
                 break;
             };
 
-            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
-                if !self
+            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes)
+                && !self
                     .send_chunk(
                         StreamChunkFrameRequest::new(self.request_id, &previous_chunk)
                             .payload_kind(StreamPayloadKind::Tar)
                             .is_last(false),
                     )
                     .await
-                {
-                    log!(
-                        Level::Warning,
-                        "WebSocket channel full or closed, aborting tar download"
-                    );
-                    self.cleanup().await;
-                    return;
-                }
+            {
+                log!(
+                    Level::Warning,
+                    "WebSocket channel full or closed, aborting tar download"
+                );
+                self.cleanup().await;
+                return;
             }
         }
 

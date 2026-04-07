@@ -142,10 +142,10 @@ pub(crate) fn route_chunk(
                 reply,
             },
         ));
-        if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result {
-            if let RouterMsg::FinishRoutedDownloadChunk(route) = message {
-                let _ = route.reply.send(());
-            }
+        if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result
+            && let RouterMsg::FinishRoutedDownloadChunk(route) = message
+        {
+            let _ = route.reply.send(());
         }
     });
 }

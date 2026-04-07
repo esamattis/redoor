@@ -25,7 +25,7 @@ pub(crate) async fn send_framed_copy_chunk(
     let mut emitted = 0usize;
     let mut send_succeeded = true;
 
-    while let Some(chunk) = frames.next() {
+    for chunk in frames.by_ref() {
         emitted += 1;
         if !agent_connection.send_binary(chunk.to_bytes()).await {
             send_succeeded = false;
@@ -379,10 +379,10 @@ pub(crate) fn route_chunk(
             reply,
         }));
 
-        if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result {
-            if let RouterMsg::FinishRoutedCopyChunk(route) = message {
-                let _ = route.reply.send(());
-            }
+        if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result
+            && let RouterMsg::FinishRoutedCopyChunk(route) = message
+        {
+            let _ = route.reply.send(());
         }
     });
 }

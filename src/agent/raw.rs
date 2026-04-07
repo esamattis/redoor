@@ -74,6 +74,14 @@ struct RawUploadSession {
     bytes_written: u64,
 }
 
+/// Holds the state needed to start one raw download worker.
+pub(crate) struct RawDownloadContext<'a> {
+    pub(crate) request_id: RequestId,
+    pub(crate) write: &'a mpsc::Sender<WsMessage>,
+    pub(crate) cancel_receiver: watch::Receiver<bool>,
+    pub(crate) active_downloads: ActiveDownloads,
+}
+
 /// Outcome of waiting for either the next raw upload chunk or a cancel signal.
 enum RawUploadEvent {
     Chunk(Option<streaming::StreamChunk>),
@@ -449,21 +457,19 @@ impl RawDownloadWorker {
 
                                 if let Some(data) =
                                     pending_chunk.replace(buffer[..bytes_read].to_vec())
-                                {
-                                    if !self
+                                    && !self
                                         .send_chunk(
                                             StreamChunkFrameRequest::new(self.request_id, &data)
                                                 .is_last(false),
                                         )
                                         .await
-                                    {
-                                        log!(
-                                            Level::Warning,
-                                            "WebSocket channel full or closed, aborting download"
-                                        );
-                                        self.cleanup().await;
-                                        return;
-                                    }
+                                {
+                                    log!(
+                                        Level::Warning,
+                                        "WebSocket channel full or closed, aborting download"
+                                    );
+                                    self.cleanup().await;
+                                    return;
                                 }
                             }
                             Err(error) => {
@@ -602,19 +608,16 @@ impl AgentActor {
         path: String,
         range_start: Option<u64>,
         range_end: Option<u64>,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        cancel_receiver: watch::Receiver<bool>,
-        active_downloads: ActiveDownloads,
+        context: RawDownloadContext<'_>,
     ) {
         RawDownloadWorker {
             path,
             range_start,
             range_end,
-            request_id,
-            write: write.clone(),
-            cancel_receiver,
-            active_downloads,
+            request_id: context.request_id,
+            write: context.write.clone(),
+            cancel_receiver: context.cancel_receiver,
+            active_downloads: context.active_downloads,
             chunk_index: ChunkIndex::new(0),
         }
         .process()
