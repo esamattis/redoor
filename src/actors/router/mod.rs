@@ -94,6 +94,8 @@ pub fn spawn_router() -> (RouterHandle, tokio::task::JoinHandle<()>) {
 }
 
 /// Checks whether an inbound stream chunk belongs to a remote copy flow.
+///
+/// TODO: This should be method of RouterState
 fn is_remote_copy_stream(state: &RouterState, request_id: RequestId) -> bool {
     state
         .copies
@@ -104,6 +106,8 @@ fn is_remote_copy_stream(state: &RouterState, request_id: RequestId) -> bool {
 }
 
 /// Routes a final agent command response to one-shot, copy, or upload handlers.
+///
+/// TODO: This should be method of RouterState
 fn route_response(state: &mut RouterState, response: RouteResponse) {
     if let Some((reply, stored_agent_id)) = state
         .pending_rest
@@ -149,6 +153,8 @@ fn route_response(state: &mut RouterState, response: RouteResponse) {
 }
 
 /// Runs the router event loop so all correlated routing state stays single-owner.
+///
+/// TODO: This should be method of RouterState
 async fn run_router(mut receiver: mpsc::Receiver<RouterMsg>, router_handle: RouterHandle) {
     log!(Level::Info, "Router task started");
     let mut state = RouterState::new(ui::start_refresh_check_task(router_handle.clone()));

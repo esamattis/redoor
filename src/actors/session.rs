@@ -148,6 +148,7 @@ impl SessionRuntime {
 /// halves and wires them to the router using explicit Tokio channels.
 pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref: RouterHandle) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
+    // TODO: Add comments explaining bounded/unbounded channel reasoning
     let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
     let (tx_out_binary, mut rx_out_binary) = mpsc::channel::<WsMessage>(1);
 
@@ -171,6 +172,7 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
                 biased;
                 message = rx_out_text.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
                 message = rx_out_binary.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
+                // TODO: Add comment explaining what break means
                 else => break,
             };
 
@@ -179,6 +181,7 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
             };
 
             if sender.send(message).await.is_err() {
+                // TODO: Add comment explaining what break means
                 break;
             }
         }
@@ -199,6 +202,7 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
             },
             WsMessage::Binary(bytes) => {
                 if !runtime.handle_binary_message(bytes.to_vec()).await {
+                    // TODO: Add comment explaining what break means
                     break;
                 }
             }
