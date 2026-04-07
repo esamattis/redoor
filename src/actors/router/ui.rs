@@ -6,6 +6,13 @@ use crate::log;
 use crate::logging::Level;
 use std::time::{Duration, Instant};
 
+/* <CODEREVIEW>
+This five-second throttle is much slower than the copy progress emission cadence (`250ms` for local
+copy updates, and per-chunk refresh requests on routed copies). In practice that means copy rows can
+keep showing stale byte counts or even remain `Active` for up to five seconds after the router has
+already recorded `Completed` or `Errored`, which makes the status-sending behavior look broken from
+the UI.
+</CODEREVIEW> */
 /// Minimum gap between broadcast refresh events to avoid UI invalidation storms.
 pub(crate) const UI_REFRESH_THROTTLE_WINDOW: Duration = Duration::from_secs(5);
 /// Poll interval used by the background task that releases trailing refreshes.
