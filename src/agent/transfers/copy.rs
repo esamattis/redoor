@@ -15,6 +15,9 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// Keeps local-copy failures typed so the HTTP layer never has to infer them from text.
 #[derive(Debug, Error)]
 pub(crate) enum LocalCopyError {
@@ -85,6 +88,8 @@ pub(crate) enum LocalCopyError {
     CreateTempDirectory(#[source] std::io::Error),
     #[error("Failed to finalize copied directory: {0}")]
     FinalizeCopiedDirectory(#[source] std::io::Error),
+    #[error("Lost router connection while reporting local copy progress")]
+    ProgressChannelClosed,
 }
 
 impl LocalCopyError {
@@ -125,7 +130,8 @@ impl LocalCopyError {
             | Self::ReadEntryMetadata(_)
             | Self::ReadSourceMetadata(_)
             | Self::CreateDestinationDirectory(_)
-            | Self::PlannerFailed(_) => redoor::commands::CommandErrorKind::Internal,
+            | Self::PlannerFailed(_)
+            | Self::ProgressChannelClosed => redoor::commands::CommandErrorKind::Internal,
         }
     }
 }
@@ -142,6 +148,19 @@ fn temp_local_copy_path(path: &str) -> PathBuf {
     match destination.parent() {
         Some(parent) => parent.join(temp_name),
         None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Removes one local-copy temp file or directory if it is still present.
+async fn cleanup_local_copy_temp_path(path: &Path) {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.is_dir() => {
+            let _ = tokio::fs::remove_dir_all(path).await;
+        }
+        Ok(_) => {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        Err(_) => {}
     }
 }
 
@@ -255,7 +274,11 @@ impl LocalCopyProgressReporter {
     }
 
     /// Emits a progress update once enough bytes or time have passed.
-    async fn report(&mut self, force: bool) {
+    async fn report(&mut self, force: bool) -> Result<(), LocalCopyError> {
+        if self.write.is_closed() {
+            return Err(LocalCopyError::ProgressChannelClosed);
+        }
+
         let now = Instant::now();
         let should_report = force
             || self
@@ -265,7 +288,7 @@ impl LocalCopyProgressReporter {
             || now.saturating_duration_since(self.last_reported_at) >= Self::REPORT_EVERY_DURATION;
 
         if !should_report {
-            return;
+            return Ok(());
         }
 
         let message = Message::TransferProgressUpdate {
@@ -275,24 +298,28 @@ impl LocalCopyProgressReporter {
             total_bytes: Some(self.total_bytes),
         };
 
-        if let Ok(json) = serde_json::to_string(&message) {
-            let _ = self.write.send(WsMessage::text(json)).await;
-        }
+        let json =
+            serde_json::to_string(&message).map_err(|_| LocalCopyError::ProgressChannelClosed)?;
+        self.write
+            .send(WsMessage::text(json))
+            .await
+            .map_err(|_| LocalCopyError::ProgressChannelClosed)?;
 
         self.last_reported_bytes = self.transferred_bytes;
         self.last_reported_at = now;
+        Ok(())
     }
 
     /// Adds copied bytes and reports if the throttle allows it.
-    async fn advance(&mut self, bytes: u64) {
+    async fn advance(&mut self, bytes: u64) -> Result<(), LocalCopyError> {
         self.transferred_bytes = self.transferred_bytes.saturating_add(bytes);
-        self.report(false).await;
+        self.report(false).await
     }
 
     /// Forces the final progress update so the UI lands on 100%.
-    async fn finish(&mut self) {
+    async fn finish(&mut self) -> Result<(), LocalCopyError> {
         self.transferred_bytes = self.total_bytes;
-        self.report(true).await;
+        self.report(true).await
     }
 }
 
@@ -300,17 +327,14 @@ impl LocalCopyProgressReporter {
 async fn copy_file_streaming(
     source_path: &Path,
     dest_path: &Path,
+    temp_path: &Path,
     reporter: &mut LocalCopyProgressReporter,
 ) -> Result<(), LocalCopyError> {
     let mut source = File::open(source_path)
         .await
         .map_err(|_| LocalCopyError::OpenSourceFile(source_path.display().to_string()))?;
-    let temp_path =
-        temp_local_copy_path(dest_path.to_str().ok_or_else(|| {
-            LocalCopyError::NonUtf8DestinationPath(dest_path.display().to_string())
-        })?);
 
-    let mut destination = File::create(&temp_path)
+    let mut destination = File::create(temp_path)
         .await
         .map_err(|_| LocalCopyError::CreateDestinationFile(temp_path.display().to_string()))?;
 
@@ -331,7 +355,7 @@ async fn copy_file_streaming(
             .await
             .map_err(|_| LocalCopyError::WriteDestinationFile(temp_path.display().to_string()))?;
 
-        reporter.advance(bytes_read as u64).await;
+        reporter.advance(bytes_read as u64).await?;
     }
 
     destination
@@ -340,12 +364,12 @@ async fn copy_file_streaming(
         .map_err(|_| LocalCopyError::FlushDestinationFile(temp_path.display().to_string()))?;
     drop(destination);
 
-    tokio::fs::rename(&temp_path, dest_path)
-        .await
-        .map_err(|_| LocalCopyError::FinalizeCopiedFile {
+    tokio::fs::rename(temp_path, dest_path).await.map_err(|_| {
+        LocalCopyError::FinalizeCopiedFile {
             from: temp_path.display().to_string(),
             to: dest_path.display().to_string(),
-        })?;
+        }
+    })?;
 
     Ok(())
 }
@@ -446,7 +470,8 @@ async fn copy_directory_from_plan(
             })?;
         }
 
-        copy_file_streaming(&source_path, &dest_path, reporter).await?;
+        let temp_path = temp_local_copy_path_for_destination(&dest_path)?;
+        copy_file_streaming(&source_path, &dest_path, &temp_path, reporter).await?;
     }
 
     Ok(())
@@ -479,68 +504,51 @@ impl AgentActor {
         write: &mpsc::Sender<WsMessage>,
         agent_id: &AgentId,
     ) {
+        match self
+            .run_local_copy_file(source_path, dest_path, request_id, write, agent_id)
+            .await
+        {
+            Ok(result) => {
+                self.send_command_response(write, agent_id, request_id, result)
+                    .await;
+            }
+            Err(error) => {
+                self.send_local_copy_error(write, agent_id, request_id, error)
+                    .await;
+            }
+        }
+    }
+
+    /// Executes one same-agent file copy and returns the final protocol result.
+    async fn run_local_copy_file(
+        &self,
+        source_path: String,
+        dest_path: String,
+        request_id: RequestId,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &AgentId,
+    ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
 
-        let source_metadata = match tokio::fs::metadata(&source_path_buf).await {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::AccessSourceFile(error),
-                )
-                .await;
-                return;
-            }
-        };
+        let source_metadata = tokio::fs::metadata(&source_path_buf)
+            .await
+            .map_err(LocalCopyError::AccessSourceFile)?;
 
         if !source_metadata.is_file() {
-            self.send_local_copy_error(
-                write,
-                agent_id,
-                request_id,
-                LocalCopyError::SourceNotFile(source_path.clone()),
-            )
-            .await;
-            return;
+            return Err(LocalCopyError::SourceNotFile(source_path));
         }
 
-        if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)
-        {
-            self.send_local_copy_error(write, agent_id, request_id, error)
-                .await;
-            return;
-        }
-
-        if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error)
-                .await;
-            return;
-        }
+        validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)?;
+        validate_local_copy_parent(&dest_path_buf).await?;
 
         match tokio::fs::try_exists(&dest_path_buf).await {
             Ok(true) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::DestinationAlreadyExists(dest_path.clone()),
-                )
-                .await;
-                return;
+                return Err(LocalCopyError::DestinationAlreadyExists(dest_path));
             }
             Ok(false) => {}
             Err(error) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::CheckDestinationPath(error),
-                )
-                .await;
-                return;
+                return Err(LocalCopyError::CheckDestinationPath(error));
             }
         }
 
@@ -550,25 +558,22 @@ impl AgentActor {
             request_id,
             source_metadata.len(),
         );
+        let temp_path = temp_local_copy_path_for_destination(&dest_path_buf)?;
 
-        reporter.report(true).await;
+        reporter.report(true).await?;
 
-        match copy_file_streaming(&source_path_buf, &dest_path_buf, &mut reporter).await {
+        match copy_file_streaming(&source_path_buf, &dest_path_buf, &temp_path, &mut reporter).await
+        {
             Ok(()) => {
-                reporter.finish().await;
-                self.send_command_response(
-                    write,
-                    agent_id,
-                    request_id,
-                    CommandResult::LocalCopyFile,
-                )
-                .await;
+                if let Err(error) = reporter.finish().await {
+                    cleanup_local_copy_temp_path(&temp_path).await;
+                    return Err(error);
+                }
+                Ok(CommandResult::LocalCopyFile)
             }
             Err(error) => {
-                let temp_path = temp_local_copy_path(&dest_path);
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                self.send_local_copy_error(write, agent_id, request_id, error)
-                    .await;
+                cleanup_local_copy_temp_path(&temp_path).await;
+                Err(error)
             }
         }
     }
@@ -582,68 +587,51 @@ impl AgentActor {
         write: &mpsc::Sender<WsMessage>,
         agent_id: &AgentId,
     ) {
+        match self
+            .run_local_copy_directory(source_path, dest_path, request_id, write, agent_id)
+            .await
+        {
+            Ok(result) => {
+                self.send_command_response(write, agent_id, request_id, result)
+                    .await;
+            }
+            Err(error) => {
+                self.send_local_copy_error(write, agent_id, request_id, error)
+                    .await;
+            }
+        }
+    }
+
+    /// Executes one same-agent directory copy and returns the final protocol result.
+    async fn run_local_copy_directory(
+        &self,
+        source_path: String,
+        dest_path: String,
+        request_id: RequestId,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &AgentId,
+    ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
 
-        let source_metadata = match tokio::fs::metadata(&source_path_buf).await {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::AccessSourceDirectory(error),
-                )
-                .await;
-                return;
-            }
-        };
+        let source_metadata = tokio::fs::metadata(&source_path_buf)
+            .await
+            .map_err(LocalCopyError::AccessSourceDirectory)?;
 
         if !source_metadata.is_dir() {
-            self.send_local_copy_error(
-                write,
-                agent_id,
-                request_id,
-                LocalCopyError::SourceNotDirectory(source_path.clone()),
-            )
-            .await;
-            return;
+            return Err(LocalCopyError::SourceNotDirectory(source_path));
         }
 
-        if let Err(error) = validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)
-        {
-            self.send_local_copy_error(write, agent_id, request_id, error)
-                .await;
-            return;
-        }
-
-        if let Err(error) = validate_local_copy_parent(&dest_path_buf).await {
-            self.send_local_copy_error(write, agent_id, request_id, error)
-                .await;
-            return;
-        }
+        validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)?;
+        validate_local_copy_parent(&dest_path_buf).await?;
 
         match tokio::fs::try_exists(&dest_path_buf).await {
             Ok(true) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::DestinationAlreadyExists(dest_path.clone()),
-                )
-                .await;
-                return;
+                return Err(LocalCopyError::DestinationAlreadyExists(dest_path));
             }
             Ok(false) => {}
             Err(error) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::CheckDestinationPath(error),
-                )
-                .await;
-                return;
+                return Err(LocalCopyError::CheckDestinationPath(error));
             }
         }
 
@@ -654,35 +642,15 @@ impl AgentActor {
         .await
         {
             Ok(Ok(plan)) => plan,
-            Ok(Err(error)) => {
-                self.send_local_copy_error(write, agent_id, request_id, error)
-                    .await;
-                return;
-            }
-            Err(error) => {
-                self.send_local_copy_error(
-                    write,
-                    agent_id,
-                    request_id,
-                    LocalCopyError::PlannerFailed(error.to_string()),
-                )
-                .await;
-                return;
-            }
+            Ok(Err(error)) => return Err(error),
+            Err(error) => return Err(LocalCopyError::PlannerFailed(error.to_string())),
         };
 
         let temp_dest_root = temp_local_copy_dir_path(&dest_path);
 
-        if let Err(error) = tokio::fs::create_dir(&temp_dest_root).await {
-            self.send_local_copy_error(
-                write,
-                agent_id,
-                request_id,
-                LocalCopyError::CreateTempDirectory(error),
-            )
-            .await;
-            return;
-        }
+        tokio::fs::create_dir(&temp_dest_root)
+            .await
+            .map_err(LocalCopyError::CreateTempDirectory)?;
 
         let mut reporter = LocalCopyProgressReporter::new(
             write.clone(),
@@ -691,7 +659,10 @@ impl AgentActor {
             plan.total_bytes,
         );
 
-        reporter.report(true).await;
+        if let Err(error) = reporter.report(true).await {
+            let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
+            return Err(error);
+        }
 
         match copy_directory_from_plan(&source_path_buf, &temp_dest_root, &plan, &mut reporter)
             .await
@@ -699,30 +670,135 @@ impl AgentActor {
             Ok(()) => {
                 if let Err(error) = tokio::fs::rename(&temp_dest_root, &dest_path_buf).await {
                     let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                    self.send_local_copy_error(
-                        write,
-                        agent_id,
-                        request_id,
-                        LocalCopyError::FinalizeCopiedDirectory(error),
-                    )
-                    .await;
-                    return;
+                    return Err(LocalCopyError::FinalizeCopiedDirectory(error));
                 }
 
-                reporter.finish().await;
-                self.send_command_response(
-                    write,
-                    agent_id,
-                    request_id,
-                    CommandResult::LocalCopyDirectory,
-                )
-                .await;
+                if let Err(error) = reporter.finish().await {
+                    let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
+                    return Err(error);
+                }
+                Ok(CommandResult::LocalCopyDirectory)
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                self.send_local_copy_error(write, agent_id, request_id, error)
-                    .await;
+                Err(error)
             }
         }
+    }
+}
+
+/// Builds the temp copy path from one validated destination path.
+fn temp_local_copy_path_for_destination(dest_path: &Path) -> Result<PathBuf, LocalCopyError> {
+    Ok(temp_local_copy_path(dest_path.to_str().ok_or_else(
+        || LocalCopyError::NonUtf8DestinationPath(dest_path.display().to_string()),
+    )?))
+}
+
+#[cfg(test)]
+fn unique_test_path(prefix: &str) -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    std::env::temp_dir().join(format!(
+        "redoor-{prefix}-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentActor;
+    use redoor::commands::{CommandErrorKind, CommandResult};
+
+    #[tokio::test]
+    async fn local_copy_file_fails_when_progress_channel_is_closed() {
+        let source_path = unique_test_path("local-copy-source");
+        let dest_path = unique_test_path("local-copy-dest");
+        let source_contents = b"copy me";
+        tokio::fs::write(&source_path, source_contents)
+            .await
+            .expect("test source file should be created");
+
+        let (write_tx, mut write_rx) = mpsc::channel(1);
+        drop(write_rx);
+
+        AgentActor
+            .local_copy_file(
+                source_path.display().to_string(),
+                dest_path.display().to_string(),
+                RequestId::new(42),
+                &write_tx,
+                &AgentId::from("agent-1"),
+            )
+            .await;
+
+        assert!(
+            !tokio::fs::try_exists(&dest_path)
+                .await
+                .expect("destination existence should be readable"),
+            "the destination should stay absent when the router text lane has already closed"
+        );
+
+        let parent = dest_path
+            .parent()
+            .expect("temp test file should have a parent");
+        let file_name = dest_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp test file name should stay utf-8");
+        let mut entries = tokio::fs::read_dir(parent)
+            .await
+            .expect("temp test parent should stay readable");
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .expect("temp test directory iteration should succeed")
+        {
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !entry_name.contains(&format!(".{file_name}.redoor-local-copy-")),
+                "failed local copies should remove their temp file instead of leaking hidden copy output"
+            );
+        }
+
+        let _ = tokio::fs::remove_file(&source_path).await;
+    }
+
+    #[tokio::test]
+    async fn local_copy_progress_reporter_surfaces_closed_channel() {
+        let (write_tx, write_rx) = mpsc::channel(1);
+        drop(write_rx);
+        let mut reporter = LocalCopyProgressReporter::new(
+            write_tx,
+            AgentId::from("agent-1"),
+            RequestId::new(7),
+            10,
+        );
+
+        let error = reporter
+            .report(true)
+            .await
+            .expect_err("closed text lanes should stop local copy reporting immediately");
+
+        assert!(
+            matches!(error, LocalCopyError::ProgressChannelClosed),
+            "the reporter should return a dedicated connection-health error so the copy can abort cleanly"
+        );
+        assert_eq!(
+            error.kind(),
+            CommandErrorKind::Internal,
+            "the surfaced protocol error kind should stay stable for router-side handling"
+        );
+        let command_result: CommandResult = AgentCommandError::from(error).into();
+        assert!(
+            matches!(
+                command_result,
+                CommandResult::Error {
+                    kind: CommandErrorKind::Internal,
+                    ..
+                }
+            ),
+            "connection-loss during local copy reporting should become a final command error if it can still be sent"
+        );
     }
 }
