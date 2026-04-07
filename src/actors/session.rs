@@ -148,8 +148,11 @@ impl SessionRuntime {
 /// halves and wires them to the router using explicit Tokio channels.
 pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref: RouterHandle) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
-    // TODO: Add comments explaining bounded/unbounded channel reasoning
+    // Text frames carry control-plane messages, so they stay unbounded to avoid
+    // stalling router notifications behind a concurrent large transfer.
     let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
+    // Binary frames can be large and continuous, so this lane stays bounded to
+    // propagate backpressure instead of buffering an unbounded stream in memory.
     let (tx_out_binary, mut rx_out_binary) = mpsc::channel::<WsMessage>(1);
 
     let mut runtime = SessionRuntime {
@@ -172,7 +175,8 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
                 biased;
                 message = rx_out_text.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
                 message = rx_out_binary.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
-                // TODO: Add comment explaining what break means
+                // Both outbound lanes are closed, so no future websocket frames can
+                // be produced and the writer task can stop cleanly.
                 else => break,
             };
 
@@ -181,7 +185,8 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
             };
 
             if sender.send(message).await.is_err() {
-                // TODO: Add comment explaining what break means
+                // A send failure means the websocket is gone, so continuing to pull
+                // router output would only accumulate work for a dead session.
                 break;
             }
         }
@@ -202,7 +207,8 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
             },
             WsMessage::Binary(bytes) => {
                 if !runtime.handle_binary_message(bytes.to_vec()).await {
-                    // TODO: Add comment explaining what break means
+                    // The router stopped accepting or acknowledging streamed chunks,
+                    // so the session can no longer keep this websocket registered.
                     break;
                 }
             }
