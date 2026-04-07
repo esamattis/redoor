@@ -323,6 +323,13 @@ impl LocalCopyProgressReporter {
     }
 }
 
+/// Holds the protocol response plumbing shared by local copy operations.
+pub(crate) struct LocalCopyResponseContext<'a> {
+    pub(crate) write: &'a mpsc::Sender<WsMessage>,
+    pub(crate) agent_id: &'a AgentId,
+    pub(crate) request_id: RequestId,
+}
+
 /// Copies one file through a temp file so partially copied output is never exposed as final data.
 async fn copy_file_streaming(
     source_path: &Path,
@@ -481,15 +488,13 @@ impl AgentActor {
     /// Sends a consistent local-copy error response back to the router.
     async fn send_local_copy_error(
         &self,
-        write: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
-        request_id: RequestId,
+        response: &LocalCopyResponseContext<'_>,
         error: LocalCopyError,
     ) {
         self.send_command_response(
-            write,
-            agent_id,
-            request_id,
+            response.write,
+            response.agent_id,
+            response.request_id,
             AgentCommandError::from(error).into(),
         )
         .await;
@@ -500,21 +505,23 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
+        response: LocalCopyResponseContext<'_>,
     ) {
         match self
-            .run_local_copy_file(source_path, dest_path, request_id, write, agent_id)
+            .run_local_copy_file(source_path, dest_path, &response)
             .await
         {
             Ok(result) => {
-                self.send_command_response(write, agent_id, request_id, result)
-                    .await;
+                self.send_command_response(
+                    response.write,
+                    response.agent_id,
+                    response.request_id,
+                    result,
+                )
+                .await;
             }
             Err(error) => {
-                self.send_local_copy_error(write, agent_id, request_id, error)
-                    .await;
+                self.send_local_copy_error(&response, error).await;
             }
         }
     }
@@ -524,9 +531,7 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
+        response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
@@ -553,9 +558,9 @@ impl AgentActor {
         }
 
         let mut reporter = LocalCopyProgressReporter::new(
-            write.clone(),
-            agent_id.clone(),
-            request_id,
+            response.write.clone(),
+            response.agent_id.clone(),
+            response.request_id,
             source_metadata.len(),
         );
         let temp_path = temp_local_copy_path_for_destination(&dest_path_buf)?;
@@ -583,21 +588,23 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
+        response: LocalCopyResponseContext<'_>,
     ) {
         match self
-            .run_local_copy_directory(source_path, dest_path, request_id, write, agent_id)
+            .run_local_copy_directory(source_path, dest_path, &response)
             .await
         {
             Ok(result) => {
-                self.send_command_response(write, agent_id, request_id, result)
-                    .await;
+                self.send_command_response(
+                    response.write,
+                    response.agent_id,
+                    response.request_id,
+                    result,
+                )
+                .await;
             }
             Err(error) => {
-                self.send_local_copy_error(write, agent_id, request_id, error)
-                    .await;
+                self.send_local_copy_error(&response, error).await;
             }
         }
     }
@@ -607,9 +614,7 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        agent_id: &AgentId,
+        response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
@@ -653,9 +658,9 @@ impl AgentActor {
             .map_err(LocalCopyError::CreateTempDirectory)?;
 
         let mut reporter = LocalCopyProgressReporter::new(
-            write.clone(),
-            agent_id.clone(),
-            request_id,
+            response.write.clone(),
+            response.agent_id.clone(),
+            response.request_id,
             plan.total_bytes,
         );
 
@@ -719,16 +724,18 @@ mod tests {
             .await
             .expect("test source file should be created");
 
-        let (write_tx, mut write_rx) = mpsc::channel(1);
+        let (write_tx, write_rx) = mpsc::channel(1);
         drop(write_rx);
 
         AgentActor
             .local_copy_file(
                 source_path.display().to_string(),
                 dest_path.display().to_string(),
-                RequestId::new(42),
-                &write_tx,
-                &AgentId::from("agent-1"),
+                LocalCopyResponseContext {
+                    write: &write_tx,
+                    agent_id: &AgentId::from("agent-1"),
+                    request_id: RequestId::new(42),
+                },
             )
             .await;
 

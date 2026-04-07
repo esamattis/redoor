@@ -1,6 +1,6 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
-    AgentState, DownloadSessionHandle,
+    AgentState, DownloadSessionHandle, raw::RawDownloadContext,
 };
 use redoor::{
     Level,
@@ -34,10 +34,12 @@ async fn handle_command_message(
                     path,
                     range_start,
                     range_end,
-                    request_id,
-                    &write_binary,
-                    cancel_receiver,
-                    active_downloads.clone(),
+                    RawDownloadContext {
+                        request_id,
+                        write: &write_binary,
+                        cancel_receiver,
+                        active_downloads: active_downloads.clone(),
+                    },
                 )
                 .await;
         }
@@ -59,7 +61,15 @@ async fn handle_command_message(
             dest_path,
         } => {
             AgentActor
-                .local_copy_file(source_path, dest_path, request_id, &write_text, &agent_id)
+                .local_copy_file(
+                    source_path,
+                    dest_path,
+                    super::transfers::copy::LocalCopyResponseContext {
+                        write: &write_text,
+                        agent_id: &agent_id,
+                        request_id,
+                    },
+                )
                 .await;
         }
         Command::LocalCopyDirectory {
@@ -67,7 +77,15 @@ async fn handle_command_message(
             dest_path,
         } => {
             AgentActor
-                .local_copy_directory(source_path, dest_path, request_id, &write_text, &agent_id)
+                .local_copy_directory(
+                    source_path,
+                    dest_path,
+                    super::transfers::copy::LocalCopyResponseContext {
+                        write: &write_text,
+                        agent_id: &agent_id,
+                        request_id,
+                    },
+                )
                 .await;
         }
         Command::RawDelete { path } => {
