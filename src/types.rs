@@ -52,6 +52,12 @@ impl SocketId {
     }
 }
 
+impl Default for SocketId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl From<Uuid> for SocketId {
     fn from(value: Uuid) -> Self {
         Self(value)

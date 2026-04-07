@@ -368,6 +368,12 @@ impl CommandResult {
 
 pub struct CommandHandler;
 
+impl Default for CommandHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandHandler {
     pub fn new() -> Self {
         Self

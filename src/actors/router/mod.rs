@@ -39,6 +39,7 @@ impl RouterHandle {
     }
 
     /// Queues one fire-and-forget router message.
+    #[allow(clippy::result_large_err)]
     pub fn send(&self, message: RouterMsg) -> Result<(), mpsc::error::SendError<RouterMsg>> {
         self.sender.try_send(message).map_err(|error| match error {
             mpsc::error::TrySendError::Closed(message)

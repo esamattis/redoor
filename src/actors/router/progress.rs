@@ -255,7 +255,6 @@ pub(crate) fn list_transfer_progress(state: &RouterState) -> TransferProgressLis
 mod tests {
     use super::*;
     use crate::commands::{TransferDirection, TransferProgressState, UiEvent};
-    use std::collections::HashMap;
     use std::time::Instant;
 
     #[tokio::test]
