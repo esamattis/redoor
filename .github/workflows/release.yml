@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+\\.[0-9]+\\.[0-9]+(-\\w+)?"
 
 jobs:
   build:
@@ -13,6 +13,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary_name: redoor-x86_64-linux
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary_name: redoor-x86_64-macos
           - os: macos-latest
             target: aarch64-apple-darwin
             binary_name: redoor-aarch64-macos
@@ -31,8 +34,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@9d47c6ad4b08e29e8cdfc55bd167cc60a066ab9f # v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Rename binary
         run: |
