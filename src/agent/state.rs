@@ -18,6 +18,10 @@ pub(crate) struct AgentArgs {
     pub(crate) name: String,
     #[arg(long)]
     pub(crate) log: Option<String>,
+    /// Working directory to switch to immediately on startup so the agent
+    /// operates from the requested path even when launched elsewhere.
+    #[arg(short = 'd', long)]
+    pub(crate) dir: Option<String>,
 }
 
 #[derive(Clone)]

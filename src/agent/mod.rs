@@ -95,6 +95,12 @@ pub(crate) struct AgentRuntime {
 }
 
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Change directory as early as possible so logging, relative paths,
+    // and all downstream operations use the requested working directory.
+    if let Some(dir) = &args.dir {
+        std::env::set_current_dir(dir)?;
+    }
+
     let server_url = args.ws_address;
     let agent_name = args.name;
     let log_file = args.log;
