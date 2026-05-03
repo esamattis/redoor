@@ -13,13 +13,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: redoor-x86_64-linux
+            archive_name: redoor-x86_64-linux
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: redoor-aarch64-macos
+            archive_name: redoor-aarch64-macos
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary_name: redoor-aarch64-linux
+            archive_name: redoor-aarch64-linux
 
     runs-on: ${{ matrix.os }}
 
@@ -40,18 +40,14 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Rename binary
-        run: |
-          mv target/${{ matrix.target }}/release/redoor ${{ matrix.binary_name }}
-
       - name: Package binary
-        run: tar czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }}
+        run: tar czf ${{ matrix.archive_name }}.tar.gz -C target/${{ matrix.target }}/release redoor
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}.tar.gz
+          name: ${{ matrix.archive_name }}
+          path: ${{ matrix.archive_name }}.tar.gz
 
   release:
     needs: build
