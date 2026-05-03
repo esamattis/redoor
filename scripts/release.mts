@@ -10,6 +10,14 @@ if (statusOutput.stdout.trim() !== "") {
     process.exit(1);
 }
 
+const currentBranch = (await $`git rev-parse --abbrev-ref HEAD`).stdout.trim();
+if (currentBranch !== "main") {
+    console.error(
+        `Error: You must be on the 'main' branch to release. Current branch: '${currentBranch}'.`,
+    );
+    process.exit(1);
+}
+
 // Find the latest git tag prefixed with "v"
 const tagOutput = await $`git tag -l 'v*' | sort -V | tail -n 1`;
 const latestTag = tagOutput.stdout.trim();
