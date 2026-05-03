@@ -2,6 +2,15 @@
 import { $, question } from "zx";
 import * as semver from "semver";
 
+// Check for uncommitted changes or untracked files
+const statusOutput = await $`git status --porcelain`.nothrow();
+if (statusOutput.stdout.trim() !== "") {
+    console.error(
+        "Error: There are uncommitted changes or untracked files. Please commit or stash them before releasing.",
+    );
+    process.exit(1);
+}
+
 // Find the latest git tag prefixed with "v"
 const tagOutput = await $`git tag -l 'v*' | sort -V | tail -n 1`;
 const latestTag = tagOutput.stdout.trim();
@@ -28,7 +37,8 @@ if (localTagOutput.stdout.trim() === newTag) {
     await $`git tag -d ${newTag}`;
 }
 
-const remoteTagOutput = await $`git ls-remote --tags origin ${newTag}`.nothrow();
+const remoteTagOutput =
+    await $`git ls-remote --tags origin ${newTag}`.nothrow();
 if (remoteTagOutput.stdout.trim().includes(`refs/tags/${newTag}`)) {
     console.log(`Deleting existing remote tag ${newTag}...`);
     await $`git push origin --delete ${newTag}`;
@@ -41,6 +51,7 @@ if (latestTag && semver.lt(newVersion, latestTag.replace(/^v/, ""))) {
     process.exit(1);
 }
 
-await $`git tag ${newTag}`;
+await $`git tag -a ${newTag} -m "Release ${newTag}"`;
+await $`git push origin`;
 await $`git push origin ${newTag}`;
 console.log(`Released ${newTag}`);
