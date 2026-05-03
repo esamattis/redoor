@@ -143,10 +143,10 @@ export class Agent {
     }
 
     /// Returns the browser view URL for a given path on this agent.
-    /// Absolute paths are preserved (producing a `//` after `/browser`),
-    /// while relative paths are used as-is so the agent resolves them.
+    /// The full path is encoded so absolute paths survive URL parsing
+    /// without their leading `/` being swallowed by the router.
     getBrowserUrl(path: string): string {
-        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        const encodedPath = encodeURIComponent(path);
         return `/agents/${encodeURIComponent(this.info.id)}/browser/${encodedPath}`;
     }
 
