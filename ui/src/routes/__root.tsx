@@ -846,11 +846,12 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
 function getTransferSpeedBytesPerSecond(
     transfer: TransferProgressEntry,
 ): number | null {
-    if (transfer.ended_at === null || transfer.ended_at === undefined) {
-        return null;
-    }
+    const endTime =
+        transfer.ended_at === null || transfer.ended_at === undefined
+            ? Date.now() / 1000
+            : transfer.ended_at;
 
-    const elapsedSeconds = transfer.ended_at - transfer.started_at;
+    const elapsedSeconds = endTime - transfer.started_at;
 
     if (elapsedSeconds <= 0) {
         return null;
@@ -991,7 +992,11 @@ function TransferProgressPanel(props: {
                                             </span>
                                             <span className="text-xs text-gray-500">
                                                 {transfer.state === "active"
-                                                    ? "Current speed: —"
+                                                    ? `Current speed: ${formatSpeed(
+                                                          getTransferSpeedBytesPerSecond(
+                                                              transfer,
+                                                          ),
+                                                      )}`
                                                     : `Final speed: ${formatSpeed(
                                                           getTransferSpeedBytesPerSecond(
                                                               transfer,
