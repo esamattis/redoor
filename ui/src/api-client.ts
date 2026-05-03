@@ -142,6 +142,14 @@ export class Agent {
         return url;
     }
 
+    /// Returns the browser view URL for a given path on this agent.
+    /// Absolute paths are preserved (producing a `//` after `/browser`),
+    /// while relative paths are used as-is so the agent resolves them.
+    getBrowserUrl(path: string): string {
+        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        return `/agents/${encodeURIComponent(this.info.id)}/browser/${encodedPath}`;
+    }
+
     async upload(path: string, file: File): Promise<Response> {
         const response = await fetch(this.getRawUrl(path), {
             method: "PUT",

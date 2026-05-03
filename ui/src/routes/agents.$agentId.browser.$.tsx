@@ -24,7 +24,7 @@ import {
     EyeOff,
 } from "lucide-react";
 import { BrowserActionDialog } from "../components/browser-action-dialog";
-import { getParentPath, formatSize } from "../utils/path";
+import { formatSize } from "../utils/path";
 import {
     type Agent,
     type LsResponse,
@@ -53,12 +53,14 @@ function getImmediateParentPath(path: string): string | null {
         return null;
     }
 
+    const isAbsolute = normalizedPath.startsWith("/");
     const parts = normalizedPath.split("/").filter((part) => part !== "");
     if (parts.length <= 1) {
         return null;
     }
 
-    return parts.slice(0, -1).join("/");
+    const parent = parts.slice(0, -1).join("/");
+    return isAbsolute ? `/${parent}` : parent;
 }
 
 function getBrowserPathHref(agentId: string, relativePath: string | null) {
@@ -82,13 +84,16 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         const details = await agent.getDetails();
         const relativePath = params._splat || "";
-        const fullPath = relativePath
-            ? `${details.cwd}/${relativePath}`
-            : details.cwd;
-        const lsResult: LsResponse = await agent.ls(fullPath);
+        const lsPath = relativePath || details.cwd;
+        const lsResult: LsResponse = await agent.ls(lsPath);
         const downloadUrl = isLsFileResponse(lsResult)
             ? agent.getRawUrl(lsResult.path, { cwd: details.cwd })
             : undefined;
+        const fullPath = relativePath.startsWith("/")
+            ? relativePath
+            : relativePath
+              ? `${details.cwd}/${relativePath}`
+              : details.cwd;
 
         return {
             agent,
@@ -556,7 +561,7 @@ function Breadcrumbs(props: {
     const { agentId, agentName, relativePath } = props;
 
     const parts = relativePath.split("/").filter((part) => part !== "");
-    const paths: string[] = [];
+    const isAbsolute = relativePath.startsWith("/");
     let accumulatedPath = "";
 
     return (
@@ -569,10 +574,11 @@ function Breadcrumbs(props: {
                 {agentName}
             </Link>
             {parts.map((part, index) => {
-                accumulatedPath = accumulatedPath
-                    ? `${accumulatedPath}/${part}`
-                    : part;
-                paths.push(accumulatedPath);
+                if (accumulatedPath === "") {
+                    accumulatedPath = isAbsolute ? `/${part}` : part;
+                } else {
+                    accumulatedPath = `${accumulatedPath}/${part}`;
+                }
                 const isLast = index === parts.length - 1;
 
                 return (
@@ -677,9 +683,11 @@ function FileEntry(props: {
     const splatValue = relativePath
         ? `${relativePath}/${entry.name}`
         : entry.name;
-    const fullPath = Route.useLoaderData().cwd
-        ? joinBrowserPath(Route.useLoaderData().cwd, splatValue)
-        : splatValue;
+    const fullPath = splatValue.startsWith("/")
+        ? splatValue
+        : Route.useLoaderData().cwd
+          ? joinBrowserPath(Route.useLoaderData().cwd, splatValue)
+          : splatValue;
     const isSelected = selectedFileKeys.has(`${agentId}:${fullPath}`);
 
     return (

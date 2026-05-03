@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import {
     ArrowDownToLine,
     ArrowUpFromLine,
@@ -122,15 +123,54 @@ export function TransferList(props: {
                                 <td className="p-3">
                                     {transfer.direction === "copy" ? (
                                         <div className="space-y-1 font-mono text-xs text-gray-700 break-all">
-                                            <div>{transfer.source?.path}</div>
+                                            <div>
+                                                {sourceAgent ? (
+                                                    <Link
+                                                        to={sourceAgent.getBrowserUrl(
+                                                            transfer.source
+                                                                ?.path ?? "",
+                                                        )}
+                                                        className="text-blue-600 hover:underline"
+                                                    >
+                                                        {transfer.source?.path}
+                                                    </Link>
+                                                ) : (
+                                                    transfer.source?.path
+                                                )}
+                                            </div>
                                             <div className="text-gray-400">
                                                 -&gt;
                                             </div>
-                                            <div>{transfer.dest?.path}</div>
+                                            <div>
+                                                {destAgent ? (
+                                                    <Link
+                                                        to={destAgent.getBrowserUrl(
+                                                            transfer.dest
+                                                                ?.path ?? "",
+                                                        )}
+                                                        className="text-blue-600 hover:underline"
+                                                    >
+                                                        {transfer.dest?.path}
+                                                    </Link>
+                                                ) : (
+                                                    transfer.dest?.path
+                                                )}
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="font-mono text-xs text-gray-700 break-all">
-                                            {transfer.path}
+                                            {agent ? (
+                                                <Link
+                                                    to={agent.getBrowserUrl(
+                                                        transfer.path,
+                                                    )}
+                                                    className="text-blue-600 hover:underline"
+                                                >
+                                                    {transfer.path}
+                                                </Link>
+                                            ) : (
+                                                transfer.path
+                                            )}
                                         </div>
                                     )}
                                 </td>
