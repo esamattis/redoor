@@ -19,14 +19,28 @@ if (!semver.valid(newVersion)) {
     process.exit(1);
 }
 
-if (latestTag && semver.lte(newVersion, latestTag.replace(/^v/, ""))) {
+const newTag = `v${newVersion}`;
+
+// If the tag already exists, delete it locally and from remote before recreating
+const localTagOutput = await $`git tag -l ${newTag}`.nothrow();
+if (localTagOutput.stdout.trim() === newTag) {
+    console.log(`Deleting existing local tag ${newTag}...`);
+    await $`git tag -d ${newTag}`;
+}
+
+const remoteTagOutput = await $`git ls-remote --tags origin ${newTag}`.nothrow();
+if (remoteTagOutput.stdout.trim().includes(`refs/tags/${newTag}`)) {
+    console.log(`Deleting existing remote tag ${newTag}...`);
+    await $`git push origin --delete ${newTag}`;
+}
+
+if (latestTag && semver.lt(newVersion, latestTag.replace(/^v/, ""))) {
     console.error(
         `New version ${newVersion} must be greater than latest tag ${latestTag}`,
     );
     process.exit(1);
 }
 
-const newTag = `v${newVersion}`;
 await $`git tag ${newTag}`;
 await $`git push origin ${newTag}`;
 console.log(`Released ${newTag}`);
