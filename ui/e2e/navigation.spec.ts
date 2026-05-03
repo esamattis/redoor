@@ -14,6 +14,7 @@ const WEB_BASE_URL = "http://localhost:4000";
 test.describe.serial("File Browser Navigation", () => {
     let agentId: string;
     let agentName: string;
+    let agent2Id: string;
     let testDirName: string;
 
     test.beforeAll(async () => {
@@ -52,6 +53,12 @@ test.describe.serial("File Browser Navigation", () => {
         }
         agentId = agent.id;
         agentName = agent.name;
+
+        const agent2 = agents.find((entry) => entry.name === "agent2_custom");
+        if (!agent2) {
+            throw new Error("Agent agent2_custom not available for testing");
+        }
+        agent2Id = agent2.id;
     });
 
     test.afterAll(async () => {
@@ -656,5 +663,74 @@ test.describe.serial("File Browser Navigation", () => {
 
         // Matching contents proves the copy preserved the original file bytes.
         expect(copiedContent).toBe("content1");
+    });
+
+    test("should copy a file from one agent to another agent", async ({
+        page,
+    }) => {
+        const crossAgentCopiedPath = path.join(
+            "dev_agents",
+            "agent2",
+            "file1.txt",
+        );
+
+        await fs.rm(crossAgentCopiedPath, { force: true });
+
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
+
+        // Select the file on the source agent.
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+
+        await expect(
+            page.getByRole("button", { name: "Copy selected items" }),
+        ).toBeVisible();
+
+        // Navigate to the destination agent via the sidebar so the selection state
+        // survives the client-side navigation.
+        await page.getByRole("link", { name: "agent2_custom" }).click();
+
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${agent2Id}/browser`,
+        );
+
+        // The selection persists across agents, so the copy button remains available.
+        await expect(
+            page.getByRole("button", { name: "Copy selected items" }),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "Copy selected items" }).click();
+
+        // Polling the filesystem is more reliable than waiting on UI messages because
+        // the selected-items panel disappears immediately after a successful copy.
+        await expect
+            .poll(async () => {
+                try {
+                    await fs.stat(crossAgentCopiedPath);
+                    return "exists";
+                } catch {
+                    return "missing";
+                }
+            })
+            .toBe("exists");
+
+        // Reload the page because the directory listing does not auto-refresh after copy.
+        await page.reload();
+
+        // Seeing the copied file in the destination agent proves the cross-agent copy landed in the right place.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+
+        const copiedContent = await fs.readFile(crossAgentCopiedPath, "utf-8");
+
+        // Matching contents proves the cross-agent copy preserved the original file bytes.
+        expect(copiedContent).toBe("content1");
+
+        await fs.rm(crossAgentCopiedPath, { force: true });
     });
 });

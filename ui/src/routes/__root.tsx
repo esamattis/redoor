@@ -524,9 +524,23 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
         });
 
         try {
+            const agentsById = new Map(
+                props.agents.map((agent) => [agent.id, agent]),
+            );
+
             const results = await Promise.allSettled(
-                selectedFiles.map((file) =>
-                    currentAgent.copyTo(
+                selectedFiles.map((file) => {
+                    const sourceAgent = agentsById.get(file.agentId);
+
+                    if (!sourceAgent) {
+                        return Promise.reject(
+                            new Error(
+                                `Source agent unavailable for selected item: ${file.agentId}`,
+                            ),
+                        );
+                    }
+
+                    return sourceAgent.copyTo(
                         {
                             agent: currentAgent.id,
                             path: joinBrowserPath(
@@ -535,8 +549,8 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                             ),
                         },
                         file.path,
-                    ),
-                ),
+                    );
+                }),
             );
 
             const successfulCopies = selectedFiles.filter(
