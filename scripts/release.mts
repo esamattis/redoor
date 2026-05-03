@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { $, question } from "zx";
 import * as semver from "semver";
+import { readFile, writeFile } from "node:fs/promises";
 
 const statusOutput = await $`git status --porcelain`.nothrow();
 if (statusOutput.stdout.trim() !== "") {
@@ -43,6 +44,18 @@ if (latestTag && semver.lt(newVersion, latestTag.replace(/^v/, ""))) {
     );
     process.exit(1);
 }
+
+// Update version in Cargo.toml and commit the change
+const cargoTomlPath = "Cargo.toml";
+const cargoTomlContent = await readFile(cargoTomlPath, "utf-8");
+const updatedCargoToml = cargoTomlContent.replace(
+    /^version = ".*"$/m,
+    `version = "${newVersion}"`,
+);
+await writeFile(cargoTomlPath, updatedCargoToml);
+
+await $`git add ${cargoTomlPath}`;
+await $`git commit -m "Bump version to ${newVersion}"`;
 
 // If the tag already exists, delete it locally and from remote before recreating
 const localTagOutput = await $`git tag -l ${newTag}`.nothrow();
