@@ -20,6 +20,8 @@ import {
     Trash2,
     Square,
     CheckSquare,
+    Eye,
+    EyeOff,
 } from "lucide-react";
 import { BrowserActionDialog } from "../components/browser-action-dialog";
 import { getParentPath, formatSize } from "../utils/path";
@@ -106,15 +108,23 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { agent, agentId, agentName, relativePath, lsResult } = data;
+    const [showHiddenFiles, setShowHiddenFiles] = React.useState(false);
 
     const isAtCwd = relativePath === "";
     const parentPath = getImmediateParentPath(relativePath);
 
     if (isLsDirectoryResponse(lsResult)) {
-        const directories = lsResult.files.filter(
-            (f) => f.type === "directory",
+        const filterHidden = (files: typeof lsResult.files) => {
+            if (showHiddenFiles) return files;
+            return files.filter((f) => !f.name.startsWith("."));
+        };
+
+        const directories = filterHidden(
+            lsResult.files.filter((f) => f.type === "directory"),
         );
-        const regularFiles = lsResult.files.filter((f) => f.type === "file");
+        const regularFiles = filterHidden(
+            lsResult.files.filter((f) => f.type === "file"),
+        );
 
         directories.sort((a, b) => a.name.localeCompare(b.name));
         regularFiles.sort((a, b) => a.name.localeCompare(b.name));
@@ -132,6 +142,10 @@ function FileBrowser() {
                         isAtCwd={isAtCwd}
                         parentPath={parentPath}
                         directoryPath={data.fullPath}
+                        showHiddenFiles={showHiddenFiles}
+                        onToggleHiddenFiles={() =>
+                            setShowHiddenFiles((prev) => !prev)
+                        }
                     />
 
                     <FileList
@@ -475,6 +489,8 @@ function BrowserHeader(props: {
     isAtCwd: boolean;
     parentPath: string | null;
     directoryPath: string;
+    showHiddenFiles: boolean;
+    onToggleHiddenFiles: () => void;
 }) {
     return (
         <div className="mb-6">
@@ -485,6 +501,24 @@ function BrowserHeader(props: {
                     relativePath={props.relativePath}
                 />
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                        type="button"
+                        onClick={props.onToggleHiddenFiles}
+                        aria-pressed={props.showHiddenFiles}
+                        aria-label={
+                            props.showHiddenFiles
+                                ? "Hide hidden files"
+                                : "Show hidden files"
+                        }
+                        className="inline-flex items-center gap-2 rounded bg-gray-100 px-4 py-2 hover:bg-gray-200"
+                    >
+                        {props.showHiddenFiles ? (
+                            <EyeOff className="h-4 w-4" />
+                        ) : (
+                            <Eye className="h-4 w-4" />
+                        )}
+                        {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
+                    </button>
                     <CreateDirectoryAction
                         agent={props.agent}
                         directoryPath={props.directoryPath}
