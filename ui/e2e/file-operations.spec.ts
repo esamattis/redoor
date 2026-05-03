@@ -46,7 +46,11 @@ test.describe.serial("File Operations", () => {
             // This checks the inline status feedback shown next to the upload action.
             await expect(page.getByText("Uploaded 2 files")).toBeVisible();
 
-            // This confirms the transfer progress panel reflects the completed upload state for the first uploaded file.
+            // Navigate to the transfers history page to verify completed uploads are tracked.
+            await page.getByRole("link", { name: "Transfers" }).click();
+            await expect(page).toHaveURL(new RegExp("/transfers$"));
+
+            // This confirms the transfer history page reflects the completed upload state for the first uploaded file.
             await expect(
                 page
                     .getByRole("row")
@@ -54,14 +58,14 @@ test.describe.serial("File Operations", () => {
                     .filter({ hasText: "completed" })
                     .last(),
             ).toBeVisible();
-            // This verifies the first uploaded file name is rendered in transfer progress even if multiple matching rows exist during refreshes.
+            // This verifies the first uploaded file name is rendered in transfer history even if multiple matching rows exist during refreshes.
             await expect(
                 page
                     .getByRole("row")
                     .filter({ hasText: "uploaded-a.txt" })
                     .last(),
             ).toBeVisible();
-            // This verifies multi-file uploads are tracked independently in transfer progress even if multiple matching rows exist during refreshes.
+            // This verifies multi-file uploads are tracked independently in transfer history even if multiple matching rows exist during refreshes.
             await expect(
                 page
                     .getByRole("row")
