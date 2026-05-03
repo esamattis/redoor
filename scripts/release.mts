@@ -54,19 +54,63 @@ const updatedCargoToml = cargoTomlContent.replace(
 );
 await writeFile(cargoTomlPath, updatedCargoToml);
 
-await $`git add ${cargoTomlPath}`;
+console.log("Running cargo build to update Cargo.lock...");
+await $`cargo build`;
+await $`git add ${cargoTomlPath} Cargo.lock`;
 await $`git commit -m "Bump version to ${newVersion}"`;
 
-// If the tag already exists, delete it locally and from remote before recreating
+// Check if the tag already exists locally or remotely
 const localTagOutput = await $`git tag -l ${newTag}`.nothrow();
-if (localTagOutput.stdout.trim() === newTag) {
+const localTagExists = localTagOutput.stdout.trim() === newTag;
+
+const remoteTagOutput =
+    await $`git ls-remote --tags origin ${newTag}`.nothrow();
+const remoteTagExists = remoteTagOutput.stdout
+    .trim()
+    .includes(`refs/tags/${newTag}`);
+
+if (localTagExists || remoteTagExists) {
+    console.log("");
+    console.log(
+        "╔══════════════════════════════════════════════════════════════════╗",
+    );
+    console.log(
+        "║                     ⚠️  DESTRUCTIVE WARNING  ⚠️                  ║",
+    );
+    console.log(
+        "╠══════════════════════════════════════════════════════════════════╣",
+    );
+    if (localTagExists) {
+        console.log(
+            `║  Local tag '${newTag}' already exists and will be deleted.       ║`,
+        );
+    }
+    if (remoteTagExists) {
+        console.log(
+            `║  Remote tag '${newTag}' already exists and will be deleted.      ║`,
+        );
+    }
+    console.log(
+        "╚══════════════════════════════════════════════════════════════════╝",
+    );
+    console.log("");
+
+    const confirmation = await question(
+        "Are you sure you want to delete and recreate this tag? (yes/no): ",
+    );
+
+    if (confirmation.toLowerCase() !== "yes") {
+        console.log("Release aborted.");
+        process.exit(1);
+    }
+}
+
+if (localTagExists) {
     console.log(`Deleting existing local tag ${newTag}...`);
     await $`git tag -d ${newTag}`;
 }
 
-const remoteTagOutput =
-    await $`git ls-remote --tags origin ${newTag}`.nothrow();
-if (remoteTagOutput.stdout.trim().includes(`refs/tags/${newTag}`)) {
+if (remoteTagExists) {
     console.log(`Deleting existing remote tag ${newTag}...`);
     await $`git push origin --delete ${newTag}`;
 }
