@@ -578,4 +578,83 @@ test.describe.serial("File Browser Navigation", () => {
             }),
         ).toHaveCount(0);
     });
+
+    test("should copy a file to a newly created directory within the same agent", async ({
+        page,
+    }) => {
+        const copyTargetDirName = `copy-target-${Date.now()}`;
+        const copyTargetDirPath = path.join(TEST_DIR, copyTargetDirName);
+        const copiedFilePath = path.join(copyTargetDirPath, "file1.txt");
+
+        await fs.rm(copyTargetDirPath, { force: true, recursive: true });
+
+        await page.goto(`${WEB_BASE_URL}/agents/${agentId}/browser`);
+        await page
+            .locator(`a[href="/agents/${agentId}/browser/${testDirName}"]`)
+            .click();
+
+        // Create a new directory that will serve as the copy destination.
+        await page.getByRole("button", { name: "Create directory" }).click();
+        await expect(
+            page.getByRole("dialog", { name: "Create directory" }),
+        ).toBeVisible();
+        await page
+            .getByRole("textbox", { name: "Directory name" })
+            .fill(copyTargetDirName);
+        await page
+            .getByRole("dialog", { name: "Create directory" })
+            .getByRole("button", { name: "Create directory", exact: true })
+            .click();
+        await expect(
+            page.getByRole("link", { name: copyTargetDirName, exact: true }),
+        ).toBeVisible();
+
+        // Select the file to copy while still in the parent directory.
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+
+        // The selected-items panel must appear so the test can interact with the copy action.
+        await expect(
+            page.getByRole("button", { name: "Copy selected items" }),
+        ).toBeVisible();
+
+        // Navigate into the newly created directory to set it as the copy destination.
+        await page
+            .getByRole("link", { name: copyTargetDirName, exact: true })
+            .click();
+
+        // The selection persists across navigation, so the copy button remains available.
+        await expect(
+            page.getByRole("button", { name: "Copy selected items" }),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "Copy selected items" }).click();
+
+        // Polling the filesystem is more reliable than waiting on UI messages because
+        // the selected-items panel disappears immediately after a successful copy.
+        await expect
+            .poll(async () => {
+                try {
+                    await fs.stat(copiedFilePath);
+                    return "exists";
+                } catch {
+                    return "missing";
+                }
+            })
+            .toBe("exists");
+
+        // Reload the page because the directory listing does not auto-refresh after copy.
+        await page.reload();
+
+        // Seeing the copied file in the destination directory proves the copy landed in the right place.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+
+        const copiedContent = await fs.readFile(copiedFilePath, "utf-8");
+
+        // Matching contents proves the copy preserved the original file bytes.
+        expect(copiedContent).toBe("content1");
+    });
 });
