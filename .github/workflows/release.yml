@@ -46,11 +46,14 @@ jobs:
         run: |
           mv target/${{ matrix.target }}/release/redoor ${{ matrix.binary_name }}
 
+      - name: Package binary
+        run: tar czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}.tar.gz
 
   release:
     needs: build
@@ -68,5 +71,5 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
-          files: artifacts/*
+          files: artifacts/*.tar.gz
           generate_release_notes: true
