@@ -108,7 +108,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { agent, agentId, agentName, relativePath, lsResult } = data;
-    const [showHiddenFiles, setShowHiddenFiles] = React.useState(false);
+    const [showHiddenFiles, setShowHiddenFiles] = React.useState(true);
 
     const isAtCwd = relativePath === "";
     const parentPath = getImmediateParentPath(relativePath);
