@@ -69,6 +69,22 @@ function getBrowserPathHref(agentId: string, relativePath: string | null) {
         : `/agents/${agentId}/browser`;
 }
 
+/**
+ * Sort entries case-insensitively with dot-prefixed entries first.
+ */
+function sortFileEntries<T extends { name: string }>(entries: T[]): T[] {
+    return [...entries].sort((a, b) => {
+        const aIsDot = a.name.startsWith(".");
+        const bIsDot = b.name.startsWith(".");
+        if (aIsDot !== bIsDot) {
+            return aIsDot ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name, undefined, {
+            sensitivity: "base",
+        });
+    });
+}
+
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -124,15 +140,12 @@ function FileBrowser() {
             return files.filter((f) => !f.name.startsWith("."));
         };
 
-        const directories = filterHidden(
-            lsResult.files.filter((f) => f.type === "directory"),
+        const directories = sortFileEntries(
+            filterHidden(lsResult.files.filter((f) => f.type === "directory")),
         );
-        const regularFiles = filterHidden(
-            lsResult.files.filter((f) => f.type === "file"),
+        const regularFiles = sortFileEntries(
+            filterHidden(lsResult.files.filter((f) => f.type === "file")),
         );
-
-        directories.sort((a, b) => a.name.localeCompare(b.name));
-        regularFiles.sort((a, b) => a.name.localeCompare(b.name));
 
         const sortedFiles = [...directories, ...regularFiles];
 

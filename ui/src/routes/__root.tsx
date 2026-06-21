@@ -514,6 +514,19 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
         return null;
     }
 
+    // Sort selected files case-insensitively with dot-prefixed items first so
+    // the list is stable and easy to scan.
+    const sortedSelectedFiles = [...selectedFiles].sort((a, b) => {
+        const aIsDot = a.fileName.startsWith(".");
+        const bIsDot = b.fileName.startsWith(".");
+        if (aIsDot !== bIsDot) {
+            return aIsDot ? -1 : 1;
+        }
+        return a.fileName.localeCompare(b.fileName, undefined, {
+            sensitivity: "base",
+        });
+    });
+
     const statusMessage =
         copyState.type === "copying"
             ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
@@ -812,7 +825,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                         </tr>
                     </thead>
                     <tbody>
-                        {selectedFiles.map((file) => (
+                        {sortedSelectedFiles.map((file) => (
                             <tr
                                 key={`${file.agentId}:${file.path}`}
                                 className="border-b last:border-b-0 hover:bg-gray-50 align-top"
