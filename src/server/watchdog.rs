@@ -47,10 +47,10 @@ fn supervisor_key(config: &AgentConfig) -> String {
 
 /// Builds the spawn closure for one agent config. The closure is
 /// re-invoked on every restart cycle, so it must be safe to call
-/// repeatedly. Ssh closures re-run the one-time prepare step on
-/// each call; the prepare is cheap when the remote binary is
-/// already in place, and a failure here puts the supervisor into
-/// the backoff loop where the next cycle retries.
+/// repeatedly. Ssh closures cache the one-time prepare step in
+/// shared state so re-invocations just spawn a fresh ssh child
+/// without re-sniffing the host; a failed prepare is retried on
+/// the next cycle.
 fn make_spawn_fn(config: AgentConfig, redoor_port: u16) -> SpawnFn {
     match config {
         AgentConfig::Local(c) => local_spawn_fn(c, redoor_port),
@@ -73,19 +73,52 @@ fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16) -> SpawnFn {
     })
 }
 
-/// Build a spawn closure for an ssh agent. Re-invoking re-runs the
-/// one-time prepare (sniff + download + upload) and then spawns a
-/// fresh ssh child. The prepare is a single ssh round-trip when the
-/// binary is already on the remote host, so re-running it on every
-/// restart stays cheap. A failure puts the supervisor in backoff.
+/// Build a spawn closure for an ssh agent. The first invocation runs the
+/// one-time prepare (sniff + download + upload) and caches the
+/// `PreparedSshAgent` for subsequent calls. Re-invocations on later
+/// restart cycles skip the prepare and just spawn a fresh ssh child.
+/// If the prepare fails (e.g. transient network blip), the cache stays
+/// empty and the next cycle retries the prepare; a successful prepare
+/// then switches the closure to the cached fast path. A spawn failure
+/// after a successful prepare goes through the supervisor's normal
+/// backoff loop without re-running the prepare.
 fn ssh_spawn_fn(config: crate::ssh::SshAgentConfig, redoor_port: u16) -> SpawnFn {
+    use tokio::sync::Mutex;
+
+    // Cached `PreparedSshAgent`. `None` means "not yet prepared or the
+    // last prepare failed"; the closure retries `prepare_ssh_agent` and
+    // stores the result on success. The supervisor calls the spawn
+    // closure serially (one cycle at a time) so contention on this lock
+    // is limited to the prepare call itself.
+    let cached: Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> = Arc::new(Mutex::new(None));
+    let config = Arc::new(config);
+
     Arc::new(move || {
+        let cached = cached.clone();
         let config = config.clone();
         let redoor_port = redoor_port;
         Box::pin(async move {
-            let prepared = crate::ssh::prepare_ssh_agent(&config, redoor_port)
-                .await
-                .map_err(|e| e.to_string())?;
+            let prepared = {
+                let mut guard = cached.lock().await;
+                if let Some(p) = guard.as_ref() {
+                    p.clone()
+                } else {
+                    match crate::ssh::prepare_ssh_agent(&config, redoor_port).await {
+                        Ok(p) => {
+                            *guard = Some(p.clone());
+                            p
+                        }
+                        Err(error) => {
+                            log!(
+                                Level::Warning,
+                                "ssh prepare failed, will retry next cycle: {}",
+                                error
+                            );
+                            return Err(error.to_string());
+                        }
+                    }
+                }
+            };
             prepared.spawn().await.map_err(|e| e.to_string())
         })
     })
