@@ -1,5 +1,6 @@
 mod agent;
 mod server;
+mod ssh;
 
 use clap::{Parser, Subcommand};
 use redoor::{actors, logging};
@@ -16,6 +17,7 @@ struct Cli {
 enum Commands {
     Server(server::CoordinatorArgs),
     Agent(agent::AgentArgs),
+    Ssh(ssh::SshArgs),
 }
 
 #[tokio::main]
@@ -24,6 +26,12 @@ async fn main() {
         Commands::Server(args) => run_server(args).await,
         Commands::Agent(args) => {
             if let Err(error) = agent::run(args).await {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Ssh(args) => {
+            if let Err(error) = ssh::run(args).await {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
