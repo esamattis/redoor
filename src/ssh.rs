@@ -4,7 +4,9 @@
 //! the ssh command.
 
 use clap::Args;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Arguments for `redoor ssh`.
@@ -54,6 +56,244 @@ fn default_agent_name(target: &str) -> String {
     target.rsplit('@').next().unwrap_or(target).to_string()
 }
 
+/// Result of probing a remote host: which OS/arch it runs and whether the
+/// configured redoor binary is already executable at the target path.
+struct RemoteSniff {
+    os: String,
+    arch: String,
+    binary_exists: bool,
+}
+
+/// Probes the remote host with a single ssh command that reports its OS,
+/// CPU architecture, and whether the configured redoor binary is already
+/// executable at `remote_bin`. Batching all three into one round-trip
+/// avoids paying ssh setup latency three times for what is conceptually
+/// one "is the host ready" check.
+async fn sniff_remote(
+    host: &SshHost,
+    remote_bin: &str,
+) -> Result<RemoteSniff, Box<dyn std::error::Error>> {
+    // The whole probe is one shell command so we only authenticate once.
+    // `test -x` is used instead of `test -f` so a broken symlink or a
+    // non-executable file is treated as "needs reinstall" rather than
+    // "already installed".
+    let shell_command = format!(
+        "echo \"$(uname),$(uname -m),$(test -x {} && echo yes || echo no)\"",
+        remote_bin
+    );
+    let options = SshRunOptions::default().compressed();
+    let output = host.run_captured(&shell_command, &options).await?;
+    let trimmed = output.trim();
+    let parts: Vec<&str> = trimmed.split(',').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<yes|no>'",
+            trimmed
+        )
+        .into());
+    }
+    // Map `uname` values to the os component used in the release artifact
+    // filenames (e.g. `redoor-aarch64-linux.tar.gz`).
+    let os = match parts[0] {
+        "Linux" => "linux",
+        "Darwin" => "macos",
+        other => return Err(format!("unsupported remote os '{}'", other).into()),
+    };
+    // macOS reports `arm64` for Apple Silicon but the release artifacts use
+    // `aarch64`, so normalize before looking up the download URL.
+    let arch = match parts[1] {
+        "x86_64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        other => return Err(format!("unsupported remote arch '{}'", other).into()),
+    };
+    let binary_exists = parts[2] == "yes";
+    Ok(RemoteSniff {
+        os: os.to_string(),
+        arch: arch.to_string(),
+        binary_exists,
+    })
+}
+
+/// Local cache directory for redoor release binaries downloaded from GitHub.
+/// Caching avoids re-downloading the same tarball on every `redoor ssh` call
+/// against the same remote target.
+fn local_binaries_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME must be set");
+    PathBuf::from(home).join(".local/share/redoor/binaries")
+}
+
+/// Final on-disk name of the cached binary for a given (version, os, arch).
+/// Embedding all three in the filename lets multiple targets coexist in the
+/// same cache directory and makes it obvious which file matches which host.
+fn cached_binary_path(version: &str, os: &str, arch: &str) -> PathBuf {
+    local_binaries_dir().join(format!("redoor-v{}-{}-{}", version, os, arch))
+}
+
+/// Builds the GitHub release download URL for a given (version, os, arch).
+/// The artifact naming follows the release workflow in
+/// `.github/workflows/release.yml` (`redoor-<arch>-<os>.tar.gz`).
+fn release_url(version: &str, os: &str, arch: &str) -> String {
+    format!(
+        "https://github.com/esamattis/redoor/releases/download/v{}/redoor-{}-{}.tar.gz",
+        version, arch, os
+    )
+}
+
+/// Ensures the matching redoor binary is present in the local cache,
+/// downloading and extracting it from GitHub releases on a cache miss.
+/// Returns the absolute path to the cached binary.
+async fn ensure_local_binary(
+    version: &str,
+    os: &str,
+    arch: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let binaries_dir = local_binaries_dir();
+    tokio::fs::create_dir_all(&binaries_dir).await?;
+    let final_path = cached_binary_path(version, os, arch);
+    if tokio::fs::try_exists(&final_path).await? {
+        return Ok(final_path);
+    }
+    download_binary(version, os, arch, &binaries_dir, &final_path).await?;
+    Ok(final_path)
+}
+
+/// Downloads the release tarball from GitHub and extracts the `redoor`
+/// binary into `final_path`. The tarball is streamed to disk and extracted
+/// with the system `tar` command so we never hold the whole archive (or
+/// the binary) in memory at once.
+async fn download_binary(
+    version: &str,
+    os: &str,
+    arch: &str,
+    binaries_dir: &Path,
+    final_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures_util::StreamExt;
+
+    let url = release_url(version, os, arch);
+    let tar_path = binaries_dir.join(format!("redoor-{}-{}.tar.gz", arch, os));
+    let extract_dir = binaries_dir.join(format!("extract-v{}-{}-{}", version, arch, os));
+
+    // Stream the response body to disk chunk by chunk so large tarballs
+    // don't have to fit in RAM, which matters on memory-constrained hosts.
+    let response = reqwest::get(&url).await?;
+    if !response.status().is_success() {
+        return Err(format!("download from {} failed: HTTP {}", url, response.status()).into());
+    }
+    let mut file = tokio::fs::File::create(&tar_path).await?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    drop(file);
+
+    // Use the system `tar` rather than the `tar` crate so extraction
+    // matches exactly what the release workflow used to create the archive,
+    // including any platform-specific flags.
+    tokio::fs::create_dir_all(&extract_dir).await?;
+    let tar_status = Command::new("tar")
+        .arg("-xzf")
+        .arg(&tar_path)
+        .arg("-C")
+        .arg(&extract_dir)
+        .status()
+        .await?;
+    if !tar_status.success() {
+        return Err(format!(
+            "tar extraction failed with status {}",
+            tar_status.code().unwrap_or(-1)
+        )
+        .into());
+    }
+
+    // The release archive contains a single `redoor` binary; move it to the
+    // versioned cache path so future `redoor ssh` calls hit the cache.
+    let extracted_bin = extract_dir.join("redoor");
+    if !tokio::fs::try_exists(&extracted_bin).await? {
+        return Err(format!(
+            "extracted tarball did not contain a 'redoor' binary at {}",
+            extracted_bin.display()
+        )
+        .into());
+    }
+    // Copy + remove rather than rename so it works even if `extract_dir`
+    // ends up on a different filesystem than `final_path` (e.g. tmpfs).
+    tokio::fs::copy(&extracted_bin, final_path).await?;
+    let _ = make_executable(final_path).await;
+
+    // Best-effort cleanup of the intermediate extraction artifacts; failures
+    // here are harmless and shouldn't abort the upload.
+    let _ = tokio::fs::remove_file(&tar_path).await;
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+
+    Ok(())
+}
+
+/// Sets the executable bit on `path` so the cached binary can be uploaded
+/// and run on the remote host without an extra `chmod` round-trip.
+async fn make_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = tokio::fs::metadata(path).await?;
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(path, perms).await
+}
+
+/// Returns the parent directory of a posix-style path that may start with
+/// `~`. We split on the last `/` so `~/.local/redoor/0.0.3/redoor` becomes
+/// `~/.local/redoor/0.0.3`, which the remote shell can still expand.
+fn parent_dir_of(path: &str) -> String {
+    match path.rfind('/') {
+        Some(idx) => path[..idx].to_string(),
+        None => ".".to_string(),
+    }
+}
+
+/// Uploads the locally cached binary to the remote host by piping it
+/// through `ssh ... 'cat > remote_path'`. Creates the remote parent
+/// directory and marks the binary executable so it is ready to run
+/// immediately, even when `cat` did not preserve the local mode bits.
+async fn upload_binary(
+    host: &SshHost,
+    local_path: &Path,
+    remote_bin: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = parent_dir_of(remote_bin);
+    let options = SshRunOptions::default().compressed();
+
+    // The remote parent directory may not exist yet (e.g. first run against
+    // a fresh host), so create it before `cat` tries to write into it.
+    let mkdir_cmd = format!("mkdir -p {}", parent);
+    let mkdir_status = host.run(&mkdir_cmd, &[], &options).await?;
+    if !mkdir_status.success() {
+        return Err(format!(
+            "remote mkdir '{}' failed with status {}",
+            parent,
+            mkdir_status.code().unwrap_or(-1)
+        )
+        .into());
+    }
+
+    host.upload_via_cat(local_path, remote_bin).await?;
+
+    // `cat` does not always copy the source mode bits across ssh, so be
+    // explicit: a non-executable cached file would otherwise produce a
+    // remote binary that fails with "permission denied" on the next step.
+    let chmod_cmd = format!("chmod +x {}", remote_bin);
+    let chmod_status = host.run(&chmod_cmd, &[], &options).await?;
+    if !chmod_status.success() {
+        return Err(format!(
+            "remote chmod +x '{}' failed with status {}",
+            remote_bin,
+            chmod_status.code().unwrap_or(-1)
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// One end of a reverse port forward: ssh listens on `remote_port` at the
 /// remote host and tunnels connections to `local_port` on the machine that
 /// started ssh. Both ports are usually the same redoor port, but they are
@@ -75,6 +315,11 @@ pub(crate) struct SshRunOptions {
     /// if any requested forward could not be bound. This prevents the remote
     /// command from running against a tunnel that will never come up.
     pub(crate) exit_on_forward_failure: bool,
+    /// When true, adds `-C` so ssh compresses its traffic. Useful for bulk
+    /// transfers like binary uploads and the one-shot sniff command; left off
+    /// for the long-running agent session which is mostly idle and would just
+    /// burn CPU on compression.
+    pub(crate) compressed: bool,
 }
 
 impl SshRunOptions {
@@ -91,6 +336,12 @@ impl SshRunOptions {
     /// Requests ssh to abort the connection if any requested forward fails.
     pub(crate) fn exit_on_forward_failure(mut self) -> Self {
         self.exit_on_forward_failure = true;
+        self
+    }
+
+    /// Enables ssh compression (`-C`) for this connection.
+    pub(crate) fn compressed(mut self) -> Self {
+        self.compressed = true;
         self
     }
 }
@@ -149,6 +400,10 @@ impl SshHost {
         }
         ssh.arg("-p").arg(self.ssh_port.to_string());
 
+        if options.compressed {
+            ssh.arg("-C");
+        }
+
         if options.exit_on_forward_failure {
             ssh.arg("-o").arg("ExitOnForwardFailure=yes");
         }
@@ -169,6 +424,110 @@ impl SshHost {
         ssh.stderr(Stdio::inherit());
 
         ssh.status().await
+    }
+
+    /// Runs a single shell command on the remote host and captures its
+    /// stdout. Used for one-shot "sniff" commands whose output we need to
+    /// parse locally rather than stream to the user. Stderr is still
+    /// inherited so authentication errors and similar diagnostics stay
+    /// visible.
+    pub(crate) async fn run_captured(
+        &self,
+        shell_command: &str,
+        options: &SshRunOptions,
+    ) -> Result<String, std::io::Error> {
+        let mut ssh = Command::new("ssh");
+
+        if !self.username.is_empty() {
+            ssh.arg("-l").arg(&self.username);
+        }
+        ssh.arg("-p").arg(self.ssh_port.to_string());
+
+        if options.compressed {
+            ssh.arg("-C");
+        }
+
+        if options.exit_on_forward_failure {
+            ssh.arg("-o").arg("ExitOnForwardFailure=yes");
+        }
+
+        for forward in &options.reverse_forwards {
+            let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
+            ssh.arg("-R").arg(spec);
+        }
+
+        ssh.arg(&self.target);
+        ssh.arg(shell_command);
+
+        ssh.stdin(Stdio::null());
+        ssh.stdout(Stdio::piped());
+        ssh.stderr(Stdio::inherit());
+
+        let output = ssh.output().await?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(format!(
+                "ssh exited with status {} while running: {}",
+                output.status.code().unwrap_or(-1),
+                shell_command
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Streams `local_path` to the remote host by piping it into
+    /// `cat > remote_path` over ssh with compression enabled. Streaming
+    /// (rather than scp/sftp) keeps the implementation simple and avoids
+    /// reading the entire binary into memory, which matters when the binary
+    /// is large or memory is constrained. The remote path is interpreted by
+    /// the remote shell so `~` and other shell expansions work as expected.
+    pub(crate) async fn upload_via_cat(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<(), std::io::Error> {
+        let mut ssh = Command::new("ssh");
+
+        if !self.username.is_empty() {
+            ssh.arg("-l").arg(&self.username);
+        }
+        ssh.arg("-p").arg(self.ssh_port.to_string());
+        // Compress the upload stream so large binaries transfer faster over
+        // slow uplinks. ssh compression is cheap and transparent here.
+        ssh.arg("-C");
+        ssh.arg(&self.target);
+        ssh.arg(format!("cat > {}", remote_path));
+
+        ssh.stdin(Stdio::piped());
+        ssh.stdout(Stdio::inherit());
+        ssh.stderr(Stdio::inherit());
+
+        let mut child = ssh.spawn()?;
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let mut file = tokio::fs::File::open(local_path).await?;
+
+        // Run the copy on a separate task so we can concurrently wait for
+        // the child. If the remote `cat` exits early (e.g. disk full), the
+        // stdin pipe closes and the copy errors out; without the spawn we
+        // would deadlock waiting on a write that never completes.
+        let copy_handle = tokio::spawn(async move {
+            tokio::io::copy(&mut file, &mut stdin).await?;
+            // Drop stdin to send EOF so the remote `cat` flushes and exits.
+            drop(stdin);
+            Ok::<_, std::io::Error>(())
+        });
+
+        let status = child.wait().await?;
+        copy_handle
+            .await
+            .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))??;
+
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "ssh upload exited with status {}",
+                status.code().unwrap_or(-1)
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -194,6 +553,17 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
     let host = SshHost::new(args.target)
         .username(args.username)
         .ssh_port(args.ssh_port);
+
+    // Sniff the remote host before starting the agent so we can install the
+    // redoor binary on first contact. Without this, a fresh remote host
+    // would just fail with "command not found" and the user would have to
+    // install the binary manually, which defeats the purpose of `redoor ssh`.
+    let sniff = sniff_remote(&host, &remote_bin).await?;
+    if !sniff.binary_exists {
+        let local_path =
+            ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
+        upload_binary(&host, &local_path, &remote_bin).await?;
+    }
 
     // The reverse forward and exit-on-failure behavior are run-time options
     // because they describe the tunnel, not the remote command itself.
