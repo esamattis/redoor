@@ -11,7 +11,6 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
-    Cpu,
     HardDrive,
     Copy,
     X,
@@ -307,7 +306,12 @@ function TopTabStrip(props: {
 function BrandMark() {
     return (
         <div className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200">
-            <Cpu className="h-5 w-5 text-blue-400" />
+            <img
+                src="/logo.svg"
+                alt=""
+                className="h-5 w-5"
+                aria-hidden="true"
+            />
             <span className="text-sm font-semibold tracking-tight">Redoor</span>
         </div>
     );
