@@ -435,7 +435,7 @@ pub(crate) struct ReverseForward {
 
 /// Options for [`SshHost::run`] that are orthogonal to the remote command,
 /// such as reverse port forwards and whether ssh should compress its traffic.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SshRunOptions {
     /// Reverse port forwards (`ssh -R`) to request on this connection.
     pub(crate) reverse_forwards: Vec<ReverseForward>,
@@ -480,6 +480,7 @@ impl SshRunOptions {
 /// `run` method can stay focused on the remote command and its options. The
 /// builder methods return `Self` by value so callers can chain configuration
 /// fluently before awaiting [`SshHost::run`].
+#[derive(Clone)]
 pub(crate) struct SshHost {
     username: Option<String>,
     ssh_port: u16,
@@ -754,6 +755,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
 /// ssh argv to run. The supervisor uses [`PreparedSshAgent::spawn`] to
 /// start a fresh ssh child for every restart cycle without re-sniffing
 /// the host or re-uploading the binary.
+#[derive(Clone)]
 pub(crate) struct PreparedSshAgent {
     host: SshHost,
     remote_bin: String,

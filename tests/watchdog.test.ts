@@ -145,6 +145,29 @@ describe("Watchdog supervisor", () => {
             // process) and respawns a fresh agent.
             process.kill(firstPid, "SIGSTOP");
 
+            // <CODEREVIEW>
+            // AGENTS.md says: "When a single test needs cleanup,
+            //  always use onTestFinished() instead of try-finally."
+            // This test uses `try { ... } finally { SIGCONT }` to
+            // resume the frozen process. If the `expect` calls
+            // between `try` and `finally` throw, the `finally` runs,
+            // so the cleanup works today — but the guideline exists
+            // because vitest's `onTestFinished` is more robust: it
+            // runs even if the test times out (the `finally` in a
+            // timed-out test may not run, depending on where the
+            // timeout fires), and it keeps the cleanup visible at the
+            // top of the test instead of buried at the bottom.
+            // Suggestion: move the SIGCONT cleanup into
+            // `onTestFinished` and drop the `try/finally`:
+            ///   onTestFinished(() => {
+            ///       try { process.kill(firstPid, "SIGCONT"); }
+            ///       catch { /* already gone */ }
+            ///   });
+            ///   process.kill(firstPid, "SIGSTOP");
+            ///   const replacement = await waitForValue({ ... });
+            ///   expect(replacement.pid).not.toBe(firstPid);
+            ///   ...
+            // </CODEREVIEW>
             try {
                 const replacement = await waitForValue({
                     timeoutMs: 60000,
