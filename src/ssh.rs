@@ -43,6 +43,12 @@ pub(crate) struct SshArgs {
     /// versioned install layout (`~/.local/redoor/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN", default_value_t = default_remote_bin())]
     pub(crate) remote_bin: String,
+    /// Working directory the remote redoor agent switches into via its
+    /// `-d/--dir` flag, mirroring the operator's `redoor agent -d`. Useful
+    /// for keeping relative paths and local uploads confined to a project
+    /// tree on the remote host without changing ssh's own cwd.
+    #[arg(short = 'd', long)]
+    pub(crate) dir: Option<String>,
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
     /// standard ssh CLI usage so existing muscle memory transfers.
     pub(crate) target: String,
@@ -80,6 +86,10 @@ pub(crate) struct SshAgentConfig {
     /// Path to the redoor binary on the remote host. When `None`, defaults to
     /// the versioned install layout.
     pub(crate) remote_bin: Option<String>,
+    /// Working directory the remote redoor agent switches into via its
+    /// `-d/--dir` flag, mirroring the operator's `redoor agent -d`. When
+    /// `None`, the agent uses the remote shell's current directory.
+    pub(crate) dir: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub(crate) target: String,
 }
@@ -615,6 +625,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         // `SshArgs` already resolved the default via clap's `default_value_t`,
         // so forward it as-is rather than re-deriving it in `start_ssh_agent`.
         remote_bin: Some(args.remote_bin),
+        dir: args.dir,
         target: args.target,
     };
     start_ssh_agent(config, args.redoor_port).await
@@ -664,15 +675,22 @@ pub(crate) async fn start_ssh_agent(
     let options = SshRunOptions::default().with_reverse_forward(redoor_port, redoor_port);
 
     // ssh joins all trailing args after the command into one remote argv, so
-    // the agent name must be appended after the fixed flags.
-    let remote_argv: [&str; 4] = ["agent", &ws_url, "--name", &agent_name];
+    // the agent name must be appended after the fixed flags. The optional
+    // `-d/--dir` is appended last so its absence matches the local agent's
+    // default of inheriting the current working directory.
+    let mut remote_argv: Vec<&str> = vec!["agent", &ws_url, "--name", &agent_name];
+    if let Some(dir) = &config.dir {
+        remote_argv.push("-d");
+        remote_argv.push(dir);
+    }
 
     log!(
         Level::Info,
-        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}",
+        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}, dir={:?}",
         agent_name,
         ws_url,
-        remote_bin
+        remote_bin,
+        config.dir
     );
 
     let status = host.run(&remote_bin, &remote_argv, &options).await?;

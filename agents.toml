@@ -6,3 +6,4 @@ dir = "/"
 [[agents]]
 name = "local"
 local = true
+dir = "/Users/esamatti/tmp"

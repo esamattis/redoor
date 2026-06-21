@@ -58,8 +58,9 @@ pub(crate) enum AgentConfig {
 /// whole document from scratch. Parsing with the immutable `Document` is
 /// enough for the read path; it can be upgraded to `DocumentMut` via
 /// `into_mut()` when editing support is added.
-pub(crate) fn parse_agents_file(path: &str) -> Result<Vec<AgentConfig>> {
-    let content = std::fs::read_to_string(path)
+pub(crate) async fn parse_agents_file(path: &str) -> Result<Vec<AgentConfig>> {
+    let content = tokio::fs::read_to_string(path)
+        .await
         .with_context(|| format!("Failed to read agents file '{}'", path))?;
     let doc = Document::parse(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse agents file '{}': {}", path, e))?;
@@ -100,18 +101,13 @@ pub(crate) fn parse_agents_file(path: &str) -> Result<Vec<AgentConfig>> {
 /// field: without a host there is nothing to ssh to. All other fields are
 /// explicit per-entry settings that the operator must declare so a missing
 /// field is surfaced as an error rather than silently falling back to a
-/// default the operator may not have intended.
+/// default the operator may not have intended. `dir` is shared with the
+/// local variant so an operator can mirror a working directory across both
+/// kinds of agents without duplicating logic.
 fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentConfig> {
     // Reject local-only fields so an operator who confuses the two variants
     // gets a clear error pointing at the specific mis-placed field, instead
     // of silently ignoring it.
-    if entry.get("dir").and_then(|item| item.as_str()).is_some() {
-        bail!(
-            "agents entry #{} has 'dir' which only applies to local agents (local = true); \
-             remove 'dir' or set 'local = true'",
-            index
-        );
-    }
     if entry.get("log").and_then(|item| item.as_str()).is_some() {
         bail!(
             "agents entry #{} has 'log' which only applies to local agents (local = true); \
@@ -156,11 +152,17 @@ fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentCon
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
+    let dir = entry
+        .get("dir")
+        .and_then(|item| item.as_str())
+        .map(|s| s.to_string());
+
     Ok(SshAgentConfig {
         username,
         ssh_port,
         name,
         remote_bin,
+        dir,
         target,
     })
 }
@@ -246,7 +248,7 @@ fn default_local_agent_name() -> String {
 /// agent setup latency would otherwise block the server from accepting
 /// connections from agents that are already running.
 pub(crate) async fn spawn_agents(path: &str, redoor_port: u16) -> Result<()> {
-    let configs = parse_agents_file(path)?;
+    let configs = parse_agents_file(path).await?;
     log!(
         Level::Info,
         "Starting {} agent(s) from '{}'",
@@ -359,8 +361,8 @@ mod tests {
     /// Verifies that all optional fields fall back to their defaults when
     /// omitted, so a minimal agents file with only a `target` is valid.
     /// `ssh_port` defaults to 22 when missing.
-    #[test]
-    fn test_parse_agents_file_minimal_entry() {
+    #[tokio::test]
+    async fn test_parse_agents_file_minimal_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-{}.toml",
             std::time::SystemTime::now()
@@ -370,7 +372,7 @@ mod tests {
         ));
         std::fs::write(&temp, "[[agents]]\ntarget = \"user@example.com\"\n").unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).unwrap();
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
@@ -381,16 +383,19 @@ mod tests {
         assert_eq!(agent.target, "user@example.com");
         // ssh_port defaults to 22 when not specified, matching `redoor ssh`.
         assert_eq!(agent.ssh_port, 22);
-        // username, name and remote_bin are None so start_ssh_agent can derive them.
+        // username, name, remote_bin and dir are None so start_ssh_agent can
+        // derive them (default name from target, default remote_bin from
+        // versioned layout, default dir from the remote shell's cwd).
         assert!(agent.username.is_none());
         assert!(agent.name.is_none());
         assert!(agent.remote_bin.is_none());
+        assert!(agent.dir.is_none());
     }
 
     /// Verifies that every supported field is read from the toml file so
     /// operators can override the defaults per agent.
-    #[test]
-    fn test_parse_agents_file_full_entry() {
+    #[tokio::test]
+    async fn test_parse_agents_file_full_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-full-{}.toml",
             std::time::SystemTime::now()
@@ -405,13 +410,14 @@ username = "deploy"
 ssh_port = 2222
 name = "db-agent"
 remote_bin = "/usr/local/bin/redoor"
+dir = "/srv/app"
 
 [[agents]]
 target = "web-1"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).unwrap();
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert_eq!(configs.len(), 2, "both entries should be parsed");
@@ -424,6 +430,7 @@ target = "web-1"
         assert_eq!(first.ssh_port, 2222);
         assert_eq!(first.name.as_deref(), Some("db-agent"));
         assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
+        assert_eq!(first.dir.as_deref(), Some("/srv/app"));
 
         // The second entry only has a target, confirming ssh_port defaults to 22
         // when omitted while the first entry overrides it explicitly.
@@ -438,8 +445,8 @@ target = "web-1"
     /// Verifies that a missing `agents` key is rejected rather than silently
     /// producing an empty agent list, so the operator notices a typo in the
     /// file structure immediately at server startup.
-    #[test]
-    fn test_parse_agents_file_rejects_missing_agents_key() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_missing_agents_key() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-key-{}.toml",
             std::time::SystemTime::now()
@@ -449,7 +456,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "port = 3000\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap());
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -461,8 +468,8 @@ target = "web-1"
     /// Verifies that an entry without a `target` is rejected so the parser
     /// fails fast on an incomplete entry instead of producing an agent with
     /// nothing to connect to.
-    #[test]
-    fn test_parse_agents_file_rejects_entry_without_target() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_entry_without_target() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-target-{}.toml",
             std::time::SystemTime::now()
@@ -472,7 +479,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\nname = \"no-target\"\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap());
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -484,8 +491,8 @@ target = "web-1"
     /// Verifies that a present-but-non-integer `ssh_port` is rejected rather
     /// than silently falling back to 22, so a typo like a string value is
     /// surfaced as an explicit operator error.
-    #[test]
-    fn test_parse_agents_file_rejects_non_integer_ssh_port() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_non_integer_ssh_port() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-bad-type-{}.toml",
             std::time::SystemTime::now()
@@ -499,7 +506,7 @@ target = "web-1"
         )
         .unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap());
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(result.is_err(), "a non-integer ssh_port should be rejected");
@@ -507,8 +514,8 @@ target = "web-1"
 
     /// Verifies that an out-of-range `ssh_port` is rejected rather than
     /// silently truncating, so the operator gets a clear error for a typo.
-    #[test]
-    fn test_parse_agents_file_rejects_out_of_range_port() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_out_of_range_port() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-bad-port-{}.toml",
             std::time::SystemTime::now()
@@ -518,7 +525,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\ntarget = \"host\"\nssh_port = 99999\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap());
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -531,8 +538,8 @@ target = "web-1"
     /// into a [`AgentConfig::Local`] with all optional fields `None`, so the
     /// runtime can fall back to its own defaults (hostname, current dir,
     /// inherited stdio).
-    #[test]
-    fn test_parse_agents_file_minimal_local_entry() {
+    #[tokio::test]
+    async fn test_parse_agents_file_minimal_local_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-min-{}.toml",
             std::time::SystemTime::now()
@@ -542,7 +549,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\nlocal = true\n").unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).unwrap();
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
@@ -560,8 +567,8 @@ target = "web-1"
 
     /// Verifies that every supported local field is read from the toml file
     /// so operators can override the defaults per agent.
-    #[test]
-    fn test_parse_agents_file_full_local_entry() {
+    #[tokio::test]
+    async fn test_parse_agents_file_full_local_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-full-{}.toml",
             std::time::SystemTime::now()
@@ -578,7 +585,7 @@ log = "/var/log/my-local.log"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).unwrap();
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
@@ -594,8 +601,8 @@ log = "/var/log/my-local.log"
     /// Verifies that a single agents file can mix ssh and local entries,
     /// parsing each into the correct variant, so an operator can manage
     /// remote hosts and a local agent from the same file.
-    #[test]
-    fn test_parse_agents_file_mixed_entries() {
+    #[tokio::test]
+    async fn test_parse_agents_file_mixed_entries() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-mixed-{}.toml",
             std::time::SystemTime::now()
@@ -617,7 +624,7 @@ name = "web-agent"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).unwrap();
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert_eq!(configs.len(), 3, "all three entries should be parsed");
@@ -645,8 +652,8 @@ name = "web-agent"
     /// Verifies that an entry with `local = true` AND a `target` is rejected
     /// so the operator gets a clear error instead of a silently misconfigured
     /// agent that the dispatcher would then ignore the `target` for.
-    #[test]
-    fn test_parse_agents_file_rejects_local_with_target() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_local_with_target() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-target-{}.toml",
             std::time::SystemTime::now()
@@ -656,7 +663,7 @@ name = "web-agent"
         ));
         std::fs::write(&temp, "[[agents]]\nlocal = true\ntarget = \"host\"\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap());
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         let error = result.expect_err("local + target should be rejected");
@@ -673,8 +680,8 @@ name = "web-agent"
     /// field-specific error, so an operator who pastes an ssh entry and
     /// just adds `local = true` gets a clear pointer to each mis-placed
     /// field rather than a single vague "config error".
-    #[test]
-    fn test_parse_agents_file_rejects_local_with_ssh_fields() {
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_local_with_ssh_fields() {
         for field in ["username", "ssh_port", "remote_bin"] {
             let temp = std::env::temp_dir().join(format!(
                 "redoor-agents-test-local-ssh-{}-{}.toml",
@@ -690,7 +697,7 @@ name = "web-agent"
             )
             .unwrap();
 
-            let result = parse_agents_file(temp.to_str().unwrap());
+            let result = parse_agents_file(temp.to_str().unwrap()).await;
             std::fs::remove_file(&temp).ok();
 
             let error = result.expect_err(&format!("local + {} should be rejected", field));
@@ -707,33 +714,68 @@ name = "web-agent"
     /// field-specific error, mirroring the symmetric `local + ssh_field`
     /// test. Catches the case where an operator adds `local = true` to a
     /// previously working ssh entry without removing the ssh-only fields.
-    #[test]
-    fn test_parse_agents_file_rejects_ssh_with_local_fields() {
-        for field in ["dir", "log"] {
-            let temp = std::env::temp_dir().join(format!(
-                "redoor-agents-test-ssh-local-{}-{}.toml",
-                field,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::write(
-                &temp,
-                format!("[[agents]]\ntarget = \"host\"\n{} = \"/tmp/x\"\n", field),
-            )
-            .unwrap();
+    /// `dir` is intentionally absent from this list because it is shared
+    /// between both variants (see [`test_parse_agents_file_ssh_entry_with_dir`]).
+    #[tokio::test]
+    async fn test_parse_agents_file_rejects_ssh_with_log() {
+        let field = "log";
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-ssh-local-{}-{}.toml",
+            field,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            format!("[[agents]]\ntarget = \"host\"\n{} = \"/tmp/x\"\n", field),
+        )
+        .unwrap();
 
-            let result = parse_agents_file(temp.to_str().unwrap());
-            std::fs::remove_file(&temp).ok();
+        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        std::fs::remove_file(&temp).ok();
 
-            let error = result.expect_err(&format!("ssh + {} should be rejected", field));
-            assert!(
-                error.to_string().contains(field),
-                "error should mention '{}': {}",
-                field,
-                error
-            );
-        }
+        let error = result.expect_err(&format!("ssh + {} should be rejected", field));
+        assert!(
+            error.to_string().contains(field),
+            "error should mention '{}': {}",
+            field,
+            error
+        );
+    }
+
+    /// Verifies that a `dir` on an ssh entry is accepted and forwarded into
+    /// the [`SshAgentConfig`] so an operator can pin a remote agent's cwd to
+    /// a project tree, mirroring the same option on local agents.
+    #[tokio::test]
+    async fn test_parse_agents_file_ssh_entry_with_dir() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-ssh-dir-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[[agents]]
+target = "prod-db"
+dir = "/var/www/app"
+"#;
+        std::fs::write(&temp, content).unwrap();
+
+        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
+        let agent = match &configs[0] {
+            AgentConfig::Ssh(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+        };
+        assert_eq!(
+            agent.dir.as_deref(),
+            Some("/var/www/app"),
+            "dir should be read from the toml entry"
+        );
     }
 }
