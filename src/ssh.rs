@@ -33,15 +33,18 @@ pub(crate) struct SshArgs {
     /// distinguishable without requiring an explicit name.
     #[arg(long)]
     pub(crate) name: Option<String>,
+    /// Path to the redoor binary on the remote host. Defaults to the
+    /// versioned install layout (`~/.local/redoor/<version>/redoor`).
+    #[arg(long, env = "REDOOR_REMOTE_BIN", default_value_t = default_remote_bin())]
+    pub(crate) remote_bin: String,
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
     /// standard ssh CLI usage so existing muscle memory transfers.
     pub(crate) target: String,
 }
 
-/// Builds the remote redoor binary path from the crate version so the ssh
-/// command launches the matching version installed on the remote host under
-/// the per-version install layout (`~/.local/redoor/<version>/redoor`).
-fn remote_redoor_path() -> String {
+/// Default remote redoor binary path when the user does not override it
+/// via `--remote-bin` or `REDOOR_REMOTE_BIN`.
+fn default_remote_bin() -> String {
     format!("~/.local/redoor/{}/redoor", env!("CARGO_PKG_VERSION"))
 }
 
@@ -181,7 +184,7 @@ impl SshHost {
 /// Stdio is inherited so the user can observe agent logs and interact with
 /// the remote shell when needed.
 pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let remote_bin = remote_redoor_path();
+    let remote_bin = args.remote_bin;
     let agent_name = args
         .name
         .clone()
