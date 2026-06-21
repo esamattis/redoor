@@ -9,7 +9,7 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use redoor::{log, Level};
+use redoor::{Level, log};
 
 /// Arguments for `redoor ssh`.
 ///
@@ -162,7 +162,11 @@ async fn ensure_local_binary(
     tokio::fs::create_dir_all(&binaries_dir).await?;
     let final_path = cached_binary_path(version, os, arch);
     if tokio::fs::try_exists(&final_path).await? {
-        log!(Level::Info, "Local binary already cached: path={}", final_path.display());
+        log!(
+            Level::Info,
+            "Local binary already cached: path={}",
+            final_path.display()
+        );
         return Ok(final_path);
     }
     download_binary(version, os, arch, &binaries_dir, &final_path).await?;
@@ -248,7 +252,11 @@ async fn download_binary(
     let _ = tokio::fs::remove_file(&tar_path).await;
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
-    log!(Level::Info, "Binary download complete: path={}", final_path.display());
+    log!(
+        Level::Info,
+        "Binary download complete: path={}",
+        final_path.display()
+    );
 
     Ok(())
 }
@@ -321,7 +329,11 @@ async fn upload_binary(
         .into());
     }
 
-    log!(Level::Info, "Binary upload complete: remote_bin={}", remote_bin);
+    log!(
+        Level::Info,
+        "Binary upload complete: remote_bin={}",
+        remote_bin
+    );
 
     Ok(())
 }
