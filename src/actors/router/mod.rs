@@ -163,13 +163,36 @@ async fn run_router(mut receiver: mpsc::Receiver<RouterMsg>, router_handle: Rout
     while let Some(message) = receiver.recv().await {
         match message {
             RouterMsg::RegisterAgent(request) => {
-                agents::register(&mut state, request);
+                agents::register(&mut state, request).await;
             }
-            RouterMsg::UnregisterAgent { agent_id } => {
-                log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
-                state.agents.by_id.remove(&agent_id);
-                ui::notify_refresh(&mut state);
-                cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
+            RouterMsg::UnregisterAgent {
+                agent_id,
+                socket_id,
+            } => {
+                // Only remove the entry if the socket_id matches the current
+                // connection. When a new agent replaces a stale one, the old
+                // session's eventual shutdown would otherwise evict the new
+                // connection simply because both share the same agent_id.
+                let is_current = state
+                    .agents
+                    .by_id
+                    .get(&agent_id)
+                    .map(|conn| conn.socket_id == socket_id)
+                    .unwrap_or(false);
+
+                if is_current {
+                    log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
+                    state.agents.by_id.remove(&agent_id);
+                    ui::notify_refresh(&mut state);
+                    cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
+                } else {
+                    log!(
+                        Level::Debug,
+                        "Ignoring stale unregister: agent_id={}, socket_id={}",
+                        agent_id,
+                        socket_id
+                    );
+                }
             }
             RouterMsg::RouteResponse(response) => {
                 route_response(&mut state, response);

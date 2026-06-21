@@ -1,3 +1,4 @@
+use super::cleanup;
 use super::messages::{ExecuteCommandRequest, RegisterAgentRequest};
 use super::state::{AgentConnection, RouterState};
 use super::ui;
@@ -71,26 +72,43 @@ impl AgentConnection {
     }
 }
 
-/// Registers a connected agent unless another live agent already owns its name.
-pub(crate) fn register(state: &mut RouterState, request: RegisterAgentRequest) {
-    let duplicate_name = state
+/// Registers a connected agent, replacing any existing connection that
+/// already owns the same agent name.
+///
+/// When the SSH tunnel drops without a clean TCP close, the server may not
+/// detect the old session's disconnect for a long time. Rejecting the new
+/// connection in that window would make the agent permanently unreachable
+/// until the TCP timeout fires. Instead, the new connection takes over the
+/// name and the old session is cleaned up. The stale session's later
+/// `UnregisterAgent` is ignored because its `socket_id` will not match.
+pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequest) {
+    let existing_agent_id = state
         .agents
         .by_id
-        .values()
-        .any(|info| info.agent_name == request.agent_name);
+        .iter()
+        .find(|(_, info)| info.agent_name == request.agent_name)
+        .map(|(id, _)| id.clone());
 
-    if duplicate_name {
+    if let Some(old_agent_id) = existing_agent_id {
         log!(
-            Level::Error,
-            "Agent with name '{}' already registered, rejecting connection",
-            request.agent_name
+            Level::Warning,
+            "Replacing stale agent connection: agent_name={}, old_agent_id={}, new_agent_id={}",
+            request.agent_name,
+            old_agent_id,
+            request.agent_id
         );
-        let duplicate_error = Message::Error {
-            message: format!("Agent with name '{}' already connected", request.agent_name),
-        };
-        let duplicate_agent_connection = AgentConnection::from_register_request(request);
-        duplicate_agent_connection.send_message(duplicate_error);
-        return;
+
+        if let Some(old_connection) = state.agents.by_id.remove(&old_agent_id) {
+            // Notify the old session so its agent process exits promptly
+            // instead of lingering as a zombie.
+            old_connection.send_message(Message::Error {
+                message: "Connection replaced by a new agent with the same name".to_string(),
+            });
+        }
+
+        // Clean up any in-flight transfers or pending REST requests that
+        // belonged to the old connection before the new one takes over.
+        cleanup::cleanup_agent_requests(state, &old_agent_id).await;
     }
 
     log!(

@@ -199,6 +199,10 @@ pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
     UnregisterAgent {
         agent_id: AgentId,
+        /// Identifies which websocket session is unregistering so a stale
+        /// session cannot accidentally remove a replacement connection that
+        /// took over the same agent name.
+        socket_id: SocketId,
     },
     RouteResponse(RouteResponse),
     GetAgentList {

@@ -9,6 +9,13 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
+/// Interval between websocket Ping frames sent by the server to proactively
+/// detect half-open connections. When the SSH tunnel drops without a clean
+/// TCP close, the read side may not notice for a long time. Periodic pings
+/// force a write that fails fast if the underlying connection is gone,
+/// allowing the session to clean up and free the agent name.
+const WEBSOCKET_PING_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
 /// Converts a lane receive result into the next outbound websocket frame while
 /// tracking when that lane has closed.
 fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> Option<WsMessage> {
@@ -69,9 +76,10 @@ impl SessionRuntime {
                 self.agent_id = Some(agent_id);
             }
             Message::AgentUnregister { agent_id } => {
-                let _ = self
-                    .router_ref
-                    .send(RouterMsg::UnregisterAgent { agent_id });
+                let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
+                    agent_id,
+                    socket_id: self.socket_id.clone(),
+                });
             }
             Message::CommandResponse {
                 agent_id,
@@ -135,12 +143,39 @@ impl SessionRuntime {
     /// Unregisters the session's agent after the websocket goes away.
     fn shutdown(self) {
         if let Some(agent_id) = self.agent_id {
-            let _ = self
-                .router_ref
-                .send(RouterMsg::UnregisterAgent { agent_id });
+            let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
+                agent_id,
+                socket_id: self.socket_id.clone(),
+            });
         }
 
         log!(Level::Info, "Session stopped: socket_id={}", self.socket_id);
+    }
+
+    /// Dispatches one inbound websocket frame to the appropriate handler.
+    /// Returns `false` when the session should stop (e.g. router rejected
+    /// a binary chunk), so the caller can break out of its read loop.
+    async fn handle_ws_message(&mut self, message: WsMessage) -> bool {
+        match message {
+            WsMessage::Text(text) => match serde_json::from_str::<Message>(&text) {
+                Ok(message) => self.handle_control_message(message),
+                Err(error) => {
+                    log!(
+                        Level::Error,
+                        "Failed to deserialize WebSocket message: {}, raw text: {}",
+                        error,
+                        text
+                    );
+                }
+            },
+            WsMessage::Binary(bytes) => {
+                if !self.handle_binary_message(bytes.to_vec()).await {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        true
     }
 }
 
@@ -165,14 +200,32 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
 
     log!(Level::Info, "Session started: socket_id={}", socket_id);
 
+    // The writer task signals through this channel when it ends, so the reader
+    // loop can stop promptly instead of waiting for the read side to notice the
+    // broken connection.
+    let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
+
     let writer_task = tokio::spawn(async move {
         let mut text_closed = false;
         let mut binary_closed = false;
+        let mut ping_interval = tokio::time::interval(WEBSOCKET_PING_INTERVAL);
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consume the first immediate tick so the first ping fires one interval
+        // from now rather than immediately at session start.
+        ping_interval.tick().await;
 
         loop {
             // `biased` keeps control-plane text messages responsive while binary streaming is active.
             let next_message = tokio::select! {
                 biased;
+                _ = ping_interval.tick() => {
+                    // A ping forces a write; if the connection is dead the send
+                    // fails and the session can tear down instead of lingering.
+                    if sender.send(WsMessage::Ping(bytes::Bytes::new())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 message = rx_out_text.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
                 message = rx_out_binary.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
                 // Both outbound lanes are closed, so no future websocket frames can
@@ -190,29 +243,22 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
                 break;
             }
         }
+
+        let _ = writer_done_tx.send(());
     });
 
-    while let Some(Ok(message)) = receiver.next().await {
-        match message {
-            WsMessage::Text(text) => match serde_json::from_str::<Message>(&text) {
-                Ok(message) => runtime.handle_control_message(message),
-                Err(error) => {
-                    log!(
-                        Level::Error,
-                        "Failed to deserialize WebSocket message: {}, raw text: {}",
-                        error,
-                        text
-                    );
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut writer_done_rx => break,
+            result = receiver.next() => match result {
+                Some(Ok(message)) => {
+                    if !runtime.handle_ws_message(message).await {
+                        break;
+                    }
                 }
+                _ => break,
             },
-            WsMessage::Binary(bytes) => {
-                if !runtime.handle_binary_message(bytes.to_vec()).await {
-                    // The router stopped accepting or acknowledging streamed chunks,
-                    // so the session can no longer keep this websocket registered.
-                    break;
-                }
-            }
-            _ => {}
         }
     }
 

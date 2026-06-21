@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import {
+    describe,
+    it,
+    expect,
+    beforeAll,
+    afterAll,
+    afterEach,
+    onTestFinished,
+} from "vitest";
 import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +15,7 @@ import {
     TempFileManager,
     startServerAndAgent,
     waitForLogMessage,
+    waitForValue,
 } from "./test-utils";
 const AGENT_NAME = "test-agent";
 
@@ -148,7 +157,7 @@ describe("Agents API", () => {
         }
     });
 
-    it("should reject duplicate agent names", async () => {
+    it("should replace existing agent when same name reconnects", async () => {
         const DUPLICATE_AGENT_NAME = "duplicate-test-agent";
 
         const firstAgentCwd = tempFiles.tempDirectory({
@@ -189,19 +198,41 @@ describe("Agents API", () => {
             name: DUPLICATE_AGENT_NAME,
             cwd: secondAgentCwd,
         });
-        const secondAgent = processManager.getProcess(secondAgentPid);
-        // Verify second agent was spawned successfully
-        expect(secondAgent).toBeDefined();
 
-        const exitCode = await processManager.waitForExit(secondAgentPid);
-        // Verify second agent exited with non-zero code (error)
-        expect(exitCode).not.toBe(0);
+        onTestFinished(() => {
+            processManager.kill(secondAgentPid);
+        });
 
-        await apiClient.waitForAgentNames([AGENT_NAME]);
+        // Wait for the server to log the replacement of the old connection
+        await waitForLogMessage(
+            serverProcess,
+            /Replacing stale agent connection.*duplicate-test-agent/,
+        );
 
-        const agentsAfterSecond = await apiClient.listAgents();
+        // The first agent should exit because the server sent it an Error
+        // message telling it was replaced by a new connection.
+        const firstExitCode = await processManager.waitForExit(firstAgentPid);
+        // A non-zero exit code confirms the old agent received the replacement
+        // error and terminated instead of lingering as a zombie.
+        expect(firstExitCode).not.toBe(0);
+
+        // The replacement agent should be listed and functional
+        const replacementAgent = await waitForValue({
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((a) => a.name === DUPLICATE_AGENT_NAME);
+            },
+            description: "replacement agent to be listed",
+        });
+        // Verify the replacement agent is registered with the expected name
+        expect(replacementAgent).toBeDefined();
+        expect(replacementAgent!.name).toBe(DUPLICATE_AGENT_NAME);
+
         // Verify original test agent is still connected
-        expect(agentsAfterSecond.some((a) => a.name === AGENT_NAME)).toBe(true);
+        const agentsAfterReplacement = await apiClient.listAgents();
+        expect(
+            agentsAfterReplacement.some((a) => a.name === AGENT_NAME),
+        ).toBe(true);
     });
 
     it("should echo message back from connected agent", async () => {
