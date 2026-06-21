@@ -1,6 +1,6 @@
 mod agent_helpers;
 mod agents;
-mod agents_config;
+mod config;
 mod files;
 mod raw;
 mod responses;
@@ -10,6 +10,6 @@ mod transfers;
 mod ui;
 mod ws;
 
-pub(crate) use agents_config::spawn_agents;
+pub(crate) use config::{parse_config_file, spawn_agents};
 pub(crate) use routes::build_app;
 pub(crate) use state::{CoordinatorArgs, ServerState};

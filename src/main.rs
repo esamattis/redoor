@@ -41,27 +41,65 @@ async fn main() {
 }
 
 async fn run_server(args: server::CoordinatorArgs) {
-    logging::init(args.log.clone());
+    // Parse the config file once, up front, so both the precedence
+    // resolution and the agent spawn loop share the same parsed data.
+    // A missing --config is fine: the server runs with CLI/env/default
+    // settings and no auto-started agents, matching the old behavior when
+    // --agents was not passed.
+    let config = match &args.config {
+        Some(path) => match server::parse_config_file(path).await {
+            Ok(config) => Some(config),
+            Err(error) => {
+                eprintln!("Failed to parse config file '{path}': {error}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    // Precedence: CLI > config file > env > default.
+    // Each tier is only consulted if the higher tier did not provide a value,
+    // so an explicit CLI flag always wins and env is the fallback before the
+    // built-in default.
+    let port = args
+        .port
+        .or_else(|| config.as_ref().and_then(|c| c.server.port))
+        .or_else(|| {
+            std::env::var("REDOOR_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(3000);
+
+    let bind = args
+        .bind
+        .clone()
+        .or_else(|| config.as_ref().and_then(|c| c.server.bind.clone()))
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+
+    let log = args
+        .log
+        .clone()
+        .or_else(|| config.as_ref().and_then(|c| c.server.log.clone()));
+
+    logging::init(log.clone());
 
     let (router_ref, _router_task) = actors::router::spawn_router();
 
     let app = server::build_app(server::ServerState::new(router_ref));
 
-    let addr = format!("0.0.0.0:{}", args.port);
+    let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
-    println!("Server running on http://{}", addr);
+    println!("Server running on http://{addr}");
 
     // Start configured agents after the listener is bound (so reverse-ssh
     // tunnels and local agents both have a server to connect to) but before
     // axum::serve blocks the current task. spawn_agents returns immediately;
     // each agent runs in its own background task.
-    if let Some(agents_path) = &args.agents
-        && let Err(error) = server::spawn_agents(agents_path, args.port).await
-    {
-        eprintln!("Failed to start agents: {error}");
-        std::process::exit(1);
+    if let Some(config) = &config {
+        server::spawn_agents(&config.agents, port);
     }
 
     axum::serve(listener, app).await.unwrap();

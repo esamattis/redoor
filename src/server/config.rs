@@ -1,11 +1,12 @@
-//! Parses the `--agents agents.toml` file and spawns one agent per
-//! `[[agents]]` entry as a background task when the server starts.
+//! Parses the `--config config.toml` file: an optional `[server]` table plus
+//! the `[[agents]]` array, and spawns one agent per entry as a background
+//! task when the server starts.
 //!
-//! Each entry is either an ssh-backed agent (default, identified by `target`)
-//! or a local agent (`local = true`) that the server launches as a plain
-//! `redoor agent` child process without any ssh wrapping. Mixing the two
-//! types in one file is supported so a single server can manage remote hosts
-//! and a local agent from the same configuration.
+//! Each `[[agents]]` entry is either an ssh-backed agent (default, identified
+//! by `target`) or a local agent (`local = true`) that the server launches
+//! as a plain `redoor agent` child process without any ssh wrapping. Mixing
+//! the two types in one file is supported so a single server can manage
+//! remote hosts and a local agent from the same configuration.
 
 use anyhow::{Context, Result, bail};
 use redoor::{Level, log};
@@ -13,6 +14,11 @@ use std::process::Stdio;
 use sysinfo::System;
 use tokio::process::Command;
 use toml_edit::Document;
+
+/// Shorthand for the [`Document`] type produced by [`Document::parse`], whose
+/// key storage is borrowed from the parsed source. Used in helper signatures
+/// so we don't have to spell out the generic parameter on every function.
+type ParsedDocument<'a> = Document<&'a String>;
 
 use crate::ssh::{SshAgentConfig, start_ssh_agent};
 
@@ -48,9 +54,37 @@ pub(crate) enum AgentConfig {
     Local(LocalAgentConfig),
 }
 
-/// Reads and validates the agents toml file, returning one [`AgentConfig`]
-/// per `[[agents]]` entry. Entries with `local = true` become [`AgentConfig::Local`];
-/// all others are parsed as ssh agents and require a `target` field.
+/// Parsed `[server]` table from the config file. Every field is optional
+/// because any value not set in the file is filled in from the CLI flag,
+/// env var, or built-in default during precedence resolution in `run_server`.
+/// Keeping the fields `Option` here (rather than applying defaults inside the
+/// parser) lets the precedence chain in `run_server` distinguish "not set in
+/// file" from "set to the default in file", so CLI/env can still override a
+/// file that omits the key.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ServerSection {
+    pub(crate) port: Option<u16>,
+    pub(crate) bind: Option<String>,
+    pub(crate) log: Option<String>,
+}
+
+/// Full parsed config file: the optional `[server]` table plus the required
+/// `[[agents]]` array. `agents` stays required (a config file with no agents
+/// is rejected with the same error as today) so a typo in the file structure
+/// is surfaced at startup instead of silently producing an agent-less server.
+#[derive(Debug, Clone)]
+pub(crate) struct ServerConfig {
+    pub(crate) server: ServerSection,
+    pub(crate) agents: Vec<AgentConfig>,
+}
+
+/// Reads and validates the config file, returning the parsed `[server]`
+/// table and one [`AgentConfig`] per `[[agents]]` entry.
+///
+/// The `[server]` table is optional; a file with only `[[agents]]` is
+/// accepted so the previous agents-only file shape keeps working unchanged.
+/// The `[[agents]]` array is required and must be non-empty, matching the
+/// previous behavior so a malformed file fails fast at startup.
 ///
 /// Uses `toml_edit` (instead of the `toml` crate) so future server-side
 /// rewriting of the file — for example adding an agent via a REST endpoint —
@@ -58,25 +92,85 @@ pub(crate) enum AgentConfig {
 /// whole document from scratch. Parsing with the immutable `Document` is
 /// enough for the read path; it can be upgraded to `DocumentMut` via
 /// `into_mut()` when editing support is added.
-pub(crate) async fn parse_agents_file(path: &str) -> Result<Vec<AgentConfig>> {
+pub(crate) async fn parse_config_file(path: &str) -> Result<ServerConfig> {
     let content = tokio::fs::read_to_string(path)
         .await
-        .with_context(|| format!("Failed to read agents file '{}'", path))?;
+        .with_context(|| format!("Failed to read config file '{}'", path))?;
     let doc = Document::parse(&content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse agents file '{}': {}", path, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
 
+    let server = parse_server_section(&doc)?;
+
+    let agents = parse_agents_array(&doc, path)?;
+
+    Ok(ServerConfig { server, agents })
+}
+
+/// Parses the optional `[server]` table. Returns `ServerSection::default()`
+/// (all fields `None`) when the table is absent so a file that only contains
+/// `[[agents]]` keeps working. Unknown keys inside `[server]` are rejected
+/// so a typo like `post = 3000` is surfaced rather than silently ignored.
+fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
+    let Some(table) = doc.get("server").and_then(|item| item.as_table()) else {
+        return Ok(ServerSection::default());
+    };
+
+    // Reject unknown keys so a misspelled setting is surfaced immediately
+    // instead of silently falling back to a default the operator didn't mean.
+    const KNOWN_KEYS: [&str; 3] = ["port", "bind", "log"];
+    for (key, _) in table.iter() {
+        if !KNOWN_KEYS.contains(&key) {
+            bail!(
+                "unknown key 'server.{}' in config file; expected one of: {}",
+                key,
+                KNOWN_KEYS.join(", ")
+            );
+        }
+    }
+
+    let port = match table.get("port") {
+        None => None,
+        Some(item) => {
+            let raw = item
+                .as_integer()
+                .with_context(|| "server.port must be an integer")?;
+            Some(
+                u16::try_from(raw)
+                    .with_context(|| format!("server.port '{}' does not fit in a u16", raw))?,
+            )
+        }
+    };
+
+    let bind = table
+        .get("bind")
+        .and_then(|item| item.as_str())
+        .map(|s| s.to_string());
+
+    let log = table
+        .get("log")
+        .and_then(|item| item.as_str())
+        .map(|s| s.to_string());
+
+    Ok(ServerSection { port, bind, log })
+}
+
+/// Parses the required `[[agents]]` array. Extracted from the old
+/// `parse_agents_file` body unchanged so the existing per-entry validation
+/// (target required, local/ssh field exclusivity, ssh_port range, etc.) keeps
+/// working without rewriting the entry parsers.
+fn parse_agents_array(doc: &ParsedDocument<'_>, path: &str) -> Result<Vec<AgentConfig>> {
     let agents = doc
         .get("agents")
         .and_then(|item| item.as_array_of_tables())
         .with_context(|| {
             format!(
-                "agents file '{}' must contain a [[agents]] array of tables",
+                "config file '{}' must contain a [[agents]] array of tables",
                 path
             )
         })?;
 
     if agents.is_empty() {
-        bail!("agents file '{}' contains no [[agents]] entries", path);
+        bail!("config file '{}' contains no [[agents]] entries", path);
     }
 
     let mut configs = Vec::new();
@@ -236,33 +330,28 @@ fn default_local_agent_name() -> String {
     System::host_name().unwrap_or_else(|| "local".to_string())
 }
 
-/// Spawns one tokio task per `[[agents]]` entry. Each task runs the full
-/// `redoor ssh` lifecycle (sniff, install, reverse-forward) against the
-/// server's `redoor_port`, or — for `local = true` entries — runs a plain
-/// `redoor agent` child process that connects to the same server.
+/// Spawns one tokio task per agent config. The file has already been parsed
+/// by [`parse_config_file`], so this function only owns the spawn loop.
 ///
-/// Errors in individual agents are logged but do not abort the server or the
-/// other agents, so one unreachable host does not take down the whole fleet.
-/// The function returns synchronously (without waiting for the agents to
-/// connect) so the server can proceed to `axum::serve` immediately; the
-/// agent setup latency would otherwise block the server from accepting
-/// connections from agents that are already running.
-pub(crate) async fn spawn_agents(path: &str, redoor_port: u16) -> Result<()> {
-    let configs = parse_agents_file(path).await?;
+/// Made sync (no `async`) because it no longer does any I/O — removing the
+/// `async` avoids a clippy `unused_async` warning and makes the call site in
+/// `run_server` simpler. Errors in individual agents are logged but do not
+/// abort the server or the other agents, so one unreachable host does not take
+/// down the whole fleet. The function returns synchronously (without waiting
+/// for the agents to connect) so the server can proceed to `axum::serve`
+/// immediately.
+pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16) {
     log!(
         Level::Info,
-        "Starting {} agent(s) from '{}'",
-        configs.len(),
-        path
+        "Starting {} agent(s) from config",
+        configs.len()
     );
     for config in configs {
         match config {
             AgentConfig::Ssh(config) => {
-                // Clone the target/name up front so the task can log which
-                // host failed even after `config` has been moved into
-                // `start_ssh_agent`.
                 let target = config.target.clone();
                 let name = config.name.clone();
+                let config = config.clone();
                 tokio::spawn(async move {
                     log!(
                         Level::Info,
@@ -282,6 +371,7 @@ pub(crate) async fn spawn_agents(path: &str, redoor_port: u16) -> Result<()> {
             }
             AgentConfig::Local(config) => {
                 let name = config.name.clone();
+                let config = config.clone();
                 tokio::spawn(async move {
                     log!(Level::Info, "Local agent task started: name={:?}", name);
                     if let Err(error) = start_local_agent(config, redoor_port).await {
@@ -296,7 +386,6 @@ pub(crate) async fn spawn_agents(path: &str, redoor_port: u16) -> Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 /// Spawns `redoor agent` as a local child process and waits for it to exit.
@@ -362,7 +451,7 @@ mod tests {
     /// omitted, so a minimal agents file with only a `target` is valid.
     /// `ssh_port` defaults to 22 when missing.
     #[tokio::test]
-    async fn test_parse_agents_file_minimal_entry() {
+    async fn test_parse_config_file_minimal_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-{}.toml",
             std::time::SystemTime::now()
@@ -372,11 +461,15 @@ mod tests {
         ));
         std::fs::write(&temp, "[[agents]]\ntarget = \"user@example.com\"\n").unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
-        let agent = match &configs[0] {
+        assert_eq!(
+            config.agents.len(),
+            1,
+            "exactly one agent entry should be parsed"
+        );
+        let agent = match &config.agents[0] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
         };
@@ -395,7 +488,7 @@ mod tests {
     /// Verifies that every supported field is read from the toml file so
     /// operators can override the defaults per agent.
     #[tokio::test]
-    async fn test_parse_agents_file_full_entry() {
+    async fn test_parse_config_file_full_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-full-{}.toml",
             std::time::SystemTime::now()
@@ -417,11 +510,11 @@ target = "web-1"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 2, "both entries should be parsed");
-        let first = match &configs[0] {
+        assert_eq!(config.agents.len(), 2, "both entries should be parsed");
+        let first = match &config.agents[0] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
         };
@@ -434,7 +527,7 @@ target = "web-1"
 
         // The second entry only has a target, confirming ssh_port defaults to 22
         // when omitted while the first entry overrides it explicitly.
-        let second = match &configs[1] {
+        let second = match &config.agents[1] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
         };
@@ -446,7 +539,7 @@ target = "web-1"
     /// producing an empty agent list, so the operator notices a typo in the
     /// file structure immediately at server startup.
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_missing_agents_key() {
+    async fn test_parse_config_file_rejects_missing_agents_key() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-key-{}.toml",
             std::time::SystemTime::now()
@@ -456,7 +549,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "port = 3000\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -469,7 +562,7 @@ target = "web-1"
     /// fails fast on an incomplete entry instead of producing an agent with
     /// nothing to connect to.
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_entry_without_target() {
+    async fn test_parse_config_file_rejects_entry_without_target() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-target-{}.toml",
             std::time::SystemTime::now()
@@ -479,7 +572,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\nname = \"no-target\"\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -492,7 +585,7 @@ target = "web-1"
     /// than silently falling back to 22, so a typo like a string value is
     /// surfaced as an explicit operator error.
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_non_integer_ssh_port() {
+    async fn test_parse_config_file_rejects_non_integer_ssh_port() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-bad-type-{}.toml",
             std::time::SystemTime::now()
@@ -506,7 +599,7 @@ target = "web-1"
         )
         .unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(result.is_err(), "a non-integer ssh_port should be rejected");
@@ -515,7 +608,7 @@ target = "web-1"
     /// Verifies that an out-of-range `ssh_port` is rejected rather than
     /// silently truncating, so the operator gets a clear error for a typo.
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_out_of_range_port() {
+    async fn test_parse_config_file_rejects_out_of_range_port() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-bad-port-{}.toml",
             std::time::SystemTime::now()
@@ -525,7 +618,7 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\ntarget = \"host\"\nssh_port = 99999\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         assert!(
@@ -539,7 +632,7 @@ target = "web-1"
     /// runtime can fall back to its own defaults (hostname, current dir,
     /// inherited stdio).
     #[tokio::test]
-    async fn test_parse_agents_file_minimal_local_entry() {
+    async fn test_parse_config_file_minimal_local_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-min-{}.toml",
             std::time::SystemTime::now()
@@ -549,11 +642,15 @@ target = "web-1"
         ));
         std::fs::write(&temp, "[[agents]]\nlocal = true\n").unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
-        let agent = match &configs[0] {
+        assert_eq!(
+            config.agents.len(),
+            1,
+            "exactly one agent entry should be parsed"
+        );
+        let agent = match &config.agents[0] {
             AgentConfig::Local(config) => config,
             AgentConfig::Ssh(_) => panic!("entry with `local = true` should be local"),
         };
@@ -568,7 +665,7 @@ target = "web-1"
     /// Verifies that every supported local field is read from the toml file
     /// so operators can override the defaults per agent.
     #[tokio::test]
-    async fn test_parse_agents_file_full_local_entry() {
+    async fn test_parse_config_file_full_local_entry() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-full-{}.toml",
             std::time::SystemTime::now()
@@ -585,11 +682,15 @@ log = "/var/log/my-local.log"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
-        let agent = match &configs[0] {
+        assert_eq!(
+            config.agents.len(),
+            1,
+            "exactly one agent entry should be parsed"
+        );
+        let agent = match &config.agents[0] {
             AgentConfig::Local(config) => config,
             AgentConfig::Ssh(_) => panic!("entry with `local = true` should be local"),
         };
@@ -602,7 +703,7 @@ log = "/var/log/my-local.log"
     /// parsing each into the correct variant, so an operator can manage
     /// remote hosts and a local agent from the same file.
     #[tokio::test]
-    async fn test_parse_agents_file_mixed_entries() {
+    async fn test_parse_config_file_mixed_entries() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-mixed-{}.toml",
             std::time::SystemTime::now()
@@ -624,24 +725,24 @@ name = "web-agent"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 3, "all three entries should be parsed");
+        assert_eq!(config.agents.len(), 3, "all three entries should be parsed");
 
-        let first = match &configs[0] {
+        let first = match &config.agents[0] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("first entry has no `local = true`"),
         };
         assert_eq!(first.target, "remote-1");
 
-        let second = match &configs[1] {
+        let second = match &config.agents[1] {
             AgentConfig::Local(config) => config,
             AgentConfig::Ssh(_) => panic!("second entry has `local = true`"),
         };
         assert_eq!(second.name.as_deref(), Some("local-1"));
 
-        let third = match &configs[2] {
+        let third = match &config.agents[2] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("third entry has no `local = true`"),
         };
@@ -653,7 +754,7 @@ name = "web-agent"
     /// so the operator gets a clear error instead of a silently misconfigured
     /// agent that the dispatcher would then ignore the `target` for.
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_local_with_target() {
+    async fn test_parse_config_file_rejects_local_with_target() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-local-target-{}.toml",
             std::time::SystemTime::now()
@@ -663,7 +764,7 @@ name = "web-agent"
         ));
         std::fs::write(&temp, "[[agents]]\nlocal = true\ntarget = \"host\"\n").unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         let error = result.expect_err("local + target should be rejected");
@@ -681,7 +782,7 @@ name = "web-agent"
     /// just adds `local = true` gets a clear pointer to each mis-placed
     /// field rather than a single vague "config error".
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_local_with_ssh_fields() {
+    async fn test_parse_config_file_rejects_local_with_ssh_fields() {
         for field in ["username", "ssh_port", "remote_bin"] {
             let temp = std::env::temp_dir().join(format!(
                 "redoor-agents-test-local-ssh-{}-{}.toml",
@@ -697,7 +798,7 @@ name = "web-agent"
             )
             .unwrap();
 
-            let result = parse_agents_file(temp.to_str().unwrap()).await;
+            let result = parse_config_file(temp.to_str().unwrap()).await;
             std::fs::remove_file(&temp).ok();
 
             let error = result.expect_err(&format!("local + {} should be rejected", field));
@@ -715,9 +816,9 @@ name = "web-agent"
     /// test. Catches the case where an operator adds `local = true` to a
     /// previously working ssh entry without removing the ssh-only fields.
     /// `dir` is intentionally absent from this list because it is shared
-    /// between both variants (see [`test_parse_agents_file_ssh_entry_with_dir`]).
+    /// between both variants (see [`test_parse_config_file_ssh_entry_with_dir`]).
     #[tokio::test]
-    async fn test_parse_agents_file_rejects_ssh_with_log() {
+    async fn test_parse_config_file_rejects_ssh_with_log() {
         let field = "log";
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-ssh-local-{}-{}.toml",
@@ -733,7 +834,7 @@ name = "web-agent"
         )
         .unwrap();
 
-        let result = parse_agents_file(temp.to_str().unwrap()).await;
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
         let error = result.expect_err(&format!("ssh + {} should be rejected", field));
@@ -749,7 +850,7 @@ name = "web-agent"
     /// the [`SshAgentConfig`] so an operator can pin a remote agent's cwd to
     /// a project tree, mirroring the same option on local agents.
     #[tokio::test]
-    async fn test_parse_agents_file_ssh_entry_with_dir() {
+    async fn test_parse_config_file_ssh_entry_with_dir() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-ssh-dir-{}.toml",
             std::time::SystemTime::now()
@@ -764,11 +865,15 @@ dir = "/var/www/app"
 "#;
         std::fs::write(&temp, content).unwrap();
 
-        let configs = parse_agents_file(temp.to_str().unwrap()).await.unwrap();
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(configs.len(), 1, "exactly one agent entry should be parsed");
-        let agent = match &configs[0] {
+        assert_eq!(
+            config.agents.len(),
+            1,
+            "exactly one agent entry should be parsed"
+        );
+        let agent = match &config.agents[0] {
             AgentConfig::Ssh(config) => config,
             AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
         };
@@ -776,6 +881,127 @@ dir = "/var/www/app"
             agent.dir.as_deref(),
             Some("/var/www/app"),
             "dir should be read from the toml entry"
+        );
+    }
+
+    /// Verifies that a file with no [server] table produces an all-None
+    /// ServerSection, so the previous agents-only file shape keeps working and
+    /// run_server falls back to CLI/env/default for every server setting.
+    #[tokio::test]
+    async fn test_parse_config_file_missing_server_section_defaults_to_none() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-no-server-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&temp, "[[agents]]\ntarget = \"host\"\n").unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert!(
+            config.server.port.is_none(),
+            "port should be None when [server] is absent"
+        );
+        assert!(
+            config.server.bind.is_none(),
+            "bind should be None when [server] is absent"
+        );
+        assert!(
+            config.server.log.is_none(),
+            "log should be None when [server] is absent"
+        );
+    }
+
+    /// Verifies that all three [server] fields are read from the file so
+    /// operators can pin the whole server surface from one config file.
+    #[tokio::test]
+    async fn test_parse_config_file_reads_server_section() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-server-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[server]
+port = 4000
+bind = "127.0.0.1"
+log = "/tmp/x"
+
+[[agents]]
+target = "host"
+"#;
+        std::fs::write(&temp, content).unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert_eq!(config.server.port, Some(4000));
+        assert_eq!(config.server.bind.as_deref(), Some("127.0.0.1"));
+        assert_eq!(config.server.log.as_deref(), Some("/tmp/x"));
+    }
+
+    /// Verifies that an unknown key in [server] is rejected so a typo is surfaced
+    /// at startup instead of silently being ignored.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_unknown_server_key() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-bad-server-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[server]
+post = 3000
+
+[[agents]]
+target = "host"
+"#;
+        std::fs::write(&temp, content).unwrap();
+
+        let result = parse_config_file(temp.to_str().unwrap()).await;
+        std::fs::remove_file(&temp).ok();
+
+        assert!(
+            result.is_err(),
+            "an unknown [server] key should be rejected"
+        );
+        assert!(result.unwrap_err().to_string().contains("post"));
+    }
+
+    /// Verifies that an out-of-range port in [server] is rejected so the
+    /// operator gets a clear error for a typo, mirroring the existing
+    /// ssh_port range test.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_out_of_range_server_port() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-bad-server-port-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[server]
+port = 99999
+
+[[agents]]
+target = "host"
+"#;
+        std::fs::write(&temp, content).unwrap();
+
+        let result = parse_config_file(temp.to_str().unwrap()).await;
+        std::fs::remove_file(&temp).ok();
+
+        assert!(
+            result.is_err(),
+            "an out-of-range server.port should be rejected"
         );
     }
 }

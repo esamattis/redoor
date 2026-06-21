@@ -210,17 +210,44 @@ Generated bindings include: `AgentListResponse`, `AgentDetailsResponse`, `AgentI
 
 ### Configuration
 
-| Environment Variable | Default | Description                      |
-| -------------------- | ------- | -------------------------------- |
-| `REDOOR_PORT`        | `3000`  | Port for the server to listen on |
+The server can be configured via CLI flags, a TOML config file, environment
+variables, or built-in defaults. Precedence (highest wins):
+
+1. CLI flag (`--port`, `--bind`, `--log`)
+2. Config file `[server]` table (passed via `--config <path>`)
+3. Environment variable (`REDOOR_PORT`)
+4. Built-in default (`port=3000`, `bind=0.0.0.0`, `log`=stderr)
+
+| Setting | CLI flag | Config key | Env var | Default |
+| ------- | -------- | ---------- | ------- | ------- |
+| Port    | `--port` | `server.port` | `REDOOR_PORT` | `3000` |
+| Bind    | `--bind` | `server.bind` | — | `0.0.0.0` |
+| Log     | `--log`  | `server.log`  | — | stderr |
+
+Config file example:
+
+```toml
+[server]
+port = 3000
+bind = "0.0.0.0"
+log = "log/server.log"
+
+[[agents]]
+target = "user@example.com"
+
+[[agents]]
+local = true
+name = "local"
+```
 
 ### Running the Server
 
 ```sh
-cargo run --bin redoor
+# CLI flags only
+cargo run --bin redoor -- server --port 4000
 
-# Override the listen port
-cargo run --bin redoor -- --port 4000
+# With a config file (server settings + auto-started agents)
+cargo run --bin redoor -- server --config config.toml
 ```
 
 ### Running an Agent

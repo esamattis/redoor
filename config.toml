@@ -1,0 +1,16 @@
+# redoor server config file. Pass with: redoor server --config config.toml
+
+[server]
+# port = 3006          # optional; also settable via --port / REDOOR_PORT
+# bind = "0.0.0.0"     # optional; default 0.0.0.0
+# log = "log/server.log" # optional; also settable via --log
+
+[[agents]]
+target = "devbox"
+remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
+dir = "/home"
+
+[[agents]]
+name = "local"
+local = true
+dir = "/Users/esamatti/tmp"

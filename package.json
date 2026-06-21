@@ -13,7 +13,7 @@
         "lint": "oxlint -c .oxlintrc.json",
         "dev": "./scripts/dev",
         "dev:vite": "vite ./ui",
-        "dev:server": "./scripts/redoor server --log log/dev-server.log",
+        "dev:server": "./scripts/redoor server --config config.toml --log log/dev-server.log",
         "dev:agent1": "./scripts/redoor agent ws://127.0.0.1:3000/ws --name agent1_src --log log/dev-agent1_src.log",
         "dev:agent2": "mkdir -p dev_agents/agent2 && ./scripts/redoor agent ws://127.0.0.1:3000/ws --dir dev_agents/agent2 --name agent2_custom --log ../../log/dev-agent2_custom.log",
         "dev:agent3": "mkdir -p dev_agents/agent3 && ./scripts/redoor agent ws://127.0.0.1:3001/ws --dir dev_agents/agent3 --name agent3_slow --log ../../log/dev-agent3_slow.log",
