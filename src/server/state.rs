@@ -1,14 +1,25 @@
 use clap::Args;
 use redoor::actors;
+use redoor::watchdog::WatchdogRegistry;
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
     pub(crate) router_ref: actors::router::RouterHandle,
+    /// Shared registry of agent supervisors. The WebSocket session uses
+    /// this to look up the supervisor for the agent it just registered
+    /// and signal it when the connection goes stale.
+    pub(crate) watchdog_registry: WatchdogRegistry,
 }
 
 impl ServerState {
-    pub(crate) fn new(router_ref: actors::router::RouterHandle) -> Self {
-        Self { router_ref }
+    pub(crate) fn new(
+        router_ref: actors::router::RouterHandle,
+        watchdog_registry: WatchdogRegistry,
+    ) -> Self {
+        Self {
+            router_ref,
+            watchdog_registry,
+        }
     }
 }
 

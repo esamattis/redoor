@@ -86,7 +86,16 @@ async fn run_server(args: server::CoordinatorArgs) {
 
     let (router_ref, _router_task) = actors::router::spawn_router();
 
-    let app = server::build_app(server::ServerState::new(router_ref));
+    // Build the watchdog registry up front so the axum state and the
+    // supervisor spawn loop share the same map of agent name →
+    // supervisor signal. Built before binding the listener so the
+    // registry exists by the time the first WebSocket connects.
+    let watchdog_registry = server::WatchdogRegistry::new();
+
+    let app = server::build_app(server::ServerState::new(
+        router_ref.clone(),
+        watchdog_registry.clone(),
+    ));
 
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -97,9 +106,9 @@ async fn run_server(args: server::CoordinatorArgs) {
     // Start configured agents after the listener is bound (so reverse-ssh
     // tunnels and local agents both have a server to connect to) but before
     // axum::serve blocks the current task. spawn_agents returns immediately;
-    // each agent runs in its own background task.
+    // each agent runs in its own watchdog supervisor task.
     if let Some(config) = &config {
-        server::spawn_agents(&config.agents, port);
+        server::spawn_agents(&config.agents, port, &watchdog_registry);
     }
 
     axum::serve(listener, app).await.unwrap();

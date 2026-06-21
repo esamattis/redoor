@@ -7,6 +7,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use redoor::types::SocketId;
+use redoor::watchdog::WatchdogRegistry;
 use redoor::{Level, actors, commands::UiEvent, log};
 use uuid::Uuid;
 
@@ -17,7 +18,9 @@ pub(crate) async fn websocket_handler(
     ws: WebSocketUpgrade,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state.router_ref))
+    let router_ref = state.router_ref;
+    let watchdog_registry = state.watchdog_registry;
+    ws.on_upgrade(move |socket| handle_socket(socket, router_ref, watchdog_registry))
 }
 
 /// Route: `GET /api/v1/ui/ws`
@@ -28,9 +31,13 @@ pub(crate) async fn ui_websocket_handler(
     ws.on_upgrade(|socket| handle_ui_socket(socket, state.router_ref))
 }
 
-async fn handle_socket(socket: WebSocket, router_ref: actors::router::RouterHandle) {
+async fn handle_socket(
+    socket: WebSocket,
+    router_ref: actors::router::RouterHandle,
+    watchdog_registry: WatchdogRegistry,
+) {
     let socket_id = SocketId::new();
-    actors::session::handle_websocket(socket, socket_id, router_ref).await;
+    actors::session::handle_websocket(socket, socket_id, router_ref, watchdog_registry).await;
 }
 
 /// Relays UI events from the router to the websocket until either side closes.

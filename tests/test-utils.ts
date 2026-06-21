@@ -167,6 +167,7 @@ export type SpawnAgentArgs = {
 
 export type SpawnServerArgs = {
     log?: string;
+    config?: string;
 };
 
 export class ProcessManager {
@@ -221,6 +222,10 @@ export class ProcessManager {
         if (args.log !== undefined) {
             rmSync(args.log, { force: true });
             cliArgs.push("--log", args.log);
+        }
+
+        if (args.config !== undefined) {
+            cliArgs.push("--config", args.config);
         }
 
         return this.spawn(SERVER_PATH, cliArgs);

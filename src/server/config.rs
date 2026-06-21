@@ -20,7 +20,8 @@ use toml_edit::Document;
 /// so we don't have to spell out the generic parameter on every function.
 type ParsedDocument<'a> = Document<&'a String>;
 
-use crate::ssh::{SshAgentConfig, start_ssh_agent};
+use crate::server::WatchdogRegistry;
+use crate::ssh::SshAgentConfig;
 
 /// Configuration for one local agent, parsed from the agents toml.
 ///
@@ -321,8 +322,11 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
 /// Returns the default agent name for a local entry: the system hostname.
 /// Using the hostname (rather than e.g. `"local"`) means multiple servers on
 /// different machines each spawn a local agent with a distinct, meaningful
-/// name without the operator having to configure it.
-fn default_local_agent_name() -> String {
+/// name without the operator having to configure it. The supervisor in
+/// [`super::watchdog`] imports this helper so the key it registers in the
+/// [`crate::watchdog::WatchdogRegistry`] matches the name the spawned
+/// agent actually uses.
+pub(crate) fn default_local_agent_name() -> String {
     System::host_name().unwrap_or_else(|| "local".to_string())
 }
 
@@ -336,69 +340,29 @@ fn default_local_agent_name() -> String {
 /// down the whole fleet. The function returns synchronously (without waiting
 /// for the agents to connect) so the server can proceed to `axum::serve`
 /// immediately.
-pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16) {
-    log!(
-        Level::Info,
-        "Starting {} agent(s) from config",
-        configs.len()
-    );
-    for config in configs {
-        match config {
-            AgentConfig::Ssh(config) => {
-                let target = config.target.clone();
-                let name = config.name.clone();
-                let config = config.clone();
-                tokio::spawn(async move {
-                    log!(
-                        Level::Info,
-                        "Ssh agent task started: target={}, name={:?}",
-                        target,
-                        name
-                    );
-                    if let Err(error) = start_ssh_agent(config, redoor_port).await {
-                        log!(
-                            Level::Error,
-                            "Ssh agent failed (target={}): {}",
-                            target,
-                            error
-                        );
-                    }
-                });
-            }
-            AgentConfig::Local(config) => {
-                let name = config.name.clone();
-                let config = config.clone();
-                tokio::spawn(async move {
-                    log!(Level::Info, "Local agent task started: name={:?}", name);
-                    if let Err(error) = start_local_agent(config, redoor_port).await {
-                        log!(
-                            Level::Error,
-                            "Local agent failed (name={:?}): {}",
-                            name,
-                            error
-                        );
-                    }
-                });
-            }
-        }
-    }
+///
+/// The actual agent lifecycle (subprocess death / WebSocket staleness
+/// detection and restart) is owned by the watchdog supervisor
+/// (see [`crate::server::watchdog`]) so this function just hands the
+/// configs off.
+pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16, registry: &WatchdogRegistry) {
+    crate::server::watchdog::spawn_agents(configs, redoor_port, registry);
 }
 
-/// Spawns `redoor agent` as a local child process and waits for it to exit.
-/// Returns an error (rather than calling `process::exit`) so the server can
-/// log per-agent failures without taking down the whole process when one
-/// local agent crashes or is killed.
+/// Spawns `redoor agent` as a local child process and returns the running
+/// [`tokio::process::Child`] so the watchdog supervisor can wait for it or
+/// kill it when the WebSocket goes stale.
 ///
 /// The child reuses the server's own binary (via `std::env::current_exe`),
 /// which is always present because the server itself was launched from it.
 /// This avoids requiring the operator to keep two binaries in sync or
 /// configure a path. Stdio is inherited so agent logs appear in the same
 /// terminal as the server logs unless `--log` is set in the toml.
-async fn start_local_agent(
-    config: LocalAgentConfig,
+pub(crate) async fn spawn_local_agent(
+    config: &LocalAgentConfig,
     redoor_port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let name = config.name.unwrap_or_else(default_local_agent_name);
+) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
+    let name = config.name.clone().unwrap_or_else(default_local_agent_name);
     let ws_url = format!("ws://localhost:{}/ws", redoor_port);
 
     let bin = std::env::current_exe()
@@ -440,15 +404,8 @@ async fn start_local_agent(
         config.log,
     );
 
-    let status = command.status().await?;
-    if !status.success() {
-        return Err(format!(
-            "local agent exited with status {}",
-            status.code().unwrap_or(-1)
-        )
-        .into());
-    }
-    Ok(())
+    let child = command.spawn()?;
+    Ok(child)
 }
 
 #[cfg(test)]

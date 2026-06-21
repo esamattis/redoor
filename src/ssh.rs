@@ -62,7 +62,7 @@ fn default_remote_bin() -> String {
 
 /// Derives a default agent name from the ssh target by stripping any
 /// `user@` prefix so the name reflects the host being connected to.
-fn default_agent_name(target: &str) -> String {
+pub(crate) fn default_agent_name(target: &str) -> String {
     target.rsplit('@').next().unwrap_or(target).to_string()
 }
 
@@ -467,6 +467,26 @@ impl SshHost {
     /// `options`. Stdio is inherited so the user can observe remote output
     /// and interact with the process when needed.
     ///
+    /// Returns the spawned child. Callers (the supervisor) own the child
+    /// so they can wait for it or kill it when the WebSocket goes stale.
+    pub(crate) async fn spawn(
+        &self,
+        command: &str,
+        args: &[&str],
+        options: &SshRunOptions,
+    ) -> Result<tokio::process::Child, std::io::Error> {
+        let mut ssh = build_ssh_command(self, command, args, options).await?;
+
+        log!(Level::Debug, "Spawning ssh command: {:?}", ssh);
+
+        ssh.spawn()
+    }
+
+    /// Spawns `ssh` to execute `command` with `args` on the remote host,
+    /// applying the forwards and forwarding-failure behavior described by
+    /// `options`. Stdio is inherited so the user can observe remote output
+    /// and interact with the process when needed.
+    ///
     /// Returns the ssh exit status. Callers are responsible for translating
     /// a non-zero status into their own error handling.
     pub(crate) async fn run(
@@ -475,53 +495,7 @@ impl SshHost {
         args: &[&str],
         options: &SshRunOptions,
     ) -> Result<std::process::ExitStatus, std::io::Error> {
-        let mut ssh = Command::new("ssh");
-
-        if let Some(ref username) = self.username {
-            ssh.arg("-l").arg(username);
-        }
-        ssh.arg("-p").arg(self.ssh_port.to_string());
-
-        if options.compressed {
-            ssh.arg("-C");
-        }
-
-        // Always fail fast if a requested reverse forward cannot be bound.
-        // Without this, ssh keeps running and the remote command executes
-        // against a tunnel that will never come up.
-        ssh.arg("-o").arg("ExitOnForwardFailure=yes");
-
-        for forward in &options.reverse_forwards {
-            let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
-            ssh.arg("-R").arg(spec);
-        }
-
-        ssh.arg(&self.target);
-        ssh.arg(command);
-        for arg in args {
-            ssh.arg(arg);
-        }
-
-        ssh.stdin(Stdio::inherit());
-
-        if let Some(log_path) = &options.log_file {
-            // Open in append mode via the async tokio API, then convert to a
-            // std::fs::File so it can be turned into a Stdio for the child.
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)
-                .await?;
-            // Clone the handle so stdout and stderr can both write to the same file.
-            let file_for_stderr = file.try_clone().await?;
-            let stdout_file = file.into_std().await;
-            let stderr_file = file_for_stderr.into_std().await;
-            ssh.stdout(Stdio::from(stdout_file));
-            ssh.stderr(Stdio::from(stderr_file));
-        } else {
-            ssh.stdout(Stdio::inherit());
-            ssh.stderr(Stdio::inherit());
-        }
+        let mut ssh = build_ssh_command(self, command, args, options).await?;
 
         log!(Level::Debug, "Running ssh command: {:?}", ssh);
 
@@ -638,6 +612,66 @@ impl SshHost {
     }
 }
 
+/// Builds the [`Command`] used by both [`SshHost::run`] and
+/// [`SshHost::spawn`]. Centralizing the arg/stdio wiring keeps the two
+/// spawn paths from drifting out of sync as flags are added.
+async fn build_ssh_command(
+    host: &SshHost,
+    command: &str,
+    args: &[&str],
+    options: &SshRunOptions,
+) -> Result<Command, std::io::Error> {
+    let mut ssh = Command::new("ssh");
+
+    if let Some(ref username) = host.username {
+        ssh.arg("-l").arg(username);
+    }
+    ssh.arg("-p").arg(host.ssh_port.to_string());
+
+    if options.compressed {
+        ssh.arg("-C");
+    }
+
+    // Always fail fast if a requested reverse forward cannot be bound.
+    // Without this, ssh keeps running and the remote command executes
+    // against a tunnel that will never come up.
+    ssh.arg("-o").arg("ExitOnForwardFailure=yes");
+
+    for forward in &options.reverse_forwards {
+        let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
+        ssh.arg("-R").arg(spec);
+    }
+
+    ssh.arg(&host.target);
+    ssh.arg(command);
+    for arg in args {
+        ssh.arg(arg);
+    }
+
+    ssh.stdin(Stdio::inherit());
+
+    if let Some(log_path) = &options.log_file {
+        // Open in append mode via the async tokio API, then convert to a
+        // std::fs::File so it can be turned into a Stdio for the child.
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .await?;
+        // Clone the handle so stdout and stderr can both write to the same file.
+        let file_for_stderr = file.try_clone().await?;
+        let stdout_file = file.into_std().await;
+        let stderr_file = file_for_stderr.into_std().await;
+        ssh.stdout(Stdio::from(stdout_file));
+        ssh.stderr(Stdio::from(stderr_file));
+    } else {
+        ssh.stdout(Stdio::inherit());
+        ssh.stderr(Stdio::inherit());
+    }
+
+    Ok(ssh)
+}
+
 /// Spawns `ssh` with reverse port forwarding and starts a redoor agent on
 /// the remote host.
 ///
@@ -664,27 +698,49 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
     start_ssh_agent(config, args.redoor_port).await
 }
 
-/// Core implementation shared by `redoor ssh` and `redoor server --agents`:
-/// probes the remote host, installs the redoor binary if missing, then starts
-/// a redoor agent on the remote host with a reverse port forward back to
-/// `redoor_port` on the local machine.
-///
-/// Returns an error (rather than calling `process::exit`) so the server can
-/// log per-agent failures without taking down the whole process when one
-/// host is unreachable.
-pub(crate) async fn start_ssh_agent(
-    config: SshAgentConfig,
+/// Resolved values for one ssh-backed agent: the prepared host and the
+/// ssh argv to run. The supervisor uses [`PreparedSshAgent::spawn`] to
+/// start a fresh ssh child for every restart cycle without re-sniffing
+/// the host or re-uploading the binary.
+pub(crate) struct PreparedSshAgent {
+    host: SshHost,
+    remote_bin: String,
+    remote_argv: Vec<String>,
+    options: SshRunOptions,
+}
+
+impl PreparedSshAgent {
+    /// Spawns the long-running ssh child for this agent. The returned
+    /// `Child` is owned by the caller (the supervisor) so it can wait
+    /// for normal exit or kill it when the WebSocket goes stale.
+    pub(crate) async fn spawn(&self) -> Result<tokio::process::Child, std::io::Error> {
+        // Re-borrow the argv as a slice of &str for the spawn helper.
+        let argv_refs: Vec<&str> = self.remote_argv.iter().map(String::as_str).collect();
+        self.host
+            .spawn(&self.remote_bin, &argv_refs, &self.options)
+            .await
+    }
+}
+
+/// One-time setup for an ssh-backed agent: resolves the remote binary
+/// path, sniffs the host, installs the binary if missing, and computes
+/// the run-time options. After this returns successfully, the binary is
+/// in place and the host is ready to run the agent. The supervisor
+/// loops [`PreparedSshAgent::spawn`] calls against the returned struct
+/// so it doesn't re-sniff / re-upload on every restart.
+pub(crate) async fn prepare_ssh_agent(
+    config: &SshAgentConfig,
     redoor_port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let remote_bin = config.remote_bin.unwrap_or_else(default_remote_bin);
+) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
+    let remote_bin = config.remote_bin.clone().unwrap_or_else(default_remote_bin);
     let agent_name = config
         .name
         .clone()
         .unwrap_or_else(|| default_agent_name(&config.target));
     let ws_url = format!("ws://localhost:{}/ws", redoor_port);
 
-    let host = SshHost::new(config.target)
-        .username(config.username)
+    let host = SshHost::new(config.target.clone())
+        .username(config.username.clone())
         .ssh_port(config.ssh_port);
 
     // Sniff the remote host before starting the agent so we can install the
@@ -714,10 +770,15 @@ pub(crate) async fn start_ssh_agent(
     // the agent name must be appended after the fixed flags. The optional
     // `-d/--dir` is appended last so its absence matches the local agent's
     // default of inheriting the current working directory.
-    let mut remote_argv: Vec<&str> = vec!["agent", &ws_url, "--name", &agent_name];
+    let mut remote_argv: Vec<String> = vec![
+        "agent".to_string(),
+        ws_url.clone(),
+        "--name".to_string(),
+        agent_name.clone(),
+    ];
     if let Some(dir) = &config.dir {
-        remote_argv.push("-d");
-        remote_argv.push(dir);
+        remote_argv.push("-d".to_string());
+        remote_argv.push(dir.clone());
     }
 
     log!(
@@ -730,7 +791,33 @@ pub(crate) async fn start_ssh_agent(
         config.log,
     );
 
-    let status = host.run(&remote_bin, &remote_argv, &options).await?;
+    Ok(PreparedSshAgent {
+        host,
+        remote_bin,
+        remote_argv,
+        options,
+    })
+}
+
+/// Core implementation shared by `redoor ssh` and `redoor server --agents`:
+/// probes the remote host, installs the redoor binary if missing, then runs
+/// a redoor agent on the remote host with a reverse port forward back to
+/// `redoor_port` on the local machine. The function blocks until the ssh
+/// process exits.
+///
+/// Returns an error (rather than calling `process::exit`) so the server can
+/// log per-agent failures without taking down the whole process when one
+/// host is unreachable.
+pub(crate) async fn start_ssh_agent(
+    config: SshAgentConfig,
+    redoor_port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared = prepare_ssh_agent(&config, redoor_port).await?;
+    let argv_refs: Vec<&str> = prepared.remote_argv.iter().map(String::as_str).collect();
+    let status = prepared
+        .host
+        .run(&prepared.remote_bin, &argv_refs, &prepared.options)
+        .await?;
     if !status.success() {
         return Err(format!(
             "ssh agent exited with status {}",

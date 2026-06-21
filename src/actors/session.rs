@@ -5,8 +5,10 @@ use crate::actors::router::{
 use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message, SocketId};
+use crate::watchdog::{WatchdogHandle, WatchdogRegistry};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 
 /// Interval between websocket Ping frames sent by the server to proactively
@@ -15,6 +17,17 @@ use tokio::sync::{mpsc, oneshot};
 /// force a write that fails fast if the underlying connection is gone,
 /// allowing the session to clean up and free the agent name.
 const WEBSOCKET_PING_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
+/// How often the session checks whether the WebSocket has gone silent.
+/// Independent of the ping interval so the stale check can use a multiple
+/// of the ping interval as its threshold.
+const WEBSOCKET_STALE_CHECK_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
+/// No inbound frame for at least this long means the WebSocket is
+/// treated as stale and the supervisor is asked to restart the
+/// subprocess. Sized as 3x the ping interval so two missed pongs
+/// (= 30s of silence) trigger a restart.
+const WEBSOCKET_STALE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(30);
 
 /// Converts a lane receive result into the next outbound websocket frame while
 /// tracking when that lane has closed.
@@ -46,11 +59,17 @@ struct SessionRuntime {
     /// Sends binary frames on a bounded lane so large stream transfers apply
     /// backpressure instead of growing memory usage without bound.
     outgoing_binary: mpsc::Sender<WsMessage>,
+    /// Populated after `AgentRegister` if the registered agent name has a
+    /// matching watchdog supervisor. The stale check uses this to signal
+    /// the supervisor when the WebSocket goes silent. Stays `None` for
+    /// agents that aren't supervised (e.g. manually-spawned external
+    /// agents), in which case the stale check is a no-op.
+    watchdog: Option<WatchdogHandle>,
 }
 
 impl SessionRuntime {
     /// Registers the agent with the router once the websocket announces itself.
-    fn handle_control_message(&mut self, message: Message) {
+    fn handle_control_message(&mut self, message: Message, watchdog_registry: &WatchdogRegistry) {
         match message {
             Message::AgentRegister {
                 agent_id,
@@ -60,6 +79,21 @@ impl SessionRuntime {
                 hostname,
                 username,
             } => {
+                // Look up the supervisor for this agent name BEFORE
+                // moving `agent_name` into the registration payload so
+                // the registry still has access to it. A `None` result
+                // is fine: it just means the agent is not supervised by
+                // the watchdog (e.g. an external agent spawned outside
+                // the server) and the stale check will be a no-op.
+                self.watchdog = watchdog_registry.lookup(&agent_name);
+                if self.watchdog.is_some() {
+                    log!(
+                        Level::Debug,
+                        "Session linked to watchdog supervisor: agent_name={}",
+                        agent_name
+                    );
+                }
+
                 let _ = self
                     .router_ref
                     .send(RouterMsg::RegisterAgent(RegisterAgentRequest {
@@ -155,10 +189,14 @@ impl SessionRuntime {
     /// Dispatches one inbound websocket frame to the appropriate handler.
     /// Returns `false` when the session should stop (e.g. router rejected
     /// a binary chunk), so the caller can break out of its read loop.
-    async fn handle_ws_message(&mut self, message: WsMessage) -> bool {
+    async fn handle_ws_message(
+        &mut self,
+        message: WsMessage,
+        watchdog_registry: &WatchdogRegistry,
+    ) -> bool {
         match message {
             WsMessage::Text(text) => match serde_json::from_str::<Message>(&text) {
-                Ok(message) => self.handle_control_message(message),
+                Ok(message) => self.handle_control_message(message, watchdog_registry),
                 Err(error) => {
                     log!(
                         Level::Error,
@@ -181,7 +219,12 @@ impl SessionRuntime {
 
 /// Entry point for a new WebSocket connection. Splits the socket into send/receive
 /// halves and wires them to the router using explicit Tokio channels.
-pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref: RouterHandle) {
+pub async fn handle_websocket(
+    socket: WebSocket,
+    socket_id: SocketId,
+    router_ref: RouterHandle,
+    watchdog_registry: WatchdogRegistry,
+) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     // Text frames carry control-plane messages, so they stay unbounded to avoid
     // stalling router notifications behind a concurrent large transfer.
@@ -196,6 +239,7 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
         agent_id: None,
         outgoing_text: tx_out_text,
         outgoing_binary: tx_out_binary,
+        watchdog: None,
     };
 
     log!(Level::Info, "Session started: socket_id={}", socket_id);
@@ -247,13 +291,48 @@ pub async fn handle_websocket(socket: WebSocket, socket_id: SocketId, router_ref
         let _ = writer_done_tx.send(());
     });
 
+    // Track the last time we received any frame on the WebSocket. Any
+    // inbound frame (Text, Binary, Ping, Pong, Close) resets the timer.
+    // If no frame arrives for WEBSOCKET_STALE_TIMEOUT we assume the
+    // connection is half-open (e.g. SSH tunnel died without a TCP
+    // close) and ask the watchdog supervisor to restart the subprocess.
+    let mut last_seen = Instant::now();
+    let mut stale_check = tokio::time::interval(WEBSOCKET_STALE_CHECK_INTERVAL);
+    stale_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Burn the first immediate tick so the first stale check fires one
+    // interval from now rather than immediately at session start.
+    stale_check.tick().await;
+
     loop {
         tokio::select! {
             biased;
             _ = &mut writer_done_rx => break,
+            _ = stale_check.tick() => {
+                if last_seen.elapsed() > WEBSOCKET_STALE_TIMEOUT
+                    && let Some(watchdog) = runtime.watchdog.as_ref()
+                {
+                    log!(
+                        Level::Warning,
+                        "WebSocket stale for {:?}, requesting restart: agent_name={}, socket_id={}",
+                        last_seen.elapsed(),
+                        watchdog.key(),
+                        socket_id
+                    );
+                    watchdog.signal_stale();
+                    // Break out of the read loop. The writer task will
+                    // exit because the lanes close when `shutdown()`
+                    // drops the senders, and the supervisor is already
+                    // killing the subprocess.
+                    break;
+                }
+            }
             result = receiver.next() => match result {
                 Some(Ok(message)) => {
-                    if !runtime.handle_ws_message(message).await {
+                    // Any inbound frame (including Pong) resets the
+                    // stale timer. The dispatch below happens before
+                    // we drop the frame so the runtime can act on it.
+                    last_seen = Instant::now();
+                    if !runtime.handle_ws_message(message, &watchdog_registry).await {
                         break;
                     }
                 }
