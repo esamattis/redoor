@@ -90,7 +90,9 @@ test.describe.serial("File Browser Navigation", () => {
         await page.getByRole("link", { name: "subdir2" }).click();
         await page.getByRole("link", { name: "deep" }).click();
 
-        const breadcrumbs = page.locator(".flex.items-center.gap-2.text-sm");
+        const breadcrumbs = page.getByRole("navigation", {
+            name: "Breadcrumbs",
+        });
         await expect(breadcrumbs).toContainText(ctx.agentName);
         await expect(breadcrumbs).toContainText(ctx.testDirName);
         await expect(breadcrumbs).toContainText("subdir2");
@@ -111,9 +113,9 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
 
         await page.getByRole("link", { name: "subdir1" }).click();
-        const subdir1Breadcrumbs = page.locator(
-            ".flex.items-center.gap-2.text-sm",
-        );
+        const subdir1Breadcrumbs = page.getByRole("navigation", {
+            name: "Breadcrumbs",
+        });
         await expect(subdir1Breadcrumbs).toContainText("subdir1");
         await expect(
             page.getByRole("link", { name: "nested1.txt", exact: true }),
@@ -155,7 +157,7 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
         // The breadcrumb text confirms the browser stopped at subdir2 instead of jumping to the test root.
         await expect(
-            page.locator(".flex.items-center.gap-2.text-sm"),
+            page.getByRole("navigation", { name: "Breadcrumbs" }),
         ).toContainText("subdir2");
 
         const upButton = page.getByRole("link", {
@@ -188,8 +190,8 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: ctx.testDirName, exact: true }),
         ).toBeVisible();
-        // The disabled styling confirms there is no parent above the agent cwd root.
-        await expect(upButton).toHaveClass(/disabled:opacity-50/);
+        // The aria-disabled attribute confirms there is no parent above the agent cwd root.
+        await expect(upButton).toHaveAttribute("aria-disabled", "true");
     });
 
     test("should navigate back to agent page using Back to Agent button", async ({

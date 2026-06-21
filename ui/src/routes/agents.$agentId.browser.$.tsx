@@ -336,7 +336,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
                 type="button"
                 onClick={openFilePicker}
                 disabled={isUploading}
-                className="inline-flex items-center gap-2 rounded bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
                 <Upload className="h-4 w-4" />
                 {isUploading ? "Uploading..." : "Upload files"}
@@ -345,7 +345,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
                 <span
                     role={uploadState.type === "error" ? "alert" : "status"}
                     aria-live="polite"
-                    className={`text-sm ${uploadState.type === "error" ? "text-red-600" : "text-emerald-700"}`}
+                    className={`text-sm ${uploadState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
                 >
                     {statusMessage}
                 </span>
@@ -420,7 +420,7 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
             <button
                 type="button"
                 onClick={openDialog}
-                className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-white hover:bg-sky-700"
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
             >
                 <FolderPlus className="h-4 w-4" />
                 Create directory
@@ -444,7 +444,7 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
                 <form onSubmit={handleSubmit} className="mt-4">
                     <label
                         htmlFor={inputId}
-                        className="mb-2 block text-sm font-medium text-gray-700"
+                        className="mb-2 block text-sm font-medium text-slate-300"
                     >
                         Directory name
                     </label>
@@ -461,15 +461,15 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
                         placeholder="logs"
                         autoFocus
                         disabled={isCreating}
-                        className="w-full rounded border border-gray-300 px-3 py-2 text-gray-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:bg-gray-50"
+                        className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
                     />
 
                     {createDirectoryPath ? (
                         <div className="mt-4">
-                            <p className="mb-2 text-sm text-gray-600">
+                            <p className="mb-2 text-sm text-slate-400">
                                 Directory path
                             </p>
-                            <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                            <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
                                 {createDirectoryPath}
                             </p>
                         </div>
@@ -480,14 +480,14 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
                             type="button"
                             onClick={closeDialog}
                             disabled={isCreating}
-                            className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             Cancel
                         </button>
                         <button
                             type="submit"
                             disabled={isCreating}
-                            className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <FolderPlus className="h-4 w-4" />
                             {isCreating ? "Creating..." : "Create directory"}
@@ -528,7 +528,7 @@ function BrowserHeader(props: {
                                 ? "Hide hidden files"
                                 : "Show hidden files"
                         }
-                        className="inline-flex items-center gap-2 rounded bg-gray-100 px-4 py-2 hover:bg-gray-200"
+                        className="inline-flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
                     >
                         {props.showHiddenFiles ? (
                             <EyeOff className="h-4 w-4" />
@@ -547,7 +547,7 @@ function BrowserHeader(props: {
                     />
                     <Link
                         to={getBrowserPathHref(props.agentId, props.parentPath)}
-                        className="flex items-center gap-2 rounded bg-gray-100 px-4 py-2 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={props.isAtCwd}
                     >
                         <ArrowUp className="h-4 w-4" />
@@ -556,7 +556,7 @@ function BrowserHeader(props: {
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
-                        className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
+                        className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                     >
                         Back to Agent
                     </Link>
@@ -578,11 +578,14 @@ function Breadcrumbs(props: {
     let accumulatedPath = "";
 
     return (
-        <div className="flex items-center gap-2 text-sm">
+        <nav
+            aria-label="Breadcrumbs"
+            className="flex items-center gap-2 text-sm"
+        >
             <Link
                 to="/agents/$agentId"
                 params={{ agentId }}
-                className="text-blue-600 hover:underline"
+                className="text-blue-400 hover:underline"
             >
                 {agentName}
             </Link>
@@ -596,16 +599,16 @@ function Breadcrumbs(props: {
 
                 return (
                     <div key={index} className="flex items-center gap-2">
-                        <span className="text-gray-400">/</span>
+                        <span className="text-slate-600">/</span>
                         {isLast ? (
-                            <span className="text-gray-900 font-medium">
+                            <span className="font-medium text-slate-100">
                                 {part}
                             </span>
                         ) : (
                             <Link
                                 to="/agents/$agentId/browser/$"
                                 params={{ agentId, _splat: accumulatedPath }}
-                                className="text-blue-600 hover:underline font-medium"
+                                className="font-medium text-blue-400 hover:underline"
                             >
                                 {part}
                             </Link>
@@ -613,7 +616,7 @@ function Breadcrumbs(props: {
                     </div>
                 );
             })}
-        </div>
+        </nav>
     );
 }
 
@@ -635,25 +638,25 @@ function FileList(props: {
     const { agentId, agentName, relativePath, files } = props;
 
     return (
-        <table className="w-full bg-white border rounded-lg">
+        <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
             <thead>
-                <tr className="border-b bg-gray-50">
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Select
                     </th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Type
                     </th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Name
                     </th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Size
                     </th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Owner
                     </th>
-                    <th className="text-left p-3 text-sm font-medium text-gray-600">
+                    <th className="text-left p-3 text-sm font-medium text-slate-400">
                         Group
                     </th>
                 </tr>
@@ -705,7 +708,7 @@ function FileEntry(props: {
 
     return (
         <tr
-            className="border-b hover:bg-gray-50"
+            className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5"
             aria-label={`${isDirectory ? "Directory" : "File"} entry ${entry.name}`}
         >
             <td className="p-3" aria-label="">
@@ -731,10 +734,10 @@ function FileEntry(props: {
                             fileName: entry.name,
                         })
                     }
-                    className="rounded p-1 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                    className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100"
                 >
                     {isSelected ? (
-                        <CheckSquare className="h-4 w-4 text-blue-600" />
+                        <CheckSquare className="h-4 w-4 text-blue-400" />
                     ) : (
                         <Square className="h-4 w-4" />
                     )}
@@ -742,30 +745,30 @@ function FileEntry(props: {
             </td>
             <td className="p-3">
                 {isDirectory ? (
-                    <Folder className="h-5 w-5 text-blue-500" />
+                    <Folder className="h-5 w-5 text-blue-400" />
                 ) : (
-                    <File className="h-5 w-5 text-gray-400" />
+                    <File className="h-5 w-5 text-slate-500" />
                 )}
             </td>
             <td className="p-3">
                 <Link
                     to="/agents/$agentId/browser/$"
                     params={{ agentId, _splat: splatValue }}
-                    className={`${isDirectory ? "flex items-center gap-3 " : ""}text-blue-600 font-medium hover:underline`}
+                    className={`${isDirectory ? "flex items-center gap-3 " : ""}text-blue-400 font-medium hover:underline`}
                 >
                     {entry.name}
                 </Link>
             </td>
             <td
                 className={
-                    isDirectory ? "p-3 text-gray-400" : "p-3 text-gray-500"
+                    isDirectory ? "p-3 text-slate-600" : "p-3 text-slate-400"
                 }
                 aria-label={`Size for ${entry.name}`}
             >
                 {isDirectory ? "-" : formatSize(entry.size)}
             </td>
-            <td className="p-3 text-gray-500">{entry.owner || "-"}</td>
-            <td className="p-3 text-gray-500">{entry.group || "-"}</td>
+            <td className="p-3 text-slate-400">{entry.owner || "-"}</td>
+            <td className="p-3 text-slate-400">{entry.group || "-"}</td>
         </tr>
     );
 }
@@ -832,7 +835,7 @@ function FileDetailView(props: {
     return (
         <div>
             <div className="mb-6">
-                <div className="flex items-center justify-between mb-4">
+                <div className="mb-4 flex items-center justify-between">
                     <Breadcrumbs
                         agentId={props.agentId}
                         agentName={props.agentName}
@@ -841,7 +844,7 @@ function FileDetailView(props: {
                     <div className="flex gap-2">
                         <Link
                             to={getBrowserPathHref(props.agentId, parentPath)}
-                            className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
+                            className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
                         >
                             <ArrowLeft className="h-4 w-4" />
                             Back
@@ -849,7 +852,7 @@ function FileDetailView(props: {
                         <Link
                             to="/agents/$agentId"
                             params={{ agentId: props.agentId }}
-                            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                            className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                         >
                             Back to Agent
                         </Link>
@@ -857,12 +860,15 @@ function FileDetailView(props: {
                 </div>
             </div>
 
-            <div className="bg-white border rounded-lg p-6">
-                <div className="flex items-center gap-4 mb-6">
-                    <div className="p-3 bg-blue-100 rounded-lg">
-                        <File className="h-8 w-8 text-blue-600" />
+            <div className="rounded-lg border border-slate-800 bg-[#11141b] p-6">
+                <div className="mb-6 flex items-center gap-4">
+                    <div className="rounded-lg bg-blue-500/15 p-3">
+                        <File className="h-8 w-8 text-blue-400" />
                     </div>
-                    <h1 className="text-2xl font-bold text-gray-900">
+                    <h1
+                        aria-label="File name"
+                        className="text-2xl font-bold text-slate-100"
+                    >
                         {props.fileName}
                     </h1>
                 </div>
@@ -870,20 +876,23 @@ function FileDetailView(props: {
                 <div className="space-y-4">
                     <div className="grid grid-cols-3 gap-4">
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">Size</p>
-                            <p className="text-gray-900 font-medium">
+                            <p className="mb-1 text-sm text-slate-400">Size</p>
+                            <p
+                                aria-label="File size value"
+                                className="font-medium text-slate-100"
+                            >
                                 {formatSize(props.lsResult.size)}
                             </p>
                         </div>
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">Owner</p>
-                            <p className="text-gray-900 font-medium">
+                            <p className="mb-1 text-sm text-slate-400">Owner</p>
+                            <p className="font-medium text-slate-100">
                                 {props.lsResult.owner || "-"}
                             </p>
                         </div>
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">Group</p>
-                            <p className="text-gray-900 font-medium">
+                            <p className="mb-1 text-sm text-slate-400">Group</p>
+                            <p className="font-medium text-slate-100">
                                 {props.lsResult.group || "-"}
                             </p>
                         </div>
@@ -891,42 +900,44 @@ function FileDetailView(props: {
 
                     <div className="grid grid-cols-2 gap-4">
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">UID</p>
-                            <p className="text-gray-900 font-medium">
+                            <p className="mb-1 text-sm text-slate-400">UID</p>
+                            <p className="font-medium text-slate-100">
                                 {props.lsResult.uid}
                             </p>
                         </div>
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">GID</p>
-                            <p className="text-gray-900 font-medium">
+                            <p className="mb-1 text-sm text-slate-400">GID</p>
+                            <p className="font-medium text-slate-100">
                                 {props.lsResult.gid}
                             </p>
                         </div>
                     </div>
 
                     <div>
-                        <p className="text-sm text-gray-500 mb-1">Full Path</p>
-                        <p className="text-gray-900 font-mono text-sm bg-gray-50 p-2 rounded">
+                        <p className="mb-1 text-sm text-slate-400">Full Path</p>
+                        <p className="rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
                             {props.lsResult.path}
                         </p>
                     </div>
 
                     <div className="flex flex-wrap gap-3">
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">
+                            <p className="mb-1 text-sm text-slate-400">
                                 Download
                             </p>
                             <a
                                 href={props.downloadUrl}
                                 download={props.fileName}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                             >
                                 <Download className="h-4 w-4" />
                                 Download File
                             </a>
                         </div>
                         <div>
-                            <p className="text-sm text-gray-500 mb-1">Delete</p>
+                            <p className="mb-1 text-sm text-slate-400">
+                                Delete
+                            </p>
                             <button
                                 type="button"
                                 aria-label="Delete file"
@@ -934,7 +945,7 @@ function FileDetailView(props: {
                                     setDeleteState({ type: "idle" });
                                     setIsConfirmDeleteOpen(true);
                                 }}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                                className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-500"
                             >
                                 <Trash2 className="h-4 w-4" />
                                 Delete File
@@ -943,13 +954,13 @@ function FileDetailView(props: {
                     </div>
 
                     <div>
-                        <p className="text-sm text-gray-500 mb-2">
+                        <p className="mb-2 text-sm text-slate-400">
                             Command Line Downloads
                         </p>
 
                         {/* wget row */}
-                        <div className="flex items-center gap-2 mb-2">
-                            <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
+                        <div className="mb-2 flex items-center gap-2">
+                            <code className="flex-1 rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
                                 wget "{props.downloadUrl}"
                             </code>
                             <button
@@ -959,11 +970,11 @@ function FileDetailView(props: {
                                         "wget",
                                     )
                                 }
-                                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
+                                className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100"
                                 aria-label="Copy wget command"
                             >
                                 {copiedCommand === "wget" ? (
-                                    <Check className="h-4 w-4 text-green-600" />
+                                    <Check className="h-4 w-4 text-emerald-400" />
                                 ) : (
                                     <Copy className="h-4 w-4" />
                                 )}
@@ -972,7 +983,7 @@ function FileDetailView(props: {
 
                         {/* curl row */}
                         <div className="flex items-center gap-2">
-                            <code className="flex-1 text-sm font-mono bg-gray-50 p-2 rounded">
+                            <code className="flex-1 rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
                                 curl -O "{props.downloadUrl}"
                             </code>
                             <button
@@ -982,11 +993,11 @@ function FileDetailView(props: {
                                         "curl",
                                     )
                                 }
-                                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
+                                className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100"
                                 aria-label="Copy curl command"
                             >
                                 {copiedCommand === "curl" ? (
-                                    <Check className="h-4 w-4 text-green-600" />
+                                    <Check className="h-4 w-4 text-emerald-400" />
                                 ) : (
                                     <Copy className="h-4 w-4" />
                                 )}
@@ -1002,7 +1013,7 @@ function FileDetailView(props: {
                 description={
                     <>
                         This permanently deletes
-                        <span className="mx-1 break-all font-medium text-gray-900">
+                        <span className="mx-1 break-all font-medium text-slate-100">
                             {props.fileName}
                         </span>
                         from the agent filesystem.
@@ -1049,7 +1060,7 @@ function DeleteConfirmationDialog(props: {
             onClose={props.onClose}
         >
             <div className="mt-4">
-                <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
                     {props.pathDisplay}
                 </p>
 
@@ -1058,7 +1069,7 @@ function DeleteConfirmationDialog(props: {
                         type="button"
                         onClick={props.onClose}
                         disabled={props.deleteState.type === "deleting"}
-                        className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Cancel
                     </button>
@@ -1066,7 +1077,7 @@ function DeleteConfirmationDialog(props: {
                         type="button"
                         onClick={props.onConfirm}
                         disabled={props.deleteState.type === "deleting"}
-                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <Trash2 className="h-4 w-4" />
                         {props.deleteState.type === "deleting"
@@ -1087,11 +1098,11 @@ function FileBrowserError({ error }: { error: Error }) {
         errorMessage.includes("agent not found")
     ) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <div className="text-center flex flex-col items-center gap-2">
-                    <AlertCircle className="h-12 w-12 text-red-500" />
-                    <p className="text-gray-500">Agent not found</p>
-                    <Link to="/" className="text-blue-600 hover:underline">
+            <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-center">
+                    <AlertCircle className="h-12 w-12 text-red-400" />
+                    <p className="text-slate-400">Agent not found</p>
+                    <Link to="/" className="text-blue-400 hover:underline">
                         Back to agents
                     </Link>
                 </div>
@@ -1104,10 +1115,10 @@ function FileBrowserError({ error }: { error: Error }) {
         errorMessage.includes("directory not found")
     ) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <div className="text-center flex flex-col items-center gap-2">
-                    <AlertCircle className="h-12 w-12 text-red-500" />
-                    <p className="text-gray-500">Directory not found</p>
+            <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-center">
+                    <AlertCircle className="h-12 w-12 text-red-400" />
+                    <p className="text-slate-400">Directory not found</p>
                 </div>
             </div>
         );
@@ -1115,10 +1126,10 @@ function FileBrowserError({ error }: { error: Error }) {
 
     if (errorMessage.includes("not a directory")) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <div className="text-center flex flex-col items-center gap-2">
-                    <AlertCircle className="h-12 w-12 text-red-500" />
-                    <p className="text-gray-500">Not a directory</p>
+            <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-center">
+                    <AlertCircle className="h-12 w-12 text-red-400" />
+                    <p className="text-slate-400">Not a directory</p>
                 </div>
             </div>
         );
@@ -1126,21 +1137,21 @@ function FileBrowserError({ error }: { error: Error }) {
 
     if (errorMessage.includes("permission denied")) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <div className="text-center flex flex-col items-center gap-2">
-                    <AlertCircle className="h-12 w-12 text-red-500" />
-                    <p className="text-gray-500">Permission denied</p>
+            <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-center">
+                    <AlertCircle className="h-12 w-12 text-red-400" />
+                    <p className="text-slate-400">Permission denied</p>
                 </div>
             </div>
         );
     }
 
     return (
-        <div className="flex items-center justify-center h-full">
-            <div className="text-center flex flex-col items-center gap-2">
-                <AlertCircle className="h-12 w-12 text-red-500" />
-                <p className="text-gray-500">Error loading files</p>
-                <p className="text-sm text-gray-400">{error.message}</p>
+        <div className="flex h-full items-center justify-center">
+            <div className="flex flex-col items-center gap-2 text-center">
+                <AlertCircle className="h-12 w-12 text-red-400" />
+                <p className="text-slate-400">Error loading files</p>
+                <p className="text-sm text-slate-500">{error.message}</p>
             </div>
         </div>
     );

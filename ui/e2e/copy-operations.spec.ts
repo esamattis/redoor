@@ -127,9 +127,9 @@ test.describe.serial("Copy Operations", () => {
             page.getByRole("button", { name: "Copy selected items" }),
         ).toBeVisible();
 
-        // Navigate to the destination agent via the sidebar so the selection state
-        // survives the client-side navigation.
-        await page.getByRole("link", { name: "agent2_custom" }).click();
+        // Navigate to the destination agent via the top tab strip so the
+        // selection state survives the client-side navigation.
+        await page.getByRole("tab", { name: "agent2_custom" }).click();
 
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser`,

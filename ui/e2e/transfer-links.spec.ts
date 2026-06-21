@@ -48,8 +48,8 @@ test.describe.serial("Transfer Path Links", () => {
                 page.getByText(`Uploaded ${uploadFileName}`),
             ).toBeVisible();
 
-            // Navigate to the transfers history page.
-            await page.getByRole("link", { name: "Transfers" }).click();
+            // Navigate to the transfers history page via the top tab strip.
+            await page.getByRole("tab", { name: "Transfers" }).click();
             await expect(page).toHaveURL(new RegExp("/transfers$"));
 
             // Find the completed upload transfer row.
@@ -74,9 +74,9 @@ test.describe.serial("Transfer Path Links", () => {
                     `/agents/${ctx.agentId}/browser/.*${uploadFileName}$`,
                 ),
             );
-            await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
-                uploadFileName,
-            );
+            await expect(
+                page.getByRole("heading", { name: "File name" }),
+            ).toContainText(uploadFileName);
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }

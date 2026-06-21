@@ -12,15 +12,15 @@ function TransfersPage() {
     const { agents, transferProgress } = RootRoute.useLoaderData();
 
     return (
-        <div className="p-6">
-            <div className="max-w-7xl mx-auto">
-                <div className="flex items-center gap-3 mb-6">
-                    <ArrowLeftRight className="h-6 w-6 text-blue-600" />
-                    <h1 className="text-2xl font-bold text-gray-900">
+        <div className="p-8">
+            <div className="mx-auto max-w-7xl">
+                <div className="mb-6 flex items-center gap-3">
+                    <ArrowLeftRight className="h-6 w-6 text-blue-400" />
+                    <h1 className="text-2xl font-bold text-slate-100">
                         Transfer history
                     </h1>
                 </div>
-                <div className="border rounded-lg overflow-hidden">
+                <div className="overflow-hidden rounded-lg border border-slate-800">
                     <TransferList
                         agents={agents}
                         transfers={transferProgress.transfers}

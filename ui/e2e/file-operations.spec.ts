@@ -46,8 +46,8 @@ test.describe.serial("File Operations", () => {
             // This checks the inline status feedback shown next to the upload action.
             await expect(page.getByText("Uploaded 2 files")).toBeVisible();
 
-            // Navigate to the transfers history page to verify completed uploads are tracked.
-            await page.getByRole("link", { name: "Transfers" }).click();
+            // Navigate to the transfers history page via the top tab strip.
+            await page.getByRole("tab", { name: "Transfers" }).click();
             await expect(page).toHaveURL(new RegExp("/transfers$"));
 
             // This confirms the transfer history page reflects the completed upload state for the first uploaded file.

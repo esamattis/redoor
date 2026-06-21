@@ -29,9 +29,9 @@ test.describe.serial("File Detail View", () => {
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
-        await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
-            "file1.txt",
-        );
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("file1.txt");
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Owner")).toBeVisible();
         await expect(page.getByText("Group")).toBeVisible();
@@ -60,11 +60,7 @@ test.describe.serial("File Detail View", () => {
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
-        const sizeText = await page
-            .locator("p", { hasText: "Size" })
-            .locator("..")
-            .locator("p.text-gray-900")
-            .textContent();
+        const sizeText = await page.getByLabel("File size value").textContent();
 
         expect(sizeText).toBeDefined();
         expect(sizeText).not.toBe("-");
@@ -132,9 +128,9 @@ test.describe.serial("File Detail View", () => {
             .getByRole("link", { name: "nested1.txt", exact: true })
             .click();
 
-        await expect(page.locator("h1.text-2xl.font-bold")).toContainText(
-            "nested1.txt",
-        );
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("nested1.txt");
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
 

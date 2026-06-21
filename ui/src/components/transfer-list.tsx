@@ -32,30 +32,30 @@ export function TransferList(props: {
 }) {
     if (props.transfers.length === 0) {
         return (
-            <div className="p-6 text-center text-sm text-gray-500">
+            <div className="p-6 text-center text-sm text-slate-500">
                 No transfers
             </div>
         );
     }
 
     return (
-        <div className="overflow-auto bg-white">
-            <table className="w-full bg-white">
-                <thead className="sticky top-0 bg-gray-50">
-                    <tr className="border-b">
-                        <th className="text-left p-3 text-sm font-medium text-gray-600">
+        <div className="overflow-auto bg-[#11141b]">
+            <table className="w-full bg-[#11141b]">
+                <thead className="sticky top-0 bg-[#1a1f2a]">
+                    <tr className="border-b border-slate-800">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
                             Agent
                         </th>
-                        <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
                             Direction
                         </th>
-                        <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
                             Path
                         </th>
-                        <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
                             Progress
                         </th>
-                        <th className="text-left p-3 text-sm font-medium text-gray-600">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
                             Status
                         </th>
                     </tr>
@@ -80,17 +80,17 @@ export function TransferList(props: {
                         return (
                             <tr
                                 key={transfer.request_id.toString()}
-                                className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                                className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5 align-top"
                             >
                                 <td className="p-3">
                                     <div className="flex flex-col">
-                                        <span className="text-sm font-medium text-gray-900">
+                                        <span className="text-sm font-medium text-slate-100">
                                             {transfer.direction === "copy"
                                                 ? `${sourceAgent?.name ?? transfer.source?.agent} -> ${destAgent?.name ?? transfer.dest?.agent}`
                                                 : (agent?.name ??
                                                   transfer.agent_id)}
                                         </span>
-                                        <span className="text-xs text-gray-500">
+                                        <span className="text-xs text-slate-500">
                                             {transfer.direction === "copy"
                                                 ? `${transfer.source?.agent} -> ${transfer.dest?.agent}`
                                                 : transfer.agent_id}
@@ -101,8 +101,8 @@ export function TransferList(props: {
                                     <span
                                         className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
                                             transfer.direction === "upload"
-                                                ? "bg-blue-50 text-blue-700"
-                                                : "bg-emerald-50 text-emerald-700"
+                                                ? "bg-blue-500/15 text-blue-300"
+                                                : "bg-emerald-500/15 text-emerald-300"
                                         }`}
                                     >
                                         {transfer.direction === "upload" ? (
@@ -122,7 +122,7 @@ export function TransferList(props: {
                                 </td>
                                 <td className="p-3">
                                     {transfer.direction === "copy" ? (
-                                        <div className="space-y-1 font-mono text-xs text-gray-700 break-all">
+                                        <div className="space-y-1 break-all font-mono text-xs text-slate-300">
                                             <div>
                                                 {sourceAgent ? (
                                                     <Link
@@ -130,7 +130,7 @@ export function TransferList(props: {
                                                             transfer.source
                                                                 ?.path ?? "",
                                                         )}
-                                                        className="text-blue-600 hover:underline"
+                                                        className="text-blue-400 hover:underline"
                                                     >
                                                         {transfer.source?.path}
                                                     </Link>
@@ -138,7 +138,7 @@ export function TransferList(props: {
                                                     transfer.source?.path
                                                 )}
                                             </div>
-                                            <div className="text-gray-400">
+                                            <div className="text-slate-600">
                                                 -&gt;
                                             </div>
                                             <div>
@@ -148,7 +148,7 @@ export function TransferList(props: {
                                                             transfer.dest
                                                                 ?.path ?? "",
                                                         )}
-                                                        className="text-blue-600 hover:underline"
+                                                        className="text-blue-400 hover:underline"
                                                     >
                                                         {transfer.dest?.path}
                                                     </Link>
@@ -158,13 +158,13 @@ export function TransferList(props: {
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="font-mono text-xs text-gray-700 break-all">
+                                        <div className="break-all font-mono text-xs text-slate-300">
                                             {agent ? (
                                                 <Link
                                                     to={agent.getBrowserUrl(
                                                         transfer.path,
                                                     )}
-                                                    className="text-blue-600 hover:underline"
+                                                    className="text-blue-400 hover:underline"
                                                 >
                                                     {transfer.path}
                                                 </Link>
@@ -175,14 +175,14 @@ export function TransferList(props: {
                                     )}
                                 </td>
                                 <td className="p-3">
-                                    <div className="flex flex-col gap-1 text-sm text-gray-700">
+                                    <div className="flex flex-col gap-1 text-sm text-slate-300">
                                         <span>
                                             {formatSize(
                                                 transfer.transferred_bytes,
                                             )}{" "}
                                             / {formatSize(transfer.total_bytes)}
                                         </span>
-                                        <span className="text-xs text-gray-500">
+                                        <span className="text-xs text-slate-500">
                                             {transfer.state === "active"
                                                 ? `Current speed: ${formatSpeed(
                                                       getTransferSpeedBytesPerSecond(
@@ -202,17 +202,17 @@ export function TransferList(props: {
                                         <span
                                             className={`text-sm font-medium ${
                                                 transfer.state === "errored"
-                                                    ? "text-red-600"
+                                                    ? "text-red-400"
                                                     : transfer.state ===
                                                         "completed"
-                                                      ? "text-emerald-700"
-                                                      : "text-gray-900"
+                                                      ? "text-emerald-400"
+                                                      : "text-slate-100"
                                             }`}
                                         >
                                             {transfer.state}
                                         </span>
                                         {transfer.error ? (
-                                            <span className="inline-flex items-start gap-1 text-xs text-red-600">
+                                            <span className="inline-flex items-start gap-1 text-xs text-red-400">
                                                 <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                                                 <span className="break-words">
                                                     {transfer.error}

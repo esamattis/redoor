@@ -188,66 +188,10 @@ function RootLayout() {
     }, [agents]);
 
     return (
-        <div className="flex h-screen">
+        <div className="flex h-screen flex-col bg-[#0b0d12]">
             <RouteLoadingIndicator />
-            <aside className="w-72 border-r bg-gray-50 flex flex-col">
-                <div className="p-4 border-b bg-white flex items-center gap-2">
-                    <Cpu className="h-6 w-6 text-blue-600" />
-                    <h1 className="font-bold text-lg text-gray-800">Redoor</h1>
-                </div>
-                <div className="flex-1 overflow-auto">
-                    {agents.length === 0 ? (
-                        <div className="p-4 text-sm text-gray-500 text-center">
-                            No agents connected
-                        </div>
-                    ) : (
-                        <ul className="divide-y">
-                            {sortedAgents.map((agent) => {
-                                const isActive = location.pathname.startsWith(
-                                    `/agents/${encodeURIComponent(agent.id)}/browser`,
-                                );
-                                return (
-                                    <li key={agent.id}>
-                                        <Link
-                                            to="/agents/$agentId/browser/$"
-                                            params={{
-                                                agentId: agent.id,
-                                                _splat: undefined,
-                                            }}
-                                            className={`px-4 py-3 hover:bg-gray-100 cursor-pointer flex items-center gap-3 ${
-                                                isActive
-                                                    ? "bg-blue-50 border-l-4 border-blue-500"
-                                                    : ""
-                                            }`}
-                                        >
-                                            <HardDrive className="h-4 w-4 text-gray-500" />
-                                            <span className="text-sm font-medium text-gray-700">
-                                                {agent.name}
-                                            </span>
-                                        </Link>
-                                    </li>
-                                );
-                            })}
-                        </ul>
-                    )}
-                    <div className="p-4 border-t">
-                        <Link
-                            to="/transfers"
-                            className={`px-4 py-3 hover:bg-gray-100 cursor-pointer flex items-center gap-3 rounded-md ${
-                                location.pathname.startsWith("/transfers")
-                                    ? "bg-blue-50 border-l-4 border-blue-500"
-                                    : ""
-                            }`}
-                        >
-                            <ArrowLeftRight className="h-4 w-4 text-gray-500" />
-                            <span className="text-sm font-medium text-gray-700">
-                                Transfers
-                            </span>
-                        </Link>
-                    </div>
-                </div>
-            </aside>
-            <div className="flex-1 min-h-0 flex flex-col">
+            <TopTabStrip agents={sortedAgents} pathname={location.pathname} />
+            <div className="flex min-h-0 flex-1 flex-col">
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
@@ -268,6 +212,103 @@ function RootLayout() {
                     },
                 ]}
             />
+        </div>
+    );
+}
+
+/**
+ * Browser-style tab strip that replaced the old vertical sidebar.
+ *
+ * Each connected agent gets its own tab plus a trailing Transfers tab. The
+ * active tab connects to the content area with a lifted look so it reads as
+ * the current page, mirroring how Chrome / Edge present open tabs.
+ */
+function TopTabStrip(props: {
+    agents: RootLoaderData["agents"];
+    pathname: string;
+}) {
+    const transfersActive = props.pathname.startsWith("/transfers");
+
+    return (
+        <header
+            aria-label="Primary navigation"
+            className="flex min-h-0 items-end gap-1 border-b border-slate-800 bg-[#0f1218] px-3 pt-2"
+        >
+            <BrandMark />
+            <div
+                role="tablist"
+                aria-label="Agents and transfers"
+                className="flex min-h-0 items-end gap-1 overflow-x-auto pb-0"
+            >
+                {props.agents.length === 0 ? (
+                    <span className="px-3 pb-2 text-sm text-slate-500">
+                        No agents connected
+                    </span>
+                ) : (
+                    props.agents.map((agent) => {
+                        const agentPrefix = `/agents/${encodeURIComponent(agent.id)}`;
+                        const isActive =
+                            props.pathname.startsWith(agentPrefix) &&
+                            !transfersActive;
+                        return (
+                            <Link
+                                key={agent.id}
+                                to="/agents/$agentId/browser/$"
+                                params={{
+                                    agentId: agent.id,
+                                    _splat: undefined,
+                                }}
+                                role="tab"
+                                aria-selected={isActive}
+                                className={`group flex max-w-56 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
+                                    isActive
+                                        ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]"
+                                        : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                                }`}
+                            >
+                                <HardDrive
+                                    className={`h-4 w-4 shrink-0 ${
+                                        isActive
+                                            ? "text-blue-400"
+                                            : "text-slate-500 group-hover:text-slate-300"
+                                    }`}
+                                />
+                                <span className="truncate font-medium">
+                                    {agent.name}
+                                </span>
+                            </Link>
+                        );
+                    })
+                )}
+                <Link
+                    to="/transfers"
+                    role="tab"
+                    aria-selected={transfersActive}
+                    className={`group flex items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
+                        transfersActive
+                            ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]"
+                            : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                    }`}
+                >
+                    <ArrowLeftRight
+                        className={`h-4 w-4 shrink-0 ${
+                            transfersActive
+                                ? "text-blue-400"
+                                : "text-slate-500 group-hover:text-slate-300"
+                        }`}
+                    />
+                    <span className="font-medium">Transfers</span>
+                </Link>
+            </div>
+        </header>
+    );
+}
+
+function BrandMark() {
+    return (
+        <div className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200">
+            <Cpu className="h-5 w-5 text-blue-400" />
+            <span className="text-sm font-semibold tracking-tight">Redoor</span>
         </div>
     );
 }
@@ -300,8 +341,8 @@ function RouteLoadingIndicator() {
                 isVisible ? "opacity-100" : "opacity-0"
             }`}
         >
-            <div className="route-loading-progress-bar h-full w-full bg-blue-100">
-                <div className="route-loading-progress-bar__indicator h-full bg-blue-600" />
+            <div className="route-loading-progress-bar h-full w-full bg-blue-500/10">
+                <div className="route-loading-progress-bar__indicator h-full bg-blue-400" />
             </div>
         </div>
     );
@@ -321,21 +362,21 @@ function CollapsibleBottomPanel(props: {
     );
 
     return (
-        <section className="sticky bottom-0 z-10 border-t border-blue-200/80 bg-white/95 shadow-[0_-10px_30px_-12px_rgba(59,130,246,0.35)] backdrop-blur supports-[backdrop-filter]:bg-white/80">
+        <section className="sticky bottom-0 z-10 border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-[backdrop-filter]:bg-[#11141b]/80">
             <div>
-                <div className="max-w-full bg-white/90 p-4">
+                <div className="max-w-full bg-[#11141b]/90 p-4">
                     <div className="flex items-center justify-between gap-3 pb-3">
                         <div className="flex items-start gap-3">
                             {props.icon ? (
-                                <div className="bg-blue-50/70 p-2 text-blue-700">
+                                <div className="bg-blue-500/10 p-2 text-blue-300">
                                     {props.icon}
                                 </div>
                             ) : null}
                             <div>
-                                <h2 className="text-sm font-semibold text-gray-900">
+                                <h2 className="text-sm font-semibold text-slate-100">
                                     {props.title}
                                 </h2>
-                                <p className="text-xs text-slate-600">
+                                <p className="text-xs text-slate-400">
                                     {props.description}
                                 </p>
                             </div>
@@ -350,7 +391,7 @@ function CollapsibleBottomPanel(props: {
                                 onClick={() =>
                                     setIsCollapsed((value) => !value)
                                 }
-                                className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
+                                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
                             >
                                 {isCollapsed ? (
                                     <ChevronUp className="h-3.5 w-3.5" />
@@ -717,7 +758,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             description="Files and directories selected for copy operations"
             icon={<Files className="h-4 w-4" />}
             badge={
-                <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800">
+                <span className="rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-1 text-xs font-medium text-blue-300">
                     {selectedFiles.length}{" "}
                     {selectedFiles.length === 1 ? "item" : "items"}
                 </span>
@@ -740,7 +781,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                     onClick={handleDeleteSelectedFiles}
                                     disabled={selectedFiles.length === 0}
                                     aria-label="Delete selected items"
-                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     <Trash2 className="h-4 w-4" />
                                 </button>
@@ -768,7 +809,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                         selectedFiles.length === 0
                                     }
                                     aria-label="Copy selected items"
-                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     <Copy className="h-4 w-4" />
                                 </button>
@@ -778,7 +819,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                     <button
                         type="button"
                         onClick={() => clearSelectedFiles()}
-                        className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
+                        className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
                     >
                         Clear all
                     </button>
@@ -791,8 +832,8 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                     aria-live="polite"
                     className={`mb-3 text-sm ${
                         copyState.type === "error"
-                            ? "text-red-600"
-                            : "text-blue-800"
+                            ? "text-red-400"
+                            : "text-blue-300"
                     }`}
                 >
                     {statusMessage}
@@ -801,25 +842,25 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             {deleteState.type === "error" ? (
                 <p
                     role="alert"
-                    className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                    className="mb-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
                 >
                     {deleteState.message}
                 </p>
             ) : null}
-            <div className="max-h-64 overflow-auto bg-white">
+            <div className="max-h-64 overflow-auto bg-[#11141b]">
                 <table className="w-full">
-                    <thead className="sticky top-0 bg-gray-50">
-                        <tr className="border-b">
-                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                    <thead className="sticky top-0 bg-[#1a1f2a]">
+                        <tr className="border-b border-slate-800">
+                            <th className="p-3 text-left text-sm font-medium text-slate-400">
                                 Agent
                             </th>
-                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                            <th className="p-3 text-left text-sm font-medium text-slate-400">
                                 Item
                             </th>
-                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                            <th className="p-3 text-left text-sm font-medium text-slate-400">
                                 Path
                             </th>
-                            <th className="p-3 text-left text-sm font-medium text-gray-600">
+                            <th className="p-3 text-left text-sm font-medium text-slate-400">
                                 Action
                             </th>
                         </tr>
@@ -828,14 +869,14 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                         {sortedSelectedFiles.map((file) => (
                             <tr
                                 key={`${file.agentId}:${file.path}`}
-                                className="border-b last:border-b-0 hover:bg-gray-50 align-top"
+                                className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5 align-top"
                             >
                                 <td className="p-3">
                                     <div className="flex flex-col">
-                                        <span className="text-sm font-medium text-gray-900">
+                                        <span className="text-sm font-medium text-slate-100">
                                             {file.agentName}
                                         </span>
-                                        <span className="text-xs text-gray-500">
+                                        <span className="text-xs text-slate-500">
                                             {file.agentId}
                                         </span>
                                     </div>
@@ -848,13 +889,13 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                             _splat:
                                                 file.relativePath || undefined,
                                         }}
-                                        className="text-sm font-medium text-blue-600 hover:underline"
+                                        className="text-sm font-medium text-blue-400 hover:underline"
                                     >
                                         {file.fileName}
                                     </Link>
                                 </td>
                                 <td className="p-3">
-                                    <div className="break-all font-mono text-xs text-gray-700">
+                                    <div className="break-all font-mono text-xs text-slate-300">
                                         {file.path}
                                     </div>
                                 </td>
@@ -868,7 +909,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                                 path: file.path,
                                             })
                                         }
-                                        className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                        className="inline-flex items-center gap-2 rounded border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/5"
                                     >
                                         <X className="h-3.5 w-3.5" />
                                         Unselect
@@ -900,7 +941,7 @@ function TransferProgressPanel(props: {
             title="Active transfers"
             description="Currently running file transfers"
             badge={
-                <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800">
+                <span className="rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-1 text-xs font-medium text-blue-300">
                     {activeTransfers.length}{" "}
                     {activeTransfers.length === 1 ? "transfer" : "transfers"}
                 </span>
@@ -908,7 +949,7 @@ function TransferProgressPanel(props: {
             actions={
                 <Link
                     to="/transfers"
-                    className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-blue-50"
+                    className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
                 >
                     View all
                 </Link>
