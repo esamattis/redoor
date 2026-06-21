@@ -99,29 +99,34 @@ pub(crate) struct SshAgentConfig {
     pub(crate) log: Option<String>,
 }
 
-/// Result of probing a remote host: which OS/arch it runs and whether the
-/// configured redoor binary is already executable at the target path.
+/// Result of probing a remote host: which OS/arch it runs and what its
+/// existing redoor binary reports for `--version` (empty if there is no
+/// runnable binary at the configured path).
 struct RemoteSniff {
     os: String,
     arch: String,
-    binary_exists: bool,
+    /// Stdout of `<remote_bin> --version` with leading/trailing whitespace
+    /// stripped. Empty when the binary is missing, not executable, or
+    /// otherwise fails to run, in which case it needs to be (re)installed.
+    version_output: String,
 }
 
 /// Probes the remote host with a single ssh command that reports its OS,
-/// CPU architecture, and whether the configured redoor binary is already
-/// executable at `remote_bin`. Batching all three into one round-trip
-/// avoids paying ssh setup latency three times for what is conceptually
-/// one "is the host ready" check.
+/// CPU architecture, and the `--version` output of the configured redoor
+/// binary. Batching all three into one round-trip avoids paying ssh
+/// setup latency three times for what is conceptually one "is the host
+/// ready" check.
 async fn sniff_remote(
     host: &SshHost,
     remote_bin: &str,
 ) -> Result<RemoteSniff, Box<dyn std::error::Error>> {
     // The whole probe is one shell command so we only authenticate once.
-    // `test -x` is used instead of `test -f` so a broken symlink or a
-    // non-executable file is treated as "needs reinstall" rather than
-    // "already installed".
+    // We probe with `--version` instead of `test -x` so a binary that
+    // exists at the path but is broken, the wrong program, or a stale
+    // version still gets reinstalled -- we trust the remote report only
+    // when it matches the version this client was built against.
     let shell_command = format!(
-        "echo \"$(uname),$(uname -m),$(test -x {} && echo yes || echo no)\"",
+        "echo \"$(uname),$(uname -m),$({} --version 2>/dev/null)\"",
         remote_bin
     );
     let options = SshRunOptions::default().compressed();
@@ -130,7 +135,7 @@ async fn sniff_remote(
     let parts: Vec<&str> = trimmed.split(',').collect();
     if parts.len() != 3 {
         return Err(format!(
-            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<yes|no>'",
+            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<version>'",
             trimmed
         )
         .into());
@@ -149,19 +154,60 @@ async fn sniff_remote(
         "aarch64" | "arm64" => "aarch64",
         other => return Err(format!("unsupported remote arch '{}'", other).into()),
     };
-    let binary_exists = parts[2] == "yes";
+    let version_output = parts[2].trim().to_string();
     log!(
         Level::Info,
-        "Remote sniff: os={}, arch={}, binary_exists={}",
+        "Remote sniff: os={}, arch={}, version_output='{}'",
         os,
         arch,
-        binary_exists
+        version_output
     );
     Ok(RemoteSniff {
         os: os.to_string(),
         arch: arch.to_string(),
-        binary_exists,
+        version_output,
     })
+}
+
+/// Ensures the remote host has a redoor binary that reports the expected
+/// `--version`. Downloads from the local cache and uploads if the existing
+/// binary is missing, stale, or not a redoor binary at all, then re-sniffs
+/// to confirm the freshly uploaded binary actually runs and reports the
+/// right version. Returning an error from the post-upload check (instead
+/// of silently proceeding) is important: a mismatch here means we wrote
+/// the wrong binary for the host's arch, or the upload was corrupted, and
+/// launching the agent would just fail again in a more confusing way.
+async fn ensure_remote_binary(
+    host: &SshHost,
+    remote_bin: &str,
+    sniff: &RemoteSniff,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let expected = format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    if sniff.version_output == expected {
+        return Ok(());
+    }
+    log!(
+        Level::Info,
+        "Remote binary missing or version mismatch (got '{}', want '{}'), reinstalling",
+        sniff.version_output,
+        expected
+    );
+    let local_path = ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
+    upload_binary(host, &local_path, remote_bin).await?;
+    let post_upload = sniff_remote(host, remote_bin).await?;
+    if post_upload.version_output != expected {
+        return Err(format!(
+            "remote binary at {} did not report expected version after upload: got '{}', want '{}'",
+            remote_bin, post_upload.version_output, expected
+        )
+        .into());
+    }
+    log!(
+        Level::Info,
+        "Remote binary version verified after upload: '{}'",
+        post_upload.version_output
+    );
+    Ok(())
 }
 
 /// Local cache directory for redoor release binaries downloaded from GitHub.
@@ -748,15 +794,7 @@ pub(crate) async fn prepare_ssh_agent(
     // would just fail with "command not found" and the user would have to
     // install the binary manually, which defeats the purpose of `redoor ssh`.
     let sniff = sniff_remote(&host, &remote_bin).await?;
-    if !sniff.binary_exists {
-        log!(
-            Level::Info,
-            "Remote binary not found, downloading and uploading"
-        );
-        let local_path =
-            ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
-        upload_binary(&host, &local_path, &remote_bin).await?;
-    }
+    ensure_remote_binary(&host, &remote_bin, &sniff).await?;
 
     // The reverse forward is a run-time option because it describes the
     // tunnel, not the remote command itself. ExitOnForwardFailure is always
