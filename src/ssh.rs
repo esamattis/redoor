@@ -92,6 +92,11 @@ pub(crate) struct SshAgentConfig {
     pub(crate) dir: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub(crate) target: String,
+    /// Optional local log file path. When set, the ssh process's
+    /// stdout/stderr is redirected to this file so the remote agent's
+    /// logs (forwarded through ssh) are captured locally. The file is
+    /// opened in append mode so agent restarts accumulate logs.
+    pub(crate) log: Option<String>,
 }
 
 /// Result of probing a remote host: which OS/arch it runs and whether the
@@ -393,6 +398,10 @@ pub(crate) struct SshRunOptions {
     /// for the long-running agent session which is mostly idle and would just
     /// burn CPU on compression.
     pub(crate) compressed: bool,
+    /// When set, the ssh process's stdout/stderr is redirected (append
+    /// mode) to this local file path. Used only for the long-running
+    /// agent run so sniff/upload diagnostics still go to the terminal.
+    pub(crate) log_file: Option<String>,
 }
 
 impl SshRunOptions {
@@ -409,6 +418,12 @@ impl SshRunOptions {
     /// Enables ssh compression (`-C`) for this connection.
     pub(crate) fn compressed(mut self) -> Self {
         self.compressed = true;
+        self
+    }
+
+    /// Sets a local log file to redirect the ssh process's stdout/stderr into.
+    pub(crate) fn with_log_file(mut self, path: impl Into<String>) -> Self {
+        self.log_file = Some(path.into());
         self
     }
 }
@@ -488,8 +503,25 @@ impl SshHost {
         }
 
         ssh.stdin(Stdio::inherit());
-        ssh.stdout(Stdio::inherit());
-        ssh.stderr(Stdio::inherit());
+
+        if let Some(log_path) = &options.log_file {
+            // Open in append mode via the async tokio API, then convert to a
+            // std::fs::File so it can be turned into a Stdio for the child.
+            let file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+                .await?;
+            // Clone the handle so stdout and stderr can both write to the same file.
+            let file_for_stderr = file.try_clone().await?;
+            let stdout_file = file.into_std().await;
+            let stderr_file = file_for_stderr.into_std().await;
+            ssh.stdout(Stdio::from(stdout_file));
+            ssh.stderr(Stdio::from(stderr_file));
+        } else {
+            ssh.stdout(Stdio::inherit());
+            ssh.stderr(Stdio::inherit());
+        }
 
         log!(Level::Debug, "Running ssh command: {:?}", ssh);
 
@@ -627,6 +659,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         remote_bin: Some(args.remote_bin),
         dir: args.dir,
         target: args.target,
+        log: None,
     };
     start_ssh_agent(config, args.redoor_port).await
 }
@@ -672,7 +705,10 @@ pub(crate) async fn start_ssh_agent(
     // The reverse forward is a run-time option because it describes the
     // tunnel, not the remote command itself. ExitOnForwardFailure is always
     // enabled so the agent fails fast if its tunnel cannot be established.
-    let options = SshRunOptions::default().with_reverse_forward(redoor_port, redoor_port);
+    let mut options = SshRunOptions::default().with_reverse_forward(redoor_port, redoor_port);
+    if let Some(log) = &config.log {
+        options = options.with_log_file(log);
+    }
 
     // ssh joins all trailing args after the command into one remote argv, so
     // the agent name must be appended after the fixed flags. The optional
@@ -686,11 +722,12 @@ pub(crate) async fn start_ssh_agent(
 
     log!(
         Level::Info,
-        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}, dir={:?}",
+        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}, dir={:?}, log={:?}",
         agent_name,
         ws_url,
         remote_bin,
-        config.dir
+        config.dir,
+        config.log,
     );
 
     let status = host.run(&remote_bin, &remote_argv, &options).await?;

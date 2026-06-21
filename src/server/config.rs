@@ -38,8 +38,9 @@ pub(crate) struct LocalAgentConfig {
     /// Working directory the spawned `redoor agent` switches into via
     /// its `-d/--dir` flag, mirroring the operator's `redoor agent -d`.
     pub(crate) dir: Option<String>,
-    /// Log file path passed to the spawned `redoor agent` via `--log`.
-    /// When `None`, the agent inherits stdio so its logs appear in the
+    /// Log file path. When set, the spawned `redoor agent` process's
+    /// stdout/stderr is redirected (append mode) to this file. When
+    /// `None`, stdio is inherited so the agent's logs appear in the
     /// server's terminal.
     pub(crate) log: Option<String>,
 }
@@ -199,17 +200,6 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, path: &str) -> Result<Vec<AgentC
 /// local variant so an operator can mirror a working directory across both
 /// kinds of agents without duplicating logic.
 fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentConfig> {
-    // Reject local-only fields so an operator who confuses the two variants
-    // gets a clear error pointing at the specific mis-placed field, instead
-    // of silently ignoring it.
-    if entry.get("log").and_then(|item| item.as_str()).is_some() {
-        bail!(
-            "agents entry #{} has 'log' which only applies to local agents (local = true); \
-             remove 'log' or set 'local = true'",
-            index
-        );
-    }
-
     let target = entry
         .get("target")
         .and_then(|item| item.as_str())
@@ -251,6 +241,11 @@ fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentCon
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
+    let log = entry
+        .get("log")
+        .and_then(|item| item.as_str())
+        .map(|s| s.to_string());
+
     Ok(SshAgentConfig {
         username,
         ssh_port,
@@ -258,6 +253,7 @@ fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentCon
         remote_bin,
         dir,
         target,
+        log,
     })
 }
 
@@ -414,22 +410,34 @@ async fn start_local_agent(
     if let Some(dir) = &config.dir {
         command.arg("-d").arg(dir);
     }
-    if let Some(log) = &config.log {
-        command.arg("--log").arg(log);
-    }
 
-    // Inherit stdio so the local agent's logs appear in the same terminal
-    // as the server logs, unless the operator redirected them via `--log`.
     command.stdin(Stdio::inherit());
-    command.stdout(Stdio::inherit());
-    command.stderr(Stdio::inherit());
+
+    if let Some(log) = &config.log {
+        // Redirect the child's stdout/stderr into the log file instead of
+        // passing --log to the agent. The agent writes to stdout/stderr
+        // and the OS redirect captures it, avoiding double-writes that
+        // would happen if both --log and a redirect were used.
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .await?;
+        let file_for_stderr = file.try_clone().await?;
+        command.stdout(Stdio::from(file.into_std().await));
+        command.stderr(Stdio::from(file_for_stderr.into_std().await));
+    } else {
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+    }
 
     log!(
         Level::Info,
-        "Starting local redoor agent: name={}, ws_url={}, bin={}",
+        "Starting local redoor agent: name={}, ws_url={}, bin={}, log={:?}",
         name,
         ws_url,
-        bin.display()
+        bin.display(),
+        config.log,
     );
 
     let status = command.status().await?;
@@ -483,6 +491,7 @@ mod tests {
         assert!(agent.name.is_none());
         assert!(agent.remote_bin.is_none());
         assert!(agent.dir.is_none());
+        assert!(agent.log.is_none(), "log should be None when not specified");
     }
 
     /// Verifies that every supported field is read from the toml file so
@@ -504,6 +513,7 @@ ssh_port = 2222
 name = "db-agent"
 remote_bin = "/usr/local/bin/redoor"
 dir = "/srv/app"
+log = "log/db-agent.log"
 
 [[agents]]
 target = "web-1"
@@ -524,6 +534,7 @@ target = "web-1"
         assert_eq!(first.name.as_deref(), Some("db-agent"));
         assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
         assert_eq!(first.dir.as_deref(), Some("/srv/app"));
+        assert_eq!(first.log.as_deref(), Some("log/db-agent.log"));
 
         // The second entry only has a target, confirming ssh_port defaults to 22
         // when omitted while the first entry overrides it explicitly.
@@ -811,41 +822,6 @@ name = "web-agent"
         }
     }
 
-    /// Verifies that local-only fields on an ssh entry are rejected with a
-    /// field-specific error, mirroring the symmetric `local + ssh_field`
-    /// test. Catches the case where an operator adds `local = true` to a
-    /// previously working ssh entry without removing the ssh-only fields.
-    /// `dir` is intentionally absent from this list because it is shared
-    /// between both variants (see [`test_parse_config_file_ssh_entry_with_dir`]).
-    #[tokio::test]
-    async fn test_parse_config_file_rejects_ssh_with_log() {
-        let field = "log";
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-ssh-local-{}-{}.toml",
-            field,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(
-            &temp,
-            format!("[[agents]]\ntarget = \"host\"\n{} = \"/tmp/x\"\n", field),
-        )
-        .unwrap();
-
-        let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
-
-        let error = result.expect_err(&format!("ssh + {} should be rejected", field));
-        assert!(
-            error.to_string().contains(field),
-            "error should mention '{}': {}",
-            field,
-            error
-        );
-    }
-
     /// Verifies that a `dir` on an ssh entry is accepted and forwarded into
     /// the [`SshAgentConfig`] so an operator can pin a remote agent's cwd to
     /// a project tree, mirroring the same option on local agents.
@@ -881,6 +857,40 @@ dir = "/var/www/app"
             agent.dir.as_deref(),
             Some("/var/www/app"),
             "dir should be read from the toml entry"
+        );
+    }
+
+    /// Verifies that a `log` on an ssh entry is accepted and forwarded into
+    /// the SshAgentConfig so the operator can capture a remote agent's
+    /// forwarded stdout/stderr into a local log file.
+    #[tokio::test]
+    async fn test_parse_config_file_ssh_entry_with_log() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-ssh-log-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[[agents]]
+target = "prod-db"
+log = "log/prod-db.log"
+"#;
+        std::fs::write(&temp, content).unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert_eq!(config.agents.len(), 1);
+        let agent = match &config.agents[0] {
+            AgentConfig::Ssh(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+        };
+        assert_eq!(
+            agent.log.as_deref(),
+            Some("log/prod-db.log"),
+            "log should be read from the ssh toml entry"
         );
     }
 

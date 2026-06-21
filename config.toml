@@ -9,8 +9,10 @@
 target = "devbox"
 remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
 dir = "/home"
+log = "log/devbox.log"   # optional; redirects the agent's stdout/stderr to this local file
 
 [[agents]]
 name = "local"
 local = true
 dir = "/Users/esamatti/tmp"
+log = "log/local.log"    # optional; redirects the agent's stdout/stderr to this file
