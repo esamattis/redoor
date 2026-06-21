@@ -31,6 +31,7 @@ async fn main() {
             }
         }
         Commands::Ssh(args) => {
+            logging::init(None);
             if let Err(error) = ssh::run(args).await {
                 eprintln!("{error}");
                 std::process::exit(1);

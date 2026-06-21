@@ -9,6 +9,8 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use redoor::{log, Level};
+
 /// Arguments for `redoor ssh`.
 ///
 /// Mirrors the familiar `ssh` invocation (`-l user -p port user@host`) while
@@ -19,9 +21,11 @@ use tokio::process::Command;
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct SshArgs {
-    /// SSH login username. Forwarded to ssh via `-l`.
+    /// SSH login username. Forwarded to ssh via `-l`. Optional so that
+    /// ssh config (`~/.ssh/config`) or the `user@host` target syntax can
+    /// supply the username instead.
     #[arg(short = 'l')]
-    pub(crate) username: String,
+    pub(crate) username: Option<String>,
     /// SSH server port. Forwarded to ssh via `-p`.
     #[arg(short = 'p', default_value_t = 22)]
     pub(crate) ssh_port: u16,
@@ -107,6 +111,13 @@ async fn sniff_remote(
         other => return Err(format!("unsupported remote arch '{}'", other).into()),
     };
     let binary_exists = parts[2] == "yes";
+    log!(
+        Level::Info,
+        "Remote sniff: os={}, arch={}, binary_exists={}",
+        os,
+        arch,
+        binary_exists
+    );
     Ok(RemoteSniff {
         os: os.to_string(),
         arch: arch.to_string(),
@@ -151,6 +162,7 @@ async fn ensure_local_binary(
     tokio::fs::create_dir_all(&binaries_dir).await?;
     let final_path = cached_binary_path(version, os, arch);
     if tokio::fs::try_exists(&final_path).await? {
+        log!(Level::Info, "Local binary already cached: path={}", final_path.display());
         return Ok(final_path);
     }
     download_binary(version, os, arch, &binaries_dir, &final_path).await?;
@@ -173,6 +185,14 @@ async fn download_binary(
     let url = release_url(version, os, arch);
     let tar_path = binaries_dir.join(format!("redoor-{}-{}.tar.gz", arch, os));
     let extract_dir = binaries_dir.join(format!("extract-v{}-{}-{}", version, arch, os));
+
+    log!(
+        Level::Info,
+        "Downloading redoor binary: version={}, os={}, arch={}",
+        version,
+        os,
+        arch
+    );
 
     // Stream the response body to disk chunk by chunk so large tarballs
     // don't have to fit in RAM, which matters on memory-constrained hosts.
@@ -228,6 +248,8 @@ async fn download_binary(
     let _ = tokio::fs::remove_file(&tar_path).await;
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
+    log!(Level::Info, "Binary download complete: path={}", final_path.display());
+
     Ok(())
 }
 
@@ -263,6 +285,13 @@ async fn upload_binary(
     let parent = parent_dir_of(remote_bin);
     let options = SshRunOptions::default().compressed();
 
+    log!(
+        Level::Info,
+        "Uploading binary to remote host: local_path={}, remote_bin={}",
+        local_path.display(),
+        remote_bin
+    );
+
     // The remote parent directory may not exist yet (e.g. first run against
     // a fresh host), so create it before `cat` tries to write into it.
     let mkdir_cmd = format!("mkdir -p {}", parent);
@@ -291,6 +320,9 @@ async fn upload_binary(
         )
         .into());
     }
+
+    log!(Level::Info, "Binary upload complete: remote_bin={}", remote_bin);
+
     Ok(())
 }
 
@@ -342,7 +374,7 @@ impl SshRunOptions {
 /// builder methods return `Self` by value so callers can chain configuration
 /// fluently before awaiting [`SshHost::run`].
 pub(crate) struct SshHost {
-    username: String,
+    username: Option<String>,
     ssh_port: u16,
     target: String,
 }
@@ -351,15 +383,15 @@ impl SshHost {
     /// Starts building an ssh connection to `target` (e.g. `user@host`).
     pub(crate) fn new(target: String) -> Self {
         Self {
-            username: String::new(),
+            username: None,
             ssh_port: 22,
             target,
         }
     }
 
     /// Sets the ssh login username (`ssh -l`).
-    pub(crate) fn username(mut self, username: impl Into<String>) -> Self {
-        self.username = username.into();
+    pub(crate) fn username(mut self, username: Option<String>) -> Self {
+        self.username = username;
         self
     }
 
@@ -384,8 +416,8 @@ impl SshHost {
     ) -> Result<std::process::ExitStatus, std::io::Error> {
         let mut ssh = Command::new("ssh");
 
-        if !self.username.is_empty() {
-            ssh.arg("-l").arg(&self.username);
+        if let Some(ref username) = self.username {
+            ssh.arg("-l").arg(username);
         }
         ssh.arg("-p").arg(self.ssh_port.to_string());
 
@@ -413,6 +445,8 @@ impl SshHost {
         ssh.stdout(Stdio::inherit());
         ssh.stderr(Stdio::inherit());
 
+        log!(Level::Debug, "Running ssh command: {:?}", ssh);
+
         ssh.status().await
     }
 
@@ -428,8 +462,8 @@ impl SshHost {
     ) -> Result<String, std::io::Error> {
         let mut ssh = Command::new("ssh");
 
-        if !self.username.is_empty() {
-            ssh.arg("-l").arg(&self.username);
+        if let Some(ref username) = self.username {
+            ssh.arg("-l").arg(username);
         }
         ssh.arg("-p").arg(self.ssh_port.to_string());
 
@@ -453,6 +487,8 @@ impl SshHost {
         ssh.stdin(Stdio::null());
         ssh.stdout(Stdio::piped());
         ssh.stderr(Stdio::inherit());
+
+        log!(Level::Debug, "Running ssh command: {:?}", ssh);
 
         let output = ssh.output().await?;
         if !output.status.success() {
@@ -478,8 +514,8 @@ impl SshHost {
     ) -> Result<(), std::io::Error> {
         let mut ssh = Command::new("ssh");
 
-        if !self.username.is_empty() {
-            ssh.arg("-l").arg(&self.username);
+        if let Some(ref username) = self.username {
+            ssh.arg("-l").arg(username);
         }
         ssh.arg("-p").arg(self.ssh_port.to_string());
         // Compress the upload stream so large binaries transfer faster over
@@ -491,6 +527,8 @@ impl SshHost {
         ssh.stdin(Stdio::piped());
         ssh.stdout(Stdio::inherit());
         ssh.stderr(Stdio::inherit());
+
+        log!(Level::Debug, "Running ssh command: {:?}", ssh);
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
@@ -551,6 +589,10 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
     // install the binary manually, which defeats the purpose of `redoor ssh`.
     let sniff = sniff_remote(&host, &remote_bin).await?;
     if !sniff.binary_exists {
+        log!(
+            Level::Info,
+            "Remote binary not found, downloading and uploading"
+        );
         let local_path =
             ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
         upload_binary(&host, &local_path, &remote_bin).await?;
@@ -564,6 +606,14 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
     // ssh joins all trailing args after the command into one remote argv, so
     // the agent name must be appended after the fixed flags.
     let remote_argv: [&str; 4] = ["agent", &ws_url, "--name", &agent_name];
+
+    log!(
+        Level::Info,
+        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}",
+        agent_name,
+        ws_url,
+        remote_bin
+    );
 
     let status = host.run(&remote_bin, &remote_argv, &options).await?;
     if !status.success() {
