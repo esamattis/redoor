@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, onTestFinished } from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import { writeFileSync, rmSync } from "node:fs";
 import {
@@ -145,57 +145,11 @@ describe("Watchdog supervisor", () => {
             // process) and respawns a fresh agent.
             process.kill(firstPid, "SIGSTOP");
 
-            // <CODEREVIEW>
-            // AGENTS.md says: "When a single test needs cleanup,
-            //  always use onTestFinished() instead of try-finally."
-            // This test uses `try { ... } finally { SIGCONT }` to
-            // resume the frozen process. If the `expect` calls
-            // between `try` and `finally` throw, the `finally` runs,
-            // so the cleanup works today — but the guideline exists
-            // because vitest's `onTestFinished` is more robust: it
-            // runs even if the test times out (the `finally` in a
-            // timed-out test may not run, depending on where the
-            // timeout fires), and it keeps the cleanup visible at the
-            // top of the test instead of buried at the bottom.
-            // Suggestion: move the SIGCONT cleanup into
-            // `onTestFinished` and drop the `try/finally`:
-            ///   onTestFinished(() => {
-            ///       try { process.kill(firstPid, "SIGCONT"); }
-            ///       catch { /* already gone */ }
-            ///   });
-            ///   process.kill(firstPid, "SIGSTOP");
-            ///   const replacement = await waitForValue({ ... });
-            ///   expect(replacement.pid).not.toBe(firstPid);
-            ///   ...
-            // </CODEREVIEW>
-            try {
-                const replacement = await waitForValue({
-                    timeoutMs: 60000,
-                    description:
-                        "watchdog agent to be restarted after WebSocket went stale",
-                    predicate: async () => {
-                        const agents = await apiClient.listAgents();
-                        const a = agents.find((x) => x.name === AGENT_NAME);
-                        if (!a) {
-                            return undefined;
-                        }
-                        const details = await a.getDetails();
-                        return details.pid !== firstPid ? details : undefined;
-                    },
-                });
-
-                // A new, different PID proves the supervisor
-                // actually killed the frozen process and respawned
-                // a fresh one in response to the stale signal.
-                expect(replacement.pid).not.toBe(firstPid);
-                expect(replacement.pid).toBeGreaterThan(0);
-
-                // The replacement should be responsive via the REST
-                // API, confirming the new WebSocket is live.
-                const replacementAgent = await getWatchdogAgent();
-                const echo = await replacementAgent.echo("alive");
-                expect(echo.message).toBe("alive");
-            } finally {
+            // Register cleanup at the top of the test so it is
+            // visible and runs even if the test times out (vitest
+            // skips the body of a timed-out test, so a
+            // `try/finally` here would not always fire).
+            onTestFinished(() => {
                 // Resume the frozen process if it is still alive so
                 // it can receive the SIGKILL cleanly. If the
                 // supervisor already killed it, the kill returns
@@ -205,7 +159,34 @@ describe("Watchdog supervisor", () => {
                 } catch {
                     // process already gone, nothing to resume
                 }
-            }
+            });
+
+            const replacement = await waitForValue({
+                timeoutMs: 60000,
+                description:
+                    "watchdog agent to be restarted after WebSocket went stale",
+                predicate: async () => {
+                    const agents = await apiClient.listAgents();
+                    const a = agents.find((x) => x.name === AGENT_NAME);
+                    if (!a) {
+                        return undefined;
+                    }
+                    const details = await a.getDetails();
+                    return details.pid !== firstPid ? details : undefined;
+                },
+            });
+
+            // A new, different PID proves the supervisor
+            // actually killed the frozen process and respawned
+            // a fresh one in response to the stale signal.
+            expect(replacement.pid).not.toBe(firstPid);
+            expect(replacement.pid).toBeGreaterThan(0);
+
+            // The replacement should be responsive via the REST
+            // API, confirming the new WebSocket is live.
+            const replacementAgent = await getWatchdogAgent();
+            const echo = await replacementAgent.echo("alive");
+            expect(echo.message).toBe("alive");
         },
         90000,
     );
