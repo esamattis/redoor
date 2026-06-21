@@ -305,16 +305,11 @@ pub(crate) struct ReverseForward {
 }
 
 /// Options for [`SshHost::run`] that are orthogonal to the remote command,
-/// such as reverse port forwards and whether ssh should abort the connection
-/// when a requested forward cannot be established.
+/// such as reverse port forwards and whether ssh should compress its traffic.
 #[derive(Default)]
 pub(crate) struct SshRunOptions {
     /// Reverse port forwards (`ssh -R`) to request on this connection.
     pub(crate) reverse_forwards: Vec<ReverseForward>,
-    /// When true, adds `-o ExitOnForwardFailure=yes` so ssh exits at startup
-    /// if any requested forward could not be bound. This prevents the remote
-    /// command from running against a tunnel that will never come up.
-    pub(crate) exit_on_forward_failure: bool,
     /// When true, adds `-C` so ssh compresses its traffic. Useful for bulk
     /// transfers like binary uploads and the one-shot sniff command; left off
     /// for the long-running agent session which is mostly idle and would just
@@ -330,12 +325,6 @@ impl SshRunOptions {
             remote_port,
             local_port,
         });
-        self
-    }
-
-    /// Requests ssh to abort the connection if any requested forward fails.
-    pub(crate) fn exit_on_forward_failure(mut self) -> Self {
-        self.exit_on_forward_failure = true;
         self
     }
 
@@ -404,9 +393,10 @@ impl SshHost {
             ssh.arg("-C");
         }
 
-        if options.exit_on_forward_failure {
-            ssh.arg("-o").arg("ExitOnForwardFailure=yes");
-        }
+        // Always fail fast if a requested reverse forward cannot be bound.
+        // Without this, ssh keeps running and the remote command executes
+        // against a tunnel that will never come up.
+        ssh.arg("-o").arg("ExitOnForwardFailure=yes");
 
         for forward in &options.reverse_forwards {
             let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
@@ -447,9 +437,10 @@ impl SshHost {
             ssh.arg("-C");
         }
 
-        if options.exit_on_forward_failure {
-            ssh.arg("-o").arg("ExitOnForwardFailure=yes");
-        }
+        // Always fail fast if a requested reverse forward cannot be bound.
+        // Without this, ssh keeps running and the remote command executes
+        // against a tunnel that will never come up.
+        ssh.arg("-o").arg("ExitOnForwardFailure=yes");
 
         for forward in &options.reverse_forwards {
             let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
@@ -565,11 +556,10 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         upload_binary(&host, &local_path, &remote_bin).await?;
     }
 
-    // The reverse forward and exit-on-failure behavior are run-time options
-    // because they describe the tunnel, not the remote command itself.
-    let options = SshRunOptions::default()
-        .with_reverse_forward(args.redoor_port, args.redoor_port)
-        .exit_on_forward_failure();
+    // The reverse forward is a run-time option because it describes the
+    // tunnel, not the remote command itself. ExitOnForwardFailure is always
+    // enabled so the agent fails fast if its tunnel cannot be established.
+    let options = SshRunOptions::default().with_reverse_forward(args.redoor_port, args.redoor_port);
 
     // ssh joins all trailing args after the command into one remote argv, so
     // the agent name must be appended after the fixed flags.
