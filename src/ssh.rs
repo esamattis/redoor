@@ -801,8 +801,14 @@ pub(crate) async fn prepare_ssh_agent(
     // redoor binary on first contact. Without this, a fresh remote host
     // would just fail with "command not found" and the user would have to
     // install the binary manually, which defeats the purpose of `redoor ssh`.
-    let sniff = sniff_remote(&host, &remote_bin).await?;
-    ensure_remote_binary(&host, &remote_bin, &sniff).await?;
+    //
+    // When the user supplied their own `remote_bin`, we trust it as-is:
+    // probing and (re)installing would clobber a binary the operator
+    // intentionally placed at that path.
+    if config.remote_bin.is_none() {
+        let sniff = sniff_remote(&host, &remote_bin).await?;
+        ensure_remote_binary(&host, &remote_bin, &sniff).await?;
+    }
 
     // The reverse forward is a run-time option because it describes the
     // tunnel, not the remote command itself. ExitOnForwardFailure is always
