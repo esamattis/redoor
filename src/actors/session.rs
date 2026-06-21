@@ -319,10 +319,9 @@ pub async fn handle_websocket(
                         socket_id
                     );
                     watchdog.signal_stale();
-                    // Break out of the read loop. The writer task will
-                    // exit because the lanes close when `shutdown()`
-                    // drops the senders, and the supervisor is already
-                    // killing the subprocess.
+                    // Break out of the read loop; `runtime.shutdown()`
+                    // below closes the lanes and the writer task exits,
+                    // and the supervisor is already killing the subprocess.
                     break;
                 }
             }

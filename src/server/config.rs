@@ -404,6 +404,10 @@ pub(crate) async fn spawn_local_agent(
         config.log,
     );
 
+    // Ensure the agent process is killed if the supervisor task is
+    // dropped (e.g. on server shutdown), preventing the `redoor agent`
+    // child from being orphaned. `kill_on_drop` sends SIGKILL.
+    command.kill_on_drop(true);
     let child = command.spawn()?;
     Ok(child)
 }

@@ -525,6 +525,12 @@ impl SshHost {
 
         log!(Level::Debug, "Spawning ssh command: {:?}", ssh);
 
+        // Ensure the ssh client is killed if the supervisor task is
+        // dropped (e.g. on server shutdown), preventing the ssh
+        // process from being orphaned. `kill_on_drop` sends SIGKILL.
+        // Note: this only kills the local ssh client; the remote
+        // `redoor agent` would need a separate shutdown signal.
+        ssh.kill_on_drop(true);
         ssh.spawn()
     }
 
