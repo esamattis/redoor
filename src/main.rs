@@ -53,14 +53,14 @@ async fn run_server(args: server::CoordinatorArgs) {
         .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
     println!("Server running on http://{}", addr);
 
-    // Start configured ssh agents after the listener is bound (so the reverse
-    // tunnels have a local server to forward to) but before axum::serve blocks
-    // the current task. spawn_ssh_agents returns immediately; each agent runs
-    // in its own background task.
+    // Start configured agents after the listener is bound (so reverse-ssh
+    // tunnels and local agents both have a server to connect to) but before
+    // axum::serve blocks the current task. spawn_agents returns immediately;
+    // each agent runs in its own background task.
     if let Some(agents_path) = &args.agents
-        && let Err(error) = server::spawn_ssh_agents(agents_path, args.port).await
+        && let Err(error) = server::spawn_agents(agents_path, args.port).await
     {
-        eprintln!("Failed to start ssh agents: {error}");
+        eprintln!("Failed to start agents: {error}");
         std::process::exit(1);
     }
 
