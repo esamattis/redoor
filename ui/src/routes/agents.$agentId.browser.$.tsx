@@ -519,6 +519,14 @@ function BrowserHeader(props: {
                     relativePath={props.relativePath}
                 />
                 <div className="flex flex-wrap items-center gap-2">
+                    <Link
+                        to={getBrowserPathHref(props.agentId, props.parentPath)}
+                        className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={props.isAtCwd}
+                    >
+                        <ArrowUp className="h-4 w-4" />
+                        Up
+                    </Link>
                     <button
                         type="button"
                         onClick={props.onToggleHiddenFiles}
@@ -545,14 +553,6 @@ function BrowserHeader(props: {
                         agent={props.agent}
                         directoryPath={props.directoryPath}
                     />
-                    <Link
-                        to={getBrowserPathHref(props.agentId, props.parentPath)}
-                        className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-50"
-                        disabled={props.isAtCwd}
-                    >
-                        <ArrowUp className="h-4 w-4" />
-                        Up
-                    </Link>
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
