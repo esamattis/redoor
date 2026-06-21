@@ -575,6 +575,7 @@ function Breadcrumbs(props: {
 
     const parts = relativePath.split("/").filter((part) => part !== "");
     const isAbsolute = relativePath.startsWith("/");
+    const isAtRoot = parts.length === 0;
     let accumulatedPath = "";
 
     return (
@@ -582,13 +583,17 @@ function Breadcrumbs(props: {
             aria-label="Breadcrumbs"
             className="flex items-center gap-2 text-sm"
         >
-            <Link
-                to="/agents/$agentId"
-                params={{ agentId }}
-                className="text-blue-400 hover:underline"
-            >
-                {agentName}
-            </Link>
+            {isAtRoot ? (
+                <span className="font-medium text-slate-100">{agentName}</span>
+            ) : (
+                <Link
+                    to="/agents/$agentId/browser/$"
+                    params={{ agentId, _splat: undefined }}
+                    className="text-blue-400 hover:underline"
+                >
+                    {agentName}
+                </Link>
+            )}
             {parts.map((part, index) => {
                 if (accumulatedPath === "") {
                     accumulatedPath = isAbsolute ? `/${part}` : part;
