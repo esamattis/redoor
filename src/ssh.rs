@@ -60,6 +60,30 @@ fn default_agent_name(target: &str) -> String {
     target.rsplit('@').next().unwrap_or(target).to_string()
 }
 
+/// Configuration for one ssh-backed agent, independent of any specific CLI
+/// surface so both `redoor ssh` and `redoor server --agents` can construct it
+/// without depending on clap.
+///
+/// `remote_bin` is optional so callers that want the versioned default
+/// (`~/.local/redoor/<version>/redoor`) don't have to compute it themselves;
+/// `start_ssh_agent` fills it in when `None`.
+#[derive(Debug, Clone)]
+pub(crate) struct SshAgentConfig {
+    /// SSH login username. Forwarded to ssh via `-l`. When `None`, ssh config
+    /// or the `user@host` target syntax supplies the username.
+    pub(crate) username: Option<String>,
+    /// SSH server port. Forwarded to ssh via `-p`.
+    pub(crate) ssh_port: u16,
+    /// Name the remote agent registers with on the server. When `None`,
+    /// defaults to the host portion of `target`.
+    pub(crate) name: Option<String>,
+    /// Path to the redoor binary on the remote host. When `None`, defaults to
+    /// the versioned install layout.
+    pub(crate) remote_bin: Option<String>,
+    /// Remote ssh target in `user@host` form.
+    pub(crate) target: String,
+}
+
 /// Result of probing a remote host: which OS/arch it runs and whether the
 /// configured redoor binary is already executable at the target path.
 struct RemoteSniff {
@@ -584,16 +608,40 @@ impl SshHost {
 /// Stdio is inherited so the user can observe agent logs and interact with
 /// the remote shell when needed.
 pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let remote_bin = args.remote_bin;
-    let agent_name = args
+    let config = SshAgentConfig {
+        username: args.username,
+        ssh_port: args.ssh_port,
+        name: args.name,
+        // `SshArgs` already resolved the default via clap's `default_value_t`,
+        // so forward it as-is rather than re-deriving it in `start_ssh_agent`.
+        remote_bin: Some(args.remote_bin),
+        target: args.target,
+    };
+    start_ssh_agent(config, args.redoor_port).await
+}
+
+/// Core implementation shared by `redoor ssh` and `redoor server --agents`:
+/// probes the remote host, installs the redoor binary if missing, then starts
+/// a redoor agent on the remote host with a reverse port forward back to
+/// `redoor_port` on the local machine.
+///
+/// Returns an error (rather than calling `process::exit`) so the server can
+/// log per-agent failures without taking down the whole process when one
+/// host is unreachable.
+pub(crate) async fn start_ssh_agent(
+    config: SshAgentConfig,
+    redoor_port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let remote_bin = config.remote_bin.unwrap_or_else(default_remote_bin);
+    let agent_name = config
         .name
         .clone()
-        .unwrap_or_else(|| default_agent_name(&args.target));
-    let ws_url = format!("ws://localhost:{}/ws", args.redoor_port);
+        .unwrap_or_else(|| default_agent_name(&config.target));
+    let ws_url = format!("ws://localhost:{}/ws", redoor_port);
 
-    let host = SshHost::new(args.target)
-        .username(args.username)
-        .ssh_port(args.ssh_port);
+    let host = SshHost::new(config.target)
+        .username(config.username)
+        .ssh_port(config.ssh_port);
 
     // Sniff the remote host before starting the agent so we can install the
     // redoor binary on first contact. Without this, a fresh remote host
@@ -613,7 +661,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
     // The reverse forward is a run-time option because it describes the
     // tunnel, not the remote command itself. ExitOnForwardFailure is always
     // enabled so the agent fails fast if its tunnel cannot be established.
-    let options = SshRunOptions::default().with_reverse_forward(args.redoor_port, args.redoor_port);
+    let options = SshRunOptions::default().with_reverse_forward(redoor_port, redoor_port);
 
     // ssh joins all trailing args after the command into one remote argv, so
     // the agent name must be appended after the fixed flags.
@@ -629,7 +677,11 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
 
     let status = host.run(&remote_bin, &remote_argv, &options).await?;
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        return Err(format!(
+            "ssh agent exited with status {}",
+            status.code().unwrap_or(-1)
+        )
+        .into());
     }
     Ok(())
 }

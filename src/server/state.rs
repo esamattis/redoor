@@ -19,4 +19,11 @@ pub(crate) struct CoordinatorArgs {
     pub(crate) port: u16,
     #[arg(long)]
     pub(crate) log: Option<String>,
+    /// Path to a toml file listing ssh agents to start automatically with the
+    /// server. Each `[[agents]]` entry spawns a background `redoor ssh`-style
+    /// agent that connects back to this server through a reverse tunnel, so a
+    /// single server process can bring up an entire fleet without separate
+    /// `redoor ssh` invocations per host.
+    #[arg(long)]
+    pub(crate) agents: Option<String>,
 }
