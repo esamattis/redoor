@@ -1,7 +1,7 @@
 [[agents]]
 target = "devbox"
 remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
-dir = "/"
+dir = "/tmp"
 
 [[agents]]
 name = "local"
