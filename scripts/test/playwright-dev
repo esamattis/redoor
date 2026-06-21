@@ -5,6 +5,8 @@ set -eu
 cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 
 rm -f log/playwright-*.log
+# The UI is now embedded in the redoor binary, so a single server
+# serves both the API and the SPA. No separate Vite preview is needed.
 pnpm run build
 cargo build --bin redoor
 pnpm run --parallel --stream "/^playwright-server:/"

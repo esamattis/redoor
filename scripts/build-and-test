@@ -37,9 +37,9 @@ playwright_unless_error() {
     return $exit_code
 }
 
+silent_unless_error pnpm run build
 silent_unless_error cargo fmt -- --check
 silent_unless_error cargo test
-silent_unless_error pnpm run build
 silent_unless_error cargo build
 silent_unless_error pnpm run test
 silent_unless_error pnpm run types

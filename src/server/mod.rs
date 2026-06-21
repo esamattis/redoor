@@ -6,6 +6,7 @@ mod responses;
 mod routes;
 pub(crate) mod state;
 mod transfers;
+mod ui;
 mod ws;
 
 pub(crate) use routes::build_app;

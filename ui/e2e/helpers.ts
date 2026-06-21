@@ -7,7 +7,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const BASE_TEST_DIR = path.join(__dirname, "..", "..", ".test");
 
-export const WEB_BASE_URL = "http://localhost:4000";
+// The UI is served from the same redoor server as the API, so both
+// the browser and the API client target the same origin.
+export const WEB_BASE_URL = "http://localhost:3000";
 export const API_BASE_URL = "http://localhost:3000";
 
 export interface TestContext {

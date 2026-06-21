@@ -26,5 +26,19 @@ export default defineConfig({
         port: 4000,
         host: "0.0.0.0",
         allowedHosts: ["devbox.local.esamatti.fi"],
+        // During local development the redoor API runs on port 3000 while
+        // the Vite dev server runs here on port 4000. Proxy the API and
+        // websocket routes so the browser can keep using the same origin
+        // as the page (matching the embedded production setup).
+        proxy: {
+            "/api": {
+                target: "http://127.0.0.1:3000",
+                changeOrigin: true,
+            },
+            "/ws": {
+                target: "ws://127.0.0.1:3000",
+                ws: true,
+            },
+        },
     },
 });

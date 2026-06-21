@@ -10,9 +10,12 @@ import "./styles.css";
 import { ApiClient } from "@/api-client";
 import { RefreshListener } from "@/routes/__root";
 
-export const api = new ApiClient(
-    `${window.location.protocol}//${window.location.hostname}:3000`,
-);
+// The API lives on the same origin as the page: the redoor binary
+// embeds the UI alongside the API on a single port, and during local
+// `vite dev` the Vite proxy in `vite.config.ts` forwards `/api` and
+// `/ws` to the redoor server. Either way, using the page's origin
+// keeps the client configuration trivial.
+export const api = new ApiClient(window.location.origin);
 
 // Create a new router instance
 const router = createRouter({

@@ -13,6 +13,7 @@ use super::{
     raw::{raw_agent_handler, raw_agent_put_handler},
     state::ServerState,
     transfers::{copy_file_handler, list_transfer_progress_handler},
+    ui::ui_service,
     ws::{ui_websocket_handler, websocket_handler},
 };
 
@@ -47,4 +48,5 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
                 .allow_headers(Any),
         )
         .with_state(server_state)
+        .fallback_service(ui_service())
 }
