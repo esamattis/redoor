@@ -512,13 +512,13 @@ function BrowserHeader(props: {
 }) {
     return (
         <div className="mb-6">
-            <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="mb-4 flex flex-col gap-3">
                 <Breadcrumbs
                     agentId={props.agentId}
                     agentName={props.agentName}
                     relativePath={props.relativePath}
                 />
-                <div className="flex flex-wrap items-center justify-end gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                     <button
                         type="button"
                         onClick={props.onToggleHiddenFiles}
@@ -581,7 +581,7 @@ function Breadcrumbs(props: {
     return (
         <nav
             aria-label="Breadcrumbs"
-            className="flex items-center gap-2 text-sm"
+            className="flex flex-wrap items-center gap-2 text-sm"
         >
             {isAtRoot ? (
                 <span className="font-medium text-slate-100">{agentName}</span>
@@ -840,13 +840,13 @@ function FileDetailView(props: {
     return (
         <div>
             <div className="mb-6">
-                <div className="mb-4 flex items-center justify-between">
+                <div className="mb-4 flex flex-col gap-3">
                     <Breadcrumbs
                         agentId={props.agentId}
                         agentName={props.agentName}
                         relativePath={props.relativePath}
                     />
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <Link
                             to={getBrowserPathHref(props.agentId, parentPath)}
                             className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
