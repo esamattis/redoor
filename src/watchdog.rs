@@ -94,39 +94,32 @@ impl WatchdogRegistry {
         Self::default()
     }
 
-    /// Allocates a fresh `Notify` and stores it under `key`. The
-    /// supervisor keeps the returned handle and waits on its inner
-    /// `Notify` for the rest of its lifetime.
-    /// <CODEREVIEW>
-    /// `register` silently overwrites an existing entry for the same
-    /// key. If `register("foo")` is called twice, the first supervisor
-    /// keeps running but `lookup("foo")` now returns the second
-    /// supervisor's `Notify`. Signals from the session go to the new
-    /// supervisor while the old one runs orphaned with its own
-    /// `Notify` that nothing will ever signal again — its subprocess
-    /// is never restarted on stale.
-    /// In the current design `spawn_supervisor` is called exactly once
-    /// per agent at startup, so this is not triggered. But it is a
-    /// footgun if `spawn_agents` is ever called again (e.g. config
-    /// reload) or if two configs resolve to the same default name
-    /// (e.g. two ssh agents targeting the same host without explicit
-    /// names).
-    /// Suggestion: either `assert!` / log a warning on overwrite, or
-    /// return the existing handle instead of creating a new `Notify`
-    /// when the key is already present:
-    ///   if let Some(existing) = map.get(&key) {
-    ///       return WatchdogHandle { key, stale_signal: existing.clone() };
-    ///   }
-    /// Also consider detecting duplicate keys in `spawn_agents` at
-    /// config-parse time so the operator gets a clear error instead
-    /// of a silently broken supervisor.
-    /// </CODEREVIEW>
+    /// Allocates a fresh `Notify` and stores it under `key`, then
+    /// returns a handle bound to it. The supervisor keeps the returned
+    /// handle and waits on its inner `Notify` for the rest of its
+    /// lifetime.
+    ///
+    /// If the key is already registered, this logs a warning and
+    /// returns a handle bound to the *existing* `Notify` instead of
+    /// overwriting it. This keeps a second supervisor (e.g. from a
+    /// config reload or a duplicate default name) reachable by
+    /// `lookup`/`signal_stale` instead of orphaning the first one
+    /// with a `Notify` nothing will ever signal.
     pub fn register(&self, key: String) -> WatchdogHandle {
+        let mut map = self.inner.lock().expect("watchdog registry poisoned");
+        if let Some(existing) = map.get(&key) {
+            log!(
+                Level::Warning,
+                "Watchdog key already registered, reusing existing Notify: key={}",
+                key
+            );
+            return WatchdogHandle {
+                key,
+                stale_signal: existing.clone(),
+            };
+        }
         let stale_signal = Arc::new(Notify::new());
-        self.inner
-            .lock()
-            .expect("watchdog registry poisoned")
-            .insert(key.clone(), stale_signal.clone());
+        map.insert(key.clone(), stale_signal.clone());
         WatchdogHandle { key, stale_signal }
     }
 
@@ -170,10 +163,20 @@ enum CycleOutcome {
 /// session (typically the agent's name). `spawn` is called once per
 /// cycle; it must be re-entrant because the supervisor invokes it on
 /// every restart.
-pub fn spawn_supervisor(key: String, spawn: SpawnFn, registry: &WatchdogRegistry) {
+///
+/// Returns the supervisor task's `JoinHandle` so callers (notably
+/// tests) can abort it and avoid orphaning the current subprocess
+/// when they no longer need the supervisor. Production callers ignore
+/// the handle — the supervisor is meant to run for the server's
+/// lifetime.
+pub fn spawn_supervisor(
+    key: String,
+    spawn: SpawnFn,
+    registry: &WatchdogRegistry,
+) -> tokio::task::JoinHandle<()> {
     let watchdog = registry.register(key.clone());
     log!(Level::Info, "Watchdog supervisor registered: key={}", key);
-    tokio::spawn(run_supervisor(key, spawn, watchdog));
+    tokio::spawn(run_supervisor(key, spawn, watchdog))
 }
 
 /// Runs one supervisor loop until the process exits. Cycles through
@@ -195,32 +198,14 @@ async fn run_supervisor(key: String, spawn: SpawnFn, watchdog: WatchdogHandle) {
                     status,
                     runtime
                 );
-                if runtime >= STABLE_RUNTIME {
+                if runtime >= STABLE_RUNTIME && status.success() {
                     // Long-stable run then a clean exit: treat as a
-                    // fresh transient event, restart quickly.
-                    // <CODEREVIEW>
-                    // The comment says "clean exit" but the code does
-                    // not check `status.success()`. A subprocess that
-                    // runs for >= STABLE_RUNTIME and then crashes with
-                    // a non-zero exit (e.g. segfault after 31s) also
-                    // resets the backoff. If the crash is reproducible
-                    // (e.g. a memory leak that OOMs every ~30s), the
-                    // supervisor will restart at `INITIAL_BACKOFF`
-                    // forever instead of escalating, producing a
-                    // tight crash-restart loop.
-                    // Suggestion: only reset backoff on
-                    // `status.success()`, or at minimum track a
-                    // separate "consecutive non-zero stable exits"
-                    // counter and escalate after N of them:
-                    //   if status.success() {
-                    //       backoff = INITIAL_BACKOFF;
-                    //   } else if runtime >= STABLE_RUNTIME {
-                    //       // Stable but crashed: mild escalation.
-                    //       backoff = (backoff * 2).min(MAX_BACKOFF);
-                    //   } else {
-                    //       backoff = (backoff * 2).min(MAX_BACKOFF);
-                    //   }
-                    // </CODEREVIEW>
+                    // fresh transient event, restart quickly. A
+                    // non-zero exit after a long run (e.g. a crash
+                    // after 31s) is NOT treated as clean — a
+                    // reproducible crash (memory leak that OOMs every
+                    // ~30s) would otherwise produce a tight
+                    // crash-restart loop at `INITIAL_BACKOFF` forever.
                     backoff = INITIAL_BACKOFF;
                 } else {
                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -243,32 +228,16 @@ async fn run_supervisor(key: String, spawn: SpawnFn, watchdog: WatchdogHandle) {
                     key,
                     runtime
                 );
-                // A stale WebSocket is transient (network glitch,
-                // tunnel bouncing). Don't penalize backoff for it.
-                // <CODEREVIEW>
-                // Unconditionally resetting to `INITIAL_BACKOFF` on
-                // every stale signal means a persistently broken
-                // network path (e.g. firewall dropping idle
-                // connections every 30s, or a misconfigured reverse
-                // forward that never comes up) produces a tight
-                // restart loop: spawn → ssh connects → 30s silence →
-                // stale → kill → 1s backoff → spawn → ... That is
-                // ~1 restart per 31s with no escalation, which is a
-                // lot of ssh reconnects and log noise.
-                // Suggestion: escalate backoff on repeated stale
-                // signals too, but reset it when a cycle runs long
-                // enough to prove the connection is healthy:
-                //   CycleOutcome::Stale => {
-                //       backoff = (backoff * 2).min(MAX_BACKOFF);
-                //   }
-                // And in the `Exited(Ok(_))` arm, reset backoff when
-                // `runtime >= STABLE_RUNTIME` (which already happens).
-                // That way a one-off network blip still restarts
-                // quickly (the previous run was long, so backoff was
-                // already at `INITIAL_BACKOFF`), but a persistent
-                // staleness escalates.
-                // </CODEREVIEW>
-                backoff = INITIAL_BACKOFF;
+                // A stale WebSocket is often transient (network
+                // glitch, tunnel bouncing), but a persistently broken
+                // path (e.g. firewall dropping idle connections every
+                // 30s) would produce a tight restart loop if we reset
+                // to `INITIAL_BACKOFF` every time. Escalate the
+                // backoff here too; a one-off blip still restarts
+                // quickly because the previous long run already
+                // reset the backoff in the `Exited(Ok(_))` arm, while
+                // a persistent staleness escalates up to `MAX_BACKOFF`.
+                backoff = (backoff * 2).min(MAX_BACKOFF);
             }
             CycleOutcome::SpawnFailed(error) => {
                 log!(
@@ -311,6 +280,32 @@ async fn run_one_cycle(spawn: &SpawnFn, watchdog: &WatchdogHandle) -> CycleOutco
 mod tests {
     use super::*;
 
+    /// RAII guard that aborts a supervisor task on drop. Tests hold
+    /// one for every supervisor they spawn so the supervisor (and its
+    /// in-flight subprocess, when constructed with `kill_on_drop`)
+    /// is cleaned up on every exit path, including early returns and
+    /// panics. Mirrors the role of `onTestFinished` in the TS suite
+    /// for Rust tests, which have no such hook of their own.
+    struct SupervisorGuard {
+        handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl SupervisorGuard {
+        fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+            Self {
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for SupervisorGuard {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.abort();
+            }
+        }
+    }
+
     /// Verifies `register` then `lookup` returns a handle bound to the
     /// same `Notify`, and that `signal_stale` on the registered
     /// handle wakes a task waiting on the looked-up handle's
@@ -347,7 +342,7 @@ mod tests {
     }
 
     /// Verifies the supervisor restarts a subprocess that exits
-    /// immediately. Uses `bash -c "exit 0"` (a command guaranteed to
+    /// immediately. Uses `sh -c "exit 0"` (a command guaranteed to
     /// exist on macOS and Linux) as a stand-in for a real agent.
     /// The test passes if the supervisor keeps the loop going for
     /// several cycles without panicking and the subprocess count
@@ -357,21 +352,6 @@ mod tests {
     /// by checking a counter via a shared atomic.
     #[tokio::test]
     async fn test_supervisor_restarts_subprocess_on_quick_exit() {
-        // <CODEREVIEW>
-        // The supervisor task spawned here is never cancelled. When
-        // the test returns, the tokio runtime drops the task, but
-        // the `Child` handles inside `run_one_cycle` are dropped
-        // without `kill_on_drop`, so any in-flight `sh -c "exit 0"`
-        // is not killed. For this test the subprocess exits in
-        // milliseconds so the leak is negligible, but the pattern
-        // matters for `test_supervisor_kills_subprocess_on_stale_signal`
-        // (see comment there).
-        // Suggestion: return a `JoinHandle` (or a cancellation token)
-        // from `spawn_supervisor` so tests can abort the supervisor
-        // and its current child in `on_test_finished`:
-        ///   let handle = spawn_supervisor(...);
-        ///   on_test_finished(move || { handle.abort(); });
-        // </CODEREVIEW>
         use std::process::Stdio;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::process::Command;
@@ -382,9 +362,12 @@ mod tests {
             let counter = counter_for_spawn.clone();
             Box::pin(async move {
                 counter.fetch_add(1, Ordering::SeqCst);
+                // `kill_on_drop(true)` ensures any in-flight child is
+                // reaped when the aborted supervisor drops its `Child`.
                 Command::new("sh")
                     .arg("-c")
                     .arg("exit 0")
+                    .kill_on_drop(true)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -394,7 +377,10 @@ mod tests {
         });
 
         let registry = WatchdogRegistry::new();
-        spawn_supervisor("quick-exit".to_string(), spawn, &registry);
+        // Abort the supervisor when the test exits so we don't keep
+        // spawning `sh -c "exit 0"` cycles into a dropped runtime.
+        let _guard =
+            SupervisorGuard::new(spawn_supervisor("quick-exit".to_string(), spawn, &registry));
 
         // Wait for the counter to reach at least 3 spawns to prove
         // the supervisor kept restarting instead of stopping after
@@ -421,28 +407,6 @@ mod tests {
     /// signal, proving the old subprocess was killed and replaced.
     #[tokio::test]
     async fn test_supervisor_kills_subprocess_on_stale_signal() {
-        // <CODEREVIEW>
-        // The supervisor is never cancelled after the test returns.
-        // If the test succeeds, the supervisor has already started a
-        // new `sleep 60` child (the replacement subprocess). When the
-        // tokio runtime drops the task, the `Child` is dropped
-        // without `kill_on_drop(true)`, so that `sleep 60` is
-        // orphaned and keeps running for up to 60s after the test.
-        // On a busy CI host running many tests, this can leave
-        // several orphaned `sleep` processes.
-        // Suggestion: either (a) return a `JoinHandle` from
-        // `spawn_supervisor` and abort it in `on_test_finished`,
-        // or (b) construct the `Command` with
-        // `.kill_on_drop(true)` in the test's spawn closure so the
-        // child is reaped when the `Child` is dropped:
-        ///   Command::new("sleep").arg("60")
-        ///       .kill_on_drop(true)
-        ///       .stdin(Stdio::null()) ...
-        // The same `kill_on_drop(true)` should be considered for the
-        // production spawn paths in `spawn_local_agent` and
-        // `SshHost::spawn` so the server doesn't orphan agents on
-        // shutdown.
-        // </CODEREVIEW>
         use std::process::Stdio;
         use std::sync::atomic::{AtomicU32, Ordering};
         use tokio::process::Command;
@@ -452,8 +416,13 @@ mod tests {
         let spawn: SpawnFn = Arc::new(move || {
             let pid_counter = pid_counter_for_spawn.clone();
             Box::pin(async move {
+                // `kill_on_drop(true)` ensures the replacement
+                // `sleep 60` is reaped when the aborted supervisor
+                // drops its `Child`, instead of orphaning it for up
+                // to 60s after the test returns.
                 let child = Command::new("sleep")
                     .arg("60")
+                    .kill_on_drop(true)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -465,7 +434,11 @@ mod tests {
         });
 
         let registry = WatchdogRegistry::new();
-        spawn_supervisor("stale-test".to_string(), spawn, &registry);
+        // Abort the supervisor on test exit so the replacement
+        // `sleep 60` (and any later cycles) is killed via
+        // `kill_on_drop` instead of outliving the test.
+        let _guard =
+            SupervisorGuard::new(spawn_supervisor("stale-test".to_string(), spawn, &registry));
 
         // Wait for the first sleep to be spawned.
         let first_pid = {
