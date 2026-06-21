@@ -50,12 +50,44 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// transient event rather than an escalating outage.
 const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 
-/// Closure type used to spawn a single subprocess for one supervisor
-/// cycle. Returning an error means the supervisor backs off and
-/// retries on the next cycle. The closure is `Send + 'static` so the
-/// supervisor can own it across restarts.
-pub type SpawnFn =
-    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync>;
+/// Spawn strategy for one supervisor. Returning an error means the
+/// supervisor backs off and retries on the next cycle. The inner
+/// closure is `Send + Sync + 'static` so the supervisor can own it
+/// across restarts.
+///
+/// Construct with [`SpawnFn::new`] to avoid hand-writing the
+/// `Arc::new(move || Box::pin(async move { ... }))` triple-nesting at
+/// every call site: pass an `Fn() -> Fut` and the constructor boxes
+/// each future for you.
+pub struct SpawnFn {
+    inner: Arc<
+        dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>>
+            + Send
+            + Sync,
+    >,
+}
+
+impl SpawnFn {
+    /// Wraps an `Fn() -> Fut` into a [`SpawnFn`] by boxing each call's
+    /// future. Callers pass a plain function/closure that returns a
+    /// future; the `Arc<dyn Fn ...>` + `BoxFuture` plumbing is handled
+    /// here once instead of being repeated at every construction site.
+    pub fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Child, String>> + Send + 'static,
+    {
+        Self {
+            inner: Arc::new(move || Box::pin(f())),
+        }
+    }
+
+    /// Runs one spawn invocation, returning a future that resolves to
+    /// the spawned child or an error string.
+    fn spawn(&self) -> futures_util::future::BoxFuture<'static, Result<Child, String>> {
+        (self.inner)()
+    }
+}
 
 /// Handle the WebSocket session uses to signal that its connection has
 /// gone stale. The supervisor listens on the inner `Notify` and treats
@@ -253,7 +285,7 @@ async fn run_supervisor(key: String, spawn: SpawnFn, watchdog: WatchdogHandle) {
 /// Runs one supervisor cycle: spawn the subprocess, wait for either
 /// subprocess exit or a stale-WebSocket signal, return the outcome.
 async fn run_one_cycle(spawn: &SpawnFn, watchdog: &WatchdogHandle) -> CycleOutcome {
-    let mut child = match spawn().await {
+    let mut child = match spawn.spawn().await {
         Ok(child) => child,
         Err(error) => return CycleOutcome::SpawnFailed(error),
     };
@@ -355,9 +387,9 @@ mod tests {
 
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_for_spawn = counter.clone();
-        let spawn: SpawnFn = Arc::new(move || {
+        let spawn = SpawnFn::new(move || {
             let counter = counter_for_spawn.clone();
-            Box::pin(async move {
+            async move {
                 counter.fetch_add(1, Ordering::SeqCst);
                 // `kill_on_drop(true)` ensures any in-flight child is
                 // reaped when the aborted supervisor drops its `Child`.
@@ -370,7 +402,7 @@ mod tests {
                     .stderr(Stdio::null())
                     .spawn()
                     .map_err(|e| e.to_string())
-            })
+            }
         });
 
         let registry = WatchdogRegistry::new();
@@ -412,9 +444,9 @@ mod tests {
 
         let pid_counter = Arc::new(AtomicU32::new(0));
         let pid_counter_for_spawn = pid_counter.clone();
-        let spawn: SpawnFn = Arc::new(move || {
+        let spawn = SpawnFn::new(move || {
             let pid_counter = pid_counter_for_spawn.clone();
-            Box::pin(async move {
+            async move {
                 // `kill_on_drop(true)` ensures the replacement
                 // `sleep 60` is reaped when the aborted supervisor
                 // drops its `Child`, instead of orphaning it for up
@@ -429,7 +461,7 @@ mod tests {
                     .map_err(|e| e.to_string())?;
                 pid_counter.store(child.id().unwrap_or(0), Ordering::SeqCst);
                 Ok(child)
-            })
+            }
         });
 
         let registry = WatchdogRegistry::new();

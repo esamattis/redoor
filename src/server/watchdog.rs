@@ -7,11 +7,10 @@
 //! is re-invoked on every restart cycle, so it must be safe to call
 //! repeatedly.
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use redoor::watchdog::{SpawnFn, WatchdogRegistry, spawn_supervisor};
 use redoor::{Level, log};
+use tokio::process::Child;
 
 use super::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spawn_local_agent};
 
@@ -74,14 +73,13 @@ fn make_spawn_fn(config: AgentConfig, redoor_port: u16) -> SpawnFn {
 /// a fresh `redoor agent` child each time; the supervisor's restart
 /// loop handles the rest.
 fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16) -> SpawnFn {
-    Arc::new(move || {
+    SpawnFn::new(move || {
         let config = config.clone();
-        let redoor_port = redoor_port;
-        Box::pin(async move {
+        async move {
             spawn_local_agent(&config, redoor_port)
                 .await
                 .map_err(|e| e.to_string())
-        })
+        }
     })
 }
 
@@ -102,36 +100,44 @@ fn ssh_spawn_fn(config: crate::ssh::SshAgentConfig, redoor_port: u16) -> SpawnFn
     // stores the result on success. The supervisor calls the spawn
     // closure serially (one cycle at a time) so contention on this lock
     // is limited to the prepare call itself.
-    let cached: Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> = Arc::new(Mutex::new(None));
-    let config = Arc::new(config);
-
-    Arc::new(move || {
-        let cached = cached.clone();
-        let config = config.clone();
-        let redoor_port = redoor_port;
-        Box::pin(async move {
-            let prepared = {
-                let mut guard = cached.lock().await;
-                if let Some(p) = guard.as_ref() {
-                    p.clone()
-                } else {
-                    match crate::ssh::prepare_ssh_agent(&config, redoor_port).await {
-                        Ok(p) => {
-                            *guard = Some(p.clone());
-                            p
-                        }
-                        Err(error) => {
-                            log!(
-                                Level::Warning,
-                                "ssh prepare failed, will retry next cycle: {}",
-                                error
-                            );
-                            return Err(error.to_string());
-                        }
-                    }
-                }
-            };
-            prepared.spawn().await.map_err(|e| e.to_string())
-        })
+    let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> =
+        std::sync::Arc::new(Mutex::new(None));
+    let config = std::sync::Arc::new(config);
+    SpawnFn::new(move || {
+        ssh_spawn_once(cached.clone(), config.clone(), redoor_port)
     })
+}
+
+/// One spawn cycle for an ssh agent. Reuses a cached
+/// `PreparedSshAgent` when the one-time prepare already succeeded;
+/// otherwise runs `prepare_ssh_agent` and caches the result so later
+/// cycles skip the prepare. A failed prepare leaves the cache empty so
+/// the next cycle retries it.
+async fn ssh_spawn_once(
+    cached: std::sync::Arc<tokio::sync::Mutex<Option<crate::ssh::PreparedSshAgent>>>,
+    config: std::sync::Arc<crate::ssh::SshAgentConfig>,
+    redoor_port: u16,
+) -> Result<Child, String> {
+    let prepared = {
+        let mut guard = cached.lock().await;
+        if let Some(p) = guard.as_ref() {
+            p.clone()
+        } else {
+            match crate::ssh::prepare_ssh_agent(&config, redoor_port).await {
+                Ok(p) => {
+                    *guard = Some(p.clone());
+                    p
+                }
+                Err(error) => {
+                    log!(
+                        Level::Warning,
+                        "ssh prepare failed, will retry next cycle: {}",
+                        error
+                    );
+                    return Err(error.to_string());
+                }
+            }
+        }
+    };
+    prepared.spawn().await.map_err(|e| e.to_string())
 }
