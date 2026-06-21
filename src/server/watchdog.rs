@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Result;
 use redoor::watchdog::{SpawnFn, WatchdogRegistry, spawn_supervisor};
 use redoor::{Level, log};
 
@@ -17,7 +18,17 @@ use super::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spa
 /// Spawns one watchdog supervisor per agent config and returns
 /// immediately. The supervisor lives for the lifetime of the server
 /// and keeps restarting its subprocess forever.
-pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16, registry: &WatchdogRegistry) {
+///
+/// Returns an error if any agent key is already registered (typically
+/// two `[[agents]]` entries sharing the same effective name, e.g.
+/// when a local default collides with an explicit `name` on another
+/// entry). The first duplicate stops the spawn loop and the caller
+/// should surface the error to the operator.
+pub(crate) fn spawn_agents(
+    configs: &[AgentConfig],
+    redoor_port: u16,
+    registry: &WatchdogRegistry,
+) -> Result<()> {
     log!(
         Level::Info,
         "Starting {} agent supervisor(s) from config",
@@ -26,8 +37,9 @@ pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16, registry: 
     for config in configs.iter().cloned() {
         let key = supervisor_key(&config);
         let spawn = make_spawn_fn(config, redoor_port);
-        spawn_supervisor(key, spawn, registry);
+        spawn_supervisor(key, spawn, registry)?;
     }
+    Ok(())
 }
 
 /// Computes the key used to look up the supervisor from the session.

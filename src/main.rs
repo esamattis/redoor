@@ -105,10 +105,17 @@ async fn run_server(args: server::CoordinatorArgs) {
 
     // Start configured agents after the listener is bound (so reverse-ssh
     // tunnels and local agents both have a server to connect to) but before
-    // axum::serve blocks the current task. spawn_agents returns immediately;
-    // each agent runs in its own watchdog supervisor task.
+    // axum::serve blocks the current task. spawn_agents returns immediately
+    // after handing each entry off to its supervisor task; the
+    // supervisors themselves run in the background for the server's
+    // lifetime. A duplicate agent name (e.g. two [[agents]] entries
+    // resolving to the same default key) is fatal at startup so the
+    // operator notices the misconfiguration immediately.
     if let Some(config) = &config {
-        server::spawn_agents(&config.agents, port, &watchdog_registry);
+        if let Err(error) = server::spawn_agents(&config.agents, port, &watchdog_registry) {
+            eprintln!("Failed to start agent supervisors: {error}");
+            std::process::exit(1);
+        }
     }
 
     axum::serve(listener, app).await.unwrap();

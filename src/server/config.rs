@@ -345,8 +345,12 @@ pub(crate) fn default_local_agent_name() -> String {
 /// detection and restart) is owned by the watchdog supervisor
 /// (see [`crate::server::watchdog`]) so this function just hands the
 /// configs off.
-pub(crate) fn spawn_agents(configs: &[AgentConfig], redoor_port: u16, registry: &WatchdogRegistry) {
-    crate::server::watchdog::spawn_agents(configs, redoor_port, registry);
+pub(crate) fn spawn_agents(
+    configs: &[AgentConfig],
+    redoor_port: u16,
+    registry: &WatchdogRegistry,
+) -> Result<()> {
+    crate::server::watchdog::spawn_agents(configs, redoor_port, registry)
 }
 
 /// Spawns `redoor agent` as a local child process and returns the running

@@ -30,6 +30,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::{Result, bail};
+
 use crate::log;
 use crate::logging::Level;
 use tokio::process::Child;
@@ -99,28 +101,19 @@ impl WatchdogRegistry {
     /// handle and waits on its inner `Notify` for the rest of its
     /// lifetime.
     ///
-    /// If the key is already registered, this logs a warning and
-    /// returns a handle bound to the *existing* `Notify` instead of
-    /// overwriting it. This keeps a second supervisor (e.g. from a
-    /// config reload or a duplicate default name) reachable by
-    /// `lookup`/`signal_stale` instead of orphaning the first one
-    /// with a `Notify` nothing will ever signal.
-    pub fn register(&self, key: String) -> WatchdogHandle {
+    /// Returns an error if the key is already registered. Two
+    /// supervisors sharing the same key would race on the same
+    /// `Notify`, with each one killing the other's subprocess on
+    /// stale signals, so the second registration is rejected instead
+    /// of being silently aliased.
+    pub fn register(&self, key: String) -> Result<WatchdogHandle> {
         let mut map = self.inner.lock().expect("watchdog registry poisoned");
-        if let Some(existing) = map.get(&key) {
-            log!(
-                Level::Warning,
-                "Watchdog key already registered, reusing existing Notify: key={}",
-                key
-            );
-            return WatchdogHandle {
-                key,
-                stale_signal: existing.clone(),
-            };
+        if map.contains_key(&key) {
+            bail!("Watchdog key already registered: key={}", key);
         }
         let stale_signal = Arc::new(Notify::new());
         map.insert(key.clone(), stale_signal.clone());
-        WatchdogHandle { key, stale_signal }
+        Ok(WatchdogHandle { key, stale_signal })
     }
 
     /// Looks up the handle for an already-registered key. Returns
@@ -164,7 +157,9 @@ enum CycleOutcome {
 /// cycle; it must be re-entrant because the supervisor invokes it on
 /// every restart.
 ///
-/// Returns the supervisor task's `JoinHandle` so callers (notably
+/// Returns an error if `key` is already registered; see
+/// [`WatchdogRegistry::register`] for the rationale. On success,
+/// returns the supervisor task's `JoinHandle` so callers (notably
 /// tests) can abort it and avoid orphaning the current subprocess
 /// when they no longer need the supervisor. Production callers ignore
 /// the handle — the supervisor is meant to run for the server's
@@ -173,10 +168,10 @@ pub fn spawn_supervisor(
     key: String,
     spawn: SpawnFn,
     registry: &WatchdogRegistry,
-) -> tokio::task::JoinHandle<()> {
-    let watchdog = registry.register(key.clone());
+) -> Result<tokio::task::JoinHandle<()>> {
+    let watchdog = registry.register(key.clone())?;
     log!(Level::Info, "Watchdog supervisor registered: key={}", key);
-    tokio::spawn(run_supervisor(key, spawn, watchdog))
+    Ok(tokio::spawn(run_supervisor(key, spawn, watchdog)))
 }
 
 /// Runs one supervisor loop until the process exits. Cycles through
@@ -313,7 +308,9 @@ mod tests {
     #[tokio::test]
     async fn test_registry_lookup_round_trips_stale_signal() {
         let registry = WatchdogRegistry::new();
-        let handle = registry.register("agent-1".to_string());
+        let handle = registry
+            .register("agent-1".to_string())
+            .expect("first register should succeed");
 
         let looked_up = registry
             .lookup("agent-1")
@@ -379,8 +376,10 @@ mod tests {
         let registry = WatchdogRegistry::new();
         // Abort the supervisor when the test exits so we don't keep
         // spawning `sh -c "exit 0"` cycles into a dropped runtime.
-        let _guard =
-            SupervisorGuard::new(spawn_supervisor("quick-exit".to_string(), spawn, &registry));
+        let _guard = SupervisorGuard::new(
+            spawn_supervisor("quick-exit".to_string(), spawn, &registry)
+                .expect("spawn_supervisor should register the key"),
+        );
 
         // Wait for the counter to reach at least 3 spawns to prove
         // the supervisor kept restarting instead of stopping after
@@ -437,8 +436,10 @@ mod tests {
         // Abort the supervisor on test exit so the replacement
         // `sleep 60` (and any later cycles) is killed via
         // `kill_on_drop` instead of outliving the test.
-        let _guard =
-            SupervisorGuard::new(spawn_supervisor("stale-test".to_string(), spawn, &registry));
+        let _guard = SupervisorGuard::new(
+            spawn_supervisor("stale-test".to_string(), spawn, &registry)
+                .expect("spawn_supervisor should register the key"),
+        );
 
         // Wait for the first sleep to be spawned.
         let first_pid = {
