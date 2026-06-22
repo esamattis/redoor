@@ -57,7 +57,16 @@ await writeFile(cargoTomlPath, updatedCargoToml);
 console.log("Running cargo build to update Cargo.lock...");
 await $`cargo build`;
 await $`git add ${cargoTomlPath} Cargo.lock`;
-await $`git commit -m "Bump version to ${newVersion}"`;
+
+// Check if there are staged changes to commit. Re-running the script for an
+// already-released version produces no diff, which would make git commit fail
+// with "nothing to commit". Skip the commit in that case and just (re)tag.
+const stagedOutput = await $`git diff --cached --name-only`.nothrow();
+if (stagedOutput.stdout.trim() !== "") {
+    await $`git commit -m "Bump version to ${newVersion}"`;
+} else {
+    console.log("No version changes to commit, skipping commit.");
+}
 
 // Check if the tag already exists locally or remotely
 const localTagOutput = await $`git tag -l ${newTag}`.nothrow();
