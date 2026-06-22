@@ -2,6 +2,14 @@
 
 A remote agent management system built with Rust, Tokio, and Axum. Redoor enables remote command execution and file operations on distributed agents through a central server, with a web UI for management.
 
+## Install
+
+Download binary to `~/.local/bin/redoor`
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/main/install.sh)"
+```
+
 ## Overview
 
 Redoor consists of three main components:
