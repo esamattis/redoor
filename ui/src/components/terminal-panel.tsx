@@ -199,12 +199,12 @@ export function TerminalPanel(props: { agent: Agent }) {
 
             terminalDisposablesRef.current = [
                 terminal.onData((data) => {
-                    if (socket.readyState === WebSocket.OPEN) {
+                    if (isReady && socket.readyState === WebSocket.OPEN) {
                         socket.send(encoder.encode(data));
                     }
                 }),
                 terminal.onResize((size) => {
-                    if (socket.readyState !== WebSocket.OPEN) {
+                    if (!isReady || socket.readyState !== WebSocket.OPEN) {
                         return;
                     }
                     const message: TerminalClientMessage = {
@@ -255,10 +255,6 @@ export function TerminalPanel(props: { agent: Agent }) {
                     socket.close(1002, "Invalid terminal control message");
                     return;
                 }
-                if (!isReady) {
-                    resetAfterSetupFailure(generation);
-                    return;
-                }
                 showDisconnected(generation, disconnectMessage);
                 socket.close();
             };
@@ -268,11 +264,11 @@ export function TerminalPanel(props: { agent: Agent }) {
                 if (generationRef.current !== generation) {
                     return;
                 }
-                if (!isReady) {
-                    resetAfterSetupFailure(generation);
+                if (stateRef.current.type === "disconnected") {
                     return;
                 }
-                if (stateRef.current.type === "disconnected") {
+                if (!isReady) {
+                    resetAfterSetupFailure(generation);
                     return;
                 }
                 showDisconnected(generation, "Terminal connection closed");

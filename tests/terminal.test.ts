@@ -70,6 +70,41 @@ async function openTerminal(rows = 24, cols = 80): Promise<WebSocket> {
     return socket;
 }
 
+/** Waits for the transport to open so a test can exercise the pre-ready setup window. */
+async function waitForSocketOpen(socket: WebSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+            "error",
+            () => reject(new Error("terminal websocket failed to open")),
+            { once: true },
+        );
+    });
+}
+
+/** Waits for the typed ready lifecycle without assuming it is the first frame. */
+async function waitForReady(socket: WebSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+            () => reject(new Error("terminal did not become ready")),
+            10_000,
+        );
+        socket.addEventListener("message", (event) => {
+            if (typeof event.data !== "string") {
+                return;
+            }
+            const message: TerminalServerMessage = JSON.parse(event.data);
+            if (message.type === "error") {
+                clearTimeout(timeout);
+                reject(new Error(message.message));
+            } else if (message.type === "ready") {
+                clearTimeout(timeout);
+                resolve();
+            }
+        });
+    });
+}
+
 /** Reads only a bounded rolling window until a deterministic marker appears. */
 function waitForMarker(socket: WebSocket, marker: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -104,14 +139,18 @@ describe("dedicated terminal tunnel", () => {
         const outputPromise = waitForMarker(socket, marker);
         socket.send(
             new TextEncoder().encode(
-                "printf '__REDOOR_%s__%s__\\n' TERMINAL_MARKER $$\n",
+                "trap '' HUP; sleep 60 & child=$!; trap - HUP; printf '__REDOOR_%s__%s__%s__\\n' TERMINAL_MARKER $$ $child\n",
             ),
         );
         const output = await outputPromise;
-        const pidMatch = output.match(/__REDOOR_TERMINAL_MARKER__(\d+)__/);
-        // Receiving the shell PID proves bytes crossed browser, relay, dedicated agent socket, and PTY in both directions.
+        const pidMatch = output.match(
+            /__REDOOR_TERMINAL_MARKER__(\d+)__(\d+)__/,
+        );
+        // Receiving both PIDs proves bytes crossed the tunnel and the shell launched a separate background job.
         expect(pidMatch?.[1]).toBeDefined();
+        expect(pidMatch?.[2]).toBeDefined();
         const shellPid = Number(pidMatch?.[1]);
+        const backgroundPid = Number(pidMatch?.[2]);
 
         socket.send(
             JSON.stringify({ type: "resize", size: { rows: 31, cols: 97 } }),
@@ -132,16 +171,40 @@ describe("dedicated terminal tunnel", () => {
             predicate: async () => {
                 try {
                     process.kill(shellPid, 0);
-                    return undefined;
                 } catch {
-                    return true;
+                    try {
+                        process.kill(backgroundPid, 0);
+                    } catch {
+                        return true;
+                    }
                 }
+                return undefined;
             },
             timeoutMs: 5_000,
             intervalMs: 50,
-            description: "terminal shell process to exit",
+            description: "terminal shell and background process to exit",
         });
-        // Process disappearance proves browser disconnect tears down and reaps the PTY shell.
+        // Both disappearances prove teardown reaches jobs outside the shell's process group.
         expect(() => process.kill(shellPid, 0)).toThrow();
+        expect(() => process.kill(backgroundPid, 0)).toThrow();
+    });
+
+    it("preserves bounded terminal input sent before the agent is ready", async () => {
+        const socket = new WebSocket(
+            testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }),
+        );
+        socket.binaryType = "arraybuffer";
+        onTestFinished(() => socket.close());
+        const marker = "__REDOOR_EARLY_INPUT__";
+        const outputPromise = waitForMarker(socket, marker);
+        const readyPromise = waitForReady(socket);
+
+        await waitForSocketOpen(socket);
+        socket.send(new TextEncoder().encode(`printf '${marker}'\n`));
+        await readyPromise;
+        const output = await outputPromise;
+
+        // Seeing the marker proves setup buffered valid input instead of treating it as cancellation.
+        expect(output).toContain(marker);
     });
 });

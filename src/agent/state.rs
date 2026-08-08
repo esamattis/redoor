@@ -201,6 +201,7 @@ pub(crate) struct AgentState {
     pub(crate) server_url: String,
     pub(crate) ws_text_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
+    pub(crate) connection_generation: u64,
     pub(crate) active_uploads: ActiveUploads,
     pub(crate) active_downloads: ActiveDownloads,
     pub(crate) active_terminals: ActiveTerminals,
@@ -214,9 +215,16 @@ impl AgentState {
             server_url,
             ws_text_tx: None,
             ws_binary_tx: None,
+            connection_generation: 0,
             active_uploads: ActiveUploads::new(),
             active_downloads: ActiveDownloads::new(),
             active_terminals: ActiveTerminals::new(),
         }
+    }
+
+    /// Advances the socket identity so delayed events cannot affect a replacement connection.
+    pub(crate) fn advance_connection_generation(&mut self) -> u64 {
+        self.connection_generation = self.connection_generation.wrapping_add(1);
+        self.connection_generation
     }
 }

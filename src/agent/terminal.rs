@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use nix::{
     errno::Errno,
-    sys::signal::{Signal, killpg},
+    sys::signal::{Signal, kill, killpg},
     unistd::Pid,
 };
 use redoor::terminal_protocol::{
@@ -206,9 +206,7 @@ async fn run_pty_session(
     let socket_writer_completed = matches!(end, SessionEnd::SocketWriter(_));
     let _ = shutdown_sender.send(true);
     drop(control_sender);
-    if !matches!(end, SessionEnd::Child(_)) {
-        teardown_process_group(&mut child, process_group_id).await;
-    }
+    teardown_process_group(&mut child, process_group_id).await;
     if !pty_reader_completed {
         finish_task(pty_reader).await;
     }
@@ -469,13 +467,57 @@ fn exit_notification(status: &std::process::ExitStatus) -> TerminalServerMessage
     }
 }
 
-/// Sends escalating signals to the whole PTY process group and reaps its leader.
+/// Sends escalating signals to every PTY session member and reaps its leader.
 async fn teardown_process_group(child: &mut Child, process_group_id: i32) {
-    signal_process_group(process_group_id, Signal::SIGHUP);
-    if timeout(PROCESS_EXIT_GRACE, child.wait()).await.is_err() {
-        signal_process_group(process_group_id, Signal::SIGKILL);
-    }
+    signal_terminal_session(process_group_id, Signal::SIGHUP).await;
+    let _ = timeout(PROCESS_EXIT_GRACE, child.wait()).await;
+    signal_terminal_session(process_group_id, Signal::SIGKILL).await;
     let _ = child.wait().await;
+}
+
+/// Signals both the leader group and jobs moved into separate interactive process groups.
+async fn signal_terminal_session(session_id: i32, signal: Signal) {
+    signal_process_group(session_id, signal);
+    for process_id in terminal_session_processes(session_id).await {
+        match kill(process_id, signal) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(_) => {}
+        }
+    }
+}
+
+/// Enumerates Linux process metadata asynchronously so teardown never blocks the actor runtime.
+async fn terminal_session_processes(session_id: i32) -> Vec<Pid> {
+    let Ok(mut entries) = tokio::fs::read_dir("/proc").await else {
+        return Vec::new();
+    };
+    let mut processes = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Some(process_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = tokio::fs::read_to_string(entry.path().join("stat")).await else {
+            continue;
+        };
+        if process_session_id(&stat) == Some(session_id) {
+            processes.push(Pid::from_raw(process_id));
+        }
+    }
+    processes
+}
+
+/// Extracts the session field while allowing spaces and parentheses in a process name.
+fn process_session_id(stat: &str) -> Option<i32> {
+    stat.rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()
 }
 
 /// Ignores a missing process group because it means teardown has already won the race.
@@ -491,5 +533,19 @@ async fn finish_task(mut task: JoinHandle<Result<()>>) {
     if timeout(PROCESS_EXIT_GRACE, &mut task).await.is_err() {
         task.abort();
         let _ = task.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_session_id;
+
+    /// Verifies process names cannot shift the session field parsed from procfs.
+    #[test]
+    fn parses_proc_session_id_with_complex_process_name() {
+        let stat = "123 (shell (worker)) S 1 123 456 0";
+
+        // The sixth proc stat field identifies every process belonging to the PTY session.
+        assert_eq!(process_session_id(stat), Some(456));
     }
 }

@@ -10,6 +10,7 @@ pub(super) async fn spawn_read_task(
         WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     >,
     agent_ref: AgentHandle,
+    connection_generation: u64,
 ) {
     tokio::spawn(async move {
         let mut connection_loss_reported = false;
@@ -18,6 +19,7 @@ pub(super) async fn spawn_read_task(
                 Ok(WsMessage::Text(text)) => {
                     if agent_ref
                         .send(AgentMsg::WebSocketMessage {
+                            connection_generation,
                             text: text.to_string(),
                         })
                         .await
@@ -29,6 +31,7 @@ pub(super) async fn spawn_read_task(
                 Ok(WsMessage::Binary(bytes)) => {
                     if agent_ref
                         .send(AgentMsg::WebSocketBinaryMessage {
+                            connection_generation,
                             bytes: bytes.to_vec(),
                         })
                         .await
@@ -41,6 +44,7 @@ pub(super) async fn spawn_read_task(
                     connection_loss_reported = true;
                     let _ = agent_ref
                         .send(AgentMsg::ConnectionLost {
+                            connection_generation,
                             reason: "Server closed connection".to_string(),
                         })
                         .await;
@@ -50,6 +54,7 @@ pub(super) async fn spawn_read_task(
                     connection_loss_reported = true;
                     let _ = agent_ref
                         .send(AgentMsg::ConnectionLost {
+                            connection_generation,
                             reason: format!("Error receiving message: {}", error),
                         })
                         .await;
@@ -61,6 +66,7 @@ pub(super) async fn spawn_read_task(
         if !connection_loss_reported {
             let _ = agent_ref
                 .send(AgentMsg::ConnectionLost {
+                    connection_generation,
                     reason: "Server connection ended".to_string(),
                 })
                 .await;

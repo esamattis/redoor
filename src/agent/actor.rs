@@ -68,7 +68,9 @@ impl AgentRuntime {
 
         match message {
             AgentMsg::Connect => {
-                self.connect(handle).await;
+                if self.state.ws_text_tx.is_none() && self.state.ws_binary_tx.is_none() {
+                    self.connect(handle).await;
+                }
             }
             AgentMsg::ScheduleReconnect { error } => {
                 log!(
@@ -81,7 +83,13 @@ impl AgentRuntime {
                     let _ = handle.try_send(AgentMsg::Connect);
                 });
             }
-            AgentMsg::WebSocketMessage { text } => {
+            AgentMsg::WebSocketMessage {
+                connection_generation,
+                text,
+            } => {
+                if connection_generation != self.state.connection_generation {
+                    return true;
+                }
                 if let (Some(tx_text), Some(tx_binary)) = (
                     self.state.ws_text_tx.as_ref().cloned(),
                     self.state.ws_binary_tx.as_ref().cloned(),
@@ -97,10 +105,27 @@ impl AgentRuntime {
                         .await;
                 }
             }
-            AgentMsg::WebSocketBinaryMessage { bytes } => {
-                agent.handle_upload_chunk(&mut self.state, bytes).await;
+            AgentMsg::WebSocketBinaryMessage {
+                connection_generation,
+                bytes,
+            } => {
+                if connection_generation == self.state.connection_generation {
+                    agent.handle_upload_chunk(&mut self.state, bytes).await;
+                }
             }
-            AgentMsg::ConnectionLost { reason } => {
+            AgentMsg::ConnectionLost {
+                connection_generation,
+                reason,
+            } => {
+                if connection_generation != self.state.connection_generation {
+                    log!(
+                        Level::Debug,
+                        "Ignoring stale connection loss from generation {}: {}",
+                        connection_generation,
+                        reason
+                    );
+                    return true;
+                }
                 if self.state.ws_text_tx.is_none() && self.state.ws_binary_tx.is_none() {
                     log!(
                         Level::Debug,
@@ -169,11 +194,12 @@ impl AgentRuntime {
                 let (write, read) = ws_stream.split();
                 let (text_tx, mut text_rx) = mpsc::channel::<WsMessage>(32);
                 let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
+                let connection_generation = self.state.advance_connection_generation();
 
                 self.state.ws_text_tx = Some(text_tx.clone());
                 self.state.ws_binary_tx = Some(binary_tx.clone());
 
-                spawn_read_task(read, handle.clone()).await;
+                spawn_read_task(read, handle.clone(), connection_generation).await;
 
                 let writer_handle = handle.clone();
                 tokio::spawn(async move {
@@ -197,6 +223,7 @@ impl AgentRuntime {
                             log!(Level::Warning, "Failed to send WebSocket message");
                             let _ = writer_handle
                                 .send(AgentMsg::ConnectionLost {
+                                    connection_generation,
                                     reason: "Failed to write to server connection".to_string(),
                                 })
                                 .await;
@@ -233,5 +260,46 @@ impl AgentRuntime {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redoor::types::AgentId;
+
+    /// Verifies a delayed writer failure cannot clear a newer live connection.
+    #[tokio::test]
+    async fn stale_connection_loss_does_not_clear_replacement_connection() {
+        redoor::logging::init(None);
+        let mut runtime = AgentRuntime::new(
+            AgentId::from("agent"),
+            "agent".to_string(),
+            "ws://localhost".to_string(),
+        );
+        let stale_generation = runtime.state.advance_connection_generation();
+        let current_generation = runtime.state.advance_connection_generation();
+        let (text_tx, _text_rx) = mpsc::channel(1);
+        let (binary_tx, _binary_rx) = mpsc::channel(1);
+        runtime.state.ws_text_tx = Some(text_tx);
+        runtime.state.ws_binary_tx = Some(binary_tx);
+        let (sender, _receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        let keep_running = runtime
+            .handle_message(
+                handle,
+                AgentMsg::ConnectionLost {
+                    connection_generation: stale_generation,
+                    reason: "old writer failed".to_string(),
+                },
+            )
+            .await;
+
+        // The stale event must not stop the actor or detach the current writer lanes.
+        assert!(keep_running);
+        assert_eq!(runtime.state.connection_generation, current_generation);
+        assert!(runtime.state.ws_text_tx.is_some());
+        assert!(runtime.state.ws_binary_tx.is_some());
     }
 }
