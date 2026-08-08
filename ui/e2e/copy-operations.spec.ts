@@ -68,6 +68,12 @@ test.describe.serial("Copy Operations", () => {
             .getByLabel("File entry file1.txt")
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/file1.txt`,
+        );
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("file1.txt");
 
         // File detail pages are not copy destinations, so they do not show the action.
         await expect(copyButton).toHaveCount(0);

@@ -66,6 +66,7 @@ export class RefreshListener {
     private websocket: WebSocket | null = null;
     private invalidateInFlight: Promise<void> | null = null;
     private invalidateQueued = false;
+    private unsubscribeFromResolved: (() => void) | null = null;
     private started = false;
 
     start() {
@@ -87,6 +88,8 @@ export class RefreshListener {
 
         this.websocket?.close();
         this.websocket = null;
+        this.unsubscribeFromResolved?.();
+        this.unsubscribeFromResolved = null;
         this.invalidateInFlight = null;
         this.invalidateQueued = false;
     }
@@ -98,6 +101,23 @@ export class RefreshListener {
 
         if (this.invalidateInFlight) {
             this.invalidateQueued = true;
+            return;
+        }
+
+        if (this.router.state.status === "pending") {
+            this.invalidateQueued = true;
+            if (!this.unsubscribeFromResolved) {
+                const unsubscribe = this.router.subscribe("onResolved", () => {
+                    unsubscribe();
+                    this.unsubscribeFromResolved = null;
+                    if (this.invalidateQueued && this.started) {
+                        // Let the user navigation commit before refreshing its destination loaders.
+                        this.invalidateQueued = false;
+                        this.runInvalidate();
+                    }
+                });
+                this.unsubscribeFromResolved = unsubscribe;
+            }
             return;
         }
 

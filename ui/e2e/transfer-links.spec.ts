@@ -37,7 +37,14 @@ test.describe.serial("Transfer Path Links", () => {
                     `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
                 )
                 .click();
-            await page.getByRole("link", { name: "subdir3" }).click();
+            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir3`;
+            await Promise.all([
+                page.waitForURL(uploadDestinationUrl),
+                page.getByRole("link", { name: "subdir3" }).click(),
+            ]);
+            await expect(
+                page.getByRole("navigation", { name: "Breadcrumbs" }),
+            ).toContainText("subdir3");
 
             await page
                 .getByLabel("Choose files to upload")
@@ -67,8 +74,9 @@ test.describe.serial("Transfer Path Links", () => {
             await expect(pathLink).toBeVisible();
 
             await pathLink.click();
+            await expect(pathLink).toHaveCount(0, { timeout: 15_000 });
 
-            // Should navigate to the file detail view in the browser.
+            // The source link disappearing proves the pending route committed instead of only updating browser history.
             await expect(page).toHaveURL(
                 new RegExp(
                     `/agents/${ctx.agentId}/browser/.*${uploadFileName}$`,

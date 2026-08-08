@@ -37,7 +37,14 @@ test.describe.serial("File Operations", () => {
                     `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
                 )
                 .click();
-            await page.getByRole("link", { name: "subdir3" }).click();
+            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir3`;
+            await Promise.all([
+                page.waitForURL(uploadDestinationUrl),
+                page.getByRole("link", { name: "subdir3" }).click(),
+            ]);
+            await expect(
+                page.getByRole("navigation", { name: "Breadcrumbs" }),
+            ).toContainText("subdir3");
 
             await page
                 .getByLabel("Choose files to upload")

@@ -31,11 +31,18 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
-            )
-            .click();
+        const destinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}`;
+        await Promise.all([
+            page.waitForURL(destinationUrl),
+            page
+                .locator(
+                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                )
+                .click(),
+        ]);
+        await expect(
+            page.getByRole("navigation", { name: "Breadcrumbs" }),
+        ).toContainText(ctx.testDirName);
 
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
