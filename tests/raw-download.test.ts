@@ -62,6 +62,63 @@ describe("Raw Download API", () => {
         expect(downloadedContent).toBe(testContent);
     });
 
+    it("should authorize an exact raw path with a one-time token", async () => {
+        const testContent = "one-time download";
+        const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
+        const mismatchedPath = tempFiles.create("other file", {
+            suffix: ".txt",
+        });
+        const createTokenUrl = testAgent
+            .getRawUrl(testFilePath)
+            .replace("/raw/", "/one-time-token/");
+        const createResponse = await fetch(createTokenUrl, {
+            method: "POST",
+            headers: testAgent.getAuthHeaders(),
+        });
+        // Token creation remains protected by the normal authenticated API boundary.
+        expect(createResponse.status).toBe(200);
+        const { one_time_token: oneTimeToken } =
+            (await createResponse.json()) as {
+                one_time_token: string;
+            };
+        const metadataBefore = (await testAgent.metadata(
+            testFilePath,
+        )) as unknown as { one_time_tokens: string[] };
+        // Metadata exposes the still-outstanding token only for its exact path.
+        expect(metadataBefore.one_time_tokens).toContain(oneTimeToken);
+
+        const mismatchResponse = await fetch(
+            `${testAgent.getRawUrl(mismatchedPath)}?one_time_token=${encodeURIComponent(oneTimeToken)}`,
+        );
+        // A path mismatch fails before file work without consuming the valid token.
+        expect(mismatchResponse.status).toBe(401);
+        const metadataAfterMismatch = (await testAgent.metadata(
+            testFilePath,
+        )) as unknown as { one_time_tokens: string[] };
+        // Failed matching leaves the legitimate exact-path token outstanding.
+        expect(metadataAfterMismatch.one_time_tokens).toContain(oneTimeToken);
+
+        const tokenUrl = `${testAgent.getRawUrl(testFilePath)}?one_time_token=${encodeURIComponent(oneTimeToken)}`;
+        const downloadResponse = await fetch(tokenUrl);
+        // The token permits a cookie-free request only once.
+        expect(downloadResponse.status).toBe(200);
+        // Token-authorized downloads are always presented as attachments.
+        expect(downloadResponse.headers.get("Content-Disposition")).toMatch(
+            /attachment/,
+        );
+        // The authorized response still streams the original file bytes.
+        expect(await downloadResponse.text()).toBe(testContent);
+
+        const reusedResponse = await fetch(tokenUrl);
+        // Registry removal makes the successfully consumed UUID unusable afterward.
+        expect(reusedResponse.status).toBe(401);
+        const metadataAfterUse = (await testAgent.metadata(
+            testFilePath,
+        )) as unknown as { one_time_tokens: string[] };
+        // Successful consumption removes the token from registry memory and metadata.
+        expect(metadataAfterUse.one_time_tokens).not.toContain(oneTimeToken);
+    });
+
     it("should download large file via raw endpoint", async () => {
         const largeContent = "x".repeat(100 * 1024);
         const testFilePath = tempFiles.create(largeContent, { suffix: ".txt" });
