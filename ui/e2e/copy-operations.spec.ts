@@ -35,6 +35,14 @@ test.describe.serial("Copy Operations", () => {
             )
             .click();
 
+        // Wait for the nested listing to render so the create action receives the test directory path.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}`,
+        );
+        await expect(
+            page.getByRole("button", { name: "Select file file1.txt" }),
+        ).toBeVisible();
+
         // Create a new directory that will serve as the copy destination.
         await page.getByRole("button", { name: "Create directory" }).click();
         await expect(
@@ -47,6 +55,7 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("dialog", { name: "Create directory" })
             .getByRole("button", { name: "Create directory", exact: true })
             .click();
+        // The destination link proves creation targeted the current directory and refreshed its listing.
         await expect(
             page.getByRole("link", { name: copyTargetDirName, exact: true }),
         ).toBeVisible();

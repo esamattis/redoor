@@ -9,4 +9,21 @@ rm -f log/playwright-*.log
 # serves both the API and the SPA. No separate Vite preview is needed.
 pnpm run build
 cargo build --bin redoor
-pnpm run --parallel --stream "/^playwright-server:/"
+# Start each process directly because pnpm's parallel-run argument handling differs
+# between versions and can interpret script names as workspace filters.
+pnpm run playwright-server:server &
+server_pid=$!
+pnpm run playwright-server:agent1 &
+agent1_pid=$!
+pnpm run playwright-server:agent2 &
+agent2_pid=$!
+
+# Ensure Playwright termination also cleans up all background processes.
+cleanup() {
+    kill "$server_pid" "$agent1_pid" "$agent2_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+wait "$server_pid"
+wait "$agent1_pid"
+wait "$agent2_pid"
