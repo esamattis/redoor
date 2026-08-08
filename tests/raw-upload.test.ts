@@ -337,6 +337,7 @@ describe("Raw Upload API", () => {
                 connected_at: null,
                 last_seen_at: null,
                 connection_issue: null,
+                binary: null,
             },
             {
                 getSessionCookie: () =>

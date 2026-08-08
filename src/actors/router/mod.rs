@@ -141,6 +141,7 @@ fn route_response(state: &mut RouterState, response: RouteResponse) {
                 details.arch = agent_connection.arch.clone();
                 details.hostname = agent_connection.hostname.clone();
                 details.username = agent_connection.username.clone();
+                details.binary = agent_connection.binary.clone();
                 CommandResult::GetAgentDetails(details)
             }
             _ => response.result.clone(),
@@ -360,6 +361,7 @@ mod tests {
                 hostname: "host".to_string(),
                 username: "user".to_string(),
                 default_directory: "/tmp".to_string(),
+                binary: crate::commands::current_binary_identity(),
                 watchdog: None,
             }))
             .expect("agent registered");
@@ -515,6 +517,7 @@ mod tests {
                 connected_at: list_agents[0].connected_at,
                 last_seen_at: None,
                 connection_issue: None,
+                binary: Some(crate::commands::current_binary_identity()),
             }]
         );
 

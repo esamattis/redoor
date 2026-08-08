@@ -93,6 +93,7 @@ impl SessionRuntime {
                 username,
                 cwd,
                 token,
+                binary,
             } => {
                 // Reject impostors before name takeover: an unauthenticated client
                 // that only knows an agent name must not replace a live connection.
@@ -160,6 +161,7 @@ impl SessionRuntime {
                         hostname,
                         username,
                         default_directory: cwd,
+                        binary,
                         watchdog: self.watchdog.clone(),
                     }));
                 self.agent_id = Some(agent_id);

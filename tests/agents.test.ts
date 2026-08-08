@@ -137,6 +137,17 @@ describe("Agents API", () => {
         expect(result.connected_at).toBeDefined();
         expect(typeof result.connected_at).toBe("number");
         expect(result.connected_at).toBeGreaterThan(0);
+        // Agent and server share one binary in tests, so list/details identity must match server info.
+        const serverInfo = await apiClient.getServerInfo();
+        expect(result.binary).toEqual({
+            version: serverInfo.version,
+            git_rev: serverInfo.git_rev,
+            git_dirty: serverInfo.git_dirty,
+            version_dirty: serverInfo.version_dirty,
+            build_mode: serverInfo.build_mode,
+            build_date: serverInfo.build_date,
+        });
+        expect(testAgent.binary).toEqual(result.binary);
     });
 
     it("should list directory contents on connected agent", async () => {
@@ -340,6 +351,7 @@ describe("Agents API", () => {
                 connected_at: null,
                 last_seen_at: null,
                 connection_issue: null,
+                binary: null,
             },
             {
                 getSessionCookie: () =>

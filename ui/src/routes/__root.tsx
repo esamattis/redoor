@@ -210,7 +210,9 @@ const emptyServerInfo: ServerInfoResponse = {
     version: "",
     git_rev: "",
     git_dirty: false,
+    version_dirty: false,
     build_mode: "debug",
+    build_date: "",
 };
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
@@ -661,7 +663,10 @@ function TopTabStrip(props: {
 
 function BrandMark() {
     return (
-        <div className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200">
+        <Link
+            to="/"
+            className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white"
+        >
             <img
                 src="/logo.svg"
                 alt=""
@@ -669,7 +674,7 @@ function BrandMark() {
                 aria-hidden="true"
             />
             <span className="text-sm font-semibold tracking-tight">Redoor</span>
-        </div>
+        </Link>
     );
 }
 

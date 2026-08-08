@@ -1,7 +1,8 @@
 use super::RouterError;
 use super::state::CopyContentKind;
 use crate::commands::{
-    AgentConnectionStatus, Command, CommandResult, TransferProgressListResponse, UiEvent,
+    AgentConnectionStatus, BinaryIdentity, Command, CommandResult, TransferProgressListResponse,
+    UiEvent,
 };
 use crate::log_protocol::LogStreamId;
 use crate::terminal_protocol::{TerminalId, TerminalSize};
@@ -32,6 +33,8 @@ pub struct RegisterAgentRequest {
     pub username: String,
     /// Immutable absolute directory the UI opens for this agent.
     pub default_directory: String,
+    /// Compile-time identity of the connecting agent binary.
+    pub binary: BinaryIdentity,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
@@ -55,6 +58,8 @@ pub struct AgentListEntry {
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed lifecycle diagnostic.
     pub connection_issue: Option<String>,
+    /// Binary identity from the latest registration when one has occurred.
+    pub binary: Option<BinaryIdentity>,
 }
 
 /// Registers a configured entry before any process can be started.

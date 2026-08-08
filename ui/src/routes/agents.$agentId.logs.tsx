@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, HardDrive } from "lucide-react";
 
 import { LogViewer } from "../components/log-viewer";
 import { getAgentFromRootLoaderData } from "./__root";
@@ -37,9 +37,10 @@ function AgentLogsPage() {
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: agent.id }}
-                        className="mt-6 inline-flex rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
+                        className="mt-6 inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                     >
-                        Back to agent
+                        <HardDrive className="h-4 w-4" />
+                        Agent details
                     </Link>
                 </section>
             </div>

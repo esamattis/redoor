@@ -1,14 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-    FileCode2,
-    GitCommitHorizontal,
-    Hammer,
-    KeyRound,
-    Server,
-    Tag,
-} from "lucide-react";
+import { FileCode2, KeyRound, Server } from "lucide-react";
 
-import type { ServerAuthMode, ServerBuildMode } from "../api-client";
+import type { ServerAuthMode } from "../api-client";
+import { BinaryIdentityFields } from "../components/binary-identity";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -25,31 +19,9 @@ function authModeLabel(authMode: ServerAuthMode): string {
     }
 }
 
-/** Human-readable cargo profile name. */
-function buildModeLabel(buildMode: ServerBuildMode): string {
-    switch (buildMode) {
-        case "debug":
-            return "debug";
-        case "release":
-            return "release";
-        case "unknown":
-            return "unknown";
-    }
-}
-
-/** GitHub commit URL when the baked revision looks like a real SHA. */
-function gitCommitUrl(gitRev: string): string | null {
-    if (!/^[0-9a-f]{7,40}$/i.test(gitRev)) {
-        return null;
-    }
-    return `https://github.com/esamattis/redoor/commit/${gitRev}`;
-}
-
 /** Shows server identity and runtime details without operational controls. */
 function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
-    const commitUrl = gitCommitUrl(serverInfo.git_rev);
-    const shortRev = serverInfo.git_rev.slice(0, 7);
 
     return (
         <div className="p-8">
@@ -83,55 +55,16 @@ function Index() {
                             </p>
                         </div>
                     </div>
-                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
-                        <Tag className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
-                            <h2 className="text-sm font-medium text-slate-400">
-                                Version
-                            </h2>
-                            <p className="mt-1 font-mono text-sm text-slate-100">
-                                {serverInfo.version}
-                            </p>
-                        </div>
-                    </div>
-                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
-                        <GitCommitHorizontal className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
-                            <h2 className="text-sm font-medium text-slate-400">
-                                Git revision
-                            </h2>
-                            <p className="mt-1 flex flex-wrap items-center gap-2 font-mono text-sm text-slate-100">
-                                {commitUrl ? (
-                                    <a
-                                        href={commitUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="text-blue-400 hover:underline"
-                                    >
-                                        {shortRev}
-                                    </a>
-                                ) : (
-                                    <span>{shortRev}</span>
-                                )}
-                                {serverInfo.git_dirty ? (
-                                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-sans font-medium text-amber-300">
-                                        dirty
-                                    </span>
-                                ) : null}
-                            </p>
-                        </div>
-                    </div>
-                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
-                        <Hammer className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
-                            <h2 className="text-sm font-medium text-slate-400">
-                                Build mode
-                            </h2>
-                            <p className="mt-1 font-mono text-sm text-slate-100">
-                                {buildModeLabel(serverInfo.build_mode)}
-                            </p>
-                        </div>
-                    </div>
+                    <BinaryIdentityFields
+                        binary={{
+                            version: serverInfo.version,
+                            git_rev: serverInfo.git_rev,
+                            git_dirty: serverInfo.git_dirty,
+                            version_dirty: serverInfo.version_dirty,
+                            build_mode: serverInfo.build_mode,
+                            build_date: serverInfo.build_date,
+                        }}
+                    />
                 </div>
             </div>
         </div>

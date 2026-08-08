@@ -58,6 +58,9 @@ test.describe("Authentication", () => {
         await expect(
             page.getByRole("heading", { name: "Build mode" }),
         ).toBeVisible();
+        await expect(
+            page.getByRole("heading", { name: "Build date" }),
+        ).toBeVisible();
         await expect(page.getByText("debug", { exact: true })).toBeVisible();
         // Account actions live behind the burger menu so the tab strip stays uncluttered.
         await page.getByRole("button", { name: "Open menu" }).click();

@@ -16,6 +16,7 @@ import {
     FolderOpen,
     LoaderCircle,
     ScrollText,
+    Package,
 } from "lucide-react";
 import { getBrowserUrl, type Agent } from "../api-client";
 import type { AgentDetailsResponse } from "../../../bindings/AgentDetailsResponse";
@@ -27,6 +28,7 @@ import {
     agentTabLocationsAtom,
     getAgentTabLocation,
 } from "../agent-tab-locations";
+import { BinaryIdentityFields } from "../components/binary-identity";
 import { RouteError } from "../components/route-error";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 
@@ -326,6 +328,17 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                                 now,
                             )}
                         />
+                    </DetailCard>
+                    <DetailCard
+                        title="Binary"
+                        icon={<Package className="h-5 w-5" />}
+                    >
+                        <div className="space-y-3">
+                            <BinaryIdentityFields
+                                binary={props.details.binary}
+                                rowClassName="flex items-start gap-3"
+                            />
+                        </div>
                     </DetailCard>
                 </div>
             </div>

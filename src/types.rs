@@ -214,6 +214,8 @@ pub enum Message {
         cwd: String,
         /// Shared secret proving this agent was started with server credentials.
         token: String,
+        /// Compile-time identity of the connecting agent binary.
+        binary: crate::commands::BinaryIdentity,
     },
 
     /// Instructs the authoritative control session to establish its persistent

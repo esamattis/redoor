@@ -333,7 +333,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(upButton).toHaveAttribute("aria-disabled", "true");
     });
 
-    test("should navigate back to agent page using Back to Agent button", async ({
+    test("should navigate back to agent page using Agent details button", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
@@ -344,7 +344,7 @@ test.describe.serial("File Browser Navigation", () => {
             .click();
 
         const backToAgentButton = page.getByRole("link", {
-            name: "Back to Agent",
+            name: "Agent details",
         });
         await backToAgentButton.click();
 

@@ -31,6 +31,7 @@ impl AgentConnection {
             hostname: request.hostname,
             username: request.username,
             default_directory: request.default_directory,
+            binary: request.binary,
         }
     }
 
@@ -128,6 +129,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let socket_id = connection.socket_id.clone();
     let name = connection.agent_name.clone();
     let default_directory = connection.default_directory.clone();
+    let binary = connection.binary.clone();
     let transfer_token = connection.transfer_token.clone();
     let transfer_open_sender = connection.outgoing_text.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
@@ -145,6 +147,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             last_seen_at: None,
             connection_issue: None,
             socket_id: None,
+            binary: None,
         });
     known.name = name;
     known.default_directory = Some(default_directory);
@@ -160,6 +163,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.connected_at = Some(connected_at);
     known.connection_issue = None;
     known.socket_id = Some(socket_id);
+    known.binary = Some(binary);
     ui::notify_refresh(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
@@ -418,6 +422,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             last_seen_at: None,
             connection_issue: None,
             socket_id: None,
+            binary: None,
         },
     );
     let _ = request.reply.send(());
@@ -507,6 +512,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             connected_at: info.connected_at,
             last_seen_at: info.last_seen_at,
             connection_issue: info.connection_issue.clone(),
+            binary: info.binary.clone(),
         })
         .collect()
 }
@@ -608,6 +614,7 @@ mod tests {
             hostname: "host".to_string(),
             username: "user".to_string(),
             default_directory: "/tmp".to_string(),
+            binary: crate::commands::current_binary_identity(),
             watchdog: None,
         };
         commit_registration(state, request);

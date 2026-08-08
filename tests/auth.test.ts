@@ -95,8 +95,14 @@ describe("HTTP authentication", () => {
         // Git revision comes from build.rs so operators can map a binary to source.
         expect(serverInfo.git_rev.length).toBeGreaterThan(0);
         expect(typeof serverInfo.git_dirty).toBe("boolean");
+        // Version dirty means HEAD was not tagged v{version} at compile time.
+        expect(typeof serverInfo.version_dirty).toBe("boolean");
         // Integration tests run against a debug cargo profile binary.
         expect(serverInfo.build_mode).toBe("debug");
+        // Build date is UTC ISO-8601 so operators can tell rebuilds apart.
+        expect(serverInfo.build_date).toMatch(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+        );
 
         const tamperedResponse = await fetch(`${baseUrl}/api/v1/agents`, {
             headers: {

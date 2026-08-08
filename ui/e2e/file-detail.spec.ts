@@ -111,7 +111,7 @@ test.describe.serial("File Detail View", () => {
             .click();
 
         const backToAgentButton = page.getByRole("link", {
-            name: "Back to Agent",
+            name: "Agent details",
         });
         await backToAgentButton.click();
 

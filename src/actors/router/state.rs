@@ -1,5 +1,7 @@
 use super::RouterError;
-use crate::commands::{AgentConnectionStatus, Command, CommandResult, TransferProgressEntry};
+use crate::commands::{
+    AgentConnectionStatus, BinaryIdentity, Command, CommandResult, TransferProgressEntry,
+};
 use crate::log_registry::LogRegistry;
 use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::terminal_registry::TerminalRegistry;
@@ -46,6 +48,8 @@ pub struct AgentConnection {
     pub username: String,
     /// Immutable absolute directory selected at agent startup for UI navigation.
     pub default_directory: String,
+    /// Compile-time identity reported by the agent at registration.
+    pub binary: BinaryIdentity,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -69,6 +73,8 @@ pub struct KnownAgent {
     pub connection_issue: Option<String>,
     /// Guards the inventory against stale socket teardown.
     pub socket_id: Option<SocketId>,
+    /// Last registered binary identity, retained after disconnect for list warnings.
+    pub binary: Option<BinaryIdentity>,
 }
 
 #[derive(Default)]

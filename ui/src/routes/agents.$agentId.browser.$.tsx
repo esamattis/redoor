@@ -27,6 +27,7 @@ import {
     List,
     ClipboardPaste,
     Pencil,
+    HardDrive,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
@@ -783,7 +784,15 @@ function BrowserHeader(props: {
 
     return (
         <header className="mb-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="mb-3 flex items-center gap-3">
+                <Link
+                    to="/agents/$agentId"
+                    params={{ agentId: props.agentId }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <HardDrive className="h-3.5 w-3.5" />
+                    Agent details
+                </Link>
                 <div className="min-w-0 flex-1">
                     <Breadcrumbs
                         agent={props.agent}
@@ -791,14 +800,6 @@ function BrowserHeader(props: {
                         startEditing={pathMissing}
                     />
                 </div>
-                <Link
-                    to="/agents/$agentId"
-                    params={{ agentId: props.agentId }}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    Back to Agent
-                </Link>
             </div>
 
             <div
@@ -1630,16 +1631,18 @@ function FileDetailView(props: {
     return (
         <div>
             <div className="mb-4">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <Breadcrumbs agent={props.agent} path={props.path} />
+                <div className="mb-3 flex items-center gap-3">
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
-                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
-                        <ArrowLeft className="h-3.5 w-3.5" />
-                        Back to Agent
+                        <HardDrive className="h-3.5 w-3.5" />
+                        Agent details
                     </Link>
+                    <div className="min-w-0 flex-1">
+                        <Breadcrumbs agent={props.agent} path={props.path} />
+                    </div>
                 </div>
                 <div
                     aria-label="File actions"
@@ -2021,16 +2024,18 @@ function FileEditView(props: {
     return (
         <div>
             <div className="mb-4">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <Breadcrumbs agent={props.agent} path={props.path} />
+                <div className="mb-3 flex items-center gap-3">
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
-                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
-                        <ArrowLeft className="h-3.5 w-3.5" />
-                        Back to Agent
+                        <HardDrive className="h-3.5 w-3.5" />
+                        Agent details
                     </Link>
+                    <div className="min-w-0 flex-1">
+                        <Breadcrumbs agent={props.agent} path={props.path} />
+                    </div>
                 </div>
                 <div
                     aria-label="File actions"

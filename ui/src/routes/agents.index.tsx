@@ -1,7 +1,12 @@
 import * as React from "react";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { LoaderCircle, Play, Power, FolderOpen } from "lucide-react";
-import type { Agent } from "../api-client";
+import type { Agent, BinaryIdentity } from "../api-client";
+import {
+    fieldMatchTone,
+    RevValue,
+    VersionValue,
+} from "../components/binary-identity";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 import { Route as RootRoute } from "./__root";
@@ -15,7 +20,14 @@ type MutationState = Record<string, "start" | "shutdown" | undefined>;
 /** Lists retained inventory and scopes lifecycle mutation state to individual rows. */
 function AgentManagement() {
     const router = useRouter();
-    const { agents } = RootRoute.useLoaderData();
+    const { agents, serverInfo } = RootRoute.useLoaderData();
+    const serverBinary = React.useMemo(
+        () => ({
+            version: serverInfo.version,
+            git_rev: serverInfo.git_rev,
+        }),
+        [serverInfo.git_rev, serverInfo.version],
+    );
     const sortedAgents = React.useMemo(
         () =>
             [...agents].sort(
@@ -96,6 +108,8 @@ function AgentManagement() {
                                 <th className="px-4 py-3">Name</th>
                                 <th className="px-4 py-3">Source</th>
                                 <th className="px-4 py-3">Status</th>
+                                <th className="px-4 py-3">Version</th>
+                                <th className="px-4 py-3">Rev</th>
                                 <th className="px-4 py-3">Connection</th>
                                 <th className="px-4 py-3">Issue</th>
                                 <th className="px-4 py-3">Actions</th>
@@ -134,6 +148,22 @@ function AgentManagement() {
                                         </td>
                                         <td className="px-4 py-3 capitalize">
                                             {agent.status}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <AgentVersionCell
+                                                binary={agent.binary}
+                                                serverVersion={
+                                                    serverBinary.version
+                                                }
+                                            />
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <AgentRevCell
+                                                binary={agent.binary}
+                                                serverGitRev={
+                                                    serverBinary.git_rev
+                                                }
+                                            />
                                         </td>
                                         <td className="px-4 py-3 text-slate-400">
                                             {formatAgentRecency(
@@ -247,5 +277,51 @@ function AgentManagement() {
                 onConfirm={confirmShutdown}
             />
         </div>
+    );
+}
+
+/** Package version cell: green/red vs server, plus version-tag dirty badge. */
+function AgentVersionCell(props: {
+    binary: BinaryIdentity | null;
+    serverVersion: string;
+}) {
+    if (props.binary === null) {
+        return <span className="text-slate-500">—</span>;
+    }
+    const tone = fieldMatchTone(props.binary.version, props.serverVersion);
+    return (
+        <VersionValue
+            version={props.binary.version}
+            versionDirty={props.binary.version_dirty}
+            tone={tone}
+            title={
+                tone === "mismatch"
+                    ? `Differs from server ${props.serverVersion}`
+                    : "Matches server version"
+            }
+        />
+    );
+}
+
+/** Git rev cell: green/red vs server, plus working-tree dirty badge. */
+function AgentRevCell(props: {
+    binary: BinaryIdentity | null;
+    serverGitRev: string;
+}) {
+    if (props.binary === null) {
+        return <span className="text-slate-500">—</span>;
+    }
+    const tone = fieldMatchTone(props.binary.git_rev, props.serverGitRev);
+    return (
+        <RevValue
+            gitRev={props.binary.git_rev}
+            gitDirty={props.binary.git_dirty}
+            tone={tone}
+            title={
+                tone === "mismatch"
+                    ? `Differs from server ${props.serverGitRev.slice(0, 7)}`
+                    : "Matches server revision"
+            }
+        />
     );
 }

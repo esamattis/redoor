@@ -284,6 +284,8 @@ impl AgentRuntime {
                     username,
                     cwd: self.state.default_directory.clone(),
                     token: self.state.token.clone(),
+                    // Lets the server compare agent builds against itself without a round-trip command.
+                    binary: redoor::commands::current_binary_identity(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {

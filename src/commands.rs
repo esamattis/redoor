@@ -37,7 +37,7 @@ pub enum ServerAuthMode {
 }
 
 /// Cargo profile the binary was compiled with (`debug` vs `release`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[ts(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +48,43 @@ pub enum ServerBuildMode {
     Release,
     /// Profile string from Cargo was not `debug` or `release`.
     Unknown,
+}
+
+/// Non-secret compile-time identity shared by server and agent binaries.
+///
+/// Kept identical on both sides so the UI can compare a connected agent against
+/// the server and flag mismatched or dirty builds without probing the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BinaryIdentity {
+    /// `CARGO_PKG_VERSION` baked into this binary.
+    pub version: String,
+    /// Full git commit SHA (or `unknown` when git metadata was unavailable at build).
+    pub git_rev: String,
+    /// True when the working tree had uncommitted changes at build time.
+    pub git_dirty: bool,
+    /// True when HEAD was not tagged `v{version}` at build time.
+    pub version_dirty: bool,
+    /// Whether this binary was compiled as debug or release.
+    pub build_mode: ServerBuildMode,
+    /// UTC compile timestamp (`YYYY-MM-DDTHH:MM:SSZ`) or `unknown`.
+    pub build_date: String,
+}
+
+/// Reads compile-time identity baked by `build.rs` for the running binary.
+pub fn current_binary_identity() -> BinaryIdentity {
+    BinaryIdentity {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        git_rev: env!("REDOOR_GIT_REV").to_string(),
+        git_dirty: env!("REDOOR_GIT_DIRTY") == "1",
+        version_dirty: env!("REDOOR_VERSION_DIRTY") == "1",
+        build_mode: match env!("REDOOR_BUILD_PROFILE") {
+            "release" => ServerBuildMode::Release,
+            "debug" => ServerBuildMode::Debug,
+            _ => ServerBuildMode::Unknown,
+        },
+        build_date: env!("REDOOR_BUILD_DATE").to_string(),
+    }
 }
 
 /// Non-secret server identity shown on the UI home page.
@@ -64,8 +101,12 @@ pub struct ServerInfoResponse {
     pub git_rev: String,
     /// True when the working tree had uncommitted changes at build time.
     pub git_dirty: bool,
+    /// True when HEAD was not tagged `v{version}` at build time.
+    pub version_dirty: bool,
     /// Whether this binary was compiled as debug or release.
     pub build_mode: ServerBuildMode,
+    /// UTC compile timestamp (`YYYY-MM-DDTHH:MM:SSZ`) or `unknown`.
+    pub build_date: String,
 }
 
 /// Confirms the server accepted a config reload and is about to restart.
@@ -279,6 +320,8 @@ pub struct AgentInfoResponse {
     pub connected_at: Option<UnixTimestampSeconds>,
     pub last_seen_at: Option<UnixTimestampSeconds>,
     pub connection_issue: Option<String>,
+    /// Binary identity from the latest registration; absent until first connect.
+    pub binary: Option<BinaryIdentity>,
 }
 
 /// Confirms that a managed supervisor accepted an idempotent start request.
@@ -357,6 +400,7 @@ pub struct EchoResponse {
     pub message: String,
 }
 
+/// Connected-agent detail view including the same binary identity as the server home.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentDetailsResponse {
@@ -374,6 +418,8 @@ pub struct AgentDetailsResponse {
     pub hostname: String,
     pub username: String,
     pub connected_at: UnixTimestampSeconds,
+    /// Compile-time identity of the agent binary currently serving this connection.
+    pub binary: BinaryIdentity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -936,6 +982,8 @@ impl CommandHandler {
             hostname,
             username,
             connected_at: UnixTimestampSeconds::new(0),
+            // Agent process reports its own baked identity; router may also rewrite from registration.
+            binary: current_binary_identity(),
         })
     }
 }
@@ -1315,6 +1363,8 @@ mod tests {
                 assert!(!details.arch.is_empty(), "ARCH should not be empty");
                 assert!(!details.hostname.is_empty(), "Hostname should not be empty");
                 assert!(!details.username.is_empty(), "Username should not be empty");
+                // Binary identity must match the same bake used by the server home page.
+                assert_eq!(details.binary, current_binary_identity());
             }
             _ => panic!("Expected GetAgentDetails result"),
         }

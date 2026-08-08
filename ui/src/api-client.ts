@@ -30,6 +30,7 @@ import type { CreateOneTimeTokenResponse } from "../../bindings/CreateOneTimeTok
 import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
+import type { BinaryIdentity } from "../../bindings/BinaryIdentity";
 import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
 import type { LogEvent } from "../../bindings/LogEvent";
 
@@ -56,6 +57,7 @@ export type {
     ServerInfoResponse,
     ServerAuthMode,
     ServerBuildMode,
+    BinaryIdentity,
     ReloadConfigResponse,
     LogEvent,
     AgentConnectionStatus,
@@ -252,6 +254,11 @@ export class Agent {
     /** Returns the latest managed startup or connection diagnostic. */
     get connectionIssue(): string | null {
         return this.info.connection_issue;
+    }
+
+    /** Returns binary identity from the latest registration, if any. */
+    get binary(): BinaryIdentity | null {
+        return this.info.binary;
     }
 
     /** Requests desired-running without waiting for process preparation or registration. */

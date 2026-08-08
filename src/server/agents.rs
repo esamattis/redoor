@@ -24,19 +24,18 @@ use super::{
 pub(crate) async fn server_info_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let binary = redoor::commands::current_binary_identity();
     (
         StatusCode::OK,
         Json(ServerInfoResponse {
             config_path: state.config_path.display().to_string(),
             auth_mode: state.auth_mode.clone(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            git_rev: env!("REDOOR_GIT_REV").to_string(),
-            git_dirty: env!("REDOOR_GIT_DIRTY") == "1",
-            build_mode: match env!("REDOOR_BUILD_PROFILE") {
-                "release" => redoor::commands::ServerBuildMode::Release,
-                "debug" => redoor::commands::ServerBuildMode::Debug,
-                _ => redoor::commands::ServerBuildMode::Unknown,
-            },
+            version: binary.version,
+            git_rev: binary.git_rev,
+            git_dirty: binary.git_dirty,
+            version_dirty: binary.version_dirty,
+            build_mode: binary.build_mode,
+            build_date: binary.build_date,
         }),
     )
         .into_response()
@@ -61,6 +60,7 @@ async fn list_agent_snapshots(state: &ServerState) -> Result<Vec<AgentInfoRespon
             connected_at: agent.connected_at,
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
+            binary: agent.binary,
         })
         .collect::<Vec<_>>();
     agents.sort_by(|left, right| {
