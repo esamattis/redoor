@@ -7,6 +7,8 @@ mod terminal;
 mod transfers;
 mod ws;
 
+use std::path::PathBuf;
+
 use redoor::{Level, log, types::AgentId};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -95,7 +97,9 @@ pub(crate) struct AgentRuntime {
     pub(crate) state: AgentState,
 }
 
+/// Runs an agent after resolving its shared token from CLI/env or the common config file.
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let token = resolve_token(args.token, args.config).await?;
     let launch_directory = std::env::current_dir()?;
     let configured_directory = args
         .dir
@@ -117,7 +121,6 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let server_url = args.ws_address;
     let agent_name = args.name;
-    let token = args.token;
     let log_file = args.log;
 
     let agent_id = AgentId::from(agent_name.clone());
@@ -132,6 +135,32 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     runtime.run(receiver, handle).await;
 
     Ok(())
+}
+
+/// Applies `--token`/environment precedence before falling back to the server TOML token.
+async fn resolve_token(
+    token: Option<String>,
+    config: Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(token) = token {
+        if token.is_empty() {
+            return Err("agent token must not be empty".into());
+        }
+        return Ok(token);
+    }
+
+    let config_path = match config {
+        Some(path) => PathBuf::from(path),
+        None => {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or("HOME is not set; pass --config or --token")?;
+            home.join(".config/redoor/config.toml")
+        }
+    };
+    crate::server::parse_agent_token_file(&config_path)
+        .await
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

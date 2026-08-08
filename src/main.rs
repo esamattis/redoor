@@ -1,5 +1,6 @@
 mod agent;
 mod server;
+mod setup_systemd;
 mod ssh;
 
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ struct Cli {
 enum Commands {
     Server(server::CoordinatorArgs),
     Agent(agent::AgentArgs),
+    SetupSystemd(setup_systemd::SetupSystemdArgs),
     Ssh(ssh::SshArgs),
 }
 
@@ -29,6 +31,12 @@ async fn main() {
         Commands::Agent(args) => {
             if let Err(error) = agent::run(args).await {
                 eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        Commands::SetupSystemd(args) => {
+            if let Err(error) = setup_systemd::run(args).await {
+                eprintln!("{error:#}");
                 std::process::exit(1);
             }
         }

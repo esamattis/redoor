@@ -18,8 +18,13 @@ pub(crate) struct AgentArgs {
     #[arg(long)]
     pub(crate) name: String,
     /// Shared secret from `server.agent_token` so registration cannot be spoofed.
+    /// When omitted, it is read from the configured TOML file.
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
-    pub(crate) token: String,
+    pub(crate) token: Option<String>,
+    /// Path to the server-compatible TOML config used as the token fallback.
+    /// Defaults to `~/.config/redoor/config.toml` when `--token` is absent.
+    #[arg(long)]
+    pub(crate) config: Option<String>,
     #[arg(long)]
     pub(crate) log: Option<String>,
     /// Default directory opened by the UI without limiting filesystem access.
