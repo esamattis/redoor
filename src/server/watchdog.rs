@@ -125,7 +125,8 @@ fn make_spawn_fn(config: AgentConfig, redoor_port: u16, agent_token: String) -> 
 /// a fresh `redoor agent` child each time; the supervisor's restart
 /// loop handles the rest.
 fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16, agent_token: String) -> SpawnFn {
-    SpawnFn::new(move || {
+    let diagnostic_log = config.log.clone();
+    let spawn = SpawnFn::new(move || {
         let config = config.clone();
         let agent_token = agent_token.clone();
         async move {
@@ -133,7 +134,11 @@ fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16, agent_token: Strin
                 .await
                 .map_err(|e| e.to_string())
         }
-    })
+    });
+    match diagnostic_log {
+        Some(path) => spawn.with_diagnostic_log(path),
+        None => spawn,
+    }
 }
 
 /// Build a spawn closure for an ssh agent. The first invocation runs the
@@ -159,15 +164,20 @@ fn ssh_spawn_fn(
     // is limited to the prepare call itself.
     let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> =
         std::sync::Arc::new(Mutex::new(None));
+    let diagnostic_log = config.log.clone();
     let config = std::sync::Arc::new(config);
-    SpawnFn::new(move || {
+    let spawn = SpawnFn::new(move || {
         ssh_spawn_once(
             cached.clone(),
             config.clone(),
             redoor_port,
             agent_token.clone(),
         )
-    })
+    });
+    match diagnostic_log {
+        Some(path) => spawn.with_diagnostic_log(path),
+        None => spawn,
+    }
 }
 
 /// One spawn cycle for an ssh agent. Reuses a cached

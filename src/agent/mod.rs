@@ -106,7 +106,14 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or(launch_directory);
-    let default_directory = tokio::fs::canonicalize(&configured_directory).await?;
+    let default_directory = tokio::fs::canonicalize(&configured_directory)
+        .await
+        .map_err(|error| {
+            format!(
+                "Failed to resolve agent default directory '{}': {error}",
+                configured_directory.display()
+            )
+        })?;
     if !tokio::fs::metadata(&default_directory).await?.is_dir() {
         return Err(format!(
             "Agent default directory is not a directory: {}",

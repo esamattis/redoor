@@ -6,10 +6,12 @@
 //! intentional shutdown without coupling the generic lifecycle code to Axum.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -26,12 +28,15 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 /// Surfaces a useful issue when a live child has not registered promptly.
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bounds browser-visible subprocess output so repeated failures cannot grow API responses.
+const MAX_EXIT_DIAGNOSTIC_BYTES: u64 = 8 * 1024;
 
 /// Spawn strategy kept transport-agnostic so local and SSH agents share lifecycle code.
 pub struct SpawnFn {
     inner: Arc<
         dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync,
     >,
+    diagnostic_log: Option<PathBuf>,
 }
 
 impl SpawnFn {
@@ -43,7 +48,14 @@ impl SpawnFn {
     {
         Self {
             inner: Arc::new(move || Box::pin(f())),
+            diagnostic_log: None,
         }
+    }
+
+    /// Records where redirected child output can be read after an unsuccessful exit.
+    pub fn with_diagnostic_log(mut self, path: impl Into<PathBuf>) -> Self {
+        self.diagnostic_log = Some(path.into());
+        self
     }
 
     /// Starts one transport-specific preparation/spawn attempt.
@@ -358,6 +370,7 @@ async fn run_started_cycle(
     watchdog: &WatchdogHandle,
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
 ) -> CycleResult {
+    let diagnostic_log_offset = diagnostic_log_len(spawn.diagnostic_log.as_deref()).await;
     let spawn_future = spawn.spawn();
     tokio::pin!(spawn_future);
     let child = loop {
@@ -372,7 +385,16 @@ async fn run_started_cycle(
     };
 
     match child {
-        Ok(child) => wait_for_child(child, watchdog, commands).await,
+        Ok(child) => {
+            wait_for_child(
+                child,
+                watchdog,
+                commands,
+                spawn.diagnostic_log.as_deref(),
+                diagnostic_log_offset,
+            )
+            .await
+        }
         Err(error) => {
             log!(
                 Level::Error,
@@ -416,6 +438,8 @@ async fn wait_for_child(
     mut child: Child,
     watchdog: &WatchdogHandle,
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+    diagnostic_log: Option<&Path>,
+    diagnostic_log_offset: u64,
 ) -> CycleResult {
     let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
     tokio::pin!(startup_timeout);
@@ -425,10 +449,7 @@ async fn wait_for_child(
     loop {
         tokio::select! {
             status = child.wait() => {
-                let issue = match status {
-                    Ok(status) => format!("Agent process exited with status {status}"),
-                    Err(error) => format!("Failed to wait for agent process: {error}"),
-                };
+                let issue = format_exit_issue(status, diagnostic_log, diagnostic_log_offset).await;
                 publish_issue(watchdog, issue);
                 return CycleResult { desired_running: true, was_connected: connected };
             }
@@ -555,6 +576,62 @@ fn publish_issue(watchdog: &WatchdogHandle, issue: String) {
     });
 }
 
+/// Returns the current log length so exit diagnostics only include the latest attempt.
+async fn diagnostic_log_len(path: Option<&Path>) -> u64 {
+    let Some(path) = path else {
+        return 0;
+    };
+    tokio::fs::metadata(path)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+/// Adds a bounded tail of redirected output so clients receive the child process's real error.
+async fn format_exit_issue(
+    status: std::io::Result<std::process::ExitStatus>,
+    diagnostic_log: Option<&Path>,
+    attempt_offset: u64,
+) -> String {
+    let mut issue = match status {
+        Ok(status) => format!("Agent process exited with status {status}"),
+        Err(error) => format!("Failed to wait for agent process: {error}"),
+    };
+    let Some(path) = diagnostic_log else {
+        return issue;
+    };
+
+    match read_attempt_log_tail(path, attempt_offset).await {
+        Ok(output) if !output.trim().is_empty() => {
+            issue.push_str(&format!(
+                "\nAgent output from '{}':\n{}",
+                path.display(),
+                output.trim()
+            ));
+        }
+        Ok(_) => issue.push_str(&format!(
+            "\nThe configured agent log '{}' contained no output for this attempt.",
+            path.display()
+        )),
+        Err(error) => issue.push_str(&format!(
+            "\nFailed to read configured agent log '{}': {error}",
+            path.display()
+        )),
+    }
+    issue
+}
+
+/// Reads at most the final diagnostic window written since this process attempt began.
+async fn read_attempt_log_tail(path: &Path, attempt_offset: u64) -> std::io::Result<String> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let end = file.metadata().await?.len();
+    let start = attempt_offset.max(end.saturating_sub(MAX_EXIT_DIAGNOSTIC_BYTES));
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut output = Vec::with_capacity((end - start) as usize);
+    file.read_to_end(&mut output).await?;
+    Ok(String::from_utf8_lossy(&output).into_owned())
+}
+
 /// Terminates and reaps the owned child so intentional shutdown cannot leave zombies.
 async fn kill_and_reap(child: &mut Child) {
     let _ = child.start_kill();
@@ -566,6 +643,7 @@ mod tests {
     use super::*;
     use std::process::Stdio;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
     /// Aborts a supervisor on every test exit path while child `kill_on_drop` handles cleanup.
@@ -702,6 +780,41 @@ mod tests {
         handle.shutdown().await.expect("backoff interrupted");
         // Shutdown must win over a pending retry timer.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn exit_issue_includes_output_from_the_latest_attempt() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-watchdog-exit-diagnostic-{}.log",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, "output from an earlier attempt\n")
+            .await
+            .expect("seed diagnostic log");
+        let attempt_offset = tokio::fs::metadata(&path)
+            .await
+            .expect("diagnostic metadata")
+            .len();
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .expect("open diagnostic log");
+        file.write_all(b"invalid configured directory: /missing\n")
+            .await
+            .expect("append current attempt output");
+        file.flush().await.expect("flush current attempt output");
+        let status = Command::new("sh").arg("-c").arg("exit 1").status().await;
+
+        let issue = format_exit_issue(status, Some(&path), attempt_offset).await;
+
+        // The browser-facing issue must expose the subprocess's actionable error.
+        assert!(issue.contains("invalid configured directory: /missing"));
+        // Output from an old retry must not be presented as part of the latest failure.
+        assert!(!issue.contains("output from an earlier attempt"));
+        tokio::fs::remove_file(path)
+            .await
+            .expect("remove diagnostic log");
     }
 
     #[tokio::test]

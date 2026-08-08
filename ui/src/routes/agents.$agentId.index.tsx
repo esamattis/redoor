@@ -173,7 +173,7 @@ function AgentLifecycle(props: { agent: Agent }) {
                 {props.agent.connectionIssue ? (
                     <p
                         role="alert"
-                        className="mt-4 rounded border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-300"
+                        className="mt-4 whitespace-pre-wrap rounded border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-300"
                     >
                         {props.agent.connectionIssue}
                     </p>

@@ -145,7 +145,10 @@ function AgentManagement() {
                                         </td>
                                         <td className="max-w-sm px-4 py-3 text-amber-300">
                                             {agent.connectionIssue ? (
-                                                <span role="alert">
+                                                <span
+                                                    role="alert"
+                                                    className="whitespace-pre-wrap"
+                                                >
                                                     {agent.connectionIssue}
                                                 </span>
                                             ) : (
