@@ -92,8 +92,11 @@ function sortFileEntries<T extends { name: string }>(entries: T[]): T[] {
 }
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
-    validateSearch: (search): { view?: "details" } => ({
-        view: search.view === "details" ? "details" : undefined,
+    validateSearch: (search): { view?: "details" | "edit" } => ({
+        view:
+            search.view === "details" || search.view === "edit"
+                ? search.view
+                : undefined,
     }),
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
@@ -112,6 +115,9 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         const downloadUrl = isLsFileResponse(lsResult)
             ? agent.getRawUrl(lsResult.path)
             : undefined;
+        const metadata = isLsFileResponse(lsResult)
+            ? await agent.metadata(lsResult.path)
+            : null;
 
         return {
             agent,
@@ -120,6 +126,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             path,
             lsResult,
             downloadUrl,
+            metadata,
             agents: rootLoaderData.agents,
         };
     },
@@ -208,6 +215,33 @@ function FileBrowser() {
             );
         }
 
+        const editable = data.metadata?.editable === true;
+
+        if (search.view === "edit") {
+            if (!editable) {
+                return (
+                    <FileBrowserError
+                        error={new Error("File is not editable")}
+                    />
+                );
+            }
+
+            return (
+                <div className="p-6">
+                    <div className="mx-auto max-w-6xl">
+                        <FileEditView
+                            agent={agent}
+                            agentId={agentId}
+                            path={path}
+                            fileName={fileName}
+                            filePath={lsResult.path}
+                            mimeType={data.metadata?.mime_type ?? "text/plain"}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
         return (
             <div className="p-6">
                 <div className="mx-auto max-w-6xl">
@@ -218,6 +252,7 @@ function FileBrowser() {
                         fileName={fileName}
                         lsResult={lsResult}
                         downloadUrl={downloadUrl}
+                        editable={editable}
                     />
                 </div>
             </div>
@@ -1365,6 +1400,7 @@ function FileDetailView(props: {
     fileName: string;
     lsResult: LsFileResponse;
     downloadUrl: string;
+    editable: boolean;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -1440,6 +1476,16 @@ function FileDetailView(props: {
                         <ArrowLeft className="h-4 w-4" />
                         Back
                     </Link>
+                    {props.editable ? (
+                        <Link
+                            to={getBrowserPathHref(props.agent, props.path)}
+                            search={{ view: "edit" }}
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                        >
+                            <Pencil className="h-4 w-4" />
+                            Edit
+                        </Link>
+                    ) : null}
                 </div>
             </div>
 
@@ -1581,6 +1627,248 @@ function FileDetailView(props: {
     );
 }
 
+type FileEditLoadState =
+    | { type: "loading" }
+    | { type: "ready" }
+    | { type: "error"; message: string };
+
+type FileEditSaveState =
+    | { type: "idle" }
+    | { type: "saving" }
+    | { type: "saved" }
+    | { type: "error"; message: string };
+
+/** Edits plain-text file contents in one textarea with explicit save/restore. */
+function FileEditView(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    fileName: string;
+    filePath: string;
+    mimeType: string;
+}) {
+    const parentPath = getImmediateParentPath(props.path);
+    const agentRef = React.useRef(props.agent);
+    agentRef.current = props.agent;
+    const [loadState, setLoadState] = React.useState<FileEditLoadState>({
+        type: "loading",
+    });
+    const [saveState, setSaveState] = React.useState<FileEditSaveState>({
+        type: "idle",
+    });
+    const [savedContent, setSavedContent] = React.useState("");
+    const [content, setContent] = React.useState("");
+
+    React.useEffect(() => {
+        let cancelled = false;
+
+        const loadContent = async () => {
+            setLoadState({ type: "loading" });
+            setSaveState({ type: "idle" });
+
+            try {
+                // Read through a ref so route loader identity changes do not wipe in-progress edits.
+                const response = await agentRef.current.download(
+                    props.filePath,
+                );
+                const text = await response.text();
+                if (cancelled) {
+                    return;
+                }
+                setSavedContent(text);
+                setContent(text);
+                setLoadState({ type: "ready" });
+            } catch (error) {
+                if (cancelled) {
+                    return;
+                }
+                setLoadState({
+                    type: "error",
+                    message: getErrorMessage(error, "Failed to load file"),
+                });
+            }
+        };
+
+        void loadContent();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [props.filePath]);
+
+    const isDirty = content !== savedContent;
+    const isSaving = saveState.type === "saving";
+    const canEdit = loadState.type === "ready" && !isSaving;
+
+    const handleRestore = () => {
+        if (!canEdit) {
+            return;
+        }
+        setContent(savedContent);
+        setSaveState({ type: "idle" });
+    };
+
+    const handleSave = async () => {
+        if (!canEdit) {
+            return;
+        }
+
+        setSaveState({ type: "saving" });
+
+        try {
+            await agentRef.current.upload(
+                props.filePath,
+                new globalThis.File([content], props.fileName, {
+                    type: props.mimeType || "text/plain",
+                }),
+            );
+            setSavedContent(content);
+            setSaveState({ type: "saved" });
+        } catch (error) {
+            setSaveState({
+                type: "error",
+                message: getErrorMessage(error, "Failed to save file"),
+            });
+        }
+    };
+
+    const statusMessage =
+        loadState.type === "loading"
+            ? "Loading file..."
+            : loadState.type === "error"
+              ? loadState.message
+              : saveState.type === "saving"
+                ? "Saving..."
+                : saveState.type === "saved"
+                  ? "Saved"
+                  : saveState.type === "error"
+                    ? saveState.message
+                    : isDirty
+                      ? "Unsaved changes"
+                      : null;
+
+    return (
+        <div>
+            <div className="mb-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <Breadcrumbs agent={props.agent} path={props.path} />
+                    <Link
+                        to="/agents/$agentId"
+                        params={{ agentId: props.agentId }}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        Back to Agent
+                    </Link>
+                </div>
+                <div
+                    aria-label="File actions"
+                    className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+                >
+                    <Link
+                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                        <ArrowLeft className="h-4 w-4" />
+                        Back
+                    </Link>
+                    <Link
+                        to={getBrowserPathHref(props.agent, props.path)}
+                        search={{}}
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <Info className="h-4 w-4" />
+                        View details
+                    </Link>
+                </div>
+            </div>
+
+            <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+                <header className="border-b border-slate-800 p-6 md:p-8">
+                    <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
+                        <div className="min-w-0">
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                                Edit file
+                            </p>
+                            <h1
+                                aria-label="File name"
+                                className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                            >
+                                {props.fileName}
+                            </h1>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                            <button
+                                type="button"
+                                aria-label="Restore file contents"
+                                onClick={handleRestore}
+                                disabled={!canEdit || !isDirty}
+                                className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/80 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                Restore
+                            </button>
+                            <button
+                                type="button"
+                                aria-label="Save file"
+                                onClick={() => {
+                                    void handleSave();
+                                }}
+                                disabled={!canEdit || !isDirty}
+                                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                {isSaving ? "Saving..." : "Save"}
+                            </button>
+                        </div>
+                    </div>
+                    {statusMessage ? (
+                        <p
+                            role="status"
+                            aria-label="File edit status"
+                            aria-live="polite"
+                            className={`mt-4 text-sm ${
+                                loadState.type === "error" ||
+                                saveState.type === "error"
+                                    ? "text-red-300"
+                                    : saveState.type === "saved"
+                                      ? "text-emerald-300"
+                                      : "text-slate-400"
+                            }`}
+                        >
+                            {statusMessage}
+                        </p>
+                    ) : null}
+                </header>
+
+                <div className="p-4 md:p-6">
+                    {loadState.type === "loading" ? (
+                        <p className="text-sm text-slate-400">
+                            Loading file...
+                        </p>
+                    ) : loadState.type === "error" ? (
+                        <p className="text-sm text-red-300">
+                            {loadState.message}
+                        </p>
+                    ) : (
+                        <textarea
+                            aria-label="File editor"
+                            value={content}
+                            onChange={(event) => {
+                                setContent(event.target.value);
+                                if (saveState.type === "saved") {
+                                    setSaveState({ type: "idle" });
+                                }
+                            }}
+                            disabled={!canEdit}
+                            spellCheck={false}
+                            className="min-h-[70vh] w-full resize-y rounded-xl border border-slate-700 bg-slate-950/80 p-4 font-mono text-sm leading-6 text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                    )}
+                </div>
+            </article>
+        </div>
+    );
+}
+
 function FileBrowserError({ error }: { error: Error }) {
     const errorMessage = error.message.toLowerCase();
 
@@ -1632,6 +1920,17 @@ function FileBrowserError({ error }: { error: Error }) {
                 <div className="flex flex-col items-center gap-2 text-center">
                     <AlertCircle className="h-12 w-12 text-red-400" />
                     <p className="text-slate-400">Permission denied</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (errorMessage.includes("not editable")) {
+        return (
+            <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-center">
+                    <AlertCircle className="h-12 w-12 text-red-400" />
+                    <p className="text-slate-400">File is not editable</p>
                 </div>
             </div>
         );

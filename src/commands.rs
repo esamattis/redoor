@@ -101,6 +101,9 @@ pub struct CatResult {
     pub path: String,
 }
 
+/// Keeps in-browser text editing away from multi-megabyte payloads.
+const MAX_EDITABLE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MetadataResponse {
@@ -110,6 +113,8 @@ pub struct MetadataResponse {
     pub file_size: u64,
     pub is_file: bool,
     pub is_dir: bool,
+    /// True only when the agent verified the whole file is UTF-8 and small enough to edit safely.
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -601,6 +606,19 @@ impl CommandHandler {
         }
     }
 
+    /// Marks a file editable only after size and full-content UTF-8 checks succeed,
+    /// ignoring extensions so binary data cannot open in the text editor.
+    async fn is_file_editable(path: &str, file_size: u64, is_file: bool) -> bool {
+        if !is_file || file_size > MAX_EDITABLE_FILE_BYTES {
+            return false;
+        }
+
+        match tokio::fs::read(path).await {
+            Ok(bytes) => std::str::from_utf8(&bytes).is_ok(),
+            Err(_) => false,
+        }
+    }
+
     /// Sniffs a small file prefix so extensionless downloads can set a MIME type
     /// without buffering the entire file before streaming starts.
     async fn detect_mime_type_from_content(path: &str) -> Option<String> {
@@ -739,13 +757,17 @@ impl CommandHandler {
                 };
 
                 let file_size = metadata.size();
+                let is_file = metadata.is_file();
+                let is_dir = metadata.is_dir();
+                let editable = Self::is_file_editable(&path, file_size, is_file).await;
 
                 CommandResult::Metadata(MetadataResponse {
                     path,
                     mime_type,
                     file_size,
-                    is_file: metadata.is_file(),
-                    is_dir: metadata.is_dir(),
+                    is_file,
+                    is_dir,
+                    editable,
                 })
             }
             Err(error) => CommandResult::io_error("Failed to get file metadata", error),
@@ -846,6 +868,84 @@ mod tests {
             None,
             "zero-filled content should not match a known MIME"
         );
+    }
+
+    #[tokio::test]
+    async fn test_metadata_marks_utf8_text_editable() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-metadata-editable-{}.bin",
+            std::process::id()
+        ));
+        tokio::fs::write(&path, "hello plain text")
+            .await
+            .expect("write text");
+
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::Metadata {
+                path: path.to_string_lossy().into_owned(),
+            })
+            .await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // Extensionless UTF-8 content must still be editable for the UI editor gate.
+                assert!(metadata.editable);
+                assert!(metadata.is_file);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_metadata_rejects_invalid_utf8_as_not_editable() {
+        let path =
+            std::env::temp_dir().join(format!("redoor-metadata-binary-{}.txt", std::process::id()));
+        tokio::fs::write(&path, [0xff, 0xfe, 0xfd])
+            .await
+            .expect("write binary");
+
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::Metadata {
+                path: path.to_string_lossy().into_owned(),
+            })
+            .await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // A .txt suffix must not override invalid UTF-8 content.
+                assert!(!metadata.editable);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_metadata_rejects_large_utf8_as_not_editable() {
+        let path =
+            std::env::temp_dir().join(format!("redoor-metadata-large-{}.txt", std::process::id()));
+        let large = vec![b'a'; (MAX_EDITABLE_FILE_BYTES as usize) + 1];
+        tokio::fs::write(&path, large).await.expect("write large");
+
+        let handler = CommandHandler::new();
+        let result = handler
+            .execute(Command::Metadata {
+                path: path.to_string_lossy().into_owned(),
+            })
+            .await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // Size gating avoids loading multi-megabyte bodies into the browser textarea.
+                assert!(!metadata.editable);
+                assert!(metadata.file_size > MAX_EDITABLE_FILE_BYTES);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
     }
 
     #[tokio::test]
