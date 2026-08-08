@@ -163,6 +163,49 @@ pub enum Command {
     GetAgentDetails,
 }
 
+impl Command {
+    /// Short operator-facing label without large or sensitive payloads.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Ls { path } => match path {
+                Some(path) => format!("Ls path={path}"),
+                None => "Ls path=.".to_string(),
+            },
+            Self::Cat { path } => format!("Cat path={path}"),
+            Self::RawDownload {
+                path,
+                range_start,
+                range_end,
+            } => match (range_start, range_end) {
+                (Some(start), Some(end)) => {
+                    format!("RawDownload path={path} range={start}-{end}")
+                }
+                (Some(start), None) => format!("RawDownload path={path} range_start={start}"),
+                (None, Some(end)) => format!("RawDownload path={path} range_end={end}"),
+                (None, None) => format!("RawDownload path={path}"),
+            },
+            Self::TarDownload { path } => format!("TarDownload path={path}"),
+            Self::RawUpload { path } => format!("RawUpload path={path}"),
+            Self::TarUpload { path } => format!("TarUpload path={path}"),
+            Self::LocalCopyFile {
+                source_path,
+                dest_path,
+            } => format!("LocalCopyFile source={source_path} dest={dest_path}"),
+            Self::LocalCopyDirectory {
+                source_path,
+                dest_path,
+            } => format!("LocalCopyDirectory source={source_path} dest={dest_path}"),
+            Self::RawDelete { path } => format!("RawDelete path={path}"),
+            Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
+            Self::Metadata { path } => format!("Metadata path={path}"),
+            // Echo bodies can be large or sensitive, so only the command name is logged.
+            Self::Echo { .. } => "Echo".to_string(),
+            Self::AgentInfo => "AgentInfo".to_string(),
+            Self::GetAgentDetails => "GetAgentDetails".to_string(),
+        }
+    }
+}
+
 /// Carries directory metadata with its entries so clients can show either a list or details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LsDirectoryResult {
@@ -533,6 +576,30 @@ pub enum TransferProgressState {
 }
 
 impl CommandResult {
+    /// Short operator-facing outcome without dumping large command payloads.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::LsDirectory(_) => "ok LsDirectory".to_string(),
+            Self::LsFile(_) => "ok LsFile".to_string(),
+            Self::Cat(_) => "ok Cat".to_string(),
+            Self::RawDownload { path } => format!("ok RawDownload path={path}"),
+            Self::TarDownload { path } => format!("ok TarDownload path={path}"),
+            Self::RawUpload => "ok RawUpload".to_string(),
+            Self::TarUpload => "ok TarUpload".to_string(),
+            Self::LocalCopyFile => "ok LocalCopyFile".to_string(),
+            Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),
+            Self::RawDelete => "ok RawDelete".to_string(),
+            Self::CreateDirectory => "ok CreateDirectory".to_string(),
+            Self::Metadata(_) => "ok Metadata".to_string(),
+            Self::Echo(_) => "ok Echo".to_string(),
+            Self::AgentInfo(_) => "ok AgentInfo".to_string(),
+            Self::GetAgentDetails(_) => "ok GetAgentDetails".to_string(),
+            Self::Error { kind, message } => {
+                format!("error kind={kind:?} message={message}")
+            }
+        }
+    }
+
     /// Builds one structured command failure when the caller already knows the error kind.
     pub fn error(kind: CommandErrorKind, message: impl Into<String>) -> Self {
         Self::Error {

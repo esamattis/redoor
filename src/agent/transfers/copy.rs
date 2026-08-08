@@ -1,6 +1,8 @@
 use super::super::{AgentActor, AgentCommandError};
 use redoor::{
+    Level,
     commands::CommandResult,
+    log,
     types::{AgentId, Message, RequestId},
 };
 use std::{
@@ -507,11 +509,24 @@ impl AgentActor {
         dest_path: String,
         response: LocalCopyResponseContext<'_>,
     ) {
+        log!(
+            Level::Info,
+            "Started local copy file: request_id={}, source={}, dest={}",
+            response.request_id,
+            source_path,
+            dest_path
+        );
         match self
             .run_local_copy_file(source_path, dest_path, &response)
             .await
         {
             Ok(result) => {
+                log!(
+                    Level::Info,
+                    "Local copy file complete: request_id={}, result={}",
+                    response.request_id,
+                    result.summary()
+                );
                 self.send_command_response(
                     response.write,
                     response.agent_id,
@@ -521,6 +536,12 @@ impl AgentActor {
                 .await;
             }
             Err(error) => {
+                log!(
+                    Level::Info,
+                    "Local copy file failed: request_id={}, error={}",
+                    response.request_id,
+                    error
+                );
                 self.send_local_copy_error(&response, error).await;
             }
         }
@@ -590,11 +611,24 @@ impl AgentActor {
         dest_path: String,
         response: LocalCopyResponseContext<'_>,
     ) {
+        log!(
+            Level::Info,
+            "Started local copy directory: request_id={}, source={}, dest={}",
+            response.request_id,
+            source_path,
+            dest_path
+        );
         match self
             .run_local_copy_directory(source_path, dest_path, &response)
             .await
         {
             Ok(result) => {
+                log!(
+                    Level::Info,
+                    "Local copy directory complete: request_id={}, result={}",
+                    response.request_id,
+                    result.summary()
+                );
                 self.send_command_response(
                     response.write,
                     response.agent_id,
@@ -604,6 +638,12 @@ impl AgentActor {
                 .await;
             }
             Err(error) => {
+                log!(
+                    Level::Info,
+                    "Local copy directory failed: request_id={}, error={}",
+                    response.request_id,
+                    error
+                );
                 self.send_local_copy_error(&response, error).await;
             }
         }

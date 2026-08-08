@@ -498,7 +498,8 @@ impl RawDownloadWorker {
 
                 log!(
                     Level::Info,
-                    "Raw download complete: path={}, chunks={}",
+                    "Raw download complete: request_id={}, path={}, chunks={}",
+                    self.request_id,
                     self.path,
                     self.chunk_index.display_number()
                 );
@@ -610,6 +611,44 @@ impl AgentActor {
         range_end: Option<u64>,
         context: RawDownloadContext<'_>,
     ) {
+        match (range_start, range_end) {
+            (Some(start), Some(end)) => {
+                log!(
+                    Level::Info,
+                    "Started raw download: request_id={}, path={}, range={}-{}",
+                    context.request_id,
+                    path,
+                    start,
+                    end
+                );
+            }
+            (Some(start), None) => {
+                log!(
+                    Level::Info,
+                    "Started raw download: request_id={}, path={}, range_start={}",
+                    context.request_id,
+                    path,
+                    start
+                );
+            }
+            (None, Some(end)) => {
+                log!(
+                    Level::Info,
+                    "Started raw download: request_id={}, path={}, range_end={}",
+                    context.request_id,
+                    path,
+                    end
+                );
+            }
+            (None, None) => {
+                log!(
+                    Level::Info,
+                    "Started raw download: request_id={}, path={}",
+                    context.request_id,
+                    path
+                );
+            }
+        }
         RawDownloadWorker {
             path,
             range_start,

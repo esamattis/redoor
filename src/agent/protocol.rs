@@ -93,13 +93,26 @@ async fn handle_command_message(
             let result = CommandHandler::new()
                 .execute(Command::RawDelete { path })
                 .await;
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
             AgentActor
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
         other => {
             let result = CommandHandler::new().execute(other).await;
-            let result_clone = result.clone();
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
             let response = Message::CommandResponse {
                 agent_id: agent_id.clone(),
                 request_id,
@@ -109,13 +122,6 @@ async fn handle_command_message(
             if let Ok(json) = serde_json::to_string(&response) {
                 let _ = write_text.send(WsMessage::text(json)).await;
             }
-            log!(
-                Level::Trace,
-                "Command response sent: agent_id={}, request_id={}, result={:?}",
-                agent_id,
-                request_id,
-                result_clone
-            );
         }
     }
 }
@@ -140,11 +146,11 @@ impl AgentActor {
                     ..
                 } => {
                     log!(
-                        Level::Trace,
-                        "Command received: agent_id={}, request_id={}, command={:?}",
+                        Level::Info,
+                        "Command received: agent_id={}, request_id={}, command={}",
                         state.agent_id,
                         request_id,
-                        command
+                        command.summary()
                     );
                     let requires_transfer = matches!(
                         command,
@@ -155,16 +161,19 @@ impl AgentActor {
                     );
                     let transfer_sender = state.ws_transfer_tx.as_ref().cloned();
                     if requires_transfer && transfer_sender.is_none() {
-                        self.send_command_response(
-                            write_text,
-                            &state.agent_id,
+                        let result = CommandResult::error(
+                            CommandErrorKind::Internal,
+                            "Transfer connection unavailable",
+                        );
+                        log!(
+                            Level::Info,
+                            "Command complete: agent_id={}, request_id={}, result={}",
+                            state.agent_id,
                             request_id,
-                            CommandResult::error(
-                                CommandErrorKind::Internal,
-                                "Transfer connection unavailable",
-                            ),
-                        )
-                        .await;
+                            result.summary()
+                        );
+                        self.send_command_response(write_text, &state.agent_id, request_id, result)
+                            .await;
                         return;
                     }
 

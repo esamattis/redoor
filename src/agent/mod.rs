@@ -131,11 +131,29 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let agent_name = resolved.name;
     let log_file = resolved.log;
     let token = resolved.token;
+    let loaded_config_path = resolved.loaded_config_path;
 
     let agent_id = AgentId::from(agent_name.clone());
 
     redoor::logging::init(log_file).await;
-    log!(Level::Info, "Starting agent '{}'", agent_name);
+    match loaded_config_path {
+        Some(path) => {
+            log!(Level::Info, "Loaded agent config: path={}", path.display());
+        }
+        None => {
+            log!(
+                Level::Info,
+                "No agent config file loaded; using CLI/env settings"
+            );
+        }
+    }
+    log!(
+        Level::Info,
+        "Starting agent '{}': ws={}, dir={}",
+        agent_name,
+        server_url,
+        default_directory
+    );
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
     let handle = AgentHandle { sender };
@@ -153,6 +171,8 @@ struct ResolvedAgentSettings {
     token: String,
     dir: Option<String>,
     log: Option<String>,
+    /// Path of the TOML file that contributed settings, when one was loaded.
+    loaded_config_path: Option<PathBuf>,
 }
 
 /// Applies CLI > env > config file > default for every agent setting.
@@ -171,7 +191,7 @@ async fn resolve_agent_settings(
         None => crate::server::default_config_path().ok(),
     };
 
-    let file_config = match config_path {
+    let (file_config, loaded_config_path) = match config_path {
         Some(path) => {
             // Explicit --config must exist; the conventional path is optional so
             // fully CLI/env-configured agents do not require a file.
@@ -180,18 +200,17 @@ async fn resolve_agent_settings(
                 if explicit_config {
                     return Err(format!("Failed to read config file '{}'", path.display()).into());
                 }
-                None
+                (None, None)
             } else {
-                Some(
-                    crate::server::parse_config_file(&path.to_string_lossy())
-                        .await
-                        .map_err(|error| {
-                            format!("Failed to parse config file '{}': {error}", path.display())
-                        })?,
-                )
+                let parsed = crate::server::parse_config_file(&path.to_string_lossy())
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to parse config file '{}': {error}", path.display())
+                    })?;
+                (Some(parsed), Some(path))
             }
         }
-        None => None,
+        None => (None, None),
     };
 
     let agent_section = file_config
@@ -226,6 +245,7 @@ async fn resolve_agent_settings(
         token,
         dir,
         log,
+        loaded_config_path,
     })
 }
 

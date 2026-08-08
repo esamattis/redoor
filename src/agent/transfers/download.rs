@@ -166,6 +166,13 @@ impl TarDownloadWorker {
             Ok(metadata) => metadata,
             Err(error) => {
                 let error_message = format!("Failed to open directory: {}", error);
+                log!(
+                    Level::Error,
+                    "Tar download open failed: request_id={}, path={}, error={}",
+                    self.request_id,
+                    self.path,
+                    error
+                );
                 let _ = self
                     .send_chunk(
                         StreamChunkFrameRequest::new(self.request_id, error_message.as_bytes())
@@ -180,6 +187,12 @@ impl TarDownloadWorker {
 
         if !metadata.is_dir() {
             let error_message = format!("Source path is not a directory: {}", self.path);
+            log!(
+                Level::Error,
+                "Tar download open failed: request_id={}, path={}, error=not a directory",
+                self.request_id,
+                self.path
+            );
             let _ = self
                 .send_chunk(
                     StreamChunkFrameRequest::new(self.request_id, error_message.as_bytes())
@@ -272,7 +285,8 @@ impl TarDownloadWorker {
 
         log!(
             Level::Info,
-            "Tar directory download complete: path={}, chunks={}",
+            "Tar directory download complete: request_id={}, path={}, chunks={}",
+            self.request_id,
             self.path,
             self.chunk_index.display_number()
         );
@@ -290,6 +304,12 @@ impl AgentActor {
         cancel_receiver: watch::Receiver<bool>,
         active_downloads: ActiveDownloads,
     ) {
+        log!(
+            Level::Info,
+            "Started tar download: request_id={}, path={}",
+            request_id,
+            path
+        );
         TarDownloadWorker {
             path,
             request_id,
