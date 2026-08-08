@@ -16,10 +16,11 @@ rm -rf .test-playwright-home
 mkdir -p .test-playwright-home/lazy-agent
 rm -rf .test-playwright-home/missing-agent-directory
 cat > .test-playwright-config.toml <<'EOF'
+agent_token = "test-agent-token"
+
 [server]
 username = "test-user"
 password = "test-password"
-agent_token = "test-agent-token"
 
 [[agents]]
 local = true

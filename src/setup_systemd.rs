@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use sysinfo::System;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -127,9 +126,7 @@ async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
         .await
         .with_context(|| format!("Failed to inspect config '{}'", config_path.display()))?
     {
-        if mode == SystemdMode::Agent {
-            crate::server::parse_agent_token_file(config_path).await?;
-        }
+        validate_existing_config(mode, config_path).await?;
         return Ok(());
     }
 
@@ -137,16 +134,20 @@ async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
         SystemdMode::Agent => Some(prompt_agent_token().await?),
         SystemdMode::Server => None,
     };
-    let created = crate::server::create_default_config_if_missing_with_token(
+    let created = crate::server::create_default_config_if_missing_with_options(
         config_path,
         supplied_token.as_deref(),
+        mode == SystemdMode::Agent,
     )
     .await?;
 
     if let Some(created) = created {
         match mode {
             SystemdMode::Agent => {
-                println!("Created agent config at {}", config_path.display());
+                println!(
+                    "Created agent config at {}\n[agent] defaults to ws://localhost:3000/ws and this host's name.\nEdit the file if the server is elsewhere, then restart the service.",
+                    config_path.display()
+                );
             }
             SystemdMode::Server => {
                 if let Some(password) = created.password {
@@ -165,9 +166,30 @@ async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
                 }
             }
         }
-    } else if mode == SystemdMode::Agent {
+    } else {
         // Another setup may have won the create-new race after our existence check.
-        crate::server::parse_agent_token_file(config_path).await?;
+        validate_existing_config(mode, config_path).await?;
+    }
+    Ok(())
+}
+
+/// Rejects incomplete configs before writing a unit that assumes the TOML is enough.
+async fn validate_existing_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
+    let config = crate::server::parse_config_file(&config_path.to_string_lossy())
+        .await
+        .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
+    match mode {
+        SystemdMode::Agent => {
+            if !crate::server::standalone_agent_is_fully_configured(&config) {
+                bail!(
+                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address and name so the service can start without CLI flags",
+                    config_path.display()
+                );
+            }
+        }
+        SystemdMode::Server => {
+            crate::server::require_server_section(&config)?;
+        }
     }
     Ok(())
 }
@@ -221,21 +243,13 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
     )
 }
 
-/// Renders a user service whose command line contains paths but never the agent token.
+/// Renders a user service. The agent unit has no CLI flags or env — the TOML is authoritative.
 fn render_unit(mode: SystemdMode, binary: &Path, config_path: &Path) -> String {
     let binary = quote_unit_argument(binary.to_string_lossy().as_ref());
     let config_path = quote_unit_argument(config_path.to_string_lossy().as_ref());
     let (description, command) = match mode {
-        SystemdMode::Agent => {
-            let hostname = System::host_name().unwrap_or_else(|| "local".to_owned());
-            let hostname = quote_unit_argument(&hostname);
-            (
-                "Redoor agent",
-                format!(
-                    "{binary} agent ws://localhost:3000/ws --name {hostname} --config {config_path}"
-                ),
-            )
-        }
+        // Bare `agent` assumes ~/.config/redoor/config.toml is fully configured.
+        SystemdMode::Agent => ("Redoor agent", format!("{binary} agent")),
         SystemdMode::Server => (
             "Redoor server",
             format!("{binary} server --config {config_path}"),
@@ -275,9 +289,9 @@ mod tests {
     use super::{SystemdMode, quote_unit_argument, render_unit};
     use std::path::Path;
 
-    /// Verifies agent units consume the common config without exposing its token.
+    /// Verifies agent units rely entirely on the TOML file with no CLI overrides.
     #[test]
-    fn agent_unit_uses_config_token_fallback() {
+    fn agent_unit_has_no_cli_flags_or_env() {
         let unit = render_unit(
             SystemdMode::Agent,
             Path::new("/home/test user/bin/redoor"),
@@ -285,16 +299,15 @@ mod tests {
         );
 
         assert!(
-            unit.contains("agent ws://localhost:3000/ws"),
-            "the generated agent should connect to the default local server"
+            unit.contains("ExecStart=\"/home/test user/bin/redoor\" agent\n"),
+            "the agent service must start with a bare `agent` subcommand: {unit}"
         );
         assert!(
-            unit.contains("--config \"/home/test user/.config/redoor/config.toml\""),
-            "the agent should obtain its token from the shared config path"
-        );
-        assert!(
-            !unit.contains("--token"),
-            "the secret must not be exposed in the unit or process arguments"
+            !unit.contains("--token")
+                && !unit.contains("--name")
+                && !unit.contains("--config")
+                && !unit.contains("Environment="),
+            "agent settings must come from the TOML file, not the unit: {unit}"
         );
     }
 

@@ -72,7 +72,7 @@ struct SessionRuntime {
     /// agents that aren't supervised (e.g. manually-spawned external
     /// agents), in which case the stale check is a no-op.
     watchdog: Option<WatchdogHandle>,
-    /// Expected `server.agent_token`; registration without this secret is rejected.
+    /// Expected top-level `agent_token`; registration without this secret is rejected.
     agent_token: String,
 }
 

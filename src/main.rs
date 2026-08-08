@@ -111,28 +111,28 @@ async fn run_server(args: server::CoordinatorArgs) {
             std::process::exit(1);
         }
     };
+    let server_section = match server::require_server_section(&config) {
+        Ok(section) => section.clone(),
+        Err(error) => {
+            eprintln!(
+                "Failed to parse config file '{}': {error}",
+                config_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
 
-    // Precedence: CLI > config file > env > default.
-    // Each tier is only consulted if the higher tier did not provide a value,
-    // so an explicit CLI flag always wins and env is the fallback before the
-    // built-in default.
-    let port = args
-        .port
-        .or(config.server.port)
-        .or_else(|| {
-            std::env::var("REDOOR_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-        })
-        .unwrap_or(3000);
+    // Precedence: CLI > env > config file > default.
+    // Clap already merged CLI and env into `args`; config is the next fallback.
+    let port = args.port.or(server_section.port).unwrap_or(3000);
 
     let bind = args
         .bind
         .clone()
-        .or_else(|| config.server.bind.clone())
+        .or_else(|| server_section.bind.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
 
-    let log = args.log.clone().or_else(|| config.server.log.clone());
+    let log = args.log.clone().or_else(|| server_section.log.clone());
 
     logging::init(log.clone()).await;
     log!(
@@ -142,8 +142,8 @@ async fn run_server(args: server::CoordinatorArgs) {
     );
 
     let (credentials, auth_mode) = match (
-        config.server.username.clone(),
-        config.server.password.clone(),
+        server_section.username.clone(),
+        server_section.password.clone(),
     ) {
         (Some(username), Some(password)) => (
             server::LoginCredentials::Configured { username, password },
@@ -167,8 +167,8 @@ async fn run_server(args: server::CoordinatorArgs) {
     };
     let auth = server::AuthState::new(
         credentials,
-        config.server.agent_token.clone(),
-        config.server.cookie_secure,
+        config.agent_token.clone(),
+        server_section.cookie_secure,
     )
     .await
     .unwrap_or_else(|error| {
@@ -216,7 +216,7 @@ async fn run_server(args: server::CoordinatorArgs) {
     if let Err(error) = server::register_agents(
         &config.agents,
         port,
-        &config.server.agent_token,
+        &config.agent_token,
         &watchdog_registry,
         &router_ref,
     )

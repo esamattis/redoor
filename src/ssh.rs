@@ -39,7 +39,7 @@ pub(crate) struct SshArgs {
     /// distinguishable without requiring an explicit name.
     #[arg(long)]
     pub(crate) name: Option<String>,
-    /// Shared secret from `server.agent_token` so the remote agent can register.
+    /// Shared secret from top-level `agent_token` so the remote agent can register.
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
     pub(crate) token: String,
     /// Path to the redoor binary on the remote host. Defaults to the

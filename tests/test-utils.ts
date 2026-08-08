@@ -268,10 +268,11 @@ export class ProcessManager {
         if (args.config === undefined) {
             writeFileSync(
                 configPath,
-                `[server]
+                `agent_token = "${TEST_AGENT_TOKEN}"
+
+[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-agent_token = "${TEST_AGENT_TOKEN}"
 `,
             );
         }

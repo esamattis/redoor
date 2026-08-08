@@ -64,38 +64,31 @@ impl ServerState {
 
 /// Arguments for `redoor server`.
 ///
-/// All server-level fields are `Option` so `run_server` can tell whether the
-/// operator passed them explicitly on the command line and apply the
-/// CLI > config file > env > default precedence. The `env` attribute is
-/// intentionally NOT used on `port`: clap would populate the field from
-/// `REDOOR_PORT` before we see it, which would make env beat the config file
-/// — the opposite of the desired precedence. Env is read manually in
-/// `run_server` as the third-tier fallback.
+/// All server-level fields are `Option` so `run_server` can apply
+/// CLI > env > config file > default. Clap `env` fills each field when the
+/// flag is omitted, so resolution is simply `args.or(config).or(default)`.
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct CoordinatorArgs {
-    /// Port to listen on. Overrides [server] port in the config file and the
-    /// REDOOR_PORT env var. Defaults to 3000 when not set anywhere.
-    #[arg(long)]
+    /// Port to listen on. Overrides `REDOOR_PORT` and `[server].port`.
+    /// Defaults to 3000 when not set anywhere.
+    #[arg(long, env = "REDOOR_PORT")]
     pub(crate) port: Option<u16>,
     /// Address to bind the HTTP listener on (e.g. "0.0.0.0" to expose
-    /// beyond localhost). Overrides [server] bind in the config file. Defaults
-    /// to 127.0.0.1 when not set anywhere.
+    /// beyond localhost). Overrides `[server].bind`. Defaults to 127.0.0.1
+    /// when not set anywhere.
     #[arg(long)]
     pub(crate) bind: Option<String>,
-    /// Server log file path. Overrides [server] log in the config file.
-    /// When not set, logging goes to stderr.
+    /// Server log file path. Overrides `[server].log`. When not set, logging
+    /// goes to stderr.
     #[arg(long)]
     pub(crate) log: Option<String>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates
-    /// `~/.config/redoor/config.toml`. Its `[server]` table requires
-    /// `agent_token`; browser `username`/`password` may be omitted together on
-    /// Linux to use PAM system-account login. Each optional `[[agents]]` entry
-    /// is either an ssh-backed agent (with a `target` host) that connects back
-    /// to this server through a reverse tunnel, or a local agent (with
-    /// `local = true`) that the server can launch as a plain `redoor agent` child
-    /// process. Entries are registered as stopped and start lazily from the UI
-    /// or management API, so configuration does not eagerly launch a fleet.
+    /// `~/.config/redoor/config.toml`. Top-level `agent_token` is required;
+    /// `[server]` holds listener/auth settings (browser `username`/`password`
+    /// may be omitted together on Linux for PAM). Optional `[[agents]]` entries
+    /// are either ssh-backed (`target`) or local (`local = true`) and start
+    /// lazily from the UI or management API.
     #[arg(long)]
     pub(crate) config: Option<String>,
 }

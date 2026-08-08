@@ -12,24 +12,34 @@ use std::{
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
+/// Arguments for `redoor agent`.
+///
+/// Every field is `Option` so `agent::run` can apply the same
+/// CLI > env > config file > default precedence as the server. Clap `env`
+/// fills each field when the flag is omitted.
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct AgentArgs {
-    pub(crate) ws_address: String,
-    #[arg(long)]
-    pub(crate) name: String,
-    /// Shared secret from `server.agent_token` so registration cannot be spoofed.
-    /// When omitted, it is read from the configured TOML file.
+    /// WebSocket URL of the server (e.g. `ws://127.0.0.1:3000/ws`).
+    /// Overrides `REDOOR_AGENT_WS` and `[agent].ws_address`.
+    #[arg(env = "REDOOR_AGENT_WS")]
+    pub(crate) ws_address: Option<String>,
+    /// Registration name shown in the UI. Overrides `REDOOR_AGENT_NAME` and `[agent].name`.
+    #[arg(long, env = "REDOOR_AGENT_NAME")]
+    pub(crate) name: Option<String>,
+    /// Shared secret from top-level `agent_token` so registration cannot be spoofed.
+    /// Overrides `REDOOR_AGENT_TOKEN` and the config file.
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
     pub(crate) token: Option<String>,
-    /// Path to the server-compatible TOML config used as the token fallback.
-    /// Defaults to `~/.config/redoor/config.toml` when `--token` is absent.
+    /// Path to the shared TOML config. Defaults to `~/.config/redoor/config.toml`.
     #[arg(long)]
     pub(crate) config: Option<String>,
-    #[arg(long)]
+    /// Agent log file path. Overrides `REDOOR_AGENT_LOG` and `[agent].log`.
+    #[arg(long, env = "REDOOR_AGENT_LOG")]
     pub(crate) log: Option<String>,
     /// Default directory opened by the UI without limiting filesystem access.
-    #[arg(short = 'd', long)]
+    /// Overrides `REDOOR_AGENT_DIR` and `[agent].dir`.
+    #[arg(short = 'd', long, env = "REDOOR_AGENT_DIR")]
     pub(crate) dir: Option<String>,
 }
 

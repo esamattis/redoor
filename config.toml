@@ -1,22 +1,31 @@
-# redoor server config file. Pass with: redoor server --config config.toml
+# redoor config file. Pass with: redoor server --config config.toml
+# Shared by server and agent. Precedence: CLI > env > config file > default.
+
+agent_token = "dev-agent-token" # required; shared registration secret
 
 [server]
 # port = 3006          # optional; also settable via --port / REDOOR_PORT
 # bind = "0.0.0.0"     # optional; default 127.0.0.1
 # cookie_secure = false # set true when serving over HTTPS
 # log = "log/server.log" # optional; also settable via --log
-username = "admin"       # required; used by the browser login form
-password = "change-me"   # required; choose a long, private password
-agent_token = "dev-agent-token" # required; agents pass this via --token / REDOOR_AGENT_TOKEN
+#username = "admin"       # optional pair with password; omit both on Linux for PAM
+#password = "change-me"
 
-#[[agents]]
-#target = "devbox"
+# Standalone agent (redoor agent / systemd --mode agent). Not used for [[agents]].
+# [agent]
+# ws_address = "ws://127.0.0.1:3000/ws"
+# name = "local"
+# dir = "/home/esamatti"
+# log = "/home/esamatti/redoor-agent.log"
+
+[[agents]]
+target = "devbox"
 #remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
 #dir = "/home"
-#log = "log/devbox.log"   # optional; redirects the agent's stdout/stderr to this local file
+log = "redoor-agent.log"   # optional; redirects the agent's stdout/stderr to this local file
 
 [[agents]]
 name = "local"
 local = true
-dir = "/Users/esamatti/tmp"
-log = "log/local.log"    # optional; redirects the agent's stdout/stderr to this file
+dir = "/home/esamatti"
+log = "/home/esamatti/redoor-agent.log"    # optional; redirects the agent's stdout/stderr to this file

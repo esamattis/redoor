@@ -99,13 +99,12 @@ pub(crate) struct AgentRuntime {
     pub(crate) state: AgentState,
 }
 
-/// Runs an agent after resolving its shared token from CLI/env or the common config file.
+/// Runs an agent after resolving settings with CLI > env > config file > default.
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let token = resolve_token(args.token, args.config).await?;
+    let resolved = resolve_agent_settings(args).await?;
     let launch_directory = std::env::current_dir()?;
-    let configured_directory = args
+    let configured_directory = resolved
         .dir
-        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or(launch_directory);
     let default_directory = tokio::fs::canonicalize(&configured_directory)
@@ -128,9 +127,10 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         .into_string()
         .map_err(|_| "Agent default directory is not valid UTF-8")?;
 
-    let server_url = args.ws_address;
-    let agent_name = args.name;
-    let log_file = args.log;
+    let server_url = resolved.ws_address;
+    let agent_name = resolved.name;
+    let log_file = resolved.log;
+    let token = resolved.token;
 
     let agent_id = AgentId::from(agent_name.clone());
 
@@ -146,30 +146,95 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Applies `--token`/environment precedence before falling back to the server TOML token.
-async fn resolve_token(
-    token: Option<String>,
-    config: Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(token) = token {
-        if token.is_empty() {
-            return Err("agent token must not be empty".into());
-        }
-        return Ok(token);
-    }
+/// Fully resolved agent launch settings after applying source precedence.
+struct ResolvedAgentSettings {
+    ws_address: String,
+    name: String,
+    token: String,
+    dir: Option<String>,
+    log: Option<String>,
+}
 
-    let config_path = match config {
-        Some(path) => PathBuf::from(path),
-        None => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .ok_or("HOME is not set; pass --config or --token")?;
-            home.join(".config/redoor/config.toml")
-        }
+/// Applies CLI > env > config file > default for every agent setting.
+///
+/// Clap already merged CLI and env into `args`. Required values (`ws_address`,
+/// `name`, `token`) error when still missing after config fallback so a bare
+/// `redoor agent` only works when the TOML is complete.
+async fn resolve_agent_settings(
+    args: AgentArgs,
+) -> Result<ResolvedAgentSettings, Box<dyn std::error::Error>> {
+    let explicit_config = args.config.is_some();
+    let config_path = match args.config {
+        Some(path) => Some(PathBuf::from(path)),
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".config/redoor/config.toml")),
     };
-    crate::server::parse_agent_token_file(&config_path)
-        .await
-        .map_err(Into::into)
+
+    let file_config = match config_path {
+        Some(path) => {
+            // Explicit --config must exist; the conventional path is optional so
+            // fully CLI/env-configured agents do not require a file.
+            let exists = tokio::fs::try_exists(&path).await.unwrap_or(false);
+            if !exists {
+                if explicit_config {
+                    return Err(format!("Failed to read config file '{}'", path.display()).into());
+                }
+                None
+            } else {
+                Some(
+                    crate::server::parse_config_file(&path.to_string_lossy())
+                        .await
+                        .map_err(|error| {
+                            format!("Failed to parse config file '{}': {error}", path.display())
+                        })?,
+                )
+            }
+        }
+        None => None,
+    };
+
+    let agent_section = file_config
+        .as_ref()
+        .and_then(|config| config.agent.clone())
+        .unwrap_or_default();
+
+    // args already holds CLI or env; config is the next tier.
+    let ws_address = first_non_empty([args.ws_address, agent_section.ws_address]).ok_or(
+        "agent ws_address is required; set it via CLI, REDOOR_AGENT_WS, or [agent].ws_address",
+    )?;
+
+    let name = first_non_empty([args.name, agent_section.name])
+        .ok_or("agent name is required; set it via --name, REDOOR_AGENT_NAME, or [agent].name")?;
+
+    let token = first_non_empty([
+        args.token,
+        file_config
+            .as_ref()
+            .map(|config| config.agent_token.clone()),
+    ])
+    .ok_or(
+        "agent token is required; set it via --token, REDOOR_AGENT_TOKEN, or top-level agent_token",
+    )?;
+
+    let dir = first_non_empty([args.dir, agent_section.dir]);
+    let log = first_non_empty([args.log, agent_section.log]);
+
+    Ok(ResolvedAgentSettings {
+        ws_address,
+        name,
+        token,
+        dir,
+        log,
+    })
+}
+
+/// Returns the first non-empty string across precedence tiers.
+fn first_non_empty<I>(values: I) -> Option<String>
+where
+    I: IntoIterator<Item = Option<String>>,
+{
+    values.into_iter().flatten().find(|value| !value.is_empty())
 }
 
 #[cfg(test)]

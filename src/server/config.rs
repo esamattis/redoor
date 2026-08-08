@@ -1,11 +1,10 @@
-//! Parses the required server config: authenticated `[server]` settings plus
-//! optional `[[agents]]`, and registers each entry for lazy lifecycle control.
+//! Shared TOML config used by both the server and the standalone agent.
 //!
-//! Each `[[agents]]` entry is either an ssh-backed agent (default, identified
-//! by `target`) or a local agent (`local = true`) that the server launches
-//! as a plain `redoor agent` child process without any ssh wrapping. Mixing
-//! the two types in one file is supported so a single server can manage
-//! remote hosts and a local agent from the same configuration.
+//! Top-level `agent_token` is the shared registration secret. Optional
+//! `[server]` holds listener and browser-auth settings; optional `[agent]`
+//! holds standalone agent connection settings; optional `[[agents]]` lists
+//! server-managed local/SSH agents. Server mode requires `[server]`; agent
+//! mode resolves required fields from CLI > env > config > default.
 
 use anyhow::{Context, Result, bail};
 use redoor::{Level, log};
@@ -40,15 +39,24 @@ fn generate_secret() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Optional standalone `[agent]` values written into a starter config.
+struct DefaultAgentSection<'a> {
+    ws_address: &'a str,
+    name: &'a str,
+}
+
 /// Renders a complete starter config while keeping optional settings discoverable but disabled.
 ///
 /// On Linux, username/password are omitted so the server authenticates via the
 /// process owner's system account (PAM). Elsewhere both are required and generated.
+/// When `agent` is set, an active `[agent]` table is written so `redoor agent`
+/// can start from the file alone (systemd agent setup).
 fn default_config_content(
     username: Option<&str>,
     password: Option<&str>,
     agent_token: &str,
     agent_token_was_generated: bool,
+    agent: Option<DefaultAgentSection<'_>>,
 ) -> String {
     let agent_token = toml_edit::Value::from(agent_token).to_string();
     let credentials = match (username, password) {
@@ -68,31 +76,68 @@ fn default_config_content(
             .to_string()
         }
     };
-    let header = match (username.is_some(), agent_token_was_generated) {
-        (true, true) => "# A random password and agent_token were generated on first start.",
-        (true, false) => {
+    let header = match (
+        username.is_some(),
+        agent_token_was_generated,
+        agent.is_some(),
+    ) {
+        (_, _, true) => {
+            "# agent_token was supplied during agent setup.\n# [agent] is fully set so `redoor agent` needs no CLI flags."
+        }
+        (true, true, false) => "# A random password and agent_token were generated on first start.",
+        (true, false, false) => {
             "# A random browser password was generated; agent_token was supplied during setup."
         }
-        (false, true) => {
+        (false, true, false) => {
             "# A random agent_token was generated on first start.\n# Browser login uses the process owner's system username/password (Linux PAM)."
         }
-        (false, false) => {
+        (false, false, false) => {
             "# agent_token was supplied during setup.\n# Browser login uses the process owner's system username/password (Linux PAM)."
         }
     };
-    format!(
-        r#"# Redoor server configuration.
-{header}
-# Bind defaults to loopback; set bind = "0.0.0.0" only when intentionally exposing the server.
-
-[server]
-{credentials}agent_token = {agent_token}
-# port = 3000
+    let for_standalone_agent = agent.is_some();
+    let agent_block = match agent {
+        Some(agent) => {
+            let ws_address = toml_edit::Value::from(agent.ws_address).to_string();
+            let name = toml_edit::Value::from(agent.name).to_string();
+            format!(
+                r#"[agent]
+ws_address = {ws_address}
+name = {name}
+# dir = "/home/local-user"
+# log = "log/agent.log"
+"#
+            )
+        }
+        None => {
+            r#"# Standalone agent settings. Uncomment for `redoor agent` / systemd --mode agent.
+# [agent]
+# ws_address = "ws://127.0.0.1:3000/ws"
+# name = "local"
+# dir = "/home/local-user"
+# log = "log/agent.log"
+"#
+            .to_string()
+        }
+    };
+    let server_block = if for_standalone_agent {
+        // Agent-only hosts do not need a [server] table.
+        String::new()
+    } else {
+        format!(
+            r#"[server]
+{credentials}# port = 3000
 # bind = "127.0.0.1"
 # cookie_secure = false
 # log = "log/server.log"
 
-# SSH-backed agent example. Remove `# ` from this block to enable it.
+"#
+        )
+    };
+    let managed_agents = if for_standalone_agent {
+        String::new()
+    } else {
+        r#"# SSH-backed agent example. Remove `# ` from this block to enable it.
 # [[agents]]
 # target = "user@example.com"
 # local = false
@@ -110,6 +155,18 @@ fn default_config_content(
 # dir = "/home/local-user"
 # log = "log/local-agent.log"
 "#
+        .to_string()
+    };
+    format!(
+        r#"# Redoor configuration (shared by server and agent).
+{header}
+# agent_token is top-level because both processes need the same secret.
+# Bind defaults to loopback; set bind = "0.0.0.0" only when intentionally exposing the server.
+
+agent_token = {agent_token}
+
+{server_block}{agent_block}
+{managed_agents}"#
     )
 }
 
@@ -131,9 +188,21 @@ pub(crate) async fn create_default_config_if_missing(
 ///
 /// Systemd agent setup uses the supplied-token path because an agent must share
 /// the secret from its server, while ordinary server bootstrap generates one.
+/// When `for_standalone_agent` is true, the starter file includes a complete
+/// `[agent]` table and omits `[server]` so agent-only hosts need no server keys.
 pub(crate) async fn create_default_config_if_missing_with_token(
     path: &Path,
     agent_token: Option<&str>,
+) -> Result<Option<CreatedDefaultConfig>> {
+    create_default_config_if_missing_with_options(path, agent_token, false).await
+}
+
+/// Like [`create_default_config_if_missing_with_token`], optionally writing a
+/// fully configured standalone `[agent]` section for systemd agent install.
+pub(crate) async fn create_default_config_if_missing_with_options(
+    path: &Path,
+    agent_token: Option<&str>,
+    for_standalone_agent: bool,
 ) -> Result<Option<CreatedDefaultConfig>> {
     if tokio::fs::try_exists(path).await? {
         return Ok(None);
@@ -146,16 +215,31 @@ pub(crate) async fn create_default_config_if_missing_with_token(
     let agent_token = agent_token
         .map(str::to_owned)
         .unwrap_or_else(generate_secret);
-    // Linux can authenticate via PAM without embedding a second password; other
-    // platforms still need an explicit username/password pair in the file.
-    #[cfg(target_os = "linux")]
-    let (username, password): (Option<String>, Option<String>) = (None, None);
-    #[cfg(not(target_os = "linux"))]
-    let (username, password) = {
-        let username = current_process_username().await?;
-        let password = generate_secret();
-        (Some(username), Some(password))
+    // Agent-only starters skip browser credentials; server starters still need
+    // them on non-Linux where PAM is unavailable.
+    let (username, password): (Option<String>, Option<String>) = if for_standalone_agent {
+        (None, None)
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            (None, None)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let username = current_process_username().await?;
+            let password = generate_secret();
+            (Some(username), Some(password))
+        }
     };
+    let agent_name_owned = if for_standalone_agent {
+        Some(default_local_agent_name())
+    } else {
+        None
+    };
+    let agent_section = agent_name_owned.as_ref().map(|name| DefaultAgentSection {
+        ws_address: "ws://localhost:3000/ws",
+        name,
+    });
     let parent = path
         .parent()
         .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
@@ -181,6 +265,7 @@ pub(crate) async fn create_default_config_if_missing_with_token(
         password.as_deref(),
         &agent_token,
         agent_token_was_generated,
+        agent_section,
     );
     file.write_all(content.as_bytes())
         .await
@@ -226,10 +311,11 @@ pub(crate) enum AgentConfig {
     Local(LocalAgentConfig),
 }
 
-/// Parsed `[server]` table with required agent token and optional listener overrides.
+/// Parsed `[server]` table with optional listener and browser-auth overrides.
 ///
 /// `username`/`password` are optional as a pair: both set uses config credentials;
 /// both absent uses Linux PAM for the process owner (rejected on non-Linux).
+/// The shared `agent_token` lives at the document root, not here.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerSection {
     pub(crate) port: Option<u16>,
@@ -237,25 +323,41 @@ pub(crate) struct ServerSection {
     pub(crate) log: Option<String>,
     pub(crate) username: Option<String>,
     pub(crate) password: Option<String>,
-    /// Shared secret agents must present when registering over `/ws`.
-    pub(crate) agent_token: String,
     /// When true, session cookies are marked `Secure` for HTTPS deployments.
     pub(crate) cookie_secure: bool,
 }
 
-/// Full parsed config file: the required `[server]` credentials plus optional managed agents.
+/// Parsed `[agent]` table for a standalone `redoor agent` process.
+///
+/// All fields are optional in the file so CLI and env can supply missing
+/// values; agent startup requires `ws_address`, `name`, and top-level
+/// `agent_token` after applying CLI > env > config > default precedence.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentSection {
+    pub(crate) ws_address: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) dir: Option<String>,
+    pub(crate) log: Option<String>,
+}
+
+/// Full parsed config file shared by server and agent processes.
 #[derive(Debug, Clone)]
-pub(crate) struct ServerConfig {
-    pub(crate) server: ServerSection,
+pub(crate) struct RedoorConfig {
+    /// Shared secret agents present when registering over `/ws`.
+    pub(crate) agent_token: String,
+    /// Present when the file configures a server process.
+    pub(crate) server: Option<ServerSection>,
+    /// Present when the file configures a standalone agent process.
+    pub(crate) agent: Option<AgentSection>,
+    /// Server-managed local/SSH agents (server mode only).
     pub(crate) agents: Vec<AgentConfig>,
 }
 
-/// Reads and validates the config file, returning the parsed `[server]`
-/// table and one [`AgentConfig`] per `[[agents]]` entry.
+/// Reads and validates the shared config file used by both server and agent.
 ///
-/// The `[server]` table and a non-empty `agent_token` are required. Browser
-/// `username`/`password` may be omitted together on Linux (PAM). Managed
-/// `[[agents]]` are optional.
+/// Top-level non-empty `agent_token` is always required. `[server]`, `[agent]`,
+/// and `[[agents]]` are optional at parse time; each process validates the
+/// sections it needs after applying CLI/env overrides.
 ///
 /// Uses `toml_edit` (instead of the `toml` crate) so future server-side
 /// rewriting of the file — for example adding an agent via a REST endpoint —
@@ -263,66 +365,95 @@ pub(crate) struct ServerConfig {
 /// whole document from scratch. Parsing with the immutable `Document` is
 /// enough for the read path; it can be upgraded to `DocumentMut` via
 /// `into_mut()` when editing support is added.
-pub(crate) async fn parse_config_file(path: &str) -> Result<ServerConfig> {
+pub(crate) async fn parse_config_file(path: &str) -> Result<RedoorConfig> {
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("Failed to read config file '{}'", path))?;
     let doc = Document::parse(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
 
-    let server = parse_server_section(&doc)?;
+    // Reject unknown root keys so typos are not silently ignored.
+    const KNOWN_ROOT_KEYS: [&str; 4] = ["agent_token", "server", "agent", "agents"];
+    for (key, _) in doc.iter() {
+        if !KNOWN_ROOT_KEYS.contains(&key) {
+            bail!(
+                "unknown top-level key '{}' in config file; expected one of: {}",
+                key,
+                KNOWN_ROOT_KEYS.join(", ")
+            );
+        }
+    }
 
-    let agents = parse_agents_array(&doc, path)?;
-
-    Ok(ServerConfig { server, agents })
-}
-
-/// Reads only the shared agent token from a server-compatible TOML file.
-///
-/// Agents intentionally ignore unrelated server and managed-agent settings so
-/// they can consume the same file without validating configuration they do not use.
-pub(crate) async fn parse_agent_token_file(path: &Path) -> Result<String> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read config file '{}'", path.display()))?;
-    let doc = Document::parse(&content).map_err(|error| {
-        anyhow::anyhow!(
-            "Failed to parse config file '{}': {}",
-            path.display(),
-            error
-        )
-    })?;
-    let table = doc
-        .get("server")
-        .and_then(|item| item.as_table())
-        .with_context(|| "config file must contain a [server] table")?;
-    table
+    let agent_token = doc
         .get("agent_token")
         .and_then(|item| item.as_str())
         .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .with_context(|| "server.agent_token must be a non-empty string")
+        .with_context(
+            || "agent_token must be a non-empty string at the top level of the config file",
+        )?
+        .to_string();
+
+    let server = parse_server_section(&doc)?;
+    let agent = parse_agent_section(&doc)?;
+    let agents = parse_agents_array(&doc, path)?;
+
+    Ok(RedoorConfig {
+        agent_token,
+        server,
+        agent,
+        agents,
+    })
 }
 
-/// Parses required login credentials and optional listener settings from `[server]`.
-fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
-    let table = doc
-        .get("server")
-        .and_then(|item| item.as_table())
-        .with_context(|| "config file must contain a [server] table")?;
+/// Returns the `[server]` section or a clear error for server-only entry points.
+pub(crate) fn require_server_section(config: &RedoorConfig) -> Result<&ServerSection> {
+    config
+        .server
+        .as_ref()
+        .with_context(|| "config file must contain a [server] table")
+}
+
+/// Returns whether `[agent]` supplies every field a bare `redoor agent` needs.
+///
+/// Used by systemd agent setup so the unit can omit CLI flags safely.
+pub(crate) fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> bool {
+    let Some(agent) = config.agent.as_ref() else {
+        return false;
+    };
+    !config.agent_token.is_empty()
+        && agent
+            .ws_address
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
+        && agent.name.as_ref().is_some_and(|value| !value.is_empty())
+}
+
+/// Parses optional login credentials and listener settings from `[server]`.
+///
+/// Returns `Ok(None)` when the table is absent so agent-only configs stay valid.
+fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<Option<ServerSection>> {
+    let Some(table) = doc.get("server").and_then(|item| item.as_table()) else {
+        return Ok(None);
+    };
 
     // Reject unknown keys so a misspelled setting is surfaced immediately
     // instead of silently falling back to a default the operator didn't mean.
-    const KNOWN_KEYS: [&str; 7] = [
+    // agent_token moved to the document root; keep rejecting it here with a
+    // pointer so existing files fail with an actionable message.
+    const KNOWN_KEYS: [&str; 6] = [
         "port",
         "bind",
         "log",
         "username",
         "password",
-        "agent_token",
         "cookie_secure",
     ];
     for (key, _) in table.iter() {
+        if key == "agent_token" {
+            bail!(
+                "server.agent_token is no longer valid; move agent_token to the top level of the config file"
+            );
+        }
         if !KNOWN_KEYS.contains(&key) {
             bail!(
                 "unknown key 'server.{}' in config file; expected one of: {}",
@@ -398,12 +529,6 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
              system-account (PAM) login is only supported on Linux"
         );
     }
-    let agent_token = table
-        .get("agent_token")
-        .and_then(|item| item.as_str())
-        .filter(|value| !value.is_empty())
-        .with_context(|| "server.agent_token must be a non-empty string")?
-        .to_string();
     let cookie_secure = match table.get("cookie_secure") {
         None => false,
         Some(item) => item
@@ -411,15 +536,55 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
             .with_context(|| "server.cookie_secure must be a boolean")?,
     };
 
-    Ok(ServerSection {
+    Ok(Some(ServerSection {
         port,
         bind,
         log,
         username,
         password,
-        agent_token,
         cookie_secure,
-    })
+    }))
+}
+
+/// Parses optional standalone agent settings from `[agent]`.
+fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>> {
+    let Some(table) = doc.get("agent").and_then(|item| item.as_table()) else {
+        return Ok(None);
+    };
+
+    const KNOWN_KEYS: [&str; 4] = ["ws_address", "name", "dir", "log"];
+    for (key, _) in table.iter() {
+        if !KNOWN_KEYS.contains(&key) {
+            bail!(
+                "unknown key 'agent.{}' in config file; expected one of: {}",
+                key,
+                KNOWN_KEYS.join(", ")
+            );
+        }
+    }
+
+    let non_empty_string = |key: &str| -> Result<Option<String>> {
+        match table.get(key) {
+            None => Ok(None),
+            Some(item) => {
+                let value = item
+                    .as_str()
+                    .with_context(|| format!("agent.{key} must be a string"))?
+                    .to_string();
+                if value.is_empty() {
+                    bail!("agent.{key} must be a non-empty string when set");
+                }
+                Ok(Some(value))
+            }
+        }
+    };
+
+    Ok(Some(AgentSection {
+        ws_address: non_empty_string("ws_address")?,
+        name: non_empty_string("name")?,
+        dir: non_empty_string("dir")?,
+        log: non_empty_string("log")?,
+    }))
 }
 
 /// Parses optional managed agents so authentication-only servers remain valid.
@@ -657,15 +822,13 @@ pub(crate) async fn spawn_local_agent(
 mod tests {
     use super::*;
 
-    /// Adds required credentials to focused agent fixtures without obscuring each test's payload.
+    /// Adds required top-level token and server credentials without obscuring each test's payload.
     fn write_test_config(path: &std::path::Path, content: impl AsRef<str>) -> std::io::Result<()> {
         let content = content.as_ref();
-        let credentials = r#"username = "test-user"
-password = "test-password"
-agent_token = "test-agent-token"
-"#;
+        let token_line = "agent_token = \"test-agent-token\"\n";
+        let credentials = "username = \"test-user\"\npassword = \"test-password\"\n";
         let server_header = "[server]\n";
-        let complete = if content.contains(server_header) {
+        let with_server = if content.contains(server_header) {
             content.replacen(server_header, &format!("{server_header}{credentials}"), 1)
         } else {
             format!(
@@ -673,6 +836,11 @@ agent_token = "test-agent-token"
 {credentials}
 {content}"#
             )
+        };
+        let complete = if with_server.contains("agent_token") {
+            with_server
+        } else {
+            format!("{token_line}\n{with_server}")
         };
         std::fs::write(path, complete)
     }
@@ -1154,9 +1322,9 @@ log = "log/prod-db.log"
         );
     }
 
-    /// Verifies that omitting required authentication configuration fails startup.
+    /// Verifies agent-only configs may omit `[server]` while still requiring the top-level token.
     #[tokio::test]
-    async fn test_parse_config_file_rejects_missing_server_section() {
+    async fn test_parse_config_file_allows_missing_server_section() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-server-{}.toml",
             std::time::SystemTime::now()
@@ -1166,8 +1334,47 @@ log = "log/prod-db.log"
         ));
         std::fs::write(
             &temp,
-            r#"[[agents]]
-target = "host"
+            r#"agent_token = "test-agent-token"
+
+[agent]
+ws_address = "ws://127.0.0.1:3000/ws"
+name = "edge"
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert!(
+            config.server.is_none(),
+            "agent-only hosts should not need a [server] table"
+        );
+        assert!(
+            require_server_section(&config).is_err(),
+            "server entry points must still reject agent-only configs"
+        );
+        assert!(
+            standalone_agent_is_fully_configured(&config),
+            "complete [agent] + token should satisfy bare agent startup"
+        );
+    }
+
+    /// Verifies omitting the shared top-level token fails for every process role.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_missing_agent_token() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-no-token-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"[server]
+username = "test-user"
+password = "test-password"
 "#,
         )
         .unwrap();
@@ -1175,7 +1382,7 @@ target = "host"
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
-        assert!(result.is_err(), "[server] credentials must be required");
+        assert!(result.is_err(), "top-level agent_token must be required");
     }
 
     /// Verifies that all three [server] fields are read from the file so
@@ -1203,9 +1410,11 @@ target = "host"
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
-        assert_eq!(config.server.port, Some(4000));
-        assert_eq!(config.server.bind.as_deref(), Some("127.0.0.1"));
-        assert_eq!(config.server.log.as_deref(), Some("/tmp/x"));
+        let server = config.server.expect("[server] should be present");
+        assert_eq!(server.port, Some(4000));
+        assert_eq!(server.bind.as_deref(), Some("127.0.0.1"));
+        assert_eq!(server.log.as_deref(), Some("/tmp/x"));
+        assert_eq!(config.agent_token, "test-agent-token");
     }
 
     /// Verifies that an unknown key in [server] is rejected so a typo is surfaced
@@ -1286,19 +1495,23 @@ target = "host"
 
         let bootstrap = created.expect("a missing conventional config should be created");
         assert_eq!(
-            config.server.agent_token, bootstrap.agent_token,
+            config.agent_token, bootstrap.agent_token,
             "the generated agent_token should match the one-time printed secret"
         );
         assert!(
             bootstrap.agent_token.len() >= 32,
             "bootstrap agent_token must be high entropy"
         );
+        let server = config
+            .server
+            .as_ref()
+            .expect("server bootstrap must write a [server] table");
 
         #[cfg(target_os = "linux")]
         {
             // Linux starter configs omit credentials so login uses PAM.
             assert!(
-                config.server.username.is_none() && config.server.password.is_none(),
+                server.username.is_none() && server.password.is_none(),
                 "Linux default config should omit username/password for PAM login"
             );
             assert!(
@@ -1314,12 +1527,12 @@ target = "host"
         {
             let expected_username = current_process_username().await.unwrap();
             assert_eq!(
-                config.server.username.as_deref(),
+                server.username.as_deref(),
                 Some(expected_username.as_str()),
                 "the generated login should use the effective process account"
             );
             assert_eq!(
-                config.server.password.as_ref(),
+                server.password.as_ref(),
                 bootstrap.password.as_ref(),
                 "the generated login should use the one-time printed password"
             );
@@ -1338,10 +1551,13 @@ target = "host"
         }
 
         for option in [
+            "agent_token =",
             "# port =",
             "# bind =",
             "# cookie_secure =",
             "# log =",
+            "# [agent]",
+            "# ws_address =",
             "# target =",
             "# local =",
             "# username = \"remote-user\"",
@@ -1370,7 +1586,7 @@ target = "host"
         tokio::fs::remove_dir_all(directory).await.ok();
     }
 
-    /// Verifies agent setup can seed the shared config with the server's existing token.
+    /// Verifies agent setup can seed a complete standalone config with the server's token.
     #[tokio::test]
     async fn test_create_default_config_with_supplied_agent_token() {
         let directory = std::env::temp_dir().join(format!(
@@ -1382,48 +1598,90 @@ target = "host"
         ));
         let path = directory.join("config.toml");
 
-        let created = create_default_config_if_missing_with_token(&path, Some("shared-token"))
-            .await
-            .unwrap()
-            .expect("a missing agent config should be created");
-        let parsed_token = parse_agent_token_file(&path).await.unwrap();
+        let created =
+            create_default_config_if_missing_with_options(&path, Some("shared-token"), true)
+                .await
+                .unwrap()
+                .expect("a missing agent config should be created");
+        let config = parse_config_file(path.to_str().unwrap()).await.unwrap();
 
         assert_eq!(
             created.agent_token, "shared-token",
             "the bootstrap result should report the supplied shared token"
         );
         assert_eq!(
-            parsed_token, "shared-token",
-            "the agent token reader should recover the supplied token from the common config"
+            config.agent_token, "shared-token",
+            "the shared parser should recover the supplied token from the common config"
+        );
+        assert!(
+            config.server.is_none(),
+            "standalone agent bootstrap should omit [server]"
+        );
+        assert!(
+            standalone_agent_is_fully_configured(&config),
+            "standalone agent bootstrap must be runnable without CLI flags"
         );
 
         tokio::fs::remove_dir_all(directory).await.ok();
     }
 
-    /// Verifies agents ignore unrelated server keys because they consume only the shared token.
+    /// Verifies nested agent_token under [server] fails with a migration hint.
     #[tokio::test]
-    async fn test_parse_agent_token_file_ignores_unrelated_settings() {
+    async fn test_parse_config_file_rejects_server_agent_token() {
         let path = std::env::temp_dir().join(format!(
-            "redoor-agent-token-test-{}.toml",
+            "redoor-agent-token-legacy-test-{}.toml",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        tokio::fs::write(
-            &path,
-            "[server]\nagent_token = \"agent-only-token\"\nfuture_server_setting = true\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(&path, "[server]\nagent_token = \"legacy-token\"\n")
+            .await
+            .unwrap();
 
-        let token = parse_agent_token_file(&path).await.unwrap();
+        let result = parse_config_file(path.to_str().unwrap()).await;
         tokio::fs::remove_file(&path).await.ok();
 
-        assert_eq!(
-            token, "agent-only-token",
-            "agent startup should not validate settings it does not consume"
+        let error = result
+            .expect_err("legacy server.agent_token must be rejected")
+            .to_string();
+        assert!(
+            error.contains("top level"),
+            "error should tell operators to move agent_token to the top level: {error}"
         );
+    }
+
+    /// Verifies the shared parser reads a complete [agent] table.
+    #[tokio::test]
+    async fn test_parse_config_file_reads_agent_section() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-agent-section-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"agent_token = "test-agent-token"
+
+[agent]
+ws_address = "wss://example.com/ws"
+name = "edge"
+dir = "/var/app"
+log = "log/agent.log"
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        let agent = config.agent.expect("[agent] should be present");
+        assert_eq!(agent.ws_address.as_deref(), Some("wss://example.com/ws"));
+        assert_eq!(agent.name.as_deref(), Some("edge"));
+        assert_eq!(agent.dir.as_deref(), Some("/var/app"));
+        assert_eq!(agent.log.as_deref(), Some("log/agent.log"));
     }
 
     /// Verifies Linux accepts a credentials-free [server] table for PAM login.
@@ -1439,8 +1697,9 @@ target = "host"
         ));
         std::fs::write(
             &temp,
-            r#"[server]
-agent_token = "test-agent-token"
+            r#"agent_token = "test-agent-token"
+
+[server]
 "#,
         )
         .unwrap();
@@ -1448,24 +1707,27 @@ agent_token = "test-agent-token"
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
+        let server = config.server.expect("[server] should be present");
         assert!(
-            config.server.username.is_none() && config.server.password.is_none(),
+            server.username.is_none() && server.password.is_none(),
             "omitted credentials should parse as None for PAM mode"
         );
-        assert_eq!(config.server.agent_token, "test-agent-token");
+        assert_eq!(config.agent_token, "test-agent-token");
     }
 
     /// Verifies a half-specified credential pair is rejected instead of mixed auth modes.
     #[tokio::test]
     async fn test_parse_config_file_rejects_partial_credentials() {
         for content in [
-            r#"[server]
+            r#"agent_token = "test-agent-token"
+
+[server]
 username = "only-user"
-agent_token = "test-agent-token"
 "#,
-            r#"[server]
+            r#"agent_token = "test-agent-token"
+
+[server]
 password = "only-password"
-agent_token = "test-agent-token"
 "#,
         ] {
             let temp = std::env::temp_dir().join(format!(
