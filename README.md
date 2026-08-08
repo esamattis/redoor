@@ -1,8 +1,6 @@
 # redoor
 
-Remote agent control over WebSockets. Run a **server** (HTTP UI + API) and one or more **agents** that connect back to it.
-
-Each connected agent maintains one authoritative control WebSocket for commands, responses, cancellation, progress, registration, and connection lifecycle. A second persistent, session-authenticated transfer WebSocket carries only bounded binary file-stream frames, preventing congested uploads, downloads, or remote copies from blocking control traffic. Terminal and log WebSockets remain ephemeral, independently authenticated connections.
+Remote agent (not AI one) control over WebSockets. Run a **server** (HTTP UI + API) and one or more **agents** that connect back to it. Features: file explorer, download/upload, remote shell.
 
 ## Shared config
 
