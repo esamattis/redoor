@@ -37,6 +37,10 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // No dedicated data-plane socket is created by page load or the minimized launcher.
         expect(terminalSockets).toHaveLength(0);
+        // A minimized panel must not expose or paint its resize edge.
+        await expect(
+            page.getByRole("separator", { name: "Resize Terminal" }),
+        ).toHaveCount(0);
 
         await page
             .getByRole("button", { name: "Expand Terminal" })
@@ -46,6 +50,14 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // First expansion initializes exactly one ephemeral terminal session.
         expect(terminalSockets).toHaveLength(1);
+        // Resizing is available only while the panel has expanded content.
+        await expect(
+            page.getByRole("separator", { name: "Resize Terminal" }),
+        ).toBeVisible();
+        // Ghostty's contenteditable host must not paint a second browser caret.
+        await expect(
+            page.getByLabel(`Terminal for ${ctx.agentName}`),
+        ).toHaveCSS("caret-color", "rgba(0, 0, 0, 0)");
 
         await page
             .getByRole("button", { name: "Minimize Terminal" })

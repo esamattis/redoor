@@ -178,6 +178,7 @@ export function TerminalPanel(props: { agent: Agent }) {
             fitAddonRef.current = fitAddon;
             terminal.loadAddon(fitAddon);
             terminal.open(host);
+            host.setAttribute("aria-label", `Terminal for ${props.agent.name}`);
             fitAddon.fit();
             fitAddon.observeResize();
 
@@ -402,7 +403,7 @@ export function TerminalPanel(props: { agent: Agent }) {
                 <div
                     ref={hostRef}
                     aria-label={`Terminal for ${props.agent.name}`}
-                    className="h-full w-full overflow-hidden"
+                    className="h-full w-full overflow-hidden caret-transparent"
                 />
                 {terminalState.type === "disconnected" ? (
                     <div

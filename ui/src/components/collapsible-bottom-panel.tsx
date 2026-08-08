@@ -148,21 +148,23 @@ export function CollapsibleBottomPanel(props: {
             }
             className="sticky bottom-0 z-10 flex shrink-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
         >
-            <div
-                role="separator"
-                aria-label={`Resize ${props.title}`}
-                aria-orientation="horizontal"
-                tabIndex={isCollapsed ? -1 : 0}
-                title={`Resize ${props.title}`}
-                onPointerDown={handleResizeStart}
-                onPointerMove={handleResizeMove}
-                onPointerUp={handleResizeEnd}
-                onPointerCancel={handleResizeEnd}
-                onKeyDown={handleResizeKeyDown}
-                className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
-                    isResizing ? "bg-blue-400/40" : "hover:bg-blue-400/25"
-                }`}
-            />
+            {isCollapsed ? null : (
+                <div
+                    role="separator"
+                    aria-label={`Resize ${props.title}`}
+                    aria-orientation="horizontal"
+                    tabIndex={0}
+                    title={`Resize ${props.title}`}
+                    onPointerDown={handleResizeStart}
+                    onPointerMove={handleResizeMove}
+                    onPointerUp={handleResizeEnd}
+                    onPointerCancel={handleResizeEnd}
+                    onKeyDown={handleResizeKeyDown}
+                    className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
+                        isResizing ? "bg-blue-400/40" : "hover:bg-blue-400/25"
+                    }`}
+                />
+            )}
             <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
                 <div
                     ref={headerRef}
