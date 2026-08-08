@@ -110,7 +110,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
                     agent_id: agent_id.to_string(),
                 }));
             }
-            if let Some(sender) = transfer.start_sender {
+            if let Some(sender) = transfer.ready_sender {
                 let _ = sender.send(Err(RouterError::AgentNotFound {
                     agent_id: agent_id.to_string(),
                 }));
@@ -202,7 +202,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
                     agent_id: agent_id.to_string(),
                 }));
             }
-            if let Some(sender) = transfer.start_sender {
+            if let Some(sender) = transfer.ready_sender {
                 let _ = sender.send(Err(RouterError::TransferConnectionUnavailable {
                     agent_id: agent_id.to_string(),
                 }));

@@ -275,22 +275,14 @@ function FileBrowser() {
         const fileName = path.split("/").pop() || lsResult.path;
         const downloadUrl = data.downloadUrl;
         if (!downloadUrl) {
-            return (
-                <RouteError
-                    error={new Error("Download URL unavailable")}
-                />
-            );
+            return <RouteError error={new Error("Download URL unavailable")} />;
         }
 
         const editable = data.metadata?.editable === true;
 
         if (search.view === "edit") {
             if (!editable) {
-                return (
-                    <RouteError
-                        error={new Error("File is not editable")}
-                    />
-                );
+                return <RouteError error={new Error("File is not editable")} />;
             }
 
             return (
@@ -2147,5 +2139,3 @@ function FileEditView(props: {
         </div>
     );
 }
-
-

@@ -111,6 +111,9 @@ fn transfer_tokens_match(left: &str, right: &str) -> bool {
 }
 
 /// Commits live routing and retained inventory together after lifecycle admission.
+///
+/// Public status stays non-Connected until the payload socket attaches so clients
+/// that gate on `Connected` do not start transfers during the normal handshake window.
 fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     log!(
         Level::Info,
@@ -145,7 +148,15 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
         });
     known.name = name;
     known.default_directory = Some(default_directory);
-    known.status = AgentConnectionStatus::Connected;
+    // Control is live, but transfer usability still depends on the async payload handshake.
+    // Leave Starting/Disconnected (or any non-Connected state) until register_transfer promotes.
+    if known.status == AgentConnectionStatus::Connected {
+        known.status = if known.managed {
+            AgentConnectionStatus::Starting
+        } else {
+            AgentConnectionStatus::Disconnected
+        };
+    }
     known.connected_at = Some(connected_at);
     known.connection_issue = None;
     known.socket_id = Some(socket_id);
@@ -156,6 +167,19 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     }) {
         let _ = transfer_open_sender.send(WsMessage::Text(message.into()));
     }
+}
+
+/// Marks inventory fully ready only after both control and payload sockets are live.
+fn mark_agent_transfer_ready(state: &mut RouterState, agent_id: &AgentId) {
+    let Some(known) = state.agents.known_by_id.get_mut(agent_id) else {
+        return;
+    };
+    if known.status == AgentConnectionStatus::Connected {
+        return;
+    }
+    known.status = AgentConnectionStatus::Connected;
+    known.connection_issue = None;
+    ui::notify_refresh(state);
 }
 
 /// Registers a connected agent, replacing any existing connection that
@@ -237,28 +261,53 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
 }
 
 /// Authenticates and installs a payload socket under the current control session.
-pub(crate) fn register_transfer(
+///
+/// When a broken transfer socket reconnects before the server processes the old
+/// socket's unregister, replacement must fail in-flight payload work first.
+/// Otherwise the delayed unregister is ignored as stale while the agent has
+/// already dropped the old workers, leaving HTTP requests stuck forever.
+///
+/// Registration is cancellation-aware: if the socket handler timed out and
+/// dropped the reply receiver, we must not install its already-dead senders.
+/// A timed-out handler never reaches unregister, so committing would leave a
+/// zombie transfer lane until some later socket replaces it.
+pub(crate) async fn register_transfer(
     state: &mut RouterState,
     request: RegisterTransferConnectionRequest,
 ) {
-    let Some(connection) = state.agents.by_id.get_mut(&request.agent_id) else {
-        let _ = request
-            .reply
-            .send(Err(RouterError::TransferAuthenticationFailed));
-        return;
-    };
-    if !transfer_tokens_match(&connection.transfer_token, &request.token) {
-        let _ = request
-            .reply
-            .send(Err(RouterError::TransferAuthenticationFailed));
+    // Bail before mutating router state when the caller already gave up
+    // (request timeout dropped the reply). Otherwise a late-queued message
+    // would evict a live payload socket and install dead channels.
+    if request.reply.is_closed() {
+        log!(
+            Level::Warning,
+            "Ignoring cancelled transfer registration: agent_id={}, socket_id={}",
+            request.agent_id,
+            request.socket_id
+        );
+        let _ = request.shutdown.send(true);
         return;
     }
 
-    if let Some(previous) = connection.transfer.replace(TransferConnection {
-        socket_id: request.socket_id.clone(),
-        outgoing_binary: request.outgoing_binary,
-        shutdown: request.shutdown,
-    }) {
+    let previous = {
+        let Some(connection) = state.agents.by_id.get_mut(&request.agent_id) else {
+            let _ = request
+                .reply
+                .send(Err(RouterError::TransferAuthenticationFailed));
+            return;
+        };
+        if !transfer_tokens_match(&connection.transfer_token, &request.token) {
+            let _ = request
+                .reply
+                .send(Err(RouterError::TransferAuthenticationFailed));
+            return;
+        }
+        // Evict the old payload lane before installing the replacement so
+        // cleanup cannot race with new traffic on the incoming socket.
+        connection.transfer.take()
+    };
+
+    if let Some(previous) = previous {
         let _ = previous.shutdown.send(true);
         log!(
             Level::Info,
@@ -267,13 +316,51 @@ pub(crate) fn register_transfer(
             previous.socket_id,
             request.socket_id
         );
+        // Fail downloads/uploads/remote copies before the new socket is
+        // authoritative. Stale unregister for the old socket_id is ignored, and
+        // the agent already cleared workers tied to that generation.
+        cleanup::cleanup_agent_transfer_requests(
+            state,
+            &request.agent_id,
+            format!("Transfer connection replaced: {}", request.agent_id),
+        )
+        .await;
     }
+
+    // Re-check after awaits: the socket task may have timed out while we
+    // cleaned up the previous generation.
+    if request.reply.is_closed() {
+        log!(
+            Level::Warning,
+            "Aborting transfer registration after caller cancelled: agent_id={}, socket_id={}",
+            request.agent_id,
+            request.socket_id
+        );
+        let _ = request.shutdown.send(true);
+        return;
+    }
+
+    let Some(connection) = state.agents.by_id.get_mut(&request.agent_id) else {
+        // Control session disappeared during replacement cleanup.
+        let _ = request.shutdown.send(true);
+        let _ = request
+            .reply
+            .send(Err(RouterError::TransferAuthenticationFailed));
+        return;
+    };
+    connection.transfer = Some(TransferConnection {
+        socket_id: request.socket_id.clone(),
+        outgoing_binary: request.outgoing_binary,
+        shutdown: request.shutdown,
+    });
     log!(
         Level::Info,
         "Transfer socket registered: agent_id={}, socket_id={}",
         request.agent_id,
         request.socket_id
     );
+    // Promote only here so Connected means transfers can succeed, not merely control is up.
+    mark_agent_transfer_ready(state, &request.agent_id);
     let _ = request.reply.send(Ok(()));
 }
 
@@ -359,13 +446,21 @@ pub(crate) async fn apply_managed_lifecycle(
         return;
     }
 
-    let live_socket = state
-        .agents
-        .by_id
-        .get(&agent_id)
-        .map(|connection| connection.socket_id.clone());
+    let live_connection = state.agents.by_id.get(&agent_id);
+    let live_socket = live_connection.map(|connection| connection.socket_id.clone());
+    let transfer_ready = live_connection
+        .and_then(|connection| connection.transfer.as_ref())
+        .is_some();
     if live_socket.is_some() && snapshot.status != AgentConnectionStatus::Stopped {
-        known.status = AgentConnectionStatus::Connected;
+        // Watchdog learns about control registration first; do not advertise Connected
+        // until the payload socket is installed. Once Connected, transfer loss must not demote.
+        if transfer_ready || known.status == AgentConnectionStatus::Connected {
+            known.status = AgentConnectionStatus::Connected;
+        } else if snapshot.status == AgentConnectionStatus::Connected {
+            known.status = AgentConnectionStatus::Starting;
+        } else {
+            known.status = snapshot.status.clone();
+        }
         known.connection_issue = snapshot.connection_issue;
     } else {
         known.status = snapshot.status.clone();
@@ -548,6 +643,39 @@ mod tests {
         )
     }
 
+    /// Verifies clients that wait for Connected never see it before the payload socket is usable.
+    #[tokio::test]
+    async fn connected_status_waits_for_transfer_socket() {
+        crate::logging::init(None).await;
+        let mut state = test_state();
+        let token = insert_control(&mut state, "agent");
+        // Control registration alone must not advertise full readiness.
+        assert_eq!(
+            state.agents.known_by_id[&AgentId::from("agent")].status,
+            AgentConnectionStatus::Disconnected
+        );
+        assert!(
+            state.agents.by_id[&AgentId::from("agent")]
+                .transfer_connection()
+                .is_err()
+        );
+
+        let socket_id = crate::types::SocketId::new();
+        let (request, reply, _shutdown) = transfer_request("agent", token, socket_id);
+        register_transfer(&mut state, request).await;
+        assert_eq!(reply.await.expect("transfer reply delivered"), Ok(()));
+        // Connected is reserved for the moment both sockets can serve work.
+        assert_eq!(
+            state.agents.known_by_id[&AgentId::from("agent")].status,
+            AgentConnectionStatus::Connected
+        );
+        assert!(
+            state.agents.by_id[&AgentId::from("agent")]
+                .transfer_connection()
+                .is_ok()
+        );
+    }
+
     /// Verifies only the current session token can attach and replacements shut down old sockets.
     #[tokio::test]
     async fn transfer_registration_authenticates_and_replaces_atomically() {
@@ -557,7 +685,7 @@ mod tests {
         let first_socket = crate::types::SocketId::new();
         let (wrong_request, wrong_reply, _wrong_shutdown) =
             transfer_request("agent", "wrong-token".to_string(), first_socket.clone());
-        register_transfer(&mut state, wrong_request);
+        register_transfer(&mut state, wrong_request).await;
         // Rejecting a wrong token proves stale or unauthenticated processes cannot attach.
         assert_eq!(
             wrong_reply.await.expect("wrong-token reply delivered"),
@@ -572,14 +700,14 @@ mod tests {
 
         let (first_request, first_reply, first_shutdown) =
             transfer_request("agent", token.clone(), first_socket.clone());
-        register_transfer(&mut state, first_request);
+        register_transfer(&mut state, first_request).await;
         // The current session token must install the payload connection successfully.
         assert_eq!(first_reply.await.expect("first reply delivered"), Ok(()));
 
         let replacement_socket = crate::types::SocketId::new();
         let (replacement_request, replacement_reply, _replacement_shutdown) =
             transfer_request("agent", token, replacement_socket.clone());
-        register_transfer(&mut state, replacement_request);
+        register_transfer(&mut state, replacement_request).await;
         // Replacement is acknowledged only after router state owns the new socket.
         assert_eq!(
             replacement_reply
@@ -599,6 +727,99 @@ mod tests {
         );
     }
 
+    /// Verifies replacement fails payload-dependent work the delayed unregister would skip.
+    #[tokio::test]
+    async fn transfer_replacement_cleans_up_payload_requests() {
+        crate::logging::init(None).await;
+        let mut state = test_state();
+        let token = insert_control(&mut state, "agent");
+        let first_socket = crate::types::SocketId::new();
+        let (first_request, first_reply, _first_shutdown) =
+            transfer_request("agent", token.clone(), first_socket);
+        register_transfer(&mut state, first_request).await;
+        assert_eq!(first_reply.await.expect("first reply delivered"), Ok(()));
+
+        let download_id = state.next_id();
+        let (chunk_sender, _chunk_receiver) = mpsc::channel(1);
+        state.streams.downloads.insert(
+            download_id,
+            super::super::state::DirectDownload {
+                agent_id: AgentId::from("agent"),
+                chunk_sender,
+                canceled_by_rest: false,
+            },
+        );
+
+        let upload_id = state.next_id();
+        let (completion_sender, completion_receiver) = oneshot::channel();
+        let (ready_sender, _ready_receiver) = oneshot::channel();
+        state.streams.uploads.insert(
+            upload_id,
+            super::super::state::DirectUpload {
+                agent_id: AgentId::from("agent"),
+                completion_sender: Some(completion_sender),
+                ready_sender: Some(ready_sender),
+                ready: true,
+                canceled_by_rest: false,
+            },
+        );
+
+        let replacement_socket = crate::types::SocketId::new();
+        let (replacement_request, replacement_reply, _replacement_shutdown) =
+            transfer_request("agent", token, replacement_socket);
+        register_transfer(&mut state, replacement_request).await;
+        assert_eq!(
+            replacement_reply
+                .await
+                .expect("replacement reply delivered"),
+            Ok(())
+        );
+
+        // Stale unregister is ignored after replacement, so cleanup must happen here.
+        assert!(state.streams.downloads.is_empty());
+        assert!(state.streams.uploads.is_empty());
+        // Waiting HTTP upload clients must observe the lost payload path.
+        assert!(matches!(
+            completion_receiver
+                .await
+                .expect("upload completion delivered"),
+            Err(RouterError::TransferConnectionUnavailable { .. })
+        ));
+    }
+
+    /// Verifies a timed-out socket handler cannot install dead channels or evict a live socket.
+    #[tokio::test]
+    async fn transfer_registration_ignores_cancelled_reply() {
+        crate::logging::init(None).await;
+        let mut state = test_state();
+        let token = insert_control(&mut state, "agent");
+        let live_socket = crate::types::SocketId::new();
+        let (live_request, live_reply, _live_shutdown) =
+            transfer_request("agent", token.clone(), live_socket.clone());
+        register_transfer(&mut state, live_request).await;
+        assert_eq!(live_reply.await.expect("live reply delivered"), Ok(()));
+
+        let cancelled_socket = crate::types::SocketId::new();
+        let (cancelled_request, cancelled_reply, cancelled_shutdown) =
+            transfer_request("agent", token, cancelled_socket);
+        // Dropping the reply models the socket handler's request timeout path,
+        // which exits without ever sending UnregisterTransferConnection.
+        drop(cancelled_reply);
+        register_transfer(&mut state, cancelled_request).await;
+
+        // The live payload lane must survive; installing dead senders would
+        // admit transfers against a socket task that already exited.
+        assert_eq!(
+            state.agents.by_id[&AgentId::from("agent")]
+                .transfer
+                .as_ref()
+                .map(|transfer| transfer.socket_id.clone()),
+            Some(live_socket)
+        );
+        // Signal the abandoned registration's half so any lingering task exits.
+        assert!(*cancelled_shutdown.borrow());
+    }
+
     /// Verifies unknown agents and stale unregister events cannot affect live payload state.
     #[tokio::test]
     async fn transfer_registration_rejects_unknown_and_ignores_stale_unregister() {
@@ -607,7 +828,7 @@ mod tests {
         let unknown_socket = crate::types::SocketId::new();
         let (unknown_request, unknown_reply, _unknown_shutdown) =
             transfer_request("missing", "unknown-token".to_string(), unknown_socket);
-        register_transfer(&mut state, unknown_request);
+        register_transfer(&mut state, unknown_request).await;
         // Unknown identities use the same generic rejection as bad tokens to avoid disclosure.
         assert_eq!(
             unknown_reply.await.expect("unknown reply delivered"),
@@ -617,7 +838,7 @@ mod tests {
         let token = insert_control(&mut state, "agent");
         let current_socket = crate::types::SocketId::new();
         let (request, reply, _shutdown) = transfer_request("agent", token, current_socket.clone());
-        register_transfer(&mut state, request);
+        register_transfer(&mut state, request).await;
         // Setup must succeed before exercising stale teardown behavior.
         assert_eq!(reply.await.expect("registration reply delivered"), Ok(()));
         unregister_transfer(

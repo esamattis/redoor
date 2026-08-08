@@ -505,6 +505,10 @@ pub(crate) async fn raw_agent_put_handler(
 
     let (upload_completion_sender, upload_completion_receiver) =
         tokio::sync::oneshot::channel::<Result<CommandResult, actors::router::RouterError>>();
+    // Readiness is a separate barrier so the request id can arm cancel first.
+    let (upload_ready_sender, upload_ready_receiver) = tokio::sync::oneshot::channel::<
+        Result<actors::router::UploadStartOutcome, actors::router::RouterError>,
+    >();
 
     let request_id = match state
         .router_ref
@@ -517,6 +521,7 @@ pub(crate) async fn raw_agent_put_handler(
                 path: resolved_path.clone(),
                 total_bytes,
                 completion_sender: upload_completion_sender,
+                ready_sender: upload_ready_sender,
                 reply,
             })
         })
@@ -537,13 +542,51 @@ pub(crate) async fn raw_agent_put_handler(
         }
     };
 
+    // Arm cancel as soon as the id exists so timeouts/drops while waiting for
+    // TransferReady still tear down the router record and agent temp worker.
+    let mut cancel_guard =
+        UploadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
+
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(30000),
+        upload_ready_receiver,
+    )
+    .await
+    {
+        Ok(Ok(Ok(actors::router::UploadStartOutcome::Ready))) => {}
+        // Setup failed before TransferReady; reuse the completion status mapping.
+        Ok(Ok(Ok(actors::router::UploadStartOutcome::Finished(completion)))) => {
+            cancel_guard.disarm();
+            return raw_upload_completion_response(*completion, &resolved_path, 0);
+        }
+        Ok(Ok(Err(error))) => {
+            // Router already cleaned up the transfer for this error path.
+            cancel_guard.disarm();
+            return router_error_response(error);
+        }
+        Ok(Err(_)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Upload readiness channel closed".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Timed out waiting for upload readiness".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let mut body_stream = body.into_data_stream();
     let mut chunk_index = ChunkIndex::new(0);
     let mut bytes_written = 0u64;
-    // Any early return after this point means the client request ended before
-    // the agent saw a terminal chunk, so drop-driven cancel must clean up.
-    let mut cancel_guard =
-        UploadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
 
     while let Some(next_chunk) = body_stream.next().await {
         let data = match next_chunk {
@@ -632,27 +675,7 @@ pub(crate) async fn raw_agent_put_handler(
     cancel_guard.disarm();
 
     match upload_completion_receiver.await {
-        Ok(Ok(CommandResult::RawUpload)) => (
-            StatusCode::OK,
-            Json(RawUploadResponse {
-                path: resolved_path,
-                bytes_written,
-            }),
-        )
-            .into_response(),
-        Ok(Ok(CommandResult::Error { kind, message })) => {
-            let status = command_error_status(&kind);
-
-            (status, Json(ErrorResponse { error: message })).into_response()
-        }
-        Ok(Ok(_)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Unexpected upload completion response".to_string(),
-            }),
-        )
-            .into_response(),
-        Ok(Err(error)) => router_error_response(error),
+        Ok(completion) => raw_upload_completion_response(completion, &resolved_path, bytes_written),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -660,5 +683,35 @@ pub(crate) async fn raw_agent_put_handler(
             }),
         )
             .into_response(),
+    }
+}
+
+/// Maps one upload completion (including early init failures) to the established HTTP response.
+fn raw_upload_completion_response(
+    completion: Result<CommandResult, actors::router::RouterError>,
+    path: &str,
+    bytes_written: u64,
+) -> Response {
+    match completion {
+        Ok(CommandResult::RawUpload) => (
+            StatusCode::OK,
+            Json(RawUploadResponse {
+                path: path.to_string(),
+                bytes_written,
+            }),
+        )
+            .into_response(),
+        Ok(CommandResult::Error { kind, message }) => {
+            let status = command_error_status(&kind);
+            (status, Json(ErrorResponse { error: message })).into_response()
+        }
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected upload completion response".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => router_error_response(error),
     }
 }

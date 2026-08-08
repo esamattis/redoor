@@ -209,6 +209,20 @@ pub struct ExecuteStreamRequest {
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
 }
 
+/// Outcome of waiting for an upload destination to become ready.
+///
+/// The request id is returned immediately from start so HTTP can arm cancellation
+/// before this barrier. Init failures finish before `TransferReady`, so readiness
+/// must still carry the same completion payload the HTTP handler maps to status
+/// codes (permission denied -> 403, missing path -> 404, etc.).
+#[derive(Debug)]
+pub enum UploadStartOutcome {
+    /// Destination worker exists; HTTP may begin forwarding the request body.
+    Ready,
+    /// Transfer ended before readiness; boxed so the ready path stays small.
+    Finished(Box<Result<CommandResult, RouterError>>),
+}
+
 /// Starts a direct upload stream and returns the allocated internal request id.
 pub struct StartUploadRequest {
     /// Target agent that should receive the upload.
@@ -221,7 +235,12 @@ pub struct StartUploadRequest {
     pub total_bytes: u64,
     /// Completion channel for the final upload result.
     pub completion_sender: tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>,
-    /// Reply port that returns the allocated internal request id.
+    /// Released once the destination worker is ready, or with early setup failure.
+    ///
+    /// Kept separate from `reply` so HTTP can arm cancel with the request id
+    /// before blocking on this barrier.
+    pub ready_sender: tokio::sync::oneshot::Sender<Result<UploadStartOutcome, RouterError>>,
+    /// Immediate reply with the allocated request id (or start rejection).
     pub reply: RouterReply<Result<RequestId, RouterError>>,
 }
 

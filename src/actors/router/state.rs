@@ -107,7 +107,13 @@ pub struct DirectUpload {
     pub(crate) completion_sender:
         Option<tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>>,
     /// Delays the HTTP body producer until the upload worker exists on the other socket.
-    pub(crate) start_sender: Option<tokio::sync::oneshot::Sender<Result<RequestId, RouterError>>>,
+    ///
+    /// When setup fails before readiness, this carries `UploadStartOutcome::Finished`
+    /// so the HTTP layer can reuse the completion status mapping instead of a generic 500.
+    /// Dropped receivers mean the HTTP caller is gone and the upload must be canceled.
+    pub(crate) ready_sender: Option<
+        tokio::sync::oneshot::Sender<Result<super::messages::UploadStartOutcome, RouterError>>,
+    >,
     /// Records the cross-socket setup barrier for routing and diagnostics.
     pub(crate) ready: bool,
     /// Whether the REST side has already requested cancellation.

@@ -1,7 +1,9 @@
 use super::super::RouterError;
 use super::super::RouterHandle;
+use super::super::cleanup;
 use super::super::messages::{
     FinishUploadChunkRoute, RouterMsg, SendStreamChunkRequest, StartUploadRequest,
+    UploadStartOutcome,
 };
 use super::super::progress::{self, UploadStartContext};
 use super::super::state::RouterState;
@@ -12,6 +14,9 @@ use crate::logging::Level;
 use crate::types::{AgentId, Message};
 
 /// Starts a direct upload stream and records its progress entry.
+///
+/// Returns the request id immediately so the HTTP layer can arm cancellation
+/// before waiting for destination readiness on a separate channel.
 pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
     let request_id = state.next_id();
 
@@ -41,9 +46,23 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
                 path: request.path,
                 total_bytes: request.total_bytes,
                 completion_sender: request.completion_sender,
-                start_sender: request.reply,
+                ready_sender: request.ready_sender,
             },
         );
+
+        // Caller already abandoned the RPC before learning the id; tear down
+        // locally without messaging the agent so no temp-file worker is left.
+        if request.reply.send(Ok(request_id)).is_err() {
+            if state.streams.uploads.remove(&request_id).is_some() {
+                progress::mark_transfer_errored(
+                    state,
+                    request_id.as_transfer_id(),
+                    "Upload stream canceled by client".to_string(),
+                );
+                ui::notify_refresh(state);
+            }
+            return;
+        }
 
         agent_connection.send_message(Message::Command {
             agent_id: request.agent_id,
@@ -75,9 +94,17 @@ pub(crate) fn mark_ready(
         return;
     }
     upload.ready = true;
-    if let Some(start_sender) = upload.start_sender.take() {
-        let _ = start_sender.send(Ok(request_id));
+    let ready_sender = upload.ready_sender.take();
+
+    // A dropped readiness receiver means no body producer remains; cancel so
+    // the agent does not keep a temporary-file worker forever.
+    if let Some(ready_sender) = ready_sender
+        && ready_sender.send(Ok(UploadStartOutcome::Ready)).is_err()
+    {
+        cleanup::cancel_transfer(state, request_id, agent_id);
+        return;
     }
+
     super::copy::start_source_after_destination_ready(state, agent_id, request_id);
 }
 
@@ -305,7 +332,7 @@ pub(crate) fn finish_transfer(
             (
                 transfer.canceled_by_rest,
                 transfer.completion_sender.take(),
-                transfer.start_sender.take(),
+                transfer.ready_sender.take(),
             )
         }
         None => {
@@ -327,7 +354,7 @@ pub(crate) fn finish_transfer(
         }
     };
 
-    let (canceled_by_rest, completion_sender, start_sender) = transfer_state;
+    let (canceled_by_rest, completion_sender, ready_sender) = transfer_state;
 
     if canceled_by_rest {
         // After REST has already gone away, the agent response only acts as a
@@ -346,7 +373,7 @@ pub(crate) fn finish_transfer(
         if let Some(sender) = completion_sender {
             let _ = sender.send(Err(RouterError::ClientCanceledUpload));
         }
-        if let Some(sender) = start_sender {
+        if let Some(sender) = ready_sender {
             let _ = sender.send(Err(RouterError::ClientCanceledUpload));
         }
         return;
@@ -397,12 +424,14 @@ pub(crate) fn finish_transfer(
     state.streams.uploads.remove(&request_id);
     ui::notify_refresh(state);
 
-    if let Some(sender) = completion_sender {
+    if let Some(sender) = ready_sender {
+        // HTTP is still blocked on readiness when setup fails before TransferReady.
+        // Deliver the real completion here so permission/missing-path errors keep
+        // their established status mapping instead of becoming a generic 500.
+        let _ = sender.send(Ok(UploadStartOutcome::Finished(Box::new(
+            completion_result,
+        ))));
+    } else if let Some(sender) = completion_sender {
         let _ = sender.send(completion_result);
-    }
-    if let Some(sender) = start_sender {
-        let _ = sender.send(Err(RouterError::UnexpectedResponseType {
-            operation: "waiting for upload readiness",
-        }));
     }
 }

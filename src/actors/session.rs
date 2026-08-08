@@ -78,7 +78,11 @@ struct SessionRuntime {
 
 impl SessionRuntime {
     /// Registers the agent with the router once the websocket announces itself.
-    fn handle_control_message(&mut self, message: Message, watchdog_registry: &WatchdogRegistry) {
+    async fn handle_control_message(
+        &mut self,
+        message: Message,
+        watchdog_registry: &WatchdogRegistry,
+    ) {
         match message {
             Message::AgentRegister {
                 agent_id,
@@ -173,12 +177,25 @@ impl SessionRuntime {
                 agent_id,
                 request_id,
             } => {
-                let _ = self.router_ref.send(RouterMsg::RouteTransferReady(
-                    RouteTransferReadyRequest {
+                // TransferReady is a one-shot gate for uploads/copies. try_send would
+                // permanently drop readiness when the router mailbox is full, leaving
+                // the transfer stuck until client timeout with no cleanup path.
+                if let Err(error) = self
+                    .router_ref
+                    .send_async(RouterMsg::RouteTransferReady(RouteTransferReadyRequest {
+                        agent_id: agent_id.clone(),
+                        request_id,
+                    }))
+                    .await
+                {
+                    log!(
+                        Level::Error,
+                        "Failed to queue transfer readiness: agent_id={}, request_id={}, error={}",
                         agent_id,
                         request_id,
-                    },
-                ));
+                        error
+                    );
+                }
             }
             Message::CommandResponse {
                 agent_id,
@@ -237,7 +254,10 @@ impl SessionRuntime {
     ) -> bool {
         match message {
             WsMessage::Text(text) => match serde_json::from_str::<Message>(&text) {
-                Ok(message) => self.handle_control_message(message, watchdog_registry),
+                Ok(message) => {
+                    self.handle_control_message(message, watchdog_registry)
+                        .await
+                }
                 Err(error) => {
                     log!(
                         Level::Error,

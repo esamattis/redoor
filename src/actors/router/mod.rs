@@ -14,6 +14,7 @@ pub use messages::{
     RegisterManagedAgentRequest, RegisterTransferConnectionRequest, RegisterUiSubscriberRequest,
     RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg,
     SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
+    UploadStartOutcome,
 };
 pub use state::CopyContentKind;
 
@@ -188,7 +189,7 @@ async fn run_router(
                 agents::register(&mut state, request).await;
             }
             RouterMsg::RegisterTransferConnection(request) => {
-                agents::register_transfer(&mut state, request);
+                agents::register_transfer(&mut state, request).await;
             }
             RouterMsg::UnregisterTransferConnection {
                 agent_id,
@@ -389,6 +390,7 @@ mod tests {
             .expect("valid transfer token accepted");
 
         let (completion_tx, _completion_rx) = oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
         let router_for_start = router_ref.clone();
         let upload_start = tokio::spawn(async move {
             router_for_start
@@ -401,6 +403,7 @@ mod tests {
                         path: "/tmp/file.bin".to_string(),
                         total_bytes: 32,
                         completion_sender: completion_tx,
+                        ready_sender: ready_tx,
                         reply,
                     })
                 })
@@ -415,6 +418,13 @@ mod tests {
             },
             other => panic!("unexpected websocket frame: {other:?}"),
         };
+        let started_request_id = upload_start
+            .await
+            .expect("upload start task joined")
+            .expect("upload start rpc succeeded")
+            .expect("upload start accepted");
+        // Request id is available before readiness so cancel can be armed early.
+        assert_eq!(started_request_id, request_id);
         router_ref
             .send_async(RouterMsg::RouteTransferReady(RouteTransferReadyRequest {
                 agent_id: AgentId::from("agent-1"),
@@ -422,13 +432,16 @@ mod tests {
             }))
             .await
             .expect("upload readiness queued");
-        let started_request_id = upload_start
+        match ready_rx
             .await
-            .expect("upload start task joined")
-            .expect("upload start rpc succeeded")
-            .expect("upload start accepted");
-        // The readiness acknowledgement must release the same upload request the command created.
-        assert_eq!(started_request_id, request_id);
+            .expect("upload readiness delivered")
+            .expect("upload readiness accepted")
+        {
+            UploadStartOutcome::Ready => {}
+            UploadStartOutcome::Finished(result) => {
+                panic!("upload start finished before ready: {result:#?}")
+            }
+        };
 
         // Holding the first queued binary frame keeps the bounded lane full so the
         // second forwarded chunk must wait in the background task instead of the router.

@@ -1,9 +1,6 @@
 import * as React from "react";
 import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
-import {
-    useRouter,
-    type ErrorComponentProps,
-} from "@tanstack/react-router";
+import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
 import { ApiError } from "../api-client";
 
 /** True for browser network failures that never received an HTTP response. */
@@ -120,12 +117,10 @@ export function RouteError(
     const title = titleForError(props.error);
     const hint = hintForError(props.error);
     const message = messageForError(props.error);
-    const status =
-        props.error instanceof ApiError ? props.error.status : null;
+    const status = props.error instanceof ApiError ? props.error.status : null;
     const responseBody =
         props.error instanceof ApiError ? props.error.body : null;
-    const errorName =
-        props.error instanceof Error ? props.error.name : "Error";
+    const errorName = props.error instanceof Error ? props.error.name : "Error";
     const stack =
         props.error instanceof Error && props.error.stack
             ? props.error.stack
@@ -259,10 +254,7 @@ export function RouteError(
                             onClick={retry}
                             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
                         >
-                            <RefreshCw
-                                className="h-4 w-4"
-                                aria-hidden="true"
-                            />
+                            <RefreshCw className="h-4 w-4" aria-hidden="true" />
                             Try again
                         </button>
                         <button

@@ -34,8 +34,9 @@ pub(crate) struct UploadStartContext {
     /// Final completion channel for the upload result.
     pub(crate) completion_sender:
         tokio::sync::oneshot::Sender<Result<crate::commands::CommandResult, RouterError>>,
-    /// Start acknowledgement held until the destination worker is ready.
-    pub(crate) start_sender: tokio::sync::oneshot::Sender<Result<RequestId, RouterError>>,
+    /// Readiness acknowledgement held until the destination worker is ready.
+    pub(crate) ready_sender:
+        tokio::sync::oneshot::Sender<Result<super::messages::UploadStartOutcome, RouterError>>,
 }
 
 /// Inputs needed to register a new copy transfer in progress tracking.
@@ -112,7 +113,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
         DirectUpload {
             agent_id: context.agent_id,
             completion_sender: Some(context.completion_sender),
-            start_sender: Some(context.start_sender),
+            ready_sender: Some(context.ready_sender),
             ready: false,
             canceled_by_rest: false,
         },

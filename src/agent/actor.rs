@@ -98,15 +98,19 @@ impl AgentRuntime {
                 token,
                 sender,
                 shutdown,
+                installed,
             } => {
                 let is_current = control_generation == self.state.connection_generation
                     && transfer_generation == self.state.transfer_generation
                     && self.state.transfer_token.as_ref() == Some(&token);
                 if is_current {
+                    // Install before acknowledging so transfer auth cannot expose the server first.
                     self.state.ws_transfer_tx = Some(sender);
                     self.state.transfer_shutdown = Some(shutdown);
+                    let _ = installed.send(true);
                 } else {
                     let _ = shutdown.send(true);
+                    let _ = installed.send(false);
                 }
             }
             AgentMsg::TransferConnectionLost {

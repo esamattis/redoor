@@ -8,7 +8,7 @@ use redoor::{
     },
     types::AgentId,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 /// Derives the payload endpoint while preserving the configured authority and WebSocket scheme.
@@ -101,6 +101,32 @@ async fn run_transfer_connection(context: &TransferConnectContext) -> Result<()>
     let (mut socket, _) = connect_async(url.as_str())
         .await
         .context("failed to connect transfer socket")?;
+
+    // Install the transfer sender in the actor before authenticating so the server cannot
+    // admit REST transfers while ws_transfer_tx is still None on this agent.
+    let (sender, mut receiver) = mpsc::channel(TRANSFER_OUTBOUND_QUEUE_CAPACITY);
+    let (shutdown, mut shutdown_receiver) = watch::channel(false);
+    let (installed_tx, installed_rx) = oneshot::channel();
+    context
+        .handle
+        .send(AgentMsg::TransferConnected {
+            control_generation: context.control_generation,
+            transfer_generation: context.transfer_generation,
+            token: context.token.clone(),
+            sender,
+            shutdown,
+            installed: installed_tx,
+        })
+        .await
+        .context("agent actor stopped during transfer setup")?;
+    let installed = installed_rx
+        .await
+        .context("agent actor dropped transfer install acknowledgement")?;
+    if !installed {
+        // Stale generation: leave without authenticating so the server never registers this socket.
+        return Ok(());
+    }
+
     let handshake = serde_json::to_string(&TransferSocketHandshake::Authenticate {
         agent_id: context.agent_id.clone(),
         token: context.token.clone(),
@@ -112,20 +138,6 @@ async fn run_transfer_connection(context: &TransferConnectContext) -> Result<()>
         .context("failed to send transfer authentication")?;
 
     let (mut writer, mut reader) = socket.split();
-    let (sender, mut receiver) = mpsc::channel(TRANSFER_OUTBOUND_QUEUE_CAPACITY);
-    let (shutdown, mut shutdown_receiver) = watch::channel(false);
-    context
-        .handle
-        .send(AgentMsg::TransferConnected {
-            control_generation: context.control_generation,
-            transfer_generation: context.transfer_generation,
-            token: context.token.clone(),
-            sender,
-            shutdown,
-        })
-        .await
-        .context("agent actor stopped during transfer setup")?;
-
     log!(
         Level::Info,
         "Transfer socket connected: agent_id={}, generation={}",
