@@ -3,23 +3,23 @@
 /**
  * Carries bounded history and live updates for either server or agent logs.
  */
-export type LogEvent = { "type": "snapshot",
+export type LogEvent = { "type": "snapshot", 
 /**
  * Preserves chronological source order so the newest retained entry renders last.
  */
-entries: Array<string>,
+entries: Array<string>, 
 /**
  * Explains whether persistent history was available without exposing a file path.
  */
-file_logging_enabled: boolean, } | { "type": "entry",
+file_logging_enabled: boolean, } | { "type": "entry", 
 /**
  * Uses the logger's formatted output so file and live rendering stay consistent.
  */
-entry: string, } | { "type": "lagged",
+entry: string, } | { "type": "lagged", 
 /**
  * Quantifies missed records while remaining safe for JavaScript consumers.
  */
-skipped: number, } | { "type": "error",
+skipped: number, } | { "type": "error", 
 /**
  * Gives the operator an actionable generic reason while details remain process-local.
  */
