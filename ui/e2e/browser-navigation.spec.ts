@@ -181,24 +181,11 @@ test.describe.serial("File Browser Navigation", () => {
         const nestedUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}`;
         await page.goto(directoryUrl);
 
-        const breadcrumbs = page.getByRole("navigation", {
-            name: "Breadcrumbs",
-        });
-        const breadcrumbWidth = await breadcrumbs.evaluate(
-            (element) => element.getBoundingClientRect().width,
-        );
         await page.getByRole("button", { name: "Edit file path" }).click();
 
         const pathInput = page.getByRole("textbox", { name: "File path" });
         // The existing path lets users edit only the portion that needs changing.
         await expect(pathInput).toHaveValue(ctx.testDirPath);
-        const pathInputWidth = await pathInput.evaluate(
-            (element) => element.getBoundingClientRect().width,
-        );
-        // Keeping the control width stable prevents nearby header actions from shifting.
-        expect(Math.abs(pathInputWidth - breadcrumbWidth)).toBeLessThanOrEqual(
-            1,
-        );
 
         await pathInput.fill(nestedPath);
         await pathInput.press("Enter");

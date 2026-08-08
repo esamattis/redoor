@@ -777,15 +777,17 @@ function BrowserHeader(props: {
     return (
         <header className="mb-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <Breadcrumbs
-                    agent={props.agent}
-                    path={props.path}
-                    startEditing={pathMissing}
-                />
+                <div className="min-w-0 flex-1">
+                    <Breadcrumbs
+                        agent={props.agent}
+                        path={props.path}
+                        startEditing={pathMissing}
+                    />
+                </div>
                 <Link
                     to="/agents/$agentId"
                     params={{ agentId: props.agentId }}
-                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
                     <ArrowLeft className="h-3.5 w-3.5" />
                     Back to Agent
@@ -951,13 +953,11 @@ function Breadcrumbs(props: {
     startEditing?: boolean;
 }) {
     const navigate = useNavigate();
-    const breadcrumbsRef = React.useRef<HTMLElement>(null);
     const pathInputRef = React.useRef<HTMLInputElement>(null);
     const [isEditing, setIsEditing] = React.useState(
         props.startEditing === true,
     );
     const [editedPath, setEditedPath] = React.useState(props.path);
-    const [editorWidth, setEditorWidth] = React.useState<number | undefined>();
 
     const parts = props.path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
@@ -982,10 +982,8 @@ function Breadcrumbs(props: {
         pathInputRef.current?.select();
     }, [isEditing, props.path]);
 
-    /** Preserves the breadcrumb width so editing does not shift surrounding actions. */
+    /** Opens the path editor with the current route path. */
     const startEditing = () => {
-        const width = breadcrumbsRef.current?.getBoundingClientRect().width;
-        setEditorWidth(width === undefined ? undefined : Math.ceil(width));
         setEditedPath(props.path);
         setIsEditing(true);
     };
@@ -1009,11 +1007,11 @@ function Breadcrumbs(props: {
     };
 
     return (
-        <div className="flex min-w-0 items-center gap-1">
+        <div className="flex min-w-0 w-full items-center gap-1">
             {isEditing ? (
                 <form
                     onSubmit={navigateToEditedPath}
-                    className="flex min-w-0 items-center gap-1"
+                    className="flex min-w-0 w-full items-center gap-1"
                 >
                     <input
                         ref={pathInputRef}
@@ -1026,15 +1024,12 @@ function Breadcrumbs(props: {
                             }
                         }}
                         aria-label="File path"
-                        style={{
-                            width: editorWidth ?? "min(100%, 28rem)",
-                        }}
-                        className="min-w-0 max-w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        className="min-w-0 w-full flex-1 rounded-md border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                     />
                     <button
                         type="submit"
                         aria-label="Navigate to path"
-                        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
                         <Check className="h-4 w-4" />
                     </button>
@@ -1042,9 +1037,8 @@ function Breadcrumbs(props: {
             ) : (
                 <>
                     <nav
-                        ref={breadcrumbsRef}
                         aria-label="Breadcrumbs"
-                        className="flex flex-wrap items-center gap-2 text-sm"
+                        className="flex min-w-0 flex-wrap items-center gap-2 text-sm"
                     >
                         {isAtRoot ? (
                             <span className="font-medium text-slate-100">
