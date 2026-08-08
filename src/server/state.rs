@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Args;
 use redoor::actors;
@@ -19,10 +20,14 @@ pub(crate) struct ServerState {
     pub(crate) terminal_registry: TerminalRegistry,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
-    /// Absolute path of the TOML config loaded at process start (for the server home UI).
+    /// Absolute path of the TOML config loaded at process start (for the server
+    /// home UI and so reload can re-validate the same file).
     pub(crate) config_path: PathBuf,
     /// Login backend resolved from the TOML credentials (or their absence).
     pub(crate) auth_mode: ServerAuthMode,
+    /// Signals axum graceful shutdown; reload fires this after a successful
+    /// pre-validation so the listener is dropped before exec.
+    pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl ServerState {
@@ -33,6 +38,7 @@ impl ServerState {
         auth: AuthState,
         config_path: PathBuf,
         auth_mode: ServerAuthMode,
+        shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     ) -> Self {
         Self {
             router_ref,
@@ -41,6 +47,7 @@ impl ServerState {
             auth,
             config_path,
             auth_mode,
+            shutdown_tx,
         }
     }
 }

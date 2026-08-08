@@ -41,13 +41,17 @@ test.describe("Authentication", () => {
         await page.getByRole("button", { name: "Sign in" }).click();
         await expect(page).toHaveURL(`${WEB_BASE_URL}/`);
         // Root is the server home, not an agents list.
-        await expect(page.getByRole("heading", { name: "Server" })).toBeVisible();
+        await expect(
+            page.getByRole("heading", { name: "Server" }),
+        ).toBeVisible();
         await expect(page.getByText("config.toml")).toBeVisible();
         await expect(
             page.getByText("TOML (username/password in config file)"),
         ).toBeVisible();
         // Build identity is baked via build.rs for support/debugability.
-        await expect(page.getByRole("heading", { name: "Version" })).toBeVisible();
+        await expect(
+            page.getByRole("heading", { name: "Version" }),
+        ).toBeVisible();
         await expect(
             page.getByRole("heading", { name: "Git revision" }),
         ).toBeVisible();
@@ -58,7 +62,9 @@ test.describe("Authentication", () => {
         // Account actions live behind the burger menu so the tab strip stays uncluttered.
         await page.getByRole("button", { name: "Open menu" }).click();
         await expect(page.getByRole("dialog", { name: "Menu" })).toBeVisible();
-        await expect(page.getByRole("link", { name: "Server home" })).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "Server home" }),
+        ).toBeVisible();
 
         await page.getByRole("button", { name: "Log out" }).click();
         // Logout must leave protected chrome and display the dedicated form.

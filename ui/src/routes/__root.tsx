@@ -475,10 +475,7 @@ function TopTabStrip(props: {
                     }
                 }}
             >
-                <nav
-                    aria-label="Account"
-                    className="mt-3 flex flex-col gap-1"
-                >
+                <nav aria-label="Account" className="mt-3 flex flex-col gap-1">
                     <Link
                         to="/"
                         aria-label="Server home"

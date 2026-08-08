@@ -12,6 +12,7 @@ use super::{
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
     raw::{raw_agent_handler, raw_agent_put_handler},
+    reload::reload_config_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
@@ -77,6 +78,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route("/api/v1/copy", post(copy_file_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
+        .route("/api/v1/config/reload", post(reload_config_handler))
         .layer(middleware::from_fn_with_state(auth, require_authentication))
         .layer(
             CorsLayer::new()

@@ -26,6 +26,7 @@ import type { MetadataResponse } from "../../bindings/MetadataResponse";
 import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
+import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
 
 export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
@@ -45,6 +46,7 @@ export type {
     ServerInfoResponse,
     ServerAuthMode,
     ServerBuildMode,
+    ReloadConfigResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -479,6 +481,16 @@ export class ApiClient {
         );
         this.sessionCookie = null;
         return response;
+    }
+
+    /** Asks the server to re-read config.toml by restarting the process in place. */
+    async reloadConfig(): Promise<ReloadConfigResponse> {
+        return apiRequest<ReloadConfigResponse>(
+            this.baseUrl,
+            "/api/v1/config/reload",
+            { method: "POST" },
+            this.requestContext(),
+        );
     }
 
     getUiWebSocketUrl(): string {
