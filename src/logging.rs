@@ -1,7 +1,7 @@
-use std::{path::PathBuf, sync::OnceLock};
+use std::{collections::VecDeque, path::PathBuf, sync::OnceLock};
 
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{
         broadcast,
         mpsc::{self, UnboundedSender},
@@ -10,6 +10,9 @@ use tokio::{
 };
 
 const LIVE_LOG_CAPACITY: usize = 1_024;
+
+/// Caps every historical scan to the same browser-sized rolling window.
+pub const LOG_HISTORY_ENTRY_LIMIT: usize = 500;
 
 static LOGGER: OnceLock<LoggerHandle> = OnceLock::new();
 
@@ -200,6 +203,26 @@ impl Logger {
     }
 }
 
+/// Scans a stable file prefix asynchronously while retaining only the newest display entries.
+pub async fn read_latest_entries(
+    path: &std::path::Path,
+    history_end: u64,
+) -> std::io::Result<Vec<String>> {
+    let file = tokio::fs::File::open(path).await?;
+    let limited_file = file.take(history_end);
+    let mut lines = BufReader::new(limited_file).lines();
+    let mut entries = VecDeque::with_capacity(LOG_HISTORY_ENTRY_LIMIT);
+
+    while let Some(line) = lines.next_line().await? {
+        if entries.len() == LOG_HISTORY_ENTRY_LIMIT {
+            entries.pop_front();
+        }
+        entries.push_back(line);
+    }
+
+    Ok(entries.into_iter().collect())
+}
+
 /// Initializes the process-global logger before any log macro is used.
 pub async fn init(log_file_path: Option<String>) {
     if LOGGER.get().is_some() {
@@ -247,7 +270,10 @@ macro_rules! log {
 mod tests {
     use std::path::PathBuf;
 
-    use tokio::{io::AsyncReadExt, sync::broadcast::error::TryRecvError};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::broadcast::error::TryRecvError,
+    };
     use uuid::Uuid;
 
     use super::*;
@@ -255,6 +281,17 @@ mod tests {
     /// Creates an isolated file name so parallel logger tests cannot alter each other's history.
     fn temporary_log_path() -> PathBuf {
         std::env::temp_dir().join(format!("redoor-logger-test-{}.log", Uuid::new_v4()))
+    }
+
+    /// Writes deterministic physical records without involving the process-global logger.
+    async fn write_history(path: &std::path::Path, entries: &[String], final_newline: bool) {
+        let mut contents = entries.join("\n");
+        if final_newline {
+            contents.push('\n');
+        }
+        tokio::fs::write(path, contents)
+            .await
+            .expect("test history should be writable");
     }
 
     /// Starts a directly owned logger because the process-global OnceLock cannot be reset between tests.
@@ -287,6 +324,121 @@ mod tests {
                 message: message.to_string(),
             }))
             .expect("test logger should accept write commands");
+    }
+
+    /// Protects complete chronological snapshots when no eviction is necessary.
+    #[tokio::test]
+    async fn history_returns_all_entries_in_original_order_below_limit() {
+        let path = temporary_log_path();
+        let expected = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
+        write_history(&path, &expected, true).await;
+        let cutoff = tokio::fs::metadata(&path)
+            .await
+            .expect("history metadata should exist")
+            .len();
+        let actual = read_latest_entries(&path, cutoff)
+            .await
+            .expect("history should be readable");
+        // Histories below the cap must retain every complete entry in source order.
+        assert_eq!(actual, expected);
+        tokio::fs::remove_file(path)
+            .await
+            .expect("history should be removable");
+    }
+
+    /// Protects the memory cap while retaining the newest chronological records.
+    #[tokio::test]
+    async fn history_retains_only_latest_five_hundred_entries() {
+        let path = temporary_log_path();
+        let entries = (1..=510)
+            .map(|index| format!("line-{index:03}"))
+            .collect::<Vec<_>>();
+        write_history(&path, &entries, true).await;
+        let cutoff = tokio::fs::metadata(&path)
+            .await
+            .expect("history metadata should exist")
+            .len();
+        let actual = read_latest_entries(&path, cutoff)
+            .await
+            .expect("history should be readable");
+        // The rolling scanner must never retain more than the browser window.
+        assert_eq!(actual.len(), LOG_HISTORY_ENTRY_LIMIT);
+        // Eviction must discard only the ten oldest records.
+        assert_eq!(actual.first().map(String::as_str), Some("line-011"));
+        // The newest record must remain last after bounded scanning.
+        assert_eq!(actual.last().map(String::as_str), Some("line-510"));
+        tokio::fs::remove_file(path)
+            .await
+            .expect("history should be removable");
+    }
+
+    /// Protects the exact subscription cutoff from later appends.
+    #[tokio::test]
+    async fn history_cutoff_excludes_later_appends() {
+        let path = temporary_log_path();
+        write_history(&path, &["before cutoff".to_string()], true).await;
+        let cutoff = tokio::fs::metadata(&path)
+            .await
+            .expect("history metadata should exist")
+            .len();
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .expect("history should reopen");
+        file.write_all(b"after cutoff\n")
+            .await
+            .expect("append should succeed");
+        drop(file);
+        let actual = read_latest_entries(&path, cutoff)
+            .await
+            .expect("history should be readable");
+        // Only records accepted before the stable byte boundary belong in the snapshot.
+        assert_eq!(actual, vec!["before cutoff"]);
+        tokio::fs::remove_file(path)
+            .await
+            .expect("history should be removable");
+    }
+
+    /// Protects empty persistent history as a valid snapshot.
+    #[tokio::test]
+    async fn history_empty_file_returns_empty_snapshot() {
+        let path = temporary_log_path();
+        tokio::fs::write(&path, b"")
+            .await
+            .expect("empty history should be writable");
+        let actual = read_latest_entries(&path, 0)
+            .await
+            .expect("empty history should be readable");
+        // An empty active file must not invent placeholder records.
+        assert!(actual.is_empty());
+        tokio::fs::remove_file(path)
+            .await
+            .expect("history should be removable");
+    }
+
+    /// Protects an unterminated final physical line from being discarded.
+    #[tokio::test]
+    async fn history_retains_final_entry_without_newline() {
+        let path = temporary_log_path();
+        let expected = vec!["complete line".to_string(), "final line".to_string()];
+        write_history(&path, &expected, false).await;
+        let cutoff = tokio::fs::metadata(&path)
+            .await
+            .expect("history metadata should exist")
+            .len();
+        let actual = read_latest_entries(&path, cutoff)
+            .await
+            .expect("history should be readable");
+        // A final physical line is still one complete display entry without a delimiter.
+        assert_eq!(actual, expected);
+        tokio::fs::remove_file(path)
+            .await
+            .expect("history should be removable");
     }
 
     /// Protects the queue-position boundary that prevents snapshot/live gaps and duplicates.

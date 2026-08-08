@@ -40,6 +40,11 @@ test.describe.serial("Server logs", () => {
         await expect(
             page.getByRole("heading", { name: "Server logs" }),
         ).toBeVisible();
+        const agentLogsLink = page.getByRole("link", {
+            name: "View logs for agent1_src",
+        });
+        // Connected agents must be discoverable directly from the server-log view.
+        await expect(agentLogsLink).toBeVisible();
         const autoScroll = page.getByRole("checkbox", { name: "Auto-scroll" });
         // Operators should initially follow the newest entry without extra interaction.
         await expect(autoScroll).toBeChecked();
@@ -75,6 +80,21 @@ test.describe.serial("Server logs", () => {
             )
             // Strict Mode may create a transient socket, but only one mounted route socket may remain open.
             .toBe(1);
+    });
+
+    test("navigates from server logs to one connected agent log route", async ({
+        page,
+    }) => {
+        await navigateToServerLogs(page);
+        await page
+            .getByRole("link", { name: "View logs for agent1_src" })
+            .click();
+        // The typed link must preserve the selected connected agent in the route.
+        await expect(page).toHaveURL(/\/agents\/[^/]+\/logs$/);
+        // Rendering the agent-specific heading proves navigation reached the shared viewer wrapper.
+        await expect(
+            page.getByRole("heading", { name: "agent1_src logs" }),
+        ).toBeVisible();
     });
 
     test("streams live entries, honors auto-scroll, and closes on navigation", async ({

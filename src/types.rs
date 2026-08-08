@@ -275,6 +275,13 @@ pub enum Message {
         cwd: String,
     },
 
+    /// Requests one ephemeral dedicated log connection from this agent.
+    #[serde(rename = "log_stream_open")]
+    LogStreamOpen {
+        log_stream_id: crate::log_protocol::LogStreamId,
+        token: String,
+    },
+
     /// Protocol-level error outside any request-specific response flow.
     ///
     /// The router currently uses this to reject invalid agent registration such

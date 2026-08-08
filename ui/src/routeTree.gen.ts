@@ -17,6 +17,7 @@ import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as ConfigReloadRouteImport } from './routes/config.reload'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
+import { Route as AgentsAgentIdLogsRouteImport } from './routes/agents.$agentId.logs'
 import { Route as AgentsAgentIdBrowserSplatRouteImport } from './routes/agents.$agentId.browser.$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -59,6 +60,11 @@ const AgentsAgentIdIndexRoute = AgentsAgentIdIndexRouteImport.update({
   path: '/agents/$agentId/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentsAgentIdLogsRoute = AgentsAgentIdLogsRouteImport.update({
+  id: '/agents/$agentId/logs',
+  path: '/agents/$agentId/logs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsAgentIdBrowserSplatRoute =
   AgentsAgentIdBrowserSplatRouteImport.update({
     id: '/agents/$agentId/browser/$',
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/config/reload': typeof ConfigReloadRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
+  '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/config/reload': typeof ConfigReloadRoute
   '/agents': typeof AgentsIndexRoute
   '/transfers': typeof TransfersIndexRoute
+  '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/config/reload': typeof ConfigReloadRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
+  '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/config/reload'
     | '/agents/'
     | '/transfers/'
+    | '/agents/$agentId/logs'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
   fileRoutesByTo: FileRoutesByTo
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/config/reload'
     | '/agents'
     | '/transfers'
+    | '/agents/$agentId/logs'
     | '/agents/$agentId'
     | '/agents/$agentId/browser/$'
   id:
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/config/reload'
     | '/agents/'
     | '/transfers/'
+    | '/agents/$agentId/logs'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
   fileRoutesById: FileRoutesById
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   ConfigReloadRoute: typeof ConfigReloadRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   TransfersIndexRoute: typeof TransfersIndexRoute
+  AgentsAgentIdLogsRoute: typeof AgentsAgentIdLogsRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   AgentsAgentIdBrowserSplatRoute: typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -206,6 +219,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsAgentIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agents/$agentId/logs': {
+      id: '/agents/$agentId/logs'
+      path: '/agents/$agentId/logs'
+      fullPath: '/agents/$agentId/logs'
+      preLoaderRoute: typeof AgentsAgentIdLogsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/$agentId/browser/$': {
       id: '/agents/$agentId/browser/$'
       path: '/agents/$agentId/browser/$'
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConfigReloadRoute: ConfigReloadRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   TransfersIndexRoute: TransfersIndexRoute,
+  AgentsAgentIdLogsRoute: AgentsAgentIdLogsRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   AgentsAgentIdBrowserSplatRoute: AgentsAgentIdBrowserSplatRoute,
 }

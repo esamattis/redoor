@@ -1,5 +1,6 @@
 use super::RouterError;
 use crate::commands::{AgentConnectionStatus, Command, CommandResult, TransferProgressEntry};
+use crate::log_registry::LogRegistry;
 use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::terminal_registry::TerminalRegistry;
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
@@ -211,6 +212,8 @@ pub struct UiState {
 pub struct RouterState {
     /// Pending dedicated terminal setups cleaned when authoritative agents leave.
     pub(crate) terminal_registry: TerminalRegistry,
+    /// Pending dedicated log setups cleaned when authoritative agents leave.
+    pub(crate) log_registry: LogRegistry,
     /// Connected-agent registry used for all routing decisions.
     pub(crate) agents: AgentRegistry,
     /// Pending one-shot REST replies awaiting final agent responses.
@@ -232,9 +235,11 @@ impl RouterState {
     pub(crate) fn new(
         ui_refresh_check_task: tokio::task::JoinHandle<()>,
         terminal_registry: TerminalRegistry,
+        log_registry: LogRegistry,
     ) -> Self {
         Self {
             terminal_registry,
+            log_registry,
             agents: AgentRegistry::default(),
             pending_rest: PendingRestReplies::default(),
             streams: StreamTransferRegistry::default(),

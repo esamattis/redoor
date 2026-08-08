@@ -674,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_is_dormant_until_started_and_start_is_idempotent() {
-        crate::logging::init(None);
+        crate::logging::init(None).await;
         let count = Arc::new(AtomicUsize::new(0));
         let spawn_count = count.clone();
         let spawn = SpawnFn::new(move || {
@@ -716,7 +716,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_revokes_registration_and_interrupts_pending_spawn() {
-        crate::logging::init(None);
+        crate::logging::init(None).await;
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let observed_spawn = spawn_count.clone();
         let registry = WatchdogRegistry::new();
@@ -756,7 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_errors_are_visible_and_shutdown_interrupts_backoff() {
-        crate::logging::init(None);
+        crate::logging::init(None).await;
         let registry = WatchdogRegistry::new();
         let _guard = SupervisorGuard(
             spawn_supervisor(
@@ -819,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_generation_clears_issue_and_ignores_stale_disconnect() {
-        crate::logging::init(None);
+        crate::logging::init(None).await;
         let registry = WatchdogRegistry::new();
         let _guard = SupervisorGuard(
             spawn_supervisor(

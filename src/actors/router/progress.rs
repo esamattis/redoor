@@ -263,6 +263,7 @@ mod tests {
         let mut state = RouterState::new(
             refresh_check_task,
             crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
         );
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
         state.ui.subscribers.insert("ui-1".to_string(), ui_tx);

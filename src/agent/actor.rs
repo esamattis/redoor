@@ -60,6 +60,7 @@ impl AgentRuntime {
         self.state.active_uploads.clear();
         self.state.active_downloads.clear();
         self.state.active_terminals.clear();
+        self.state.active_log_streams.clear();
 
         log!(
             Level::Info,
@@ -150,6 +151,7 @@ impl AgentRuntime {
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
                 self.state.active_terminals.clear();
+                self.state.active_log_streams.clear();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     let _ = handle.try_send(AgentMsg::Connect);
@@ -167,6 +169,9 @@ impl AgentRuntime {
             }
             AgentMsg::TerminalFinished { terminal_id } => {
                 self.state.active_terminals.remove(&terminal_id);
+            }
+            AgentMsg::LogStreamFinished { log_stream_id } => {
+                self.state.active_log_streams.remove(&log_stream_id);
             }
             AgentMsg::ExitWithError => {
                 log!(Level::Error, "Exiting agent due to error");

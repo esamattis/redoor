@@ -1,6 +1,7 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
-    AgentState, DownloadSessionHandle, TerminalSessionHandle, raw::RawDownloadContext, terminal,
+    AgentState, DownloadSessionHandle, LogStreamSessionHandle, TerminalSessionHandle, logs,
+    raw::RawDownloadContext, terminal,
 };
 use redoor::{
     Level,
@@ -192,6 +193,45 @@ impl AgentActor {
                             request_id
                         );
                     }
+                }
+                Message::LogStreamOpen {
+                    log_stream_id,
+                    token,
+                } => {
+                    let (cancel_sender, cancel_receiver) = watch::channel(false);
+                    if !state.active_log_streams.insert_if_absent(
+                        log_stream_id.clone(),
+                        LogStreamSessionHandle { cancel_sender },
+                    ) {
+                        log!(
+                            Level::Warning,
+                            "Rejected duplicate or excess log stream bootstrap: log_stream_id={}",
+                            log_stream_id.0
+                        );
+                        return;
+                    }
+
+                    let server_url = state.server_url.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = logs::connect_and_run(
+                            &server_url,
+                            log_stream_id.clone(),
+                            token,
+                            cancel_receiver,
+                        )
+                        .await
+                        {
+                            log!(
+                                Level::Warning,
+                                "Log stream ended with an error: log_stream_id={}, error={}",
+                                log_stream_id.0,
+                                error
+                            );
+                        }
+                        let _ = agent_ref
+                            .send(AgentMsg::LogStreamFinished { log_stream_id })
+                            .await;
+                    });
                 }
                 Message::TerminalOpen {
                     terminal_id,
