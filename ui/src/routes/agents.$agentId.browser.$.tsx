@@ -182,7 +182,7 @@ function FileBrowser() {
 
         return (
             <div className="p-6">
-                <div className="max-w-4xl mx-auto">
+                <div className="mx-auto max-w-6xl">
                     <FileDetailView
                         agent={agent}
                         agentId={agentId}
@@ -931,6 +931,152 @@ function FileEntry(props: {
     );
 }
 
+/** Converts permission bits to the compact notation people expect from Unix tools. */
+function formatSymbolicPermissions(permissions: number): string {
+    const permissionBits = [
+        { bit: 0o400, symbol: "r" },
+        { bit: 0o200, symbol: "w" },
+        { bit: 0o100, symbol: "x" },
+        { bit: 0o040, symbol: "r" },
+        { bit: 0o020, symbol: "w" },
+        { bit: 0o010, symbol: "x" },
+        { bit: 0o004, symbol: "r" },
+        { bit: 0o002, symbol: "w" },
+        { bit: 0o001, symbol: "x" },
+    ];
+
+    return permissionBits
+        .map((permission) =>
+            permissions & permission.bit ? permission.symbol : "-",
+        )
+        .join("");
+}
+
+/** Keeps repeated metadata cells visually and semantically consistent. */
+function FileMetadataItem(props: {
+    label: string;
+    value: React.ReactNode;
+    valueLabel?: string;
+    mono?: boolean;
+}) {
+    return (
+        <div className="rounded-xl border border-slate-800/80 bg-slate-950/35 px-4 py-3.5">
+            <dt className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                {props.label}
+            </dt>
+            <dd
+                aria-label={props.valueLabel}
+                className={`mt-1.5 truncate text-sm font-semibold text-slate-100 ${props.mono ? "font-mono" : ""}`}
+            >
+                {props.value}
+            </dd>
+        </div>
+    );
+}
+
+/** Makes raw permission bits understandable without requiring users to decode octal values. */
+function FilePermissionsGrid(props: { permissions: number }) {
+    const rows = [
+        { label: "Owner", bits: [0o400, 0o200, 0o100] },
+        { label: "Group", bits: [0o040, 0o020, 0o010] },
+        { label: "Others", bits: [0o004, 0o002, 0o001] },
+    ];
+    const columns = ["Read", "Write", "Execute"];
+
+    return (
+        <div className="overflow-hidden rounded-xl border border-slate-800/80">
+            <table className="w-full table-fixed text-sm">
+                <thead className="bg-slate-950/60 text-xs font-medium uppercase tracking-wider text-slate-500">
+                    <tr>
+                        <th scope="col" className="px-3 py-3 text-left">
+                            Scope
+                        </th>
+                        {columns.map((column) => (
+                            <th
+                                key={column}
+                                scope="col"
+                                className="px-2 py-3 text-center"
+                            >
+                                {column}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                    {rows.map((row) => (
+                        <tr key={row.label} className="bg-slate-950/25">
+                            <th
+                                scope="row"
+                                className="px-3 py-3 text-left font-medium text-slate-300"
+                            >
+                                {row.label}
+                            </th>
+                            {row.bits.map((bit, index) => {
+                                const column = columns[index];
+                                if (!column) return null;
+
+                                const isAllowed = Boolean(
+                                    props.permissions & bit,
+                                );
+                                return (
+                                    <td
+                                        key={bit}
+                                        aria-label={`${row.label} ${column}: ${isAllowed ? "allowed" : "not allowed"}`}
+                                        className="px-2 py-2 text-center"
+                                    >
+                                        <span
+                                            className={`inline-flex h-7 w-7 items-center justify-center rounded-md font-mono text-xs font-bold ${isAllowed ? "bg-emerald-500/15 text-emerald-400" : "bg-slate-800/50 text-slate-600"}`}
+                                        >
+                                            {isAllowed
+                                                ? column.charAt(0).toLowerCase()
+                                                : "–"}
+                                        </span>
+                                    </td>
+                                );
+                            })}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
+/** Keeps shell commands readable on narrow screens while leaving copy controls accessible. */
+function CommandDownloadRow(props: {
+    label: string;
+    command: string;
+    isCopied: boolean;
+    onCopy: () => void;
+}) {
+    return (
+        <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/50">
+            <div className="flex items-center justify-between border-b border-slate-800/80 px-4 py-2">
+                <span className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {props.label}
+                </span>
+                <button
+                    type="button"
+                    onClick={props.onCopy}
+                    className="inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
+                    aria-label={`Copy ${props.label} command`}
+                >
+                    {props.isCopied ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                    )}
+                    {props.isCopied ? "Copied" : "Copy"}
+                </button>
+            </div>
+            <code className="block overflow-x-auto whitespace-nowrap px-4 py-3 font-mono text-sm text-slate-300">
+                {props.command}
+            </code>
+        </div>
+    );
+}
+
+/** Presents file metadata and destructive actions with clear visual separation. */
 function FileDetailView(props: {
     agent: Agent;
     agentId: string;
@@ -986,116 +1132,71 @@ function FileDetailView(props: {
         }
     };
 
+    const wgetCommand = `wget "${props.downloadUrl}"`;
+    const curlCommand = `curl -O "${props.downloadUrl}"`;
+    const symbolicPermissions = formatSymbolicPermissions(
+        props.lsResult.permissions,
+    );
+    const octalPermissions = `0${props.lsResult.permissions
+        .toString(8)
+        .padStart(3, "0")}`;
+
     return (
         <div>
-            <div className="mb-6">
-                <div className="mb-4 flex flex-col gap-3">
-                    <Breadcrumbs
-                        agentId={props.agentId}
-                        agentName={props.agentName}
-                        agent={props.agent}
-                        path={props.path}
-                    />
-                    <div className="flex flex-wrap gap-2">
-                        <Link
-                            to={getBrowserPathHref(
-                                props.agent,
-                                parentPath ?? "/",
-                            )}
-                            className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
-                        >
-                            <ArrowLeft className="h-4 w-4" />
-                            Back
-                        </Link>
-                        <Link
-                            to="/agents/$agentId"
-                            params={{ agentId: props.agentId }}
-                            className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
-                        >
-                            Back to Agent
-                        </Link>
-                    </div>
+            <div className="mb-5 space-y-4">
+                <Breadcrumbs
+                    agentId={props.agentId}
+                    agentName={props.agentName}
+                    agent={props.agent}
+                    path={props.path}
+                />
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <Link
+                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
+                        className="inline-flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-900/60 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+                    >
+                        <ArrowLeft className="h-4 w-4" />
+                        Back
+                    </Link>
+                    <Link
+                        to="/agents/$agentId"
+                        params={{ agentId: props.agentId }}
+                        className="text-sm font-medium text-slate-400 transition hover:text-blue-400"
+                    >
+                        Back to Agent
+                    </Link>
                 </div>
             </div>
 
-            <div className="rounded-lg border border-slate-800 bg-[#11141b] p-6">
-                <div className="mb-6 flex items-center gap-4">
-                    <div className="rounded-lg bg-blue-500/15 p-3">
-                        <File className="h-8 w-8 text-blue-400" />
-                    </div>
-                    <h1
-                        aria-label="File name"
-                        className="text-2xl font-bold text-slate-100"
-                    >
-                        {props.fileName}
-                    </h1>
-                </div>
-
-                <div className="space-y-4">
-                    <div className="grid grid-cols-3 gap-4">
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">Size</p>
-                            <p
-                                aria-label="File size value"
-                                className="font-medium text-slate-100"
-                            >
-                                {formatSize(props.lsResult.size)}
-                            </p>
+            <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+                <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
+                    <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
+                    <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
+                        <div className="flex min-w-0 items-start gap-4">
+                            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                                <File className="h-7 w-7 text-blue-400" />
+                            </div>
+                            <div className="min-w-0 pt-0.5">
+                                <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                                    File details
+                                </p>
+                                <h1
+                                    aria-label="File name"
+                                    className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                                >
+                                    {props.fileName}
+                                </h1>
+                            </div>
                         </div>
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">Owner</p>
-                            <p className="font-medium text-slate-100">
-                                {props.lsResult.owner || "-"}
-                            </p>
-                        </div>
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">Group</p>
-                            <p className="font-medium text-slate-100">
-                                {props.lsResult.group || "-"}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">UID</p>
-                            <p className="font-medium text-slate-100">
-                                {props.lsResult.uid}
-                            </p>
-                        </div>
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">GID</p>
-                            <p className="font-medium text-slate-100">
-                                {props.lsResult.gid}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div>
-                        <p className="mb-1 text-sm text-slate-400">Full Path</p>
-                        <p className="rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
-                            {props.lsResult.path}
-                        </p>
-                    </div>
-
-                    <div className="flex flex-wrap gap-3">
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">
-                                Download
-                            </p>
+                        <div className="flex shrink-0 flex-wrap gap-2">
                             <a
                                 href={props.downloadUrl}
                                 download={props.fileName}
-                                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
+                                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
                             >
                                 <Download className="h-4 w-4" />
                                 Download File
                             </a>
-                        </div>
-                        <div>
-                            <p className="mb-1 text-sm text-slate-400">
-                                Delete
-                            </p>
                             <button
                                 type="button"
                                 aria-label="Delete file"
@@ -1103,67 +1204,145 @@ function FileDetailView(props: {
                                     setDeleteState({ type: "idle" });
                                     setIsConfirmDeleteOpen(true);
                                 }}
-                                className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-500"
+                                className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm font-semibold text-red-300 transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-200"
                             >
                                 <Trash2 className="h-4 w-4" />
-                                Delete File
+                                Delete
                             </button>
                         </div>
                     </div>
 
-                    <div>
-                        <p className="mb-2 text-sm text-slate-400">
-                            Command Line Downloads
-                        </p>
-
-                        {/* wget row */}
-                        <div className="mb-2 flex items-center gap-2">
-                            <code className="flex-1 rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
-                                wget "{props.downloadUrl}"
-                            </code>
+                    <div className="relative mt-6">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                            <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                                Full Path
+                            </p>
                             <button
+                                type="button"
                                 onClick={() =>
-                                    copyToClipboard(
-                                        `wget "${props.downloadUrl}"`,
-                                        "wget",
-                                    )
+                                    copyToClipboard(props.lsResult.path, "path")
                                 }
-                                className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100"
-                                aria-label="Copy wget command"
+                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
+                                aria-label="Copy full path"
                             >
-                                {copiedCommand === "wget" ? (
-                                    <Check className="h-4 w-4 text-emerald-400" />
+                                {copiedCommand === "path" ? (
+                                    <Check className="h-3.5 w-3.5 text-emerald-400" />
                                 ) : (
-                                    <Copy className="h-4 w-4" />
+                                    <Copy className="h-3.5 w-3.5" />
                                 )}
+                                {copiedCommand === "path" ? "Copied" : "Copy"}
                             </button>
                         </div>
-
-                        {/* curl row */}
-                        <div className="flex items-center gap-2">
-                            <code className="flex-1 rounded bg-[#0b0d12] p-2 font-mono text-sm text-slate-300">
-                                curl -O "{props.downloadUrl}"
-                            </code>
-                            <button
-                                onClick={() =>
-                                    copyToClipboard(
-                                        `curl -O "${props.downloadUrl}"`,
-                                        "curl",
-                                    )
-                                }
-                                className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100"
-                                aria-label="Copy curl command"
-                            >
-                                {copiedCommand === "curl" ? (
-                                    <Check className="h-4 w-4 text-emerald-400" />
-                                ) : (
-                                    <Copy className="h-4 w-4" />
-                                )}
-                            </button>
-                        </div>
+                        <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
+                            {props.lsResult.path}
+                        </code>
                     </div>
+                </header>
+
+                <div className="grid gap-8 p-6 md:p-8 lg:grid-cols-[minmax(0,1fr)_minmax(21rem,0.72fr)]">
+                    <section aria-labelledby="file-metadata-heading">
+                        <div className="mb-4">
+                            <h2
+                                id="file-metadata-heading"
+                                className="text-base font-semibold text-slate-100"
+                            >
+                                Metadata
+                            </h2>
+                            <p className="mt-1 text-sm text-slate-500">
+                                Filesystem identity and storage information.
+                            </p>
+                        </div>
+                        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            <FileMetadataItem
+                                label="Size"
+                                value={formatSize(props.lsResult.size)}
+                                valueLabel="File size value"
+                            />
+                            <FileMetadataItem
+                                label="Owner"
+                                value={props.lsResult.owner || "Unknown"}
+                            />
+                            <FileMetadataItem
+                                label="Group"
+                                value={props.lsResult.group || "Unknown"}
+                            />
+                            <FileMetadataItem
+                                label="UID"
+                                value={props.lsResult.uid}
+                                mono
+                            />
+                            <FileMetadataItem
+                                label="GID"
+                                value={props.lsResult.gid}
+                                mono
+                            />
+                            <FileMetadataItem
+                                label="Permissions"
+                                value={`${symbolicPermissions} · ${octalPermissions}`}
+                                mono
+                            />
+                        </dl>
+                    </section>
+
+                    <section aria-labelledby="file-permissions-heading">
+                        <div className="mb-4 flex items-end justify-between gap-4">
+                            <div>
+                                <h2
+                                    id="file-permissions-heading"
+                                    className="text-base font-semibold text-slate-100"
+                                >
+                                    Permissions
+                                </h2>
+                                <p className="mt-1 text-sm text-slate-500">
+                                    Access granted by the Unix mode.
+                                </p>
+                            </div>
+                            <div className="text-right font-mono">
+                                <p className="text-sm font-semibold text-slate-200">
+                                    {symbolicPermissions}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    {octalPermissions}
+                                </p>
+                            </div>
+                        </div>
+                        <FilePermissionsGrid
+                            permissions={props.lsResult.permissions}
+                        />
+                    </section>
                 </div>
-            </div>
+
+                <section
+                    aria-labelledby="command-downloads-heading"
+                    className="border-t border-slate-800 bg-slate-950/15 p-6 md:p-8"
+                >
+                    <div className="mb-4">
+                        <h2
+                            id="command-downloads-heading"
+                            className="text-base font-semibold text-slate-100"
+                        >
+                            Command Line Downloads
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-500">
+                            Download this file directly from a shell.
+                        </p>
+                    </div>
+                    <div className="grid min-w-0 gap-3 lg:grid-cols-2">
+                        <CommandDownloadRow
+                            label="wget"
+                            command={wgetCommand}
+                            isCopied={copiedCommand === "wget"}
+                            onCopy={() => copyToClipboard(wgetCommand, "wget")}
+                        />
+                        <CommandDownloadRow
+                            label="curl"
+                            command={curlCommand}
+                            isCopied={copiedCommand === "curl"}
+                            onCopy={() => copyToClipboard(curlCommand, "curl")}
+                        />
+                    </div>
+                </section>
+            </article>
 
             <ConfirmationDialog
                 isOpen={isConfirmDeleteOpen}

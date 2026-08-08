@@ -32,11 +32,19 @@ test.describe.serial("File Detail View", () => {
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("file1.txt");
-        await expect(page.getByText("Size")).toBeVisible();
-        await expect(page.getByText("Owner")).toBeVisible();
-        await expect(page.getByText("Group")).toBeVisible();
-        await expect(page.getByText("UID")).toBeVisible();
-        await expect(page.getByText("GID")).toBeVisible();
+        const metadata = page.getByRole("region", { name: "Metadata" });
+        // Scoping these labels verifies the metadata cards without conflicting with permission row labels.
+        await expect(metadata.getByText("Size")).toBeVisible();
+        await expect(metadata.getByText("Owner")).toBeVisible();
+        await expect(metadata.getByText("Group")).toBeVisible();
+        await expect(metadata.getByText("UID")).toBeVisible();
+        await expect(metadata.getByText("GID")).toBeVisible();
+        // The permissions heading verifies the new access grid is part of the file detail view.
+        await expect(
+            page.getByRole("heading", { name: "Permissions" }),
+        ).toBeVisible();
+        // A visible owner read cell proves raw mode bits are translated into understandable access rights.
+        await expect(page.getByLabel("Owner Read: allowed")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
         await expect(
             page.getByRole("link", { name: "Download File" }),
