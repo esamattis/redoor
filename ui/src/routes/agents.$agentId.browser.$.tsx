@@ -26,6 +26,7 @@ import {
     Info,
     List,
     ClipboardPaste,
+    Pencil,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
@@ -157,7 +158,6 @@ function FileBrowser() {
                     <BrowserHeader
                         agent={agent}
                         agentId={agentId}
-                        agentName={agentName}
                         path={path}
                         parentPath={parentPath}
                         directoryPath={path}
@@ -214,7 +214,6 @@ function FileBrowser() {
                     <FileDetailView
                         agent={agent}
                         agentId={agentId}
-                        agentName={agentName}
                         path={path}
                         fileName={fileName}
                         lsResult={lsResult}
@@ -675,7 +674,6 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
 function BrowserHeader(props: {
     agent: Agent;
     agentId: string;
-    agentName: string;
     path: string;
     parentPath: string | null;
     directoryPath: string;
@@ -686,12 +684,7 @@ function BrowserHeader(props: {
     return (
         <header className="mb-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <Breadcrumbs
-                    agentId={props.agentId}
-                    agentName={props.agentName}
-                    agent={props.agent}
-                    path={props.path}
-                />
+                <Breadcrumbs agent={props.agent} path={props.path} />
                 <Link
                     to="/agents/$agentId"
                     params={{ agentId: props.agentId }}
@@ -798,63 +791,135 @@ function BrowserHeader(props: {
     );
 }
 
-function Breadcrumbs(props: {
-    agent: Agent;
-    agentId: string;
-    agentName: string;
-    path: string;
-}) {
-    const { agentName, path } = props;
+/** Shows the current path as links while allowing direct path navigation. */
+function Breadcrumbs(props: { agent: Agent; path: string }) {
+    const navigate = useNavigate();
+    const breadcrumbsRef = React.useRef<HTMLElement>(null);
+    const [isEditing, setIsEditing] = React.useState(false);
+    const [editedPath, setEditedPath] = React.useState(props.path);
+    const [editorWidth, setEditorWidth] = React.useState<number | undefined>();
 
-    const parts = path.split("/").filter((part) => part !== "");
+    const parts = props.path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
     let accumulatedPath = "";
 
-    return (
-        <nav
-            aria-label="Breadcrumbs"
-            className="flex flex-wrap items-center gap-2 text-sm"
-        >
-            <Link
-                to={props.agent.getBrowserUrl(props.agent.cwd)}
-                className="text-blue-400 hover:underline"
-            >
-                {agentName}
-            </Link>
-            <span className="text-slate-600">/</span>
-            {isAtRoot ? (
-                <span className="font-medium text-slate-100">/</span>
-            ) : (
-                <Link
-                    to={props.agent.getBrowserUrl("/")}
-                    className="text-blue-400 hover:underline"
-                >
-                    /
-                </Link>
-            )}
-            {parts.map((part, index) => {
-                accumulatedPath = `${accumulatedPath}/${part}`;
-                const isLast = index === parts.length - 1;
+    /** Preserves the breadcrumb width so editing does not shift surrounding actions. */
+    const startEditing = () => {
+        const width = breadcrumbsRef.current?.getBoundingClientRect().width;
+        setEditorWidth(width === undefined ? undefined : Math.ceil(width));
+        setEditedPath(props.path);
+        setIsEditing(true);
+    };
 
-                return (
-                    <div key={index} className="flex items-center gap-2">
-                        <span className="text-slate-600">/</span>
-                        {isLast ? (
+    /** Navigates to the entered path, treating an empty or relative value helpfully. */
+    const navigateToEditedPath = async (
+        event: React.FormEvent<HTMLFormElement>,
+    ) => {
+        event.preventDefault();
+        const targetPath =
+            editedPath === ""
+                ? "/"
+                : editedPath.startsWith("/")
+                  ? editedPath
+                  : `/${editedPath}`;
+
+        await navigate({
+            to: props.agent.getBrowserUrl(targetPath),
+        });
+        setIsEditing(false);
+    };
+
+    return (
+        <div className="flex min-w-0 items-center gap-1">
+            {isEditing ? (
+                <form
+                    onSubmit={navigateToEditedPath}
+                    className="flex min-w-0 items-center gap-1"
+                >
+                    <input
+                        type="text"
+                        value={editedPath}
+                        onChange={(event) => setEditedPath(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                                setIsEditing(false);
+                            }
+                        }}
+                        aria-label="File path"
+                        autoFocus
+                        style={{ width: editorWidth }}
+                        className="min-w-0 max-w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <button
+                        type="submit"
+                        aria-label="Navigate to path"
+                        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <Check className="h-4 w-4" />
+                    </button>
+                </form>
+            ) : (
+                <>
+                    <nav
+                        ref={breadcrumbsRef}
+                        aria-label="Breadcrumbs"
+                        className="flex flex-wrap items-center gap-2 text-sm"
+                    >
+                        {isAtRoot ? (
                             <span className="font-medium text-slate-100">
-                                {part}
+                                /
                             </span>
                         ) : (
                             <Link
-                                to={props.agent.getBrowserUrl(accumulatedPath)}
-                                className="font-medium text-blue-400 hover:underline"
+                                to={props.agent.getBrowserUrl("/")}
+                                className="text-blue-400 hover:underline"
                             >
-                                {part}
+                                /
                             </Link>
                         )}
-                    </div>
-                );
-            })}
-        </nav>
+                        {parts.map((part, index) => {
+                            accumulatedPath = `${accumulatedPath}/${part}`;
+                            const isLast = index === parts.length - 1;
+
+                            return (
+                                <div
+                                    key={index}
+                                    className="flex items-center gap-2"
+                                >
+                                    {index > 0 ? (
+                                        <span className="text-slate-600">
+                                            /
+                                        </span>
+                                    ) : null}
+                                    {isLast ? (
+                                        <span className="font-medium text-slate-100">
+                                            {part}
+                                        </span>
+                                    ) : (
+                                        <Link
+                                            to={props.agent.getBrowserUrl(
+                                                accumulatedPath,
+                                            )}
+                                            className="font-medium text-blue-400 hover:underline"
+                                        >
+                                            {part}
+                                        </Link>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </nav>
+                    <button
+                        type="button"
+                        onClick={startEditing}
+                        aria-label="Edit file path"
+                        className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                </>
+            )}
+        </div>
     );
 }
 
@@ -1296,7 +1361,6 @@ function DirectoryDetailView(props: {
 function FileDetailView(props: {
     agent: Agent;
     agentId: string;
-    agentName: string;
     path: string;
     fileName: string;
     lsResult: LsFileResponse;
@@ -1355,12 +1419,7 @@ function FileDetailView(props: {
         <div>
             <div className="mb-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <Breadcrumbs
-                        agentId={props.agentId}
-                        agentName={props.agentName}
-                        agent={props.agent}
-                        path={props.path}
-                    />
+                    <Breadcrumbs agent={props.agent} path={props.path} />
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
