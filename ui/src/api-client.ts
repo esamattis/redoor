@@ -90,7 +90,7 @@ export function isLsDirectoryResponse(
 export function isLsFileResponse(
     response: LsResponse,
 ): response is LsFileResponse {
-    return "size" in response;
+    return !("files" in response);
 }
 
 export class Agent {

@@ -82,9 +82,13 @@ describe("Agents API", () => {
         // Relative --dir is resolved once against the process launch directory.
         expect(registeredAgent?.cwd).toBe(expectedDefault);
         // A relative log remains launch-cwd-relative, proving --dir did not mutate process cwd.
-        await expect(fs.stat(path.join(launchDirectory, "relative-agent.log"))).resolves.toBeDefined();
+        await expect(
+            fs.stat(path.join(launchDirectory, "relative-agent.log")),
+        ).resolves.toBeDefined();
         // The default directory must not become an ambient base for unrelated relative options.
-        await expect(fs.stat(path.join(expectedDefault, "relative-agent.log"))).rejects.toThrow();
+        await expect(
+            fs.stat(path.join(expectedDefault, "relative-agent.log")),
+        ).rejects.toThrow();
     });
 
     it("should get agent details", async () => {
@@ -154,6 +158,13 @@ describe("Agents API", () => {
         expect(isLsDirectoryResponse(result)).toBe(true);
         // Verify result contains an array of files
         if (isLsDirectoryResponse(result)) {
+            // Directory details need the resolved path to identify the object represented by the listing.
+            expect(result.path).toBe(agentDetails.cwd);
+            // The mode is numeric so the UI can share its Unix permissions view with file details.
+            expect(result.permissions).toBeGreaterThan(0);
+            // Directory permission responses must contain only the standard rwx bits.
+            expect(result.permissions).toBeLessThanOrEqual(0o777);
+            // Verify result contains an array of files.
             expect(result.files).toBeInstanceOf(Array);
             // Creating a file in the isolated agent cwd ensures the listing has a deterministic entry.
             expect(result.files.length).toBeGreaterThan(0);
@@ -280,9 +291,9 @@ describe("Agents API", () => {
 
         // Verify original test agent is still connected
         const agentsAfterReplacement = await apiClient.listAgents();
-        expect(
-            agentsAfterReplacement.some((a) => a.name === AGENT_NAME),
-        ).toBe(true);
+        expect(agentsAfterReplacement.some((a) => a.name === AGENT_NAME)).toBe(
+            true,
+        );
     });
 
     it("should echo message back from connected agent", async () => {

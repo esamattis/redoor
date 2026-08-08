@@ -102,6 +102,12 @@ pub(crate) async fn ls_agent_handler(
                 StatusCode::OK,
                 Json(LsDirectoryResponse {
                     files: ls_result.files,
+                    path: ls_result.path,
+                    owner: ls_result.owner,
+                    group: ls_result.group,
+                    uid: ls_result.uid,
+                    gid: ls_result.gid,
+                    permissions: ls_result.permissions,
                 }),
             )
                 .into_response(),

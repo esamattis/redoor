@@ -49,9 +49,16 @@ pub enum Command {
     GetAgentDetails,
 }
 
+/// Carries directory metadata with its entries so clients can show either a list or details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LsDirectoryResult {
     pub files: Vec<LsEntry>,
+    pub path: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
+    pub permissions: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,10 +189,17 @@ pub struct LsEntry {
     pub gid: u32,
 }
 
+/// Exposes directory entries and metadata so clients can provide alternate directory views.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LsDirectoryResponse {
     pub files: Vec<LsEntry>,
+    pub path: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
+    pub permissions: u32,
 }
 
 /// Exposes remote file metadata needed by clients to present a useful detail view.
@@ -458,7 +472,26 @@ impl CommandHandler {
                                 }
                             }
 
-                            CommandResult::LsDirectory(LsDirectoryResult { files })
+                            let uid = metadata.uid();
+                            let gid = metadata.gid();
+                            let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
+                                .ok()
+                                .flatten()
+                                .map(|user| user.name);
+                            let group = Group::from_gid(nix::unistd::Gid::from_raw(gid))
+                                .ok()
+                                .flatten()
+                                .map(|group| group.name);
+
+                            CommandResult::LsDirectory(LsDirectoryResult {
+                                files,
+                                path,
+                                owner,
+                                group,
+                                uid,
+                                gid,
+                                permissions: metadata.mode() & 0o777,
+                            })
                         }
                         Err(error) => CommandResult::io_error("Failed to read directory", error),
                     }
@@ -801,6 +834,14 @@ mod tests {
         match result {
             CommandResult::LsDirectory(ls_result) => {
                 assert!(!ls_result.files.is_empty(), "ls should return files");
+                assert!(
+                    !ls_result.path.is_empty(),
+                    "directory path should be populated"
+                );
+                assert!(
+                    ls_result.permissions > 0,
+                    "directory permissions should be populated"
+                );
                 let first_file = &ls_result.files[0];
                 assert!(
                     first_file.file_type == "file" || first_file.file_type == "directory",
