@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { ApiClient, Agent } from "@/api-client";
 import { Toxiproxy } from "toxiproxy-node-client";
 import type Proxy from "toxiproxy-node-client/dist/Proxy";
+import { testPorts } from "../test-ports.ts";
 
 export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -157,6 +158,8 @@ const TESTS_DIRECTORY = dirname(import.meta.filename);
 const PROJECT_ROOT = join(TESTS_DIRECTORY, "..");
 export const SERVER_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor");
 export const AGENT_PATH = SERVER_PATH;
+// A per-worktree port lets Vitest run alongside development and other worktrees.
+export const VITEST_SERVER_PORT = testPorts.vitest;
 
 export type SpawnAgentArgs = {
     wsAddress: string;
@@ -233,7 +236,9 @@ export class ProcessManager {
 
     kill(pid: number): void {
         try {
-            process.kill(pid, "SIGKILL");
+            // Spawned processes are detached group leaders, so kill the group
+            // to prevent server-managed child agents surviving between runs.
+            process.kill(-pid, "SIGKILL");
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "ESRCH") {
                 throw e;
@@ -290,7 +295,7 @@ export async function startServerAndAgent(options: {
     testAgent: Agent;
     wsUrl: string;
 }> {
-    const serverPort = await getAvailablePort();
+    const serverPort = VITEST_SERVER_PORT;
     const apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
     const wsUrl = `ws://127.0.0.1:${serverPort}/ws`;
 

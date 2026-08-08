@@ -3,5 +3,6 @@
 node_modules
 playwright-report
 test-results
+/test_ports.json
 dev_agents
 .opencode/package-lock.json

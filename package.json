@@ -9,6 +9,7 @@
         "types": "tsc -p tsconfig.json",
         "format": "cd ui && prettier --write .",
         "format:check": "cd ui && prettier --check .",
+        "preplaywright": "node scripts/test/ensure-test-ports.mts",
         "playwright": "playwright test --reporter=line --config ui/playwright.config.ts",
         "lint": "oxlint -c .oxlintrc.json",
         "dev": "./scripts/dev",
@@ -19,9 +20,7 @@
         "dev:agent3": "mkdir -p dev_agents/agent3 && ./scripts/redoor agent ws://127.0.0.1:3001/ws --dir dev_agents/agent3 --name agent3_slow --log ../../log/dev-agent3_slow.log",
         "lint:fix": "oxlint -c .oxlintrc.json --fix ui",
         "preview": "vite preview",
-        "playwright-server:server": "./target/debug/redoor server --log log/playwright-redoor.log",
-        "playwright-server:agent1": "./target/debug/redoor agent ws://127.0.0.1:3000/ws --name agent1_src --log log/playwright-agent1_src.log",
-        "playwright-server:agent2": "mkdir -p dev_agents/agent2 && cd dev_agents/agent2 && ../../target/debug/redoor agent ws://127.0.0.1:3000/ws --name agent2_custom --log ../../log/playwright-agent2_custom.log",
+        "pretest": "node scripts/test/ensure-test-ports.mts",
         "test": "vitest run --config vitest.config.ts tests"
     },
     "dependencies": {

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { testPorts } from "../test-ports.ts";
 
 /**
  * Read environment variables from file.
@@ -73,7 +74,7 @@ export default defineConfig({
     /* Run your local dev server before starting the tests */
     webServer: {
         command: "../scripts/test/playwright-dev",
-        url: "http://localhost:3000/",
-        reuseExistingServer: !process.env.CI,
+        url: `http://localhost:${testPorts.playwright}/`,
+        reuseExistingServer: false,
     },
 });
