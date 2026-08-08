@@ -167,30 +167,44 @@ async fn sniff_remote(
     })
 }
 
-/// Ensures the remote host has a redoor binary that reports the expected
-/// `--version`. Downloads from the local cache and uploads if the existing
-/// binary is missing, stale, or not a redoor binary at all, then re-sniffs
-/// to confirm the freshly uploaded binary actually runs and reports the
-/// right version. Returning an error from the post-upload check (instead
-/// of silently proceeding) is important: a mismatch here means we wrote
-/// the wrong binary for the host's arch, or the upload was corrupted, and
-/// launching the agent would just fail again in a more confusing way.
+/// Ensures the remote host has the appropriate redoor binary. A debug server
+/// always uploads its local debug binary when it exists and matches the remote
+/// platform because debug and release binaries have indistinguishable version
+/// output. Otherwise, a matching remote version is retained and stale binaries
+/// are replaced with the matching GitHub release artifact. The post-upload
+/// probe catches wrong-architecture or corrupted uploads before agent startup.
 async fn ensure_remote_binary(
     host: &SshHost,
     remote_bin: &str,
     sniff: &RemoteSniff,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expected = format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    if sniff.version_output == expected {
-        return Ok(());
-    }
-    log!(
-        Level::Info,
-        "Remote binary missing or version mismatch (got '{}', want '{}'), reinstalling",
-        sniff.version_output,
-        expected
-    );
-    let local_path = ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
+    let debug_binary = available_debug_binary(&sniff.os, &sniff.arch).await?;
+
+    let local_path = if let Some(debug_binary) = debug_binary {
+        // Upload on every preparation because `--version` cannot tell whether
+        // the remote executable contains the current local debug code.
+        log!(
+            Level::Info,
+            "Using local debug binary for matching remote platform: path={}, os={}, arch={}",
+            debug_binary.display(),
+            sniff.os,
+            sniff.arch
+        );
+        debug_binary
+    } else {
+        if sniff.version_output == expected {
+            return Ok(());
+        }
+        log!(
+            Level::Info,
+            "Remote binary missing or version mismatch (got '{}', want '{}'), reinstalling",
+            sniff.version_output,
+            expected
+        );
+        ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?
+    };
+
     upload_binary(host, &local_path, remote_bin).await?;
     let post_upload = sniff_remote(host, remote_bin).await?;
     if post_upload.version_output != expected {
@@ -206,6 +220,47 @@ async fn ensure_remote_binary(
         post_upload.version_output
     );
     Ok(())
+}
+
+/// Returns the workspace debug binary path when the running server was built
+/// in debug mode and its platform matches the remote host. Keeping platform
+/// checks here prevents accidentally uploading a locally runnable binary that
+/// the remote kernel or CPU cannot execute.
+fn debug_binary_candidate(
+    debug_build: bool,
+    local_os: &str,
+    local_arch: &str,
+    remote_os: &str,
+    remote_arch: &str,
+    manifest_dir: &Path,
+) -> Option<PathBuf> {
+    if !debug_build || local_os != remote_os || local_arch != remote_arch {
+        return None;
+    }
+
+    Some(manifest_dir.join("target/debug/redoor"))
+}
+
+/// Resolves the matching local debug binary only when it exists. Missing debug
+/// output is not an error because GitHub release provisioning remains the
+/// intended fallback for fresh checkouts and cross-compiled server binaries.
+async fn available_debug_binary(
+    remote_os: &str,
+    remote_arch: &str,
+) -> Result<Option<PathBuf>, std::io::Error> {
+    let candidate = debug_binary_candidate(
+        cfg!(debug_assertions),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        remote_os,
+        remote_arch,
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+
+    match candidate {
+        Some(path) if tokio::fs::try_exists(&path).await? => Ok(Some(path)),
+        _ => Ok(None),
+    }
 }
 
 /// Local cache directory for redoor release binaries downloaded from GitHub.
@@ -879,4 +934,81 @@ pub(crate) async fn start_ssh_agent(
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::debug_binary_candidate;
+    use std::path::{Path, PathBuf};
+
+    /// Verifies a debug server can provision its exact local build to a host
+    /// that can execute the same operating-system and CPU artifact.
+    #[test]
+    fn selects_debug_binary_for_matching_platform() {
+        let path = debug_binary_candidate(
+            true,
+            "linux",
+            "x86_64",
+            "linux",
+            "x86_64",
+            Path::new("/workspace/redoor"),
+        );
+
+        // A matching debug build should bypass GitHub and use workspace output.
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/workspace/redoor/target/debug/redoor"))
+        );
+    }
+
+    /// Verifies release servers keep using release provisioning even when a
+    /// stale debug binary happens to remain in the workspace target directory.
+    #[test]
+    fn ignores_debug_binary_for_release_build() {
+        let path = debug_binary_candidate(
+            false,
+            "linux",
+            "x86_64",
+            "linux",
+            "x86_64",
+            Path::new("/workspace/redoor"),
+        );
+
+        // Build mode must gate local debug deployment independently of the path.
+        assert_eq!(path, None);
+    }
+
+    /// Verifies a debug binary is never uploaded to a remote CPU that cannot
+    /// execute it, leaving release download selection to choose the right arch.
+    #[test]
+    fn ignores_debug_binary_for_different_architecture() {
+        let path = debug_binary_candidate(
+            true,
+            "linux",
+            "x86_64",
+            "linux",
+            "aarch64",
+            Path::new("/workspace/redoor"),
+        );
+
+        // Architecture mismatches must fall back rather than fail after upload.
+        assert_eq!(path, None);
+    }
+
+    /// Verifies matching CPU names alone are insufficient when the remote host
+    /// uses another executable format and system ABI.
+    #[test]
+    fn ignores_debug_binary_for_different_operating_system() {
+        let path = debug_binary_candidate(
+            true,
+            "linux",
+            "aarch64",
+            "macos",
+            "aarch64",
+            Path::new("/workspace/redoor"),
+        );
+
+        // OS mismatches must use the platform-specific GitHub artifact instead.
+        assert_eq!(path, None);
+    }
 }
