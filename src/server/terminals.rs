@@ -1,4 +1,4 @@
-use super::state::ServerState;
+use super::{agent_helpers::require_absolute_path, state::ServerState};
 use axum::{
     extract::{
         Path, Query, State as AxumState,
@@ -54,6 +54,10 @@ pub(crate) async fn browser_terminal_websocket_handler(
     AxumState(state): AxumState<ServerState>,
     websocket: WebSocketUpgrade,
 ) -> Response {
+    let cwd = match require_absolute_path(query.cwd) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
+    };
     let size = match TerminalSize::new(query.rows, query.cols) {
         Ok(size) => size,
         Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
@@ -68,9 +72,7 @@ pub(crate) async fn browser_terminal_websocket_handler(
     websocket
         .max_message_size(MAX_TERMINAL_MESSAGE_SIZE)
         .max_frame_size(MAX_TERMINAL_MESSAGE_SIZE)
-        .on_upgrade(move |socket| {
-            run_browser_setup(socket, AgentId::from(agent), size, query.cwd, state)
-        })
+        .on_upgrade(move |socket| run_browser_setup(socket, AgentId::from(agent), size, cwd, state))
         .into_response()
 }
 

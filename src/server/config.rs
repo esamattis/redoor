@@ -26,7 +26,7 @@ use crate::ssh::SshAgentConfig;
 /// Configuration for one local agent, parsed from the agents toml.
 ///
 /// Mirrors the subset of [`crate::ssh::SshAgentConfig`] fields that make
-/// sense for an in-process agent: a display name, an optional working
+/// sense for an in-process agent: a display name, an optional UI default
 /// directory, and an optional log file. The server reuses its own binary
 /// (via `std::env::current_exe`) to start the agent, so no binary path
 /// needs to be configured.
@@ -36,8 +36,7 @@ pub(crate) struct LocalAgentConfig {
     /// defaults to the system hostname so multiple local agents on
     /// different machines are naturally distinguishable.
     pub(crate) name: Option<String>,
-    /// Working directory the spawned `redoor agent` switches into via
-    /// its `-d/--dir` flag, mirroring the operator's `redoor agent -d`.
+    /// Default directory the spawned agent publishes for UI tab navigation.
     pub(crate) dir: Option<String>,
     /// Log file path. When set, the spawned `redoor agent` process's
     /// stdout/stderr is redirected (append mode) to this file. When
@@ -198,7 +197,7 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, path: &str) -> Result<Vec<AgentC
 /// explicit per-entry settings that the operator must declare so a missing
 /// field is surfaced as an error rather than silently falling back to a
 /// default the operator may not have intended. `dir` is shared with the
-/// local variant so an operator can mirror a working directory across both
+/// local variant so an operator can mirror a UI default directory across both
 /// kinds of agents without duplicating logic.
 fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentConfig> {
     let target = entry

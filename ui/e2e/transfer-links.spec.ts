@@ -31,13 +31,13 @@ test.describe.serial("Transfer Path Links", () => {
         await fs.writeFile(uploadFilePath, "transfer link test content");
 
         try {
-            await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+            await page.goto(ctx.agentBrowserUrl);
             await page
                 .locator(
-                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
                 )
                 .click();
-            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir3`;
+            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir3`)}`;
             await Promise.all([
                 page.waitForURL(uploadDestinationUrl),
                 page.getByRole("link", { name: "subdir3" }).click(),

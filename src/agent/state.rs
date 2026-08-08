@@ -19,8 +19,7 @@ pub(crate) struct AgentArgs {
     pub(crate) name: String,
     #[arg(long)]
     pub(crate) log: Option<String>,
-    /// Working directory to switch to immediately on startup so the agent
-    /// operates from the requested path even when launched elsewhere.
+    /// Default directory opened by the UI without limiting filesystem access.
     #[arg(short = 'd', long)]
     pub(crate) dir: Option<String>,
 }
@@ -199,6 +198,8 @@ pub(crate) struct AgentState {
     pub(crate) agent_id: AgentId,
     pub(crate) agent_name: String,
     pub(crate) server_url: String,
+    /// Immutable absolute directory used when the UI opens this agent.
+    pub(crate) default_directory: String,
     pub(crate) ws_text_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) connection_generation: u64,
@@ -208,11 +209,18 @@ pub(crate) struct AgentState {
 }
 
 impl AgentState {
-    pub(crate) fn new(agent_id: AgentId, agent_name: String, server_url: String) -> Self {
+    /// Creates agent state with startup metadata that remains stable across reconnects.
+    pub(crate) fn new(
+        agent_id: AgentId,
+        agent_name: String,
+        server_url: String,
+        default_directory: String,
+    ) -> Self {
         Self {
             agent_id,
             agent_name,
             server_url,
+            default_directory,
             ws_text_tx: None,
             ws_binary_tx: None,
             connection_generation: 0,

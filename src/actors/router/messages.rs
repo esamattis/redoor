@@ -28,6 +28,19 @@ pub struct RegisterAgentRequest {
     pub hostname: String,
     /// Username reported by the agent.
     pub username: String,
+    /// Immutable absolute directory the UI opens for this agent.
+    pub default_directory: String,
+}
+
+/// Lightweight connected-agent metadata used to build complete UI tab targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentListEntry {
+    /// Stable agent identifier used in routes.
+    pub id: AgentId,
+    /// Human-readable agent name shown in tabs.
+    pub name: String,
+    /// Immutable absolute directory targeted by an agent tab.
+    pub default_directory: String,
 }
 
 /// Final command response routed back from an agent to the original caller.
@@ -217,7 +230,7 @@ pub enum RouterMsg {
     },
     RouteResponse(RouteResponse),
     GetAgentList {
-        reply: RouterReply<std::collections::HashMap<AgentId, String>>,
+        reply: RouterReply<Vec<AgentListEntry>>,
     },
     GetTransferProgress {
         reply: RouterReply<TransferProgressListResponse>,

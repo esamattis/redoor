@@ -78,6 +78,7 @@ impl SessionRuntime {
                 arch,
                 hostname,
                 username,
+                cwd,
             } => {
                 // Look up the supervisor for this agent name BEFORE
                 // moving `agent_name` into the registration payload so
@@ -106,6 +107,7 @@ impl SessionRuntime {
                         arch,
                         hostname,
                         username,
+                        default_directory: cwd,
                     }));
                 self.agent_id = Some(agent_id);
             }

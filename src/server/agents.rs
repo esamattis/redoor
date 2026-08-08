@@ -14,7 +14,9 @@ use redoor::{
 };
 
 use super::{
-    agent_helpers::get_agent_details, responses::command_error_status, state::ServerState,
+    agent_helpers::{get_agent_details, require_absolute_path},
+    responses::command_error_status,
+    state::ServerState,
 };
 
 /// Route: `GET /api/v1/agents`
@@ -32,7 +34,11 @@ pub(crate) async fn list_agents_handler(
             let response = AgentListResponse {
                 agents: agents
                     .into_iter()
-                    .map(|(id, name)| AgentInfoResponse { id, name })
+                    .map(|agent| AgentInfoResponse {
+                        id: agent.id,
+                        name: agent.name,
+                        cwd: agent.default_directory,
+                    })
                     .collect(),
             };
             (StatusCode::OK, Json(response)).into_response()
@@ -78,6 +84,10 @@ pub(crate) async fn ls_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let path = match require_absolute_path(path) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref
@@ -138,6 +148,10 @@ pub(crate) async fn cat_agent_handler(
     Path((agent, path)): Path<(String, String)>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    let path = match require_absolute_path(path) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref

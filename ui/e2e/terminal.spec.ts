@@ -35,7 +35,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             });
         });
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page.getByRole("button", { name: "New terminal" }).click();
         await expect(
             page.getByRole("status", { name: "Terminal 1: Connected" }),
@@ -70,7 +70,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         );
         const agentDetails = (await detailsResponse.json()) as { cwd: string };
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await expect(
             page.getByRole("tablist", { name: "Terminal tabs" }),
         ).toBeVisible();
@@ -243,7 +243,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     test("shows connection state and restart on the owning tab", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page.getByRole("button", { name: "New terminal" }).click();
         await expect(
             page.getByRole("status", { name: "Terminal 1: Connected" }),

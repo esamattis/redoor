@@ -328,6 +328,7 @@ describe("Raw Upload API", () => {
         const fakeAgent = new Agent(apiClient.baseUrl, {
             id: "non-existent-agent-id",
             name: "fake",
+            cwd: "/tmp",
         });
         const uploadFile = new File(["content"], "content.txt", {
             type: "text/plain",

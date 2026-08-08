@@ -259,7 +259,7 @@ port forward back to the server.
 | `ssh_port` | integer | No | `22` | SSH server port, equivalent to `ssh -p`. Must fit in an unsigned 16-bit integer. |
 | `name` | string | No | Host portion of `target` | Name under which the agent registers with the server. |
 | `remote_bin` | string | No | `~/.local/redoor/<version>/redoor` | Redoor binary path on the remote host. |
-| `dir` | string | No | Remote shell's current directory | Working directory used by the remote agent. |
+| `dir` | string | No | Remote shell's current directory | Default directory opened when the UI agent tab is clicked. |
 | `log` | string | No | Inherit server stdio | Local file to which the SSH process's stdout and stderr are appended. |
 
 #### Local agents
@@ -272,12 +272,17 @@ Redoor executable as the server. Local entries must not contain `target`,
 | --- | ---- | -------- | ------- | ----------- |
 | `local` | boolean | Yes | — | Must be `true` to select a local agent. |
 | `name` | string | No | System hostname, or `local` if unavailable | Name under which the agent registers with the server. |
-| `dir` | string | No | Server process's current directory | Working directory used by the agent. |
+| `dir` | string | No | Server process's current directory | Default directory opened when the UI agent tab is clicked. |
 | `log` | string | No | Inherit server stdio | File to which the agent process's stdout and stderr are appended. |
 
 Agent names must be unique. The server rejects duplicate names during startup.
 Agent log paths are opened on the server machine for both SSH-backed and local
 agents; they are not paths on the remote SSH host.
+
+The default directory is immutable startup metadata, not a filesystem boundary.
+Agents expose the host filesystem subject to OS permissions, and all filesystem
+REST paths and UI browser routes use complete absolute paths. Relative REST
+paths are rejected rather than resolved against the default directory.
 
 #### Example
 
@@ -323,8 +328,8 @@ cargo run --bin redoor -- server --config config.toml
 ### Running an Agent
 
 ```sh
-# Connect to a server with a custom name
-cargo run --bin redoor-agent -- ws://127.0.0.1:3000/ws --name my-agent
+# Connect to a server with a custom name and UI default directory
+cargo run --bin redoor -- agent ws://127.0.0.1:3000/ws --name my-agent --dir /srv/application
 ```
 
 ### Running the UI

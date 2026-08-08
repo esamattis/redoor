@@ -163,6 +163,7 @@ pub struct AgentListResponse {
 pub struct AgentInfoResponse {
     pub id: AgentId,
     pub name: String,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

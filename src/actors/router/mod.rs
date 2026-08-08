@@ -129,6 +129,7 @@ fn route_response(state: &mut RouterState, response: RouteResponse) {
                 let mut details = details.clone();
                 details.id = stored_agent_id.clone();
                 details.name = agent_connection.agent_name.clone();
+                details.cwd = agent_connection.default_directory.clone();
                 details.connected_at = agent_connection.connected_at;
                 details.os = agent_connection.os.clone();
                 details.arch = agent_connection.arch.clone();
@@ -286,6 +287,7 @@ async fn run_router(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::router::messages::AgentListEntry;
     use crate::commands::Command;
     use crate::streaming::{StreamChunk, StreamPayloadKind};
     use crate::types::{AgentId, SocketId};
@@ -314,6 +316,7 @@ mod tests {
                 arch: "arm64".to_string(),
                 hostname: "host".to_string(),
                 username: "user".to_string(),
+                default_directory: "/tmp/default".to_string(),
             }))
             .expect("agent registered");
 
@@ -395,9 +398,14 @@ mod tests {
 
         // Returning promptly here proves the router event loop stayed responsive
         // even though one upload chunk was still waiting for binary backpressure.
+        // The list snapshot must carry the immutable default so tabs need no details request.
         assert_eq!(
-            list_agents.get(&AgentId::from("agent-1")),
-            Some(&"agent-1".to_string())
+            list_agents,
+            vec![AgentListEntry {
+                id: AgentId::from("agent-1"),
+                name: "agent-1".to_string(),
+                default_directory: "/tmp/default".to_string(),
+            }]
         );
 
         let first_frame = binary_rx.recv().await.expect("first binary frame queued");

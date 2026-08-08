@@ -1,14 +1,15 @@
 use super::RouterError;
 use super::cleanup;
-use super::messages::{ExecuteCommandRequest, OpenTerminalRequest, RegisterAgentRequest};
+use super::messages::{
+    AgentListEntry, ExecuteCommandRequest, OpenTerminalRequest, RegisterAgentRequest,
+};
 use super::state::{AgentConnection, RouterState};
 use super::ui;
 use crate::commands::CommandResult;
 use crate::log;
 use crate::logging::Level;
-use crate::types::{AgentId, Message};
+use crate::types::Message;
 use axum::extract::ws::Message as WsMessage;
-use std::collections::HashMap;
 
 impl AgentConnection {
     /// Builds one live router connection entry from the agent registration payload.
@@ -23,6 +24,7 @@ impl AgentConnection {
             arch: request.arch,
             hostname: request.hostname,
             username: request.username,
+            default_directory: request.default_directory,
         }
     }
 
@@ -132,13 +134,17 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
     ui::notify_refresh(state);
 }
 
-/// Builds the agent id to agent name map returned by the REST API.
-pub(crate) fn list_agents(state: &RouterState) -> HashMap<AgentId, String> {
+/// Projects registration metadata needed for complete agent-tab navigation.
+pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
     state
         .agents
         .by_id
         .iter()
-        .map(|(id, info)| (id.clone(), info.agent_name.clone()))
+        .map(|(id, info)| AgentListEntry {
+            id: id.clone(),
+            name: info.agent_name.clone(),
+            default_directory: info.default_directory.clone(),
+        })
         .collect()
 }
 

@@ -22,10 +22,10 @@ test.describe.serial("Copy Operations", () => {
     test("should show the copy destination action above directory listings", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -69,7 +69,7 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/file1.txt`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/file1.txt`)}`,
         );
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -88,16 +88,16 @@ test.describe.serial("Copy Operations", () => {
 
         await fs.rm(copyTargetDirPath, { force: true, recursive: true });
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
         // Wait for the nested listing to render so the create action receives the test directory path.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
             page.getByRole("button", { name: "Select file file1.txt" }),
@@ -181,10 +181,10 @@ test.describe.serial("Copy Operations", () => {
 
         await fs.rm(crossAgentCopiedPath, { force: true });
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -202,9 +202,7 @@ test.describe.serial("Copy Operations", () => {
         // selection state survives the client-side navigation.
         await page.getByRole("tab", { name: "agent2_custom" }).click();
 
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser`,
-        );
+        await expect(page).toHaveURL(ctx.agent2BrowserUrl);
 
         // The selection persists across agents, so the destination action remains enabled.
         const copyButton = page.getByRole("button", {

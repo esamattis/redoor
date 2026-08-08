@@ -18,10 +18,10 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate to file detail view", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -49,10 +49,10 @@ test.describe.serial("File Detail View", () => {
     test("should display correct file size on detail view", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -67,10 +67,10 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate back from file detail view", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -96,10 +96,10 @@ test.describe.serial("File Detail View", () => {
     test("should navigate back to agent from file detail view", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -116,10 +116,10 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate to nested file detail view", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir1" }).click();

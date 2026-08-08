@@ -7,7 +7,6 @@ export type SelectedPath = {
     agentId: string;
     agentName: string;
     path: string;
-    relativePath: string;
     fileName: string;
 };
 

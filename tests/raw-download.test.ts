@@ -92,6 +92,7 @@ describe("Raw Download API", () => {
         const fakeAgent = new Agent(apiClient.baseUrl, {
             id: "non-existent-agent-id",
             name: "fake",
+            cwd: "/tmp",
         });
         // Server should return an error instead of hanging forever
         await expect(fakeAgent.raw("/tmp/somefile")).rejects.toThrow(

@@ -43,10 +43,7 @@ pub(crate) struct SshArgs {
     /// versioned install layout (`~/.local/redoor/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN", default_value_t = default_remote_bin())]
     pub(crate) remote_bin: String,
-    /// Working directory the remote redoor agent switches into via its
-    /// `-d/--dir` flag, mirroring the operator's `redoor agent -d`. Useful
-    /// for keeping relative paths and local uploads confined to a project
-    /// tree on the remote host without changing ssh's own cwd.
+    /// Default directory the remote agent publishes for UI tab navigation.
     #[arg(short = 'd', long)]
     pub(crate) dir: Option<String>,
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
@@ -86,9 +83,7 @@ pub(crate) struct SshAgentConfig {
     /// Path to the redoor binary on the remote host. When `None`, defaults to
     /// the versioned install layout.
     pub(crate) remote_bin: Option<String>,
-    /// Working directory the remote redoor agent switches into via its
-    /// `-d/--dir` flag, mirroring the operator's `redoor agent -d`. When
-    /// `None`, the agent uses the remote shell's current directory.
+    /// Default UI directory; when absent the remote launch cwd is published.
     pub(crate) dir: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub(crate) target: String,
@@ -820,8 +815,7 @@ pub(crate) async fn prepare_ssh_agent(
 
     // ssh joins all trailing args after the command into one remote argv, so
     // the agent name must be appended after the fixed flags. The optional
-    // `-d/--dir` is appended last so its absence matches the local agent's
-    // default of inheriting the current working directory.
+    // `-d/--dir` is appended last so absence publishes the remote launch cwd.
     let mut remote_argv: Vec<String> = vec![
         "agent".to_string(),
         ws_url.clone(),

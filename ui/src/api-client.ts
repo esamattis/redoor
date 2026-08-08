@@ -62,6 +62,14 @@ type CopyFileResponseJson = {
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
+/** Encodes a complete absolute path as browser splat data. */
+export function getBrowserUrl(agentId: string, path: string): string {
+    if (!path.startsWith("/")) {
+        throw new Error("Filesystem path must be absolute");
+    }
+    return `/agents/${encodeURIComponent(agentId)}/browser/${encodeURIComponent(path)}`;
+}
+
 export function isLsDirectoryResponse(
     response: LsResponse,
 ): response is LsDirectoryResponse {
@@ -91,6 +99,18 @@ export class Agent {
         return this.info.name;
     }
 
+    get cwd(): string {
+        return this.info.cwd;
+    }
+
+    /** Validates and encodes one complete absolute filesystem path for REST routes. */
+    private encodeFilesystemPath(path: string): string {
+        if (!path.startsWith("/")) {
+            throw new Error("Filesystem path must be absolute");
+        }
+        return path.split("/").map(encodeURIComponent).join("/");
+    }
+
     async getDetails(): Promise<AgentDetailsResponse> {
         return apiRequest(
             this.baseUrl,
@@ -101,7 +121,7 @@ export class Agent {
     async ls(path: string): Promise<LsResponse> {
         return apiRequest<LsResponse>(
             this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls/${encodeURIComponent(path)}`,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls/${this.encodeFilesystemPath(path)}`,
         );
     }
 
@@ -128,19 +148,8 @@ export class Agent {
         return response.arrayBuffer();
     }
 
-    getRawUrl(
-        path: string,
-        options?: { cwd?: string; download?: boolean },
-    ): string {
-        let relativePath = path;
-        if (options?.cwd && path.startsWith(options.cwd)) {
-            // Remove the cwd prefix and leading slash
-            relativePath = path.slice(options.cwd.length).replace(/^\//, "");
-        }
-        const encodedPath = relativePath
-            .split("/")
-            .map(encodeURIComponent)
-            .join("/");
+    getRawUrl(path: string, options?: { download?: boolean }): string {
+        const encodedPath = this.encodeFilesystemPath(path);
         let url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
         if (options?.download) {
             url += "?download=1";
@@ -152,12 +161,14 @@ export class Agent {
     /// The full path is encoded so absolute paths survive URL parsing
     /// without their leading `/` being swallowed by the router.
     getBrowserUrl(path: string): string {
-        const encodedPath = encodeURIComponent(path);
-        return `/agents/${encodeURIComponent(this.info.id)}/browser/${encodedPath}`;
+        return getBrowserUrl(this.info.id, path);
     }
 
     /** Builds one terminal socket with the directory captured by its UI tab. */
     getTerminalWebSocketUrl(size: TerminalSize, cwd: string): string {
+        if (!cwd.startsWith("/")) {
+            throw new Error("Filesystem path must be absolute");
+        }
         const url = new URL(
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/terminal/ws`,
             this.baseUrl,
@@ -212,7 +223,7 @@ export class Agent {
     }
 
     async createDirectory(path: string): Promise<CreateDirectoryResponse> {
-        const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+        const encodedPath = this.encodeFilesystemPath(path);
         const response = await fetch(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir/${encodedPath}`,
             {
@@ -238,6 +249,8 @@ export class Agent {
         destination: CopyEndpoint,
         sourcePath: string,
     ): Promise<CopyFileResponse> {
+        this.encodeFilesystemPath(sourcePath);
+        this.encodeFilesystemPath(destination.path);
         const request: CopyFileRequest = {
             source: {
                 agent: this.info.id,

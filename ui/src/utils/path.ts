@@ -1,4 +1,5 @@
 export function getParentPath(path: string): string | null {
+    if (!path.startsWith("/")) return null;
     const normalizedPath = path.replace(/\/+$/, "");
     if (normalizedPath === "") return null;
 

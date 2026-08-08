@@ -9,6 +9,7 @@ import {
     AlertCircle,
     FolderOpen,
 } from "lucide-react";
+import { getBrowserUrl } from "../api-client";
 
 export const Route = createFileRoute("/agents/$agentId/")({
     loader: async ({ params, parentMatchPromise }) => {
@@ -62,8 +63,7 @@ function AgentDetails() {
                             {details.name}
                         </h1>
                         <Link
-                            to="/agents/$agentId/browser/$"
-                            params={{ agentId: details.id }}
+                            to={getBrowserUrl(details.id, details.cwd)}
                             className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
                         >
                             <FolderOpen className="h-4 w-4" />
@@ -83,14 +83,13 @@ function AgentDetails() {
                         <DetailItem label="PID" value={details.pid} />
                         <div className="flex items-center gap-3 text-sm">
                             <span className="w-24 flex-shrink-0 text-slate-400">
-                                Working Directory:
+                                Default Directory:
                             </span>
                             <span className="truncate font-mono text-xs text-slate-200">
                                 {details.cwd}
                             </span>
                             <Link
-                                to="/agents/$agentId/browser/$"
-                                params={{ agentId: details.id }}
+                                to={getBrowserUrl(details.id, details.cwd)}
                                 className="text-xs text-blue-400 hover:underline"
                             >
                                 Browse Files

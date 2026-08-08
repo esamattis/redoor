@@ -96,11 +96,24 @@ pub(crate) struct AgentRuntime {
 }
 
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
-    // Change directory as early as possible so logging, relative paths,
-    // and all downstream operations use the requested working directory.
-    if let Some(dir) = &args.dir {
-        std::env::set_current_dir(dir)?;
+    let launch_directory = std::env::current_dir()?;
+    let configured_directory = args
+        .dir
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or(launch_directory);
+    let default_directory = tokio::fs::canonicalize(&configured_directory).await?;
+    if !tokio::fs::metadata(&default_directory).await?.is_dir() {
+        return Err(format!(
+            "Agent default directory is not a directory: {}",
+            configured_directory.display()
+        )
+        .into());
     }
+    let default_directory = default_directory
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "Agent default directory is not valid UTF-8")?;
 
     let server_url = args.ws_address;
     let agent_name = args.name;
@@ -113,7 +126,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
     let handle = AgentHandle { sender };
-    let runtime = AgentRuntime::new(agent_id, agent_name, server_url);
+    let runtime = AgentRuntime::new(agent_id, agent_name, server_url, default_directory);
 
     runtime.run(receiver, handle).await;
 

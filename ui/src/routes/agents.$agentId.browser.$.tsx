@@ -53,24 +53,13 @@ type CreateDirectoryState =
 
 function getImmediateParentPath(path: string): string | null {
     const normalizedPath = path.replace(/\/+$/, "");
-    if (normalizedPath === "") {
-        return null;
-    }
-
-    const isAbsolute = normalizedPath.startsWith("/");
-    const parts = normalizedPath.split("/").filter((part) => part !== "");
-    if (parts.length <= 1) {
-        return null;
-    }
-
-    const parent = parts.slice(0, -1).join("/");
-    return isAbsolute ? `/${parent}` : parent;
+    if (!normalizedPath.startsWith("/") || normalizedPath === "") return null;
+    const lastSlashIndex = normalizedPath.lastIndexOf("/");
+    return lastSlashIndex === 0 ? "/" : normalizedPath.slice(0, lastSlashIndex);
 }
 
-function getBrowserPathHref(agentId: string, relativePath: string | null) {
-    return relativePath
-        ? `/agents/${agentId}/browser/${relativePath}`
-        : `/agents/${agentId}/browser`;
+function getBrowserPathHref(agent: Agent, path: string) {
+    return agent.getBrowserUrl(path);
 }
 
 /**
@@ -102,26 +91,20 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         );
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
-        const details = await agent.getDetails();
-        const relativePath = params._splat || "";
-        const lsPath = relativePath || details.cwd;
-        const lsResult: LsResponse = await agent.ls(lsPath);
+        const path = params._splat;
+        if (!path?.startsWith("/")) {
+            throw new Error("Filesystem path must be absolute");
+        }
+        const lsResult: LsResponse = await agent.ls(path);
         const downloadUrl = isLsFileResponse(lsResult)
-            ? agent.getRawUrl(lsResult.path, { cwd: details.cwd })
+            ? agent.getRawUrl(lsResult.path)
             : undefined;
-        const fullPath = relativePath.startsWith("/")
-            ? relativePath
-            : relativePath
-              ? `${details.cwd}/${relativePath}`
-              : details.cwd;
 
         return {
             agent,
             agentId: agent.id,
             agentName: agent.name,
-            cwd: details.cwd,
-            relativePath,
-            fullPath,
+            path,
             lsResult,
             downloadUrl,
             agents: rootLoaderData.agents,
@@ -133,11 +116,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const { agent, agentId, agentName, relativePath, lsResult } = data;
+    const { agent, agentId, agentName, path, lsResult } = data;
     const [showHiddenFiles, setShowHiddenFiles] = React.useState(true);
 
-    const isAtCwd = relativePath === "";
-    const parentPath = getImmediateParentPath(relativePath);
+    const parentPath = getImmediateParentPath(path);
 
     if (isLsDirectoryResponse(lsResult)) {
         const filterHidden = (files: typeof lsResult.files) => {
@@ -161,10 +143,9 @@ function FileBrowser() {
                         agent={agent}
                         agentId={agentId}
                         agentName={agentName}
-                        relativePath={relativePath}
-                        isAtCwd={isAtCwd}
+                        path={path}
                         parentPath={parentPath}
-                        directoryPath={data.fullPath}
+                        directoryPath={path}
                         showHiddenFiles={showHiddenFiles}
                         onToggleHiddenFiles={() =>
                             setShowHiddenFiles((prev) => !prev)
@@ -174,15 +155,14 @@ function FileBrowser() {
                     <CopySelectedFilesAction
                         agents={data.agents}
                         destinationAgent={agent}
-                        directoryPath={data.fullPath}
+                        directoryPath={path}
                     />
 
                     <FileList
                         agentId={agentId}
                         agentName={agentName}
-                        relativePath={relativePath}
+                        directoryPath={path}
                         files={sortedFiles}
-                        isAtCwd={isAtCwd}
                     />
                 </div>
             </div>
@@ -190,7 +170,7 @@ function FileBrowser() {
     }
 
     if (isLsFileResponse(lsResult)) {
-        const fileName = relativePath.split("/").pop() || lsResult.path;
+        const fileName = path.split("/").pop() || lsResult.path;
         const downloadUrl = data.downloadUrl;
         if (!downloadUrl) {
             return (
@@ -207,7 +187,7 @@ function FileBrowser() {
                         agent={agent}
                         agentId={agentId}
                         agentName={agentName}
-                        relativePath={relativePath}
+                        path={path}
                         fileName={fileName}
                         lsResult={lsResult}
                         downloadUrl={downloadUrl}
@@ -666,8 +646,7 @@ function BrowserHeader(props: {
     agent: Agent;
     agentId: string;
     agentName: string;
-    relativePath: string;
-    isAtCwd: boolean;
+    path: string;
     parentPath: string | null;
     directoryPath: string;
     showHiddenFiles: boolean;
@@ -679,7 +658,8 @@ function BrowserHeader(props: {
                 <Breadcrumbs
                     agentId={props.agentId}
                     agentName={props.agentName}
-                    relativePath={props.relativePath}
+                    agent={props.agent}
+                    path={props.path}
                 />
                 <Link
                     to="/agents/$agentId"
@@ -697,9 +677,16 @@ function BrowserHeader(props: {
             >
                 <div className="flex flex-wrap items-center gap-1">
                     <Link
-                        to={getBrowserPathHref(props.agentId, props.parentPath)}
+                        to={
+                            props.parentPath
+                                ? getBrowserPathHref(
+                                      props.agent,
+                                      props.parentPath,
+                                  )
+                                : props.agent.getBrowserUrl("/")
+                        }
                         className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-                        disabled={props.isAtCwd}
+                        disabled={props.parentPath === null}
                     >
                         <ArrowUp className="h-4 w-4" />
                         Up
@@ -741,14 +728,14 @@ function BrowserHeader(props: {
 }
 
 function Breadcrumbs(props: {
+    agent: Agent;
     agentId: string;
     agentName: string;
-    relativePath: string;
+    path: string;
 }) {
-    const { agentId, agentName, relativePath } = props;
+    const { agentName, path } = props;
 
-    const parts = relativePath.split("/").filter((part) => part !== "");
-    const isAbsolute = relativePath.startsWith("/");
+    const parts = path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
     let accumulatedPath = "";
 
@@ -757,23 +744,25 @@ function Breadcrumbs(props: {
             aria-label="Breadcrumbs"
             className="flex flex-wrap items-center gap-2 text-sm"
         >
+            <Link
+                to={props.agent.getBrowserUrl(props.agent.cwd)}
+                className="text-blue-400 hover:underline"
+            >
+                {agentName}
+            </Link>
+            <span className="text-slate-600">/</span>
             {isAtRoot ? (
-                <span className="font-medium text-slate-100">{agentName}</span>
+                <span className="font-medium text-slate-100">/</span>
             ) : (
                 <Link
-                    to="/agents/$agentId/browser/$"
-                    params={{ agentId, _splat: undefined }}
+                    to={props.agent.getBrowserUrl("/")}
                     className="text-blue-400 hover:underline"
                 >
-                    {agentName}
+                    /
                 </Link>
             )}
             {parts.map((part, index) => {
-                if (accumulatedPath === "") {
-                    accumulatedPath = isAbsolute ? `/${part}` : part;
-                } else {
-                    accumulatedPath = `${accumulatedPath}/${part}`;
-                }
+                accumulatedPath = `${accumulatedPath}/${part}`;
                 const isLast = index === parts.length - 1;
 
                 return (
@@ -785,8 +774,7 @@ function Breadcrumbs(props: {
                             </span>
                         ) : (
                             <Link
-                                to="/agents/$agentId/browser/$"
-                                params={{ agentId, _splat: accumulatedPath }}
+                                to={props.agent.getBrowserUrl(accumulatedPath)}
                                 className="font-medium text-blue-400 hover:underline"
                             >
                                 {part}
@@ -802,7 +790,7 @@ function Breadcrumbs(props: {
 function FileList(props: {
     agentId: string;
     agentName: string;
-    relativePath: string;
+    directoryPath: string;
     files: Array<{
         name: string;
         type: string;
@@ -812,9 +800,8 @@ function FileList(props: {
         uid: number;
         gid: number;
     }>;
-    isAtCwd: boolean;
 }) {
-    const { agentId, agentName, relativePath, files } = props;
+    const { agentId, agentName, directoryPath, files } = props;
 
     return (
         <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
@@ -846,7 +833,7 @@ function FileList(props: {
                         key={index}
                         agentId={agentId}
                         agentName={agentName}
-                        relativePath={relativePath}
+                        directoryPath={directoryPath}
                         entry={entry}
                         isParent={false}
                     />
@@ -859,7 +846,7 @@ function FileList(props: {
 function FileEntry(props: {
     agentId: string;
     agentName: string;
-    relativePath: string;
+    directoryPath: string;
     entry: {
         name: string;
         type: string;
@@ -873,16 +860,10 @@ function FileEntry(props: {
 }) {
     const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
     const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
-    const { agentId, agentName, relativePath, entry, isParent } = props;
+    const { agentId, agentName, directoryPath, entry, isParent } = props;
     const isDirectory = entry.type === "directory" || isParent;
-    const splatValue = relativePath
-        ? `${relativePath}/${entry.name}`
-        : entry.name;
-    const fullPath = splatValue.startsWith("/")
-        ? splatValue
-        : Route.useLoaderData().cwd
-          ? joinBrowserPath(Route.useLoaderData().cwd, splatValue)
-          : splatValue;
+    const fullPath = joinBrowserPath(directoryPath, entry.name);
+    const agent = Route.useLoaderData().agent;
     const isSelected = selectedFileKeys.has(`${agentId}:${fullPath}`);
 
     return (
@@ -909,7 +890,6 @@ function FileEntry(props: {
                             agentId,
                             agentName,
                             path: fullPath,
-                            relativePath: splatValue,
                             fileName: entry.name,
                         })
                     }
@@ -931,8 +911,7 @@ function FileEntry(props: {
             </td>
             <td className="p-3">
                 <Link
-                    to="/agents/$agentId/browser/$"
-                    params={{ agentId, _splat: splatValue }}
+                    to={agent.getBrowserUrl(fullPath)}
                     className={`${isDirectory ? "flex items-center gap-3 " : ""}text-blue-400 font-medium hover:underline`}
                 >
                     {entry.name}
@@ -956,13 +935,13 @@ function FileDetailView(props: {
     agent: Agent;
     agentId: string;
     agentName: string;
-    relativePath: string;
+    path: string;
     fileName: string;
     lsResult: LsFileResponse;
     downloadUrl: string;
 }) {
     const navigate = useNavigate();
-    const parentPath = getImmediateParentPath(props.relativePath);
+    const parentPath = getImmediateParentPath(props.path);
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
@@ -997,11 +976,7 @@ function FileDetailView(props: {
         try {
             await props.agent.deleteFile(props.lsResult.path);
             await navigate({
-                to: "/agents/$agentId/browser/$",
-                params: {
-                    agentId: props.agentId,
-                    _splat: parentPath ?? undefined,
-                },
+                to: props.agent.getBrowserUrl(parentPath ?? "/"),
             });
         } catch (error) {
             setDeleteState({
@@ -1018,11 +993,15 @@ function FileDetailView(props: {
                     <Breadcrumbs
                         agentId={props.agentId}
                         agentName={props.agentName}
-                        relativePath={props.relativePath}
+                        agent={props.agent}
+                        path={props.path}
                     />
                     <div className="flex flex-wrap gap-2">
                         <Link
-                            to={getBrowserPathHref(props.agentId, parentPath)}
+                            to={getBrowserPathHref(
+                                props.agent,
+                                parentPath ?? "/",
+                            )}
                             className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
                         >
                             <ArrowLeft className="h-4 w-4" />

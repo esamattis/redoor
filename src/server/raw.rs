@@ -16,7 +16,7 @@ use redoor::{
 use serde::Deserialize;
 
 use super::{
-    agent_helpers::resolve_agent_path,
+    agent_helpers::require_absolute_path,
     responses::{command_error_status, router_error_response},
     state::ServerState,
 };
@@ -166,6 +166,10 @@ pub(crate) async fn raw_agent_handler(
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let path = match require_absolute_path(path) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     let agent_id = AgentId::from(agent.clone());
     let metadata = match state
         .router_ref
@@ -374,6 +378,10 @@ pub(crate) async fn raw_agent_put_handler(
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
+    let path = match require_absolute_path(path) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     let agent_id = AgentId::from(agent.clone());
     let total_bytes = match headers.get(axum::http::header::CONTENT_LENGTH) {
         Some(header_value) => match header_value.to_str() {
@@ -410,10 +418,7 @@ pub(crate) async fn raw_agent_put_handler(
         }
     };
 
-    let resolved_path = match resolve_agent_path(&state, &agent_id, path).await {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let resolved_path = path;
 
     let (upload_completion_sender, upload_completion_receiver) =
         tokio::sync::oneshot::channel::<Result<CommandResult, actors::router::RouterError>>();

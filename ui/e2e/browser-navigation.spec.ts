@@ -18,11 +18,11 @@ test.describe.serial("File Browser Navigation", () => {
     });
 
     test("should display file list at agent root", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
 
         await expect(
             page.locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             ),
         ).toBeVisible();
     });
@@ -30,13 +30,13 @@ test.describe.serial("File Browser Navigation", () => {
     test("should navigate to subdirectory and display files", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
-        const destinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}`;
+        await page.goto(ctx.agentBrowserUrl);
+        const destinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await Promise.all([
             page.waitForURL(destinationUrl),
             page
                 .locator(
-                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
                 )
                 .click(),
         ]);
@@ -65,10 +65,10 @@ test.describe.serial("File Browser Navigation", () => {
     });
 
     test("should navigate to deep nested directory", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir2", exact: true }).click();
@@ -88,10 +88,10 @@ test.describe.serial("File Browser Navigation", () => {
     });
 
     test("should navigate using breadcrumbs", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir2" }).click();
@@ -133,10 +133,10 @@ test.describe.serial("File Browser Navigation", () => {
     });
 
     test("should navigate using Up button", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir2", exact: true }).click();
@@ -146,7 +146,7 @@ test.describe.serial("File Browser Navigation", () => {
         // after the route loader has rendered the nested page rather than
         // racing with the intermediate URL change.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir2/deep`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir2/deep`)}`,
         );
         await expect(
             page.getByRole("link", { name: "nested3.txt", exact: true }),
@@ -156,7 +156,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         // One Up click should remove only the deepest path segment.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir2`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir2`)}`,
         );
         // Seeing the child directory confirms we landed in the immediate parent directory.
         await expect(
@@ -175,7 +175,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         // The second Up click should return from subdir2 to the test directory root.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         // Root directory entries confirm the browser returned to the expected directory listing.
         await expect(
@@ -190,24 +190,27 @@ test.describe.serial("File Browser Navigation", () => {
 
         await upButton.click();
 
-        // This verifies the final upward navigation from the test directory returns to the agent cwd browser root.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser`,
+        // Reaching the configured default does not turn it into a browser root.
+        await expect(page).toHaveURL(ctx.agentBrowserUrl);
+        await expect(upButton).not.toHaveAttribute("aria-disabled", "true");
+        await upButton.click();
+        // Up continues from the configured default to its real filesystem parent.
+        await expect(page).not.toHaveURL(ctx.agentBrowserUrl);
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent("/")}`,
         );
-        await expect(
-            page.getByRole("link", { name: ctx.testDirName, exact: true }),
-        ).toBeVisible();
-        // The aria-disabled attribute confirms there is no parent above the agent cwd root.
+        // Only the filesystem root has no parent navigation target.
         await expect(upButton).toHaveAttribute("aria-disabled", "true");
     });
 
     test("should navigate back to agent page using Back to Agent button", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 
@@ -220,10 +223,10 @@ test.describe.serial("File Browser Navigation", () => {
     });
 
     test("should display correct icons and sizes", async ({ page }) => {
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
 

@@ -44,6 +44,7 @@ export async function createToxiproxyAgent(options: {
     const proxiedAgent = new Agent(`http://${proxy.listen}`, {
         id: options.agent.id,
         name: options.agent.name,
+        cwd: options.agent.cwd,
     });
 
     return {
@@ -165,6 +166,7 @@ export type SpawnAgentArgs = {
     wsAddress: string;
     name: string;
     cwd: string;
+    dir?: string;
     log?: string;
 };
 
@@ -206,6 +208,10 @@ export class ProcessManager {
 
     spawnAgent(args: SpawnAgentArgs): number {
         const cliArgs = ["agent", args.wsAddress, "--name", args.name];
+
+        if (args.dir !== undefined) {
+            cliArgs.push("--dir", args.dir);
+        }
 
         if (args.log !== undefined) {
             rmSync(args.log, { force: true });
@@ -319,6 +325,7 @@ export async function startServerAndAgent(options: {
         wsAddress: wsUrl,
         name: options.agentName,
         cwd: options.agentCwd,
+        dir: options.agentCwd,
     });
 
     await waitForAgentPromise;

@@ -49,6 +49,39 @@ afterAll(() => {
 });
 
 describe("Agents API", () => {
+    it("publishes a relative --dir without changing the launch cwd", async () => {
+        const launchDirectory = tempFiles.tempDirectory({
+            suffix: "-launch-directory",
+        });
+        const relativeDefault = "browser-default";
+        const expectedDefault = path.join(launchDirectory, relativeDefault);
+        await fs.mkdir(expectedDefault);
+        const agentName = "relative-default-agent";
+        const agentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: agentName,
+            cwd: launchDirectory,
+            dir: relativeDefault,
+            log: "relative-agent.log",
+        });
+        onTestFinished(() => processManager.kill(agentPid));
+
+        const registeredAgent = await waitForValue({
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((agent) => agent.name === agentName);
+            },
+            description: "relative default directory agent registration",
+        });
+
+        // Relative --dir is resolved once against the process launch directory.
+        expect(registeredAgent?.cwd).toBe(expectedDefault);
+        // A relative log remains launch-cwd-relative, proving --dir did not mutate process cwd.
+        await expect(fs.stat(path.join(launchDirectory, "relative-agent.log"))).resolves.toBeDefined();
+        // The default directory must not become an ambient base for unrelated relative options.
+        await expect(fs.stat(path.join(expectedDefault, "relative-agent.log"))).rejects.toThrow();
+    });
+
     it("should get agent details", async () => {
         const agents = await apiClient.listAgents();
         // Verify at least one agent is connected
@@ -65,9 +98,9 @@ describe("Agents API", () => {
         expect(result.name).toBe(AGENT_NAME);
         // Verify PID is positive
         expect(result.pid).toBeGreaterThan(0);
-        // Verify CWD is a non-empty string
-        expect(result.cwd).toBeDefined();
-        expect(result.cwd.length).toBeGreaterThan(0);
+        // List and details must publish the same immutable startup default directory.
+        expect(testAgent!.cwd).toBe(agentCwd);
+        expect(result.cwd).toBe(agentCwd);
         // Verify OS, arch, hostname are non-empty strings
         expect(result.os).toBeDefined();
         expect(result.os.length).toBeGreaterThan(0);
@@ -283,6 +316,7 @@ describe("Agents API", () => {
         const agent = new Agent(apiClient.baseUrl, {
             id: nonExistentAgentId,
             name: "non-existent",
+            cwd: "/tmp",
         });
         // Verify that requesting details for non-existent agent throws an error
         await expect(agent.getDetails()).rejects.toThrow("Agent not found");

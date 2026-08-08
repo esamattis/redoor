@@ -25,9 +25,14 @@ fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> 
 
 impl AgentRuntime {
     /// Creates the initial agent runtime state before any websocket connection exists.
-    pub(crate) fn new(agent_id: AgentId, agent_name: String, server_url: String) -> Self {
+    pub(crate) fn new(
+        agent_id: AgentId,
+        agent_name: String,
+        server_url: String,
+        default_directory: String,
+    ) -> Self {
         Self {
-            state: AgentState::new(agent_id, agent_name, server_url),
+            state: AgentState::new(agent_id, agent_name, server_url, default_directory),
         }
     }
 
@@ -244,6 +249,7 @@ impl AgentRuntime {
                     arch,
                     hostname,
                     username,
+                    cwd: self.state.default_directory.clone(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {
@@ -276,6 +282,7 @@ mod tests {
             AgentId::from("agent"),
             "agent".to_string(),
             "ws://localhost".to_string(),
+            "/tmp".to_string(),
         );
         let stale_generation = runtime.state.advance_connection_generation();
         let current_generation = runtime.state.advance_connection_generation();

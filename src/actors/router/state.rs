@@ -28,6 +28,8 @@ pub struct AgentConnection {
     pub hostname: String,
     /// Username reported at registration time.
     pub username: String,
+    /// Immutable absolute directory selected at agent startup for UI navigation.
+    pub default_directory: String,
 }
 
 #[derive(Default)]

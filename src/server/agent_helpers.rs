@@ -11,14 +11,7 @@ use redoor::{
 
 use super::{responses::command_error_status, state::ServerState};
 
-fn join_agent_path(cwd: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        cwd.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
-}
-
+/// Fetches detailed runtime and immutable registration metadata for one agent.
 pub(crate) async fn get_agent_details(
     state: &ServerState,
     agent_id: &AgentId,
@@ -56,15 +49,41 @@ pub(crate) async fn get_agent_details(
     }
 }
 
-pub(crate) async fn resolve_agent_path(
-    state: &ServerState,
-    agent_id: &AgentId,
-    path: String,
-) -> Result<String, Response> {
-    if path.starts_with('/') {
-        return Ok(path);
+/// Rejects cwd-dependent filesystem addressing without canonicalizing valid destinations.
+pub(crate) fn require_absolute_path(path: String) -> Result<String, Response> {
+    if std::path::Path::new(&path).is_absolute() {
+        Ok(path)
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Filesystem path must be absolute".to_string(),
+            }),
+        )
+            .into_response())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies lexical validation accepts absolute destinations without requiring existence.
+    #[test]
+    fn accepts_absolute_paths() {
+        for path in ["/", "/tmp/existing-style", "/not-created-yet/file"] {
+            // Nonexistent destinations must remain usable by upload, mkdir, and copy APIs.
+            assert_eq!(require_absolute_path(path.to_string()).unwrap(), path);
+        }
     }
 
-    let details = get_agent_details(state, agent_id).await?;
-    Ok(join_agent_path(&details.cwd, &path))
+    /// Verifies malformed paths fail at the transport boundary before agent lookup.
+    #[test]
+    fn rejects_relative_paths() {
+        for path in ["relative", "./relative", "../relative", ""] {
+            let response = require_absolute_path(path.to_string()).unwrap_err();
+            // A stable 400 response makes relative addressing invalid for every endpoint.
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
 }

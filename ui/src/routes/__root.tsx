@@ -209,8 +209,8 @@ function RootLayout() {
             );
             if (browserMatch?.loaderData) {
                 return isLsFileResponse(browserMatch.loaderData.lsResult)
-                    ? getParentPath(browserMatch.loaderData.fullPath)
-                    : browserMatch.loaderData.fullPath;
+                    ? getParentPath(browserMatch.loaderData.path)
+                    : browserMatch.loaderData.path;
             }
 
             const detailsMatch = matches.find(
@@ -305,11 +305,7 @@ function TopTabStrip(props: {
                         return (
                             <Link
                                 key={agent.id}
-                                to="/agents/$agentId/browser/$"
-                                params={{
-                                    agentId: agent.id,
-                                    _splat: undefined,
-                                }}
+                                to={agent.getBrowserUrl(agent.cwd)}
                                 role="tab"
                                 aria-selected={isActive}
                                 className={`group flex max-w-56 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
@@ -624,13 +620,17 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                     </td>
                                     <td className="p-3">
                                         <Link
-                                            to="/agents/$agentId/browser/$"
-                                            params={{
-                                                agentId: file.agentId,
-                                                _splat:
-                                                    file.relativePath ||
-                                                    undefined,
-                                            }}
+                                            to={
+                                                props.agents
+                                                    .find(
+                                                        (agent) =>
+                                                            agent.id ===
+                                                            file.agentId,
+                                                    )
+                                                    ?.getBrowserUrl(
+                                                        file.path,
+                                                    ) ?? "/"
+                                            }
                                             className="text-sm font-medium text-blue-400 hover:underline"
                                         >
                                             {file.fileName}

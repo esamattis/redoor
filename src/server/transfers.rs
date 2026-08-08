@@ -5,7 +5,7 @@ use redoor::{
 };
 
 use super::{
-    agent_helpers::resolve_agent_path,
+    agent_helpers::require_absolute_path,
     responses::{command_error_status, router_error_response},
     state::ServerState,
 };
@@ -38,22 +38,15 @@ pub(crate) async fn copy_file_handler(
     AxumState(state): AxumState<ServerState>,
     Json(payload): Json<CopyFileRequest>,
 ) -> impl IntoResponse {
-    let source_path = match resolve_agent_path(
-        &state,
-        &payload.source.agent,
-        payload.source.path.clone(),
-    )
-    .await
-    {
+    let source_path = match require_absolute_path(payload.source.path.clone()) {
         Ok(path) => path,
         Err(response) => return response,
     };
 
-    let dest_path =
-        match resolve_agent_path(&state, &payload.dest.agent, payload.dest.path.clone()).await {
-            Ok(path) => path,
-            Err(response) => return response,
-        };
+    let dest_path = match require_absolute_path(payload.dest.path.clone()) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
 
     if payload.source.agent == payload.dest.agent && source_path == dest_path {
         return (

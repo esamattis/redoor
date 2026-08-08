@@ -31,13 +31,13 @@ test.describe.serial("File Operations", () => {
         await fs.writeFile(secondUploadPath, "uploaded content b");
 
         try {
-            await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+            await page.goto(ctx.agentBrowserUrl);
             await page
                 .locator(
-                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                    `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
                 )
                 .click();
-            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir3`;
+            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir3`)}`;
             await Promise.all([
                 page.waitForURL(uploadDestinationUrl),
                 page.getByRole("link", { name: "subdir3" }).click(),
@@ -94,10 +94,10 @@ test.describe.serial("File Operations", () => {
 
         await fs.rm(createdDirectoryPath, { force: true, recursive: true });
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir3", exact: true }).click();
@@ -145,10 +145,10 @@ test.describe.serial("File Operations", () => {
         );
         await fs.writeFile(deletableFilePath, "temporary content");
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir3" }).click();
@@ -175,7 +175,7 @@ test.describe.serial("File Operations", () => {
         // Redirecting back to the parent directory confirms the delete request completed successfully.
         await expect(page).toHaveURL(
             new RegExp(
-                `/agents/${ctx.agentId}/browser/${ctx.testDirName}/subdir3$`,
+                `/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir3`)}$`,
             ),
         );
         // The deleted entry disappearing from the listing proves the route refreshed with the new filesystem state.
@@ -195,10 +195,10 @@ test.describe.serial("File Operations", () => {
 
         await fs.writeFile(deletableFilePath, "temporary content");
 
-        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
         await page.getByRole("link", { name: "subdir3" }).click();
