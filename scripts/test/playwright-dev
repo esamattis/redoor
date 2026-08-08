@@ -17,14 +17,15 @@ cat > .test-playwright-config.toml <<'EOF'
 [server]
 username = "test-user"
 password = "test-password"
+agent_token = "test-agent-token"
 EOF
 # Start each process directly so pnpm cannot add color codes while expanding the port.
 HOME="$PWD/.test-playwright-home" ./target/debug/redoor server --config .test-playwright-config.toml --port "$REDOOR_PORT" --log log/playwright-redoor.log &
 server_pid=$!
-./target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent1_src --log log/playwright-agent1_src.log &
+./target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent1_src --token test-agent-token --log log/playwright-agent1_src.log &
 agent1_pid=$!
 mkdir -p dev_agents/agent2
-./target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent2_custom --dir dev_agents/agent2 --log log/playwright-agent2_custom.log &
+./target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent2_custom --token test-agent-token --dir dev_agents/agent2 --log log/playwright-agent2_custom.log &
 agent2_pid=$!
 
 # Ensure Playwright termination also cleans up all background processes.

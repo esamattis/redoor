@@ -14,6 +14,7 @@ import {
     VITEST_SERVER_PORT,
     waitForValue,
     waitForPort,
+    TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_USERNAME,
 } from "./test-utils";
@@ -45,6 +46,7 @@ beforeAll(async () => {
         `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
+agent_token = "${TEST_AGENT_TOKEN}"
 
 [[agents]]
 local = true

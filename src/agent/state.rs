@@ -17,6 +17,9 @@ pub(crate) struct AgentArgs {
     pub(crate) ws_address: String,
     #[arg(long)]
     pub(crate) name: String,
+    /// Shared secret from `server.agent_token` so registration cannot be spoofed.
+    #[arg(long, env = "REDOOR_AGENT_TOKEN")]
+    pub(crate) token: String,
     #[arg(long)]
     pub(crate) log: Option<String>,
     /// Default directory opened by the UI without limiting filesystem access.
@@ -200,6 +203,8 @@ pub(crate) struct AgentState {
     pub(crate) server_url: String,
     /// Immutable absolute directory used when the UI opens this agent.
     pub(crate) default_directory: String,
+    /// Shared secret presented during registration so the server can reject impostors.
+    pub(crate) token: String,
     pub(crate) ws_text_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) connection_generation: u64,
@@ -215,12 +220,14 @@ impl AgentState {
         agent_name: String,
         server_url: String,
         default_directory: String,
+        token: String,
     ) -> Self {
         Self {
             agent_id,
             agent_name,
             server_url,
             default_directory,
+            token,
             ws_text_tx: None,
             ws_binary_tx: None,
             connection_generation: 0,

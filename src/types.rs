@@ -212,6 +212,8 @@ pub enum Message {
         username: String,
         /// Immutable absolute directory opened when the UI selects this agent.
         cwd: String,
+        /// Shared secret proving this agent was started with server credentials.
+        token: String,
     },
 
     /// Optional explicit teardown signal from an agent asking the router to

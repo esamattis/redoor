@@ -8,8 +8,17 @@ use crate::types::{AgentId, Message, SocketId};
 use crate::watchdog::{WatchdogHandle, WatchdogRegistry};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use sha2::{Digest, Sha256};
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot};
+
+/// Constant-time string equality so invalid tokens do not leak length via timing.
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left_digest = Sha256::digest(left.as_bytes());
+    let right_digest = Sha256::digest(right.as_bytes());
+    bool::from(left_digest.ct_eq(&right_digest))
+}
 
 /// Interval between websocket Ping frames sent by the server to proactively
 /// detect half-open connections. When the SSH tunnel drops without a clean
@@ -65,6 +74,8 @@ struct SessionRuntime {
     /// agents that aren't supervised (e.g. manually-spawned external
     /// agents), in which case the stale check is a no-op.
     watchdog: Option<WatchdogHandle>,
+    /// Expected `server.agent_token`; registration without this secret is rejected.
+    agent_token: String,
 }
 
 impl SessionRuntime {
@@ -79,7 +90,29 @@ impl SessionRuntime {
                 hostname,
                 username,
                 cwd,
+                token,
             } => {
+                // Reject impostors before name takeover: an unauthenticated client
+                // that only knows an agent name must not replace a live connection.
+                if !constant_time_eq(&token, &self.agent_token) {
+                    log!(
+                        Level::Warning,
+                        "Rejecting agent registration with invalid token: agent_name={}, socket_id={}",
+                        agent_name,
+                        self.socket_id
+                    );
+                    let _ = self.outgoing_text.send(WsMessage::Text(
+                        serde_json::to_string(&Message::Error {
+                            message: "Invalid agent token".to_string(),
+                        })
+                        .unwrap_or_else(|_| {
+                            r#"{"type":"error","message":"Invalid agent token"}"#.to_string()
+                        })
+                        .into(),
+                    ));
+                    return;
+                }
+
                 // Look up the supervisor for this agent name BEFORE
                 // moving `agent_name` into the registration payload so
                 // the registry still has access to it. A `None` result
@@ -224,6 +257,7 @@ pub async fn handle_websocket(
     socket_id: SocketId,
     router_ref: RouterHandle,
     watchdog_registry: WatchdogRegistry,
+    agent_token: String,
 ) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     // Text frames carry control-plane messages, so they stay unbounded to avoid
@@ -240,6 +274,7 @@ pub async fn handle_websocket(
         outgoing_text: tx_out_text,
         outgoing_binary: tx_out_binary,
         watchdog: None,
+        agent_token,
     };
 
     log!(Level::Info, "Session started: socket_id={}", socket_id);

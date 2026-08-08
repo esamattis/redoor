@@ -170,6 +170,7 @@ export const AGENT_PATH = SERVER_PATH;
 export const VITEST_SERVER_PORT = testPorts.vitest;
 export const TEST_USERNAME = "test-user";
 export const TEST_PASSWORD = "test-password";
+export const TEST_AGENT_TOKEN = "test-agent-token";
 const DEFAULT_TEST_CONFIG = join(
     tmpdir(),
     `redoor-vitest-${VITEST_SERVER_PORT}.toml`,
@@ -185,6 +186,7 @@ export type SpawnAgentArgs = {
     cwd: string;
     dir?: string;
     log?: string;
+    token?: string;
 };
 
 export type SpawnServerArgs = {
@@ -230,7 +232,14 @@ export class ProcessManager {
     }
 
     spawnAgent(args: SpawnAgentArgs): number {
-        const cliArgs = ["agent", args.wsAddress, "--name", args.name];
+        const cliArgs = [
+            "agent",
+            args.wsAddress,
+            "--name",
+            args.name,
+            "--token",
+            args.token ?? TEST_AGENT_TOKEN,
+        ];
 
         if (args.dir !== undefined) {
             cliArgs.push("--dir", args.dir);
@@ -257,6 +266,7 @@ export class ProcessManager {
                 `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
+agent_token = "${TEST_AGENT_TOKEN}"
 `,
             );
         }

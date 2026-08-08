@@ -20,7 +20,8 @@ pub(crate) async fn websocket_handler(
 ) -> impl IntoResponse {
     let router_ref = state.router_ref;
     let watchdog_registry = state.watchdog_registry;
-    ws.on_upgrade(move |socket| handle_socket(socket, router_ref, watchdog_registry))
+    let agent_token = state.auth.agent_token().to_string();
+    ws.on_upgrade(move |socket| handle_socket(socket, router_ref, watchdog_registry, agent_token))
 }
 
 /// Route: `GET /api/v1/ui/ws`
@@ -35,9 +36,17 @@ async fn handle_socket(
     socket: WebSocket,
     router_ref: actors::router::RouterHandle,
     watchdog_registry: WatchdogRegistry,
+    agent_token: String,
 ) {
     let socket_id = SocketId::new();
-    actors::session::handle_websocket(socket, socket_id, router_ref, watchdog_registry).await;
+    actors::session::handle_websocket(
+        socket,
+        socket_id,
+        router_ref,
+        watchdog_registry,
+        agent_token,
+    )
+    .await;
 }
 
 /// Relays UI events from the router to the websocket until either side closes.

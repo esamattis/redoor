@@ -24,6 +24,7 @@ use crate::server::WatchdogRegistry;
 use crate::ssh::SshAgentConfig;
 
 /// Looks up the effective OS account off the async runtime because passwd databases may block.
+#[cfg(any(test, not(target_os = "linux")))]
 async fn current_process_username() -> Result<String> {
     let uid = nix::unistd::Uid::current();
     let user = tokio::task::spawn_blocking(move || nix::unistd::User::from_uid(uid))
@@ -33,18 +34,56 @@ async fn current_process_username() -> Result<String> {
     Ok(user.name)
 }
 
+/// Generates a high-entropy secret for bootstrap passwords and agent tokens.
+fn generate_secret() -> String {
+    use argon2::password_hash::rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Renders a complete starter config while keeping optional settings discoverable but disabled.
-fn default_config_content(username: &str) -> String {
-    let username = toml_edit::Value::from(username).to_string();
+///
+/// On Linux, username/password are omitted so the server authenticates via the
+/// process owner's system account (PAM). Elsewhere both are required and generated.
+fn default_config_content(
+    username: Option<&str>,
+    password: Option<&str>,
+    agent_token: &str,
+) -> String {
+    let agent_token = toml_edit::Value::from(agent_token).to_string();
+    let credentials = match (username, password) {
+        (Some(username), Some(password)) => {
+            let username = toml_edit::Value::from(username).to_string();
+            let password = toml_edit::Value::from(password).to_string();
+            format!("username = {username}\npassword = {password}\n")
+        }
+        _ => {
+            // Linux PAM path: document the optional override without writing secrets.
+            concat!(
+                "# On Linux, omit username/password to log in with the process owner's\n",
+                "# system account via PAM. Set both to use a dedicated redoor password instead.\n",
+                "# username = \"admin\"\n",
+                "# password = \"replace-with-a-long-private-password\"\n",
+            )
+            .to_string()
+        }
+    };
+    let header = if username.is_some() {
+        "# A random password and agent_token were generated on first start."
+    } else {
+        "# A random agent_token was generated on first start.\n# Browser login uses the process owner's system username/password (Linux PAM)."
+    };
     format!(
         r#"# Redoor server configuration.
-# Change the default password before exposing the server to other machines.
+{header}
+# Bind defaults to loopback; set bind = "0.0.0.0" only when intentionally exposing the server.
 
 [server]
-username = {username}
-password = "changeme"
+{credentials}agent_token = {agent_token}
 # port = 3000
-# bind = "0.0.0.0"
+# bind = "127.0.0.1"
+# cookie_secure = false
 # log = "log/server.log"
 
 # SSH-backed agent example. Remove `# ` from this block to enable it.
@@ -68,13 +107,32 @@ password = "changeme"
     )
 }
 
+/// Bootstrap secrets printed once when a starter config is created.
+pub(crate) struct CreatedDefaultConfig {
+    /// Present only when the starter config embeds a dedicated login password.
+    pub(crate) password: Option<String>,
+    pub(crate) agent_token: String,
+}
+
 /// Creates the conventional config once without overwriting a file created by another process.
-pub(crate) async fn create_default_config_if_missing(path: &Path) -> Result<bool> {
+pub(crate) async fn create_default_config_if_missing(
+    path: &Path,
+) -> Result<Option<CreatedDefaultConfig>> {
     if tokio::fs::try_exists(path).await? {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let username = current_process_username().await?;
+    let agent_token = generate_secret();
+    // Linux can authenticate via PAM without embedding a second password; other
+    // platforms still need an explicit username/password pair in the file.
+    #[cfg(target_os = "linux")]
+    let (username, password): (Option<String>, Option<String>) = (None, None);
+    #[cfg(not(target_os = "linux"))]
+    let (username, password) = {
+        let username = current_process_username().await?;
+        let password = generate_secret();
+        (Some(username), Some(password))
+    };
     let parent = path
         .parent()
         .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
@@ -89,19 +147,23 @@ pub(crate) async fn create_default_config_if_missing(path: &Path) -> Result<bool
 
     let mut file = match options.open(path).await {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("Failed to create default config '{}'", path.display()));
         }
     };
-    file.write_all(default_config_content(&username).as_bytes())
+    let content = default_config_content(username.as_deref(), password.as_deref(), &agent_token);
+    file.write_all(content.as_bytes())
         .await
         .with_context(|| format!("Failed to write default config '{}'", path.display()))?;
     file.sync_all()
         .await
         .with_context(|| format!("Failed to sync default config '{}'", path.display()))?;
-    Ok(true)
+    Ok(Some(CreatedDefaultConfig {
+        password,
+        agent_token,
+    }))
 }
 
 /// Configuration for one local agent, parsed from the agents toml.
@@ -136,14 +198,21 @@ pub(crate) enum AgentConfig {
     Local(LocalAgentConfig),
 }
 
-/// Parsed `[server]` table with required credentials and optional listener overrides.
+/// Parsed `[server]` table with required agent token and optional listener overrides.
+///
+/// `username`/`password` are optional as a pair: both set uses config credentials;
+/// both absent uses Linux PAM for the process owner (rejected on non-Linux).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerSection {
     pub(crate) port: Option<u16>,
     pub(crate) bind: Option<String>,
     pub(crate) log: Option<String>,
-    pub(crate) username: String,
-    pub(crate) password: String,
+    pub(crate) username: Option<String>,
+    pub(crate) password: Option<String>,
+    /// Shared secret agents must present when registering over `/ws`.
+    pub(crate) agent_token: String,
+    /// When true, session cookies are marked `Secure` for HTTPS deployments.
+    pub(crate) cookie_secure: bool,
 }
 
 /// Full parsed config file: the required `[server]` credentials plus optional managed agents.
@@ -156,8 +225,9 @@ pub(crate) struct ServerConfig {
 /// Reads and validates the config file, returning the parsed `[server]`
 /// table and one [`AgentConfig`] per `[[agents]]` entry.
 ///
-/// The `[server]` table and non-empty credentials are required so no server can
-/// accidentally start without authentication. Managed `[[agents]]` are optional.
+/// The `[server]` table and a non-empty `agent_token` are required. Browser
+/// `username`/`password` may be omitted together on Linux (PAM). Managed
+/// `[[agents]]` are optional.
 ///
 /// Uses `toml_edit` (instead of the `toml` crate) so future server-side
 /// rewriting of the file — for example adding an agent via a REST endpoint —
@@ -188,7 +258,15 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
 
     // Reject unknown keys so a misspelled setting is surfaced immediately
     // instead of silently falling back to a default the operator didn't mean.
-    const KNOWN_KEYS: [&str; 5] = ["port", "bind", "log", "username", "password"];
+    const KNOWN_KEYS: [&str; 7] = [
+        "port",
+        "bind",
+        "log",
+        "username",
+        "password",
+        "agent_token",
+        "cookie_secure",
+    ];
     for (key, _) in table.iter() {
         if !KNOWN_KEYS.contains(&key) {
             bail!(
@@ -221,18 +299,62 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
         .get("log")
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
-    let username = table
-        .get("username")
+    let username = match table.get("username") {
+        None => None,
+        Some(item) => {
+            let value = item
+                .as_str()
+                .with_context(|| "server.username must be a string")?
+                .to_string();
+            if value.is_empty() {
+                bail!("server.username must be a non-empty string when set");
+            }
+            Some(value)
+        }
+    };
+    let password = match table.get("password") {
+        None => None,
+        Some(item) => {
+            let value = item
+                .as_str()
+                .with_context(|| "server.password must be a string")?
+                .to_string();
+            if value.is_empty() {
+                bail!("server.password must be a non-empty string when set");
+            }
+            Some(value)
+        }
+    };
+    // Require the pair together so a half-configured file cannot silently fall
+    // back to system auth while still embedding one of the secrets.
+    match (&username, &password) {
+        (Some(_), Some(_)) | (None, None) => {}
+        (Some(_), None) => {
+            bail!("server.password is required when server.username is set")
+        }
+        (None, Some(_)) => {
+            bail!("server.username is required when server.password is set")
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if username.is_none() {
+        bail!(
+            "server.username and server.password are required on this platform; \
+             system-account (PAM) login is only supported on Linux"
+        );
+    }
+    let agent_token = table
+        .get("agent_token")
         .and_then(|item| item.as_str())
         .filter(|value| !value.is_empty())
-        .with_context(|| "server.username must be a non-empty string")?
+        .with_context(|| "server.agent_token must be a non-empty string")?
         .to_string();
-    let password = table
-        .get("password")
-        .and_then(|item| item.as_str())
-        .filter(|value| !value.is_empty())
-        .with_context(|| "server.password must be a non-empty string")?
-        .to_string();
+    let cookie_secure = match table.get("cookie_secure") {
+        None => false,
+        Some(item) => item
+            .as_bool()
+            .with_context(|| "server.cookie_secure must be a boolean")?,
+    };
 
     Ok(ServerSection {
         port,
@@ -240,6 +362,8 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
         log,
         username,
         password,
+        agent_token,
+        cookie_secure,
     })
 }
 
@@ -422,9 +546,10 @@ pub(crate) fn default_local_agent_name() -> String {
 pub(crate) fn spawn_agents(
     configs: &[AgentConfig],
     redoor_port: u16,
+    agent_token: &str,
     registry: &WatchdogRegistry,
 ) -> Result<()> {
-    crate::server::watchdog::spawn_agents(configs, redoor_port, registry)
+    crate::server::watchdog::spawn_agents(configs, redoor_port, agent_token, registry)
 }
 
 /// Spawns `redoor agent` as a local child process and returns the running
@@ -439,6 +564,7 @@ pub(crate) fn spawn_agents(
 pub(crate) async fn spawn_local_agent(
     config: &LocalAgentConfig,
     redoor_port: u16,
+    agent_token: &str,
 ) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
     let name = config.name.clone().unwrap_or_else(default_local_agent_name);
     let ws_url = format!("ws://localhost:{}/ws", redoor_port);
@@ -447,7 +573,13 @@ pub(crate) async fn spawn_local_agent(
         .map_err(|e| format!("Failed to determine redoor binary path: {}", e))?;
 
     let mut command = Command::new(&bin);
-    command.arg("agent").arg(&ws_url).arg("--name").arg(&name);
+    command
+        .arg("agent")
+        .arg(&ws_url)
+        .arg("--name")
+        .arg(&name)
+        .arg("--token")
+        .arg(agent_token);
 
     if let Some(dir) = &config.dir {
         command.arg("-d").arg(dir);
@@ -499,6 +631,7 @@ mod tests {
         let content = content.as_ref();
         let credentials = r#"username = "test-user"
 password = "test-password"
+agent_token = "test-agent-token"
 "#;
         let server_header = "[server]\n";
         let complete = if content.contains(server_header) {
@@ -1115,24 +1248,68 @@ target = "host"
                 .as_nanos()
         ));
         let path = directory.join("nested/config.toml");
-        let expected_username = current_process_username().await.unwrap();
 
         let created = create_default_config_if_missing(&path).await.unwrap();
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let config = parse_config_file(path.to_str().unwrap()).await.unwrap();
 
-        assert!(created, "a missing conventional config should be created");
+        let bootstrap = created.expect("a missing conventional config should be created");
         assert_eq!(
-            config.server.username, expected_username,
-            "the generated login should use the effective process account"
+            config.server.agent_token, bootstrap.agent_token,
+            "the generated agent_token should match the one-time printed secret"
         );
-        assert_eq!(
-            config.server.password, "changeme",
-            "the generated login should use the documented starter password"
+        assert!(
+            bootstrap.agent_token.len() >= 32,
+            "bootstrap agent_token must be high entropy"
         );
+
+        #[cfg(target_os = "linux")]
+        {
+            // Linux starter configs omit credentials so login uses PAM.
+            assert!(
+                config.server.username.is_none() && config.server.password.is_none(),
+                "Linux default config should omit username/password for PAM login"
+            );
+            assert!(
+                bootstrap.password.is_none(),
+                "Linux bootstrap should not print a generated password"
+            );
+            assert!(
+                content.contains("system username/password") || content.contains("PAM"),
+                "Linux starter config should document PAM login"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let expected_username = current_process_username().await.unwrap();
+            assert_eq!(
+                config.server.username.as_deref(),
+                Some(expected_username.as_str()),
+                "the generated login should use the effective process account"
+            );
+            assert_eq!(
+                config.server.password.as_ref(),
+                bootstrap.password.as_ref(),
+                "the generated login should use the one-time printed password"
+            );
+            let password = bootstrap
+                .password
+                .as_ref()
+                .expect("non-Linux bootstrap must generate a password");
+            assert!(
+                password.len() >= 32,
+                "bootstrap password must be high entropy"
+            );
+            assert_ne!(
+                password, &bootstrap.agent_token,
+                "password and agent_token must be independent secrets"
+            );
+        }
+
         for option in [
             "# port =",
             "# bind =",
+            "# cookie_secure =",
             "# log =",
             "# target =",
             "# local =",
@@ -1151,7 +1328,7 @@ target = "host"
         let created_again = create_default_config_if_missing(&path).await.unwrap();
         let unchanged = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
-            !created_again,
+            created_again.is_none(),
             "an existing config must never be overwritten by startup"
         );
         assert_eq!(
@@ -1160,5 +1337,64 @@ target = "host"
         );
 
         tokio::fs::remove_dir_all(directory).await.ok();
+    }
+
+    /// Verifies Linux accepts a credentials-free [server] table for PAM login.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_parse_config_file_allows_missing_credentials_on_linux() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-pam-creds-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"[server]
+agent_token = "test-agent-token"
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        assert!(
+            config.server.username.is_none() && config.server.password.is_none(),
+            "omitted credentials should parse as None for PAM mode"
+        );
+        assert_eq!(config.server.agent_token, "test-agent-token");
+    }
+
+    /// Verifies a half-specified credential pair is rejected instead of mixed auth modes.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_partial_credentials() {
+        for content in [
+            r#"[server]
+username = "only-user"
+agent_token = "test-agent-token"
+"#,
+            r#"[server]
+password = "only-password"
+agent_token = "test-agent-token"
+"#,
+        ] {
+            let temp = std::env::temp_dir().join(format!(
+                "redoor-agents-test-partial-creds-{}.toml",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&temp, content).unwrap();
+            let result = parse_config_file(temp.to_str().unwrap()).await;
+            std::fs::remove_file(&temp).ok();
+            assert!(
+                result.is_err(),
+                "username and password must be provided together"
+            );
+        }
     }
 }

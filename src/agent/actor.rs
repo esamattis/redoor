@@ -30,9 +30,10 @@ impl AgentRuntime {
         agent_name: String,
         server_url: String,
         default_directory: String,
+        token: String,
     ) -> Self {
         Self {
-            state: AgentState::new(agent_id, agent_name, server_url, default_directory),
+            state: AgentState::new(agent_id, agent_name, server_url, default_directory, token),
         }
     }
 
@@ -250,10 +251,17 @@ impl AgentRuntime {
                     hostname,
                     username,
                     cwd: self.state.default_directory.clone(),
+                    token: self.state.token.clone(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {
-                    log!(Level::Info, "Sending agent registration message: {}", json);
+                    // Do not log the JSON body: it includes the agent token secret.
+                    log!(
+                        Level::Info,
+                        "Sending agent registration message: agent_id={}, agent_name={}",
+                        self.state.agent_id,
+                        self.state.agent_name
+                    );
                     if let Err(error) = text_tx.send(WsMessage::text(json)).await {
                         log!(Level::Error, "Failed to send agent registration: {}", error);
                     }
@@ -283,6 +291,7 @@ mod tests {
             "agent".to_string(),
             "ws://localhost".to_string(),
             "/tmp".to_string(),
+            "test-token".to_string(),
         );
         let stale_generation = runtime.state.advance_connection_generation();
         let current_generation = runtime.state.advance_connection_generation();

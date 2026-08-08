@@ -225,12 +225,13 @@ redoor server --config config.toml
 ```
 
 When `--config` is omitted, Redoor loads `~/.config/redoor/config.toml`. If it
-does not exist, Redoor creates it with the current process username, password
-`changeme`, and commented examples of every available option. Change that
-starter password before exposing the server to other machines. The required
-`[server]` table contains browser login credentials. The optional
-`[[agents]]` array starts SSH-backed or local agent processes; SSH and local
-entries can be mixed in the same file.
+does not exist, Redoor creates it with a random `agent_token` and commented
+examples of every available option. On Linux the starter config omits
+`username`/`password` so browser login uses the process owner's system account
+via PAM; on other platforms it embeds a generated username/password pair.
+Store the printed secrets securely. The required `[server]` table always needs
+`agent_token`. The optional `[[agents]]` array starts SSH-backed or local agent
+processes; SSH and local entries can be mixed in the same file.
 
 #### Server settings
 
@@ -243,13 +244,18 @@ then default. Only the port has an environment-variable fallback.
 | `server.port` | integer | `--port` | `REDOOR_PORT` | `3000` | HTTP and WebSocket listener port. Must fit in an unsigned 16-bit integer. |
 | `server.bind` | string | `--bind` | — | `0.0.0.0` | Address on which the server listens. Use `127.0.0.1` for local-only access. |
 | `server.log` | string | `--log` | — | stderr | Server log file path. |
-| `server.username` | string | — | — | required | Username accepted by the browser login form. |
-| `server.password` | string | — | — | required | Password accepted by the browser login form. Keep the config file private. |
+| `server.username` | string | — | — | optional* | Username accepted by the browser login form. |
+| `server.password` | string | — | — | optional* | Password accepted by the browser login form. Keep the config file private. |
+| `server.agent_token` | string | — | — | required | Shared secret agents must present when registering. |
 
-The `[server]` table and its non-empty `username` and `password` values are
-required. Unknown keys are rejected so misspelled settings do not silently fall
-back to defaults. Successful logins use an HTTP-only cookie backed by one JSON
-file per session in `~/.local/share/sessions/`; logout removes that file.
+\* `username` and `password` must both be set or both omitted. On Linux, omitting
+both authenticates browser logins against the process owner's system account via
+PAM. On other platforms both values are required.
+
+The `[server]` table and a non-empty `agent_token` are required. Unknown keys are
+rejected so misspelled settings do not silently fall back to defaults. Successful
+logins use an HTTP-only cookie backed by one JSON file per session in
+`~/.local/share/redoor/sessions/`; logout removes that file.
 
 #### SSH-backed agents
 
