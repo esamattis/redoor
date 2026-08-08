@@ -12,7 +12,6 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
     HardDrive,
-    Copy,
     X,
     Files,
     ChevronDown,
@@ -416,30 +415,10 @@ function CollapsibleBottomPanel(props: {
     );
 }
 
-type CopySelectedFilesState =
-    | { type: "idle" }
-    | { type: "copying"; itemCount: number }
-    | { type: "success"; message: string }
-    | { type: "error"; message: string };
-
 type DeleteState =
     | { type: "idle" }
     | { type: "deleting" }
     | { type: "error"; message: string };
-
-type BrowserContext = {
-    agentId: string | null;
-    relativePath: string;
-    isDirectoryView: boolean;
-};
-
-function joinBrowserPath(directoryPath: string, fileName: string) {
-    if (directoryPath.endsWith("/")) {
-        return `${directoryPath}${fileName}`;
-    }
-
-    return `${directoryPath}/${fileName}`;
-}
 
 function getErrorMessage(error: unknown) {
     if (error instanceof Error) {
@@ -449,111 +428,17 @@ function getErrorMessage(error: unknown) {
     return "Upload failed";
 }
 
-function getBrowserContextFromPathname(pathname: string): BrowserContext {
-    const browserPathMatch = pathname.match(
-        /^\/agents\/([^/]+)\/browser(?:\/(.*))?$/,
-    );
-
-    if (!browserPathMatch) {
-        return {
-            agentId: null,
-            relativePath: "",
-            isDirectoryView: false,
-        };
-    }
-
-    const encodedAgentId = browserPathMatch[1];
-    const relativePath = browserPathMatch[2] ?? "";
-
-    if (relativePath === "") {
-        return {
-            agentId: encodedAgentId ? decodeURIComponent(encodedAgentId) : null,
-            relativePath,
-            isDirectoryView: true,
-        };
-    }
-
-    const lastPathSegment = relativePath.split("/").pop() ?? "";
-    const isDirectoryView = !lastPathSegment.includes(".");
-
-    return {
-        agentId: encodedAgentId ? decodeURIComponent(encodedAgentId) : null,
-        relativePath,
-        isDirectoryView,
-    };
-}
-
-async function getCurrentDirectoryPath(
-    agent: Agent | null,
-    browserContext: BrowserContext,
-): Promise<string | null> {
-    if (!agent || !browserContext.isDirectoryView) {
-        return null;
-    }
-
-    const details = await agent.getDetails();
-
-    return browserContext.relativePath
-        ? `${details.cwd}/${browserContext.relativePath}`
-        : details.cwd;
-}
-
 /**
- * Shows the globally selected items and lets you copy or delete them from the
- * current browser context.
+ * Shows the globally selected items so they can be reviewed, cleared, or deleted.
  */
 function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
     const router = useRouter();
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
     const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
-    const location = useLocation();
-    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
-        type: "idle",
-    });
     const [deleteState, setDeleteState] = React.useState<DeleteState>({
         type: "idle",
     });
-    const [currentDirectoryPath, setCurrentDirectoryPath] = React.useState<
-        string | null
-    >(null);
-
-    const browserContext = React.useMemo(
-        () => getBrowserContextFromPathname(location.pathname),
-        [location.pathname],
-    );
-
-    const currentAgent = React.useMemo(() => {
-        if (!browserContext.agentId) {
-            return null;
-        }
-
-        return (
-            props.agents.find((agent) => agent.id === browserContext.agentId) ??
-            null
-        );
-    }, [browserContext.agentId, props.agents]);
-
-    React.useEffect(() => {
-        let isMounted = true;
-
-        async function loadCurrentDirectoryPath() {
-            const directoryPath = await getCurrentDirectoryPath(
-                currentAgent,
-                browserContext,
-            );
-
-            if (isMounted) {
-                setCurrentDirectoryPath(directoryPath);
-            }
-        }
-
-        void loadCurrentDirectoryPath();
-
-        return () => {
-            isMounted = false;
-        };
-    }, [browserContext, currentAgent]);
 
     if (selectedFiles.length === 0) {
         return null;
@@ -571,112 +456,6 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             sensitivity: "base",
         });
     });
-
-    const statusMessage =
-        copyState.type === "copying"
-            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
-            : copyState.type === "idle"
-              ? null
-              : copyState.message;
-    const isCopying = copyState.type === "copying";
-
-    const handleCopySelectedFiles = async () => {
-        if (
-            !currentAgent ||
-            !currentDirectoryPath ||
-            selectedFiles.length === 0
-        ) {
-            return;
-        }
-
-        setCopyState({
-            type: "copying",
-            itemCount: selectedFiles.length,
-        });
-
-        try {
-            const agentsById = new Map(
-                props.agents.map((agent) => [agent.id, agent]),
-            );
-
-            const results = await Promise.allSettled(
-                selectedFiles.map((file) => {
-                    const sourceAgent = agentsById.get(file.agentId);
-
-                    if (!sourceAgent) {
-                        return Promise.reject(
-                            new Error(
-                                `Source agent unavailable for selected item: ${file.agentId}`,
-                            ),
-                        );
-                    }
-
-                    return sourceAgent.copyTo(
-                        {
-                            agent: currentAgent.id,
-                            path: joinBrowserPath(
-                                currentDirectoryPath,
-                                file.fileName,
-                            ),
-                        },
-                        file.path,
-                    );
-                }),
-            );
-
-            const successfulCopies = selectedFiles.filter(
-                (_file, index) => results[index]?.status === "fulfilled",
-            );
-
-            setCopyState({ type: "idle" });
-
-            const failedCopies = results.filter(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successfulCopies.length > 0) {
-                successfulCopies.forEach((file) => {
-                    unselectFile({
-                        agentId: file.agentId,
-                        path: file.path,
-                    });
-                });
-            }
-
-            if (failedCopies.length > 0) {
-                const firstFailedCopy = failedCopies[0];
-                const failureMessage = getErrorMessage(
-                    firstFailedCopy ? firstFailedCopy.reason : undefined,
-                ).replace(/^Upload failed$/, "Copy failed");
-
-                setCopyState({
-                    type: "error",
-                    message:
-                        successfulCopies.length > 0
-                            ? `Copied ${successfulCopies.length} of ${selectedFiles.length} items. ${failureMessage}`
-                            : failureMessage,
-                });
-                return;
-            }
-
-            setCopyState({
-                type: "success",
-                message:
-                    selectedFiles.length === 1
-                        ? `Copied ${selectedFiles[0]?.fileName ?? "item"}`
-                        : `Copied ${selectedFiles.length} items`,
-            });
-        } catch (error) {
-            setCopyState({
-                type: "error",
-                message: getErrorMessage(error).replace(
-                    /^Upload failed$/,
-                    "Copy failed",
-                ),
-            });
-        }
-    };
 
     const handleDeleteSelectedFiles = async () => {
         if (selectedFiles.length === 0) {
@@ -792,34 +571,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                             </span>
                         </Tooltip>
                     )}
-                    {isCopying ? (
-                        <span
-                            className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white"
-                            aria-label="Copying selected items"
-                            role="status"
-                        >
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                        </span>
-                    ) : (
-                        <Tooltip content="Copy selected items is only available while browsing a directory.">
-                            <span className="inline-flex">
-                                <button
-                                    type="button"
-                                    onClick={handleCopySelectedFiles}
-                                    disabled={
-                                        !browserContext.isDirectoryView ||
-                                        !currentAgent ||
-                                        !currentDirectoryPath ||
-                                        selectedFiles.length === 0
-                                    }
-                                    aria-label="Copy selected items"
-                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    <Copy className="h-4 w-4" />
-                                </button>
-                            </span>
-                        </Tooltip>
-                    )}
+
                     <button
                         type="button"
                         onClick={() => clearSelectedFiles()}
@@ -830,19 +582,6 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                 </div>
             }
         >
-            {statusMessage ? (
-                <p
-                    role={copyState.type === "error" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`mb-3 text-sm ${
-                        copyState.type === "error"
-                            ? "text-red-400"
-                            : "text-blue-300"
-                    }`}
-                >
-                    {statusMessage}
-                </p>
-            ) : null}
             {deleteState.type === "error" ? (
                 <p
                     role="alert"

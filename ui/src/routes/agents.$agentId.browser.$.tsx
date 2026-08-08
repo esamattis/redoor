@@ -5,6 +5,7 @@ import {
     Link,
     useNavigate,
     useRouter,
+    useRouterState,
 } from "@tanstack/react-router";
 import {
     Folder,
@@ -34,7 +35,9 @@ import {
 } from "../api-client";
 import {
     selectedFileKeysAtom,
+    selectedFilesAtom,
     toggleSelectedFileAtom,
+    unselectFileAtom,
 } from "../selected-files";
 
 type DeleteState =
@@ -120,6 +123,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             fullPath,
             lsResult,
             downloadUrl,
+            agents: rootLoaderData.agents,
         };
     },
     component: FileBrowser,
@@ -166,6 +170,12 @@ function FileBrowser() {
                         }
                     />
 
+                    <CopySelectedFilesAction
+                        agents={data.agents}
+                        destinationAgent={agent}
+                        directoryPath={data.fullPath}
+                    />
+
                     <FileList
                         agentId={agentId}
                         agentName={agentName}
@@ -209,6 +219,14 @@ function FileBrowser() {
     return null;
 }
 
+/** Tracks copy progress while keeping the destination action responsive. */
+type CopySelectedFilesState =
+    | { type: "idle" }
+    | { type: "copying"; itemCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+/** Tracks upload progress for files chosen from the local browser. */
 type UploadState =
     | { type: "idle" }
     | { type: "uploading"; fileCount: number }
@@ -231,6 +249,139 @@ function getErrorMessage(error: unknown, fallbackMessage: string) {
     return fallbackMessage;
 }
 
+/**
+ * Copies the global selection into this directory so the destination is clear
+ * at the point where the action is performed.
+ */
+function CopySelectedFilesAction(props: {
+    agents: Agent[];
+    destinationAgent: Agent;
+    directoryPath: string;
+}) {
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const isRoutePending = useRouterState({
+        select: (state) => state.status === "pending",
+    });
+    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
+        type: "idle",
+    });
+
+    const statusMessage =
+        copyState.type === "copying"
+            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
+            : copyState.type === "idle"
+              ? null
+              : copyState.message;
+    const isCopying = copyState.type === "copying";
+
+    const handleCopySelectedFiles = async () => {
+        if (selectedFiles.length === 0) {
+            return;
+        }
+
+        setCopyState({
+            type: "copying",
+            itemCount: selectedFiles.length,
+        });
+
+        const agentsById = new Map(
+            props.agents.map((agent) => [agent.id, agent]),
+        );
+        const results = await Promise.allSettled(
+            selectedFiles.map((file) => {
+                const sourceAgent = agentsById.get(file.agentId);
+
+                if (!sourceAgent) {
+                    return Promise.reject(
+                        new Error(
+                            `Source agent unavailable for selected item: ${file.agentId}`,
+                        ),
+                    );
+                }
+
+                return sourceAgent.copyTo(
+                    {
+                        agent: props.destinationAgent.id,
+                        path: joinBrowserPath(
+                            props.directoryPath,
+                            file.fileName,
+                        ),
+                    },
+                    file.path,
+                );
+            }),
+        );
+        const successfulCopies = selectedFiles.filter(
+            (_file, index) => results[index]?.status === "fulfilled",
+        );
+        const failedCopies = results.filter(
+            (result): result is PromiseRejectedResult =>
+                result.status === "rejected",
+        );
+
+        successfulCopies.forEach((file) => {
+            unselectFile({
+                agentId: file.agentId,
+                path: file.path,
+            });
+        });
+
+        if (failedCopies.length > 0) {
+            const firstFailedCopy = failedCopies[0];
+            const failureMessage = getErrorMessage(
+                firstFailedCopy ? firstFailedCopy.reason : undefined,
+                "Copy failed",
+            ).replace(/^Upload failed$/, "Copy failed");
+
+            setCopyState({
+                type: "error",
+                message:
+                    successfulCopies.length > 0
+                        ? `Copied ${successfulCopies.length} of ${selectedFiles.length} items. ${failureMessage}`
+                        : failureMessage,
+            });
+            return;
+        }
+
+        setCopyState({
+            type: "success",
+            message:
+                selectedFiles.length === 1
+                    ? `Copied ${selectedFiles[0]?.fileName ?? "item"}`
+                    : `Copied ${selectedFiles.length} items`,
+        });
+    };
+
+    return (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+            <button
+                type="button"
+                onClick={handleCopySelectedFiles}
+                disabled={
+                    selectedFiles.length === 0 || isCopying || isRoutePending
+                }
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                <Copy className="h-4 w-4" />
+                {isCopying
+                    ? "Copying selected files..."
+                    : "Copy selected files here"}
+            </button>
+            {statusMessage ? (
+                <span
+                    role={copyState.type === "error" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`text-sm ${copyState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
+                >
+                    {statusMessage}
+                </span>
+            ) : null}
+        </div>
+    );
+}
+
+/** Opens the local file picker and uploads chosen files into this directory. */
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
     const router = useRouter();
     const inputId = React.useId();

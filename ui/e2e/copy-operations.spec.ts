@@ -19,6 +19,60 @@ test.describe.serial("Copy Operations", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
+    test("should show the copy destination action above directory listings", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page
+            .locator(
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirName}"]`,
+            )
+            .click();
+
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected files here",
+        });
+        const fileListing = page.getByRole("table").first();
+
+        // The directory owns the destination action even before anything is selected.
+        await expect(copyButton).toBeVisible();
+        await expect(copyButton).toBeDisabled();
+
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+
+        // Selecting a file enables the destination action in the directory view.
+        await expect(copyButton).toBeEnabled();
+
+        const selectedItemsPanel = page
+            .getByRole("heading", { name: "Selected items" })
+            .locator("xpath=ancestor::section");
+
+        // The popup no longer contains the copy action after it was moved into the directory.
+        await expect(
+            selectedItemsPanel.getByRole("button", {
+                name: "Copy selected files here",
+            }),
+        ).toHaveCount(0);
+
+        const copyButtonBox = await copyButton.boundingBox();
+        const fileListingBox = await fileListing.boundingBox();
+
+        // Comparing vertical positions verifies the action is rendered above the file listing.
+        expect(copyButtonBox).not.toBeNull();
+        expect(fileListingBox).not.toBeNull();
+        expect(copyButtonBox?.y).toBeLessThan(fileListingBox?.y ?? 0);
+
+        await page
+            .getByLabel("File entry file1.txt")
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+
+        // File detail pages are not copy destinations, so they do not show the action.
+        await expect(copyButton).toHaveCount(0);
+    });
+
     test("should copy a file to a newly created directory within the same agent", async ({
         page,
     }) => {
@@ -65,9 +119,9 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
-        // The selected-items panel must appear so the test can interact with the copy action.
+        // The selected-items panel appears while the copy action stays in the directory view.
         await expect(
-            page.getByRole("button", { name: "Copy selected items" }),
+            page.getByRole("heading", { name: "Selected items" }),
         ).toBeVisible();
 
         // Navigate into the newly created directory to set it as the copy destination.
@@ -75,12 +129,13 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("link", { name: copyTargetDirName, exact: true })
             .click();
 
-        // The selection persists across navigation, so the copy button remains available.
-        await expect(
-            page.getByRole("button", { name: "Copy selected items" }),
-        ).toBeVisible();
+        // The selection persists across navigation, so the destination action is enabled.
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected files here",
+        });
+        await expect(copyButton).toBeEnabled();
 
-        await page.getByRole("button", { name: "Copy selected items" }).click();
+        await copyButton.click();
 
         // Polling the filesystem is more reliable than waiting on UI messages because
         // the selected-items panel disappears immediately after a successful copy.
@@ -132,9 +187,10 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
+        // The source directory exposes the action now that a file is selected.
         await expect(
-            page.getByRole("button", { name: "Copy selected items" }),
-        ).toBeVisible();
+            page.getByRole("button", { name: "Copy selected files here" }),
+        ).toBeEnabled();
 
         // Navigate to the destination agent via the top tab strip so the
         // selection state survives the client-side navigation.
@@ -144,12 +200,13 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser`,
         );
 
-        // The selection persists across agents, so the copy button remains available.
-        await expect(
-            page.getByRole("button", { name: "Copy selected items" }),
-        ).toBeVisible();
+        // The selection persists across agents, so the destination action remains enabled.
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected files here",
+        });
+        await expect(copyButton).toBeEnabled();
 
-        await page.getByRole("button", { name: "Copy selected items" }).click();
+        await copyButton.click();
 
         // Polling the filesystem is more reliable than waiting on UI messages because
         // the selected-items panel disappears immediately after a successful copy.
