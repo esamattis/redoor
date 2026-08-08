@@ -61,9 +61,7 @@ const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 /// each future for you.
 pub struct SpawnFn {
     inner: Arc<
-        dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>>
-            + Send
-            + Sync,
+        dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync,
     >,
 }
 

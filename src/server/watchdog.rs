@@ -103,9 +103,7 @@ fn ssh_spawn_fn(config: crate::ssh::SshAgentConfig, redoor_port: u16) -> SpawnFn
     let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> =
         std::sync::Arc::new(Mutex::new(None));
     let config = std::sync::Arc::new(config);
-    SpawnFn::new(move || {
-        ssh_spawn_once(cached.clone(), config.clone(), redoor_port)
-    })
+    SpawnFn::new(move || ssh_spawn_once(cached.clone(), config.clone(), redoor_port))
 }
 
 /// One spawn cycle for an ssh agent. Reuses a cached
