@@ -52,6 +52,7 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
     );
 
     const apiClient = new ApiClient(API_BASE_URL);
+    await apiClient.login("test-user", "test-password");
     await apiClient.waitForAgentNames(["agent1_src", "agent2_custom"], 120000);
     const agents = await apiClient.listAgents();
     const agent = agents.find((entry) => entry.name === "agent1_src");

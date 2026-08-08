@@ -14,6 +14,7 @@ import { testPorts } from "../test-ports.ts";
  */
 export default defineConfig({
     testDir: "./e2e",
+    globalSetup: "./e2e/global-setup.ts",
     /* Run tests in files in parallel */
     fullyParallel: true,
     /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -31,6 +32,7 @@ export default defineConfig({
 
         /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
         trace: "on-first-retry",
+        storageState: ".test-playwright-auth.json",
     },
 
     /* Configure projects for major browsers */

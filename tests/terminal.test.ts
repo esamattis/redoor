@@ -7,6 +7,7 @@ import {
     onTestFinished,
 } from "vitest";
 import { mkdirSync } from "node:fs";
+import WebSocket from "ws";
 import { join } from "node:path";
 import {
     ProcessManager,
@@ -45,6 +46,7 @@ async function openTerminal(
 ): Promise<WebSocket> {
     const socket = new WebSocket(
         testAgent.getTerminalWebSocketUrl({ rows, cols }, cwd),
+        { headers: testAgent.getAuthHeaders() },
     );
     socket.binaryType = "arraybuffer";
     onTestFinished(() => socket.close());
@@ -122,7 +124,7 @@ function waitForMarker(socket: WebSocket, marker: string): Promise<string> {
             () => reject(new Error(`terminal marker not received: ${marker}`)),
             10_000,
         );
-        const onMessage = (event: MessageEvent) => {
+        const onMessage = (event: WebSocket.MessageEvent) => {
             if (!(event.data instanceof ArrayBuffer)) {
                 return;
             }
@@ -229,6 +231,7 @@ describe("dedicated terminal tunnel", () => {
     it("preserves bounded terminal input sent before the agent is ready", async () => {
         const socket = new WebSocket(
             testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }, agentCwd),
+            { headers: testAgent.getAuthHeaders() },
         );
         socket.binaryType = "arraybuffer";
         onTestFinished(() => socket.close());

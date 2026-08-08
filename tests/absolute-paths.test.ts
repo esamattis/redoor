@@ -101,7 +101,10 @@ describe("absolute filesystem path contract", () => {
         ]) {
             const response = await fetch(`${api.baseUrl}/api/v1/copy`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    ...api.getAuthHeaders(),
+                },
                 body: JSON.stringify(request),
             });
             // Both copy endpoints must reject relative values independently.
@@ -124,6 +127,7 @@ describe("absolute filesystem path contract", () => {
                         Upgrade: "websocket",
                         "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
                         "Sec-WebSocket-Version": "13",
+                        ...api.getAuthHeaders(),
                     },
                 },
                 (response) => {

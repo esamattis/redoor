@@ -1,5 +1,5 @@
-//! Parses the `--config config.toml` file: an optional `[server]` table plus
-//! the `[[agents]]` array, and spawns one agent per entry as a background
+//! Parses the required server config: authenticated `[server]` settings plus
+//! optional `[[agents]]`, and spawns one agent per entry as a background
 //! task when the server starts.
 //!
 //! Each `[[agents]]` entry is either an ssh-backed agent (default, identified
@@ -10,9 +10,9 @@
 
 use anyhow::{Context, Result, bail};
 use redoor::{Level, log};
-use std::process::Stdio;
+use std::{path::Path, process::Stdio};
 use sysinfo::System;
-use tokio::process::Command;
+use tokio::{io::AsyncWriteExt, process::Command};
 use toml_edit::Document;
 
 /// Shorthand for the [`Document`] type produced by [`Document::parse`], whose
@@ -22,6 +22,87 @@ type ParsedDocument<'a> = Document<&'a String>;
 
 use crate::server::WatchdogRegistry;
 use crate::ssh::SshAgentConfig;
+
+/// Looks up the effective OS account off the async runtime because passwd databases may block.
+async fn current_process_username() -> Result<String> {
+    let uid = nix::unistd::Uid::current();
+    let user = tokio::task::spawn_blocking(move || nix::unistd::User::from_uid(uid))
+        .await
+        .context("Failed to join current-user lookup task")??
+        .with_context(|| format!("No system user exists for process UID {uid}"))?;
+    Ok(user.name)
+}
+
+/// Renders a complete starter config while keeping optional settings discoverable but disabled.
+fn default_config_content(username: &str) -> String {
+    let username = toml_edit::Value::from(username).to_string();
+    format!(
+        r#"# Redoor server configuration.
+# Change the default password before exposing the server to other machines.
+
+[server]
+username = {username}
+password = "changeme"
+# port = 3000
+# bind = "0.0.0.0"
+# log = "log/server.log"
+
+# SSH-backed agent example. Remove `# ` from this block to enable it.
+# [[agents]]
+# target = "user@example.com"
+# local = false
+# username = "remote-user"
+# ssh_port = 22
+# name = "remote-agent"
+# remote_bin = "~/.local/redoor/<version>/redoor"
+# dir = "/home/remote-user"
+# log = "log/remote-agent.log"
+
+# Local agent example. Remove `# ` from this block to enable it.
+# [[agents]]
+# local = true
+# name = "local-agent"
+# dir = "/home/local-user"
+# log = "log/local-agent.log"
+"#
+    )
+}
+
+/// Creates the conventional config once without overwriting a file created by another process.
+pub(crate) async fn create_default_config_if_missing(path: &Path) -> Result<bool> {
+    if tokio::fs::try_exists(path).await? {
+        return Ok(false);
+    }
+
+    let username = current_process_username().await?;
+    let parent = path
+        .parent()
+        .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("Failed to create config directory '{}'", parent.display()))?;
+
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = match options.open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to create default config '{}'", path.display()));
+        }
+    };
+    file.write_all(default_config_content(&username).as_bytes())
+        .await
+        .with_context(|| format!("Failed to write default config '{}'", path.display()))?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("Failed to sync default config '{}'", path.display()))?;
+    Ok(true)
+}
 
 /// Configuration for one local agent, parsed from the agents toml.
 ///
@@ -55,24 +136,17 @@ pub(crate) enum AgentConfig {
     Local(LocalAgentConfig),
 }
 
-/// Parsed `[server]` table from the config file. Every field is optional
-/// because any value not set in the file is filled in from the CLI flag,
-/// env var, or built-in default during precedence resolution in `run_server`.
-/// Keeping the fields `Option` here (rather than applying defaults inside the
-/// parser) lets the precedence chain in `run_server` distinguish "not set in
-/// file" from "set to the default in file", so CLI/env can still override a
-/// file that omits the key.
+/// Parsed `[server]` table with required credentials and optional listener overrides.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerSection {
     pub(crate) port: Option<u16>,
     pub(crate) bind: Option<String>,
     pub(crate) log: Option<String>,
+    pub(crate) username: String,
+    pub(crate) password: String,
 }
 
-/// Full parsed config file: the optional `[server]` table plus the required
-/// `[[agents]]` array. `agents` stays required (a config file with no agents
-/// is rejected with the same error as today) so a typo in the file structure
-/// is surfaced at startup instead of silently producing an agent-less server.
+/// Full parsed config file: the required `[server]` credentials plus optional managed agents.
 #[derive(Debug, Clone)]
 pub(crate) struct ServerConfig {
     pub(crate) server: ServerSection,
@@ -82,10 +156,8 @@ pub(crate) struct ServerConfig {
 /// Reads and validates the config file, returning the parsed `[server]`
 /// table and one [`AgentConfig`] per `[[agents]]` entry.
 ///
-/// The `[server]` table is optional; a file with only `[[agents]]` is
-/// accepted so the previous agents-only file shape keeps working unchanged.
-/// The `[[agents]]` array is required and must be non-empty, matching the
-/// previous behavior so a malformed file fails fast at startup.
+/// The `[server]` table and non-empty credentials are required so no server can
+/// accidentally start without authentication. Managed `[[agents]]` are optional.
 ///
 /// Uses `toml_edit` (instead of the `toml` crate) so future server-side
 /// rewriting of the file — for example adding an agent via a REST endpoint —
@@ -107,18 +179,16 @@ pub(crate) async fn parse_config_file(path: &str) -> Result<ServerConfig> {
     Ok(ServerConfig { server, agents })
 }
 
-/// Parses the optional `[server]` table. Returns `ServerSection::default()`
-/// (all fields `None`) when the table is absent so a file that only contains
-/// `[[agents]]` keeps working. Unknown keys inside `[server]` are rejected
-/// so a typo like `post = 3000` is surfaced rather than silently ignored.
+/// Parses required login credentials and optional listener settings from `[server]`.
 fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
-    let Some(table) = doc.get("server").and_then(|item| item.as_table()) else {
-        return Ok(ServerSection::default());
-    };
+    let table = doc
+        .get("server")
+        .and_then(|item| item.as_table())
+        .with_context(|| "config file must contain a [server] table")?;
 
     // Reject unknown keys so a misspelled setting is surfaced immediately
     // instead of silently falling back to a default the operator didn't mean.
-    const KNOWN_KEYS: [&str; 3] = ["port", "bind", "log"];
+    const KNOWN_KEYS: [&str; 5] = ["port", "bind", "log", "username", "password"];
     for (key, _) in table.iter() {
         if !KNOWN_KEYS.contains(&key) {
             bail!(
@@ -151,28 +221,33 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<ServerSection> {
         .get("log")
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
+    let username = table
+        .get("username")
+        .and_then(|item| item.as_str())
+        .filter(|value| !value.is_empty())
+        .with_context(|| "server.username must be a non-empty string")?
+        .to_string();
+    let password = table
+        .get("password")
+        .and_then(|item| item.as_str())
+        .filter(|value| !value.is_empty())
+        .with_context(|| "server.password must be a non-empty string")?
+        .to_string();
 
-    Ok(ServerSection { port, bind, log })
+    Ok(ServerSection {
+        port,
+        bind,
+        log,
+        username,
+        password,
+    })
 }
 
-/// Parses the required `[[agents]]` array. Extracted from the old
-/// `parse_agents_file` body unchanged so the existing per-entry validation
-/// (target required, local/ssh field exclusivity, ssh_port range, etc.) keeps
-/// working without rewriting the entry parsers.
-fn parse_agents_array(doc: &ParsedDocument<'_>, path: &str) -> Result<Vec<AgentConfig>> {
-    let agents = doc
-        .get("agents")
-        .and_then(|item| item.as_array_of_tables())
-        .with_context(|| {
-            format!(
-                "config file '{}' must contain a [[agents]] array of tables",
-                path
-            )
-        })?;
-
-    if agents.is_empty() {
-        bail!("config file '{}' contains no [[agents]] entries", path);
-    }
+/// Parses optional managed agents so authentication-only servers remain valid.
+fn parse_agents_array(doc: &ParsedDocument<'_>, _path: &str) -> Result<Vec<AgentConfig>> {
+    let Some(agents) = doc.get("agents").and_then(|item| item.as_array_of_tables()) else {
+        return Ok(Vec::new());
+    };
 
     let mut configs = Vec::new();
     for (index, entry) in agents.iter().enumerate() {
@@ -419,6 +494,25 @@ pub(crate) async fn spawn_local_agent(
 mod tests {
     use super::*;
 
+    /// Adds required credentials to focused agent fixtures without obscuring each test's payload.
+    fn write_test_config(path: &std::path::Path, content: impl AsRef<str>) -> std::io::Result<()> {
+        let content = content.as_ref();
+        let credentials = r#"username = "test-user"
+password = "test-password"
+"#;
+        let server_header = "[server]\n";
+        let complete = if content.contains(server_header) {
+            content.replacen(server_header, &format!("{server_header}{credentials}"), 1)
+        } else {
+            format!(
+                r#"[server]
+{credentials}
+{content}"#
+            )
+        };
+        std::fs::write(path, complete)
+    }
+
     /// Verifies that all optional fields fall back to their defaults when
     /// omitted, so a minimal agents file with only a `target` is valid.
     /// `ssh_port` defaults to 22 when missing.
@@ -431,7 +525,13 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\ntarget = \"user@example.com\"\n").unwrap();
+        write_test_config(
+            &temp,
+            r#"[[agents]]
+target = "user@example.com"
+"#,
+        )
+        .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -482,7 +582,7 @@ log = "log/db-agent.log"
 [[agents]]
 target = "web-1"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -510,11 +610,9 @@ target = "web-1"
         assert_eq!(second.ssh_port, 22);
     }
 
-    /// Verifies that a missing `agents` key is rejected rather than silently
-    /// producing an empty agent list, so the operator notices a typo in the
-    /// file structure immediately at server startup.
+    /// Verifies that credentials-only configuration can run without managed agents.
     #[tokio::test]
-    async fn test_parse_config_file_rejects_missing_agents_key() {
+    async fn test_parse_config_file_accepts_missing_agents_key() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-key-{}.toml",
             std::time::SystemTime::now()
@@ -522,14 +620,14 @@ target = "web-1"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "port = 3000\n").unwrap();
+        write_test_config(&temp, "port = 3000\n").unwrap();
 
-        let result = parse_config_file(temp.to_str().unwrap()).await;
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
 
         assert!(
-            result.is_err(),
-            "a file without [[agents]] should be rejected"
+            config.agents.is_empty(),
+            "a credentials-only server should not require managed agents"
         );
     }
 
@@ -545,7 +643,13 @@ target = "web-1"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\nname = \"no-target\"\n").unwrap();
+        write_test_config(
+            &temp,
+            r#"[[agents]]
+name = "no-target"
+"#,
+        )
+        .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
@@ -570,7 +674,10 @@ target = "web-1"
         ));
         std::fs::write(
             &temp,
-            "[[agents]]\ntarget = \"host\"\nssh_port = \"not-a-port\"\n",
+            r#"[[agents]]
+target = "host"
+ssh_port = "not-a-port"
+"#,
         )
         .unwrap();
 
@@ -591,7 +698,14 @@ target = "web-1"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\ntarget = \"host\"\nssh_port = 99999\n").unwrap();
+        write_test_config(
+            &temp,
+            r#"[[agents]]
+target = "host"
+ssh_port = 99999
+"#,
+        )
+        .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
@@ -615,7 +729,13 @@ target = "web-1"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\nlocal = true\n").unwrap();
+        write_test_config(
+            &temp,
+            r#"[[agents]]
+local = true
+"#,
+        )
+        .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -655,7 +775,7 @@ name = "my-local"
 dir = "/var/work"
 log = "/var/log/my-local.log"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -698,7 +818,7 @@ name = "local-1"
 target = "remote-2"
 name = "web-agent"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -737,7 +857,14 @@ name = "web-agent"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\nlocal = true\ntarget = \"host\"\n").unwrap();
+        write_test_config(
+            &temp,
+            r#"[[agents]]
+local = true
+target = "host"
+"#,
+        )
+        .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
@@ -767,9 +894,14 @@ name = "web-agent"
                     .unwrap()
                     .as_nanos()
             ));
-            std::fs::write(
+            write_test_config(
                 &temp,
-                format!("[[agents]]\nlocal = true\n{} = \"x\"\n", field),
+                format!(
+                    r#"[[agents]]
+local = true
+{field} = "x"
+"#
+                ),
             )
             .unwrap();
 
@@ -803,7 +935,7 @@ name = "web-agent"
 target = "prod-db"
 dir = "/var/www/app"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -841,7 +973,7 @@ dir = "/var/www/app"
 target = "prod-db"
 log = "log/prod-db.log"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -858,11 +990,9 @@ log = "log/prod-db.log"
         );
     }
 
-    /// Verifies that a file with no [server] table produces an all-None
-    /// ServerSection, so the previous agents-only file shape keeps working and
-    /// run_server falls back to CLI/env/default for every server setting.
+    /// Verifies that omitting required authentication configuration fails startup.
     #[tokio::test]
-    async fn test_parse_config_file_missing_server_section_defaults_to_none() {
+    async fn test_parse_config_file_rejects_missing_server_section() {
         let temp = std::env::temp_dir().join(format!(
             "redoor-agents-test-no-server-{}.toml",
             std::time::SystemTime::now()
@@ -870,23 +1000,18 @@ log = "log/prod-db.log"
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&temp, "[[agents]]\ntarget = \"host\"\n").unwrap();
+        std::fs::write(
+            &temp,
+            r#"[[agents]]
+target = "host"
+"#,
+        )
+        .unwrap();
 
-        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
 
-        assert!(
-            config.server.port.is_none(),
-            "port should be None when [server] is absent"
-        );
-        assert!(
-            config.server.bind.is_none(),
-            "bind should be None when [server] is absent"
-        );
-        assert!(
-            config.server.log.is_none(),
-            "log should be None when [server] is absent"
-        );
+        assert!(result.is_err(), "[server] credentials must be required");
     }
 
     /// Verifies that all three [server] fields are read from the file so
@@ -909,7 +1034,7 @@ log = "/tmp/x"
 [[agents]]
 target = "host"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
         std::fs::remove_file(&temp).ok();
@@ -937,7 +1062,7 @@ post = 3000
 [[agents]]
 target = "host"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
@@ -968,7 +1093,7 @@ port = 99999
 [[agents]]
 target = "host"
 "#;
-        std::fs::write(&temp, content).unwrap();
+        write_test_config(&temp, content).unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
         std::fs::remove_file(&temp).ok();
@@ -977,5 +1102,63 @@ target = "host"
             result.is_err(),
             "an out-of-range server.port should be rejected"
         );
+    }
+
+    /// Verifies first startup creates a complete, parseable config and later startups preserve it.
+    #[tokio::test]
+    async fn test_create_default_config_if_missing() {
+        let directory = std::env::temp_dir().join(format!(
+            "redoor-default-config-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("nested/config.toml");
+        let expected_username = current_process_username().await.unwrap();
+
+        let created = create_default_config_if_missing(&path).await.unwrap();
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let config = parse_config_file(path.to_str().unwrap()).await.unwrap();
+
+        assert!(created, "a missing conventional config should be created");
+        assert_eq!(
+            config.server.username, expected_username,
+            "the generated login should use the effective process account"
+        );
+        assert_eq!(
+            config.server.password, "changeme",
+            "the generated login should use the documented starter password"
+        );
+        for option in [
+            "# port =",
+            "# bind =",
+            "# log =",
+            "# target =",
+            "# local =",
+            "# username = \"remote-user\"",
+            "# ssh_port =",
+            "# name =",
+            "# remote_bin =",
+            "# dir =",
+        ] {
+            assert!(
+                content.contains(option),
+                "the starter config should document option {option}"
+            );
+        }
+
+        let created_again = create_default_config_if_missing(&path).await.unwrap();
+        let unchanged = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            !created_again,
+            "an existing config must never be overwritten by startup"
+        );
+        assert_eq!(
+            unchanged, content,
+            "checking an existing config must leave every byte unchanged"
+        );
+
+        tokio::fs::remove_dir_all(directory).await.ok();
     }
 }

@@ -218,15 +218,18 @@ Generated bindings include: `AgentListResponse`, `AgentDetailsResponse`, `AgentI
 
 ### Configuration
 
-Pass a TOML configuration file to the server with `--config`:
+The server requires a TOML configuration file. Pass one with `--config`:
 
 ```sh
 redoor server --config config.toml
 ```
 
-A config file contains an optional `[server]` table and a required, non-empty
-`[[agents]]` array. Each agent entry starts either an SSH-backed agent on a
-remote host or an agent process on the server's local machine. SSH and local
+When `--config` is omitted, Redoor loads `~/.config/redoor/config.toml`. If it
+does not exist, Redoor creates it with the current process username, password
+`changeme`, and commented examples of every available option. Change that
+starter password before exposing the server to other machines. The required
+`[server]` table contains browser login credentials. The optional
+`[[agents]]` array starts SSH-backed or local agent processes; SSH and local
 entries can be mixed in the same file.
 
 #### Server settings
@@ -240,9 +243,13 @@ then default. Only the port has an environment-variable fallback.
 | `server.port` | integer | `--port` | `REDOOR_PORT` | `3000` | HTTP and WebSocket listener port. Must fit in an unsigned 16-bit integer. |
 | `server.bind` | string | `--bind` | — | `0.0.0.0` | Address on which the server listens. Use `127.0.0.1` for local-only access. |
 | `server.log` | string | `--log` | — | stderr | Server log file path. |
+| `server.username` | string | — | — | required | Username accepted by the browser login form. |
+| `server.password` | string | — | — | required | Password accepted by the browser login form. Keep the config file private. |
 
-The `[server]` table may be omitted. Unknown keys in this table are rejected so
-that misspelled settings do not silently fall back to defaults.
+The `[server]` table and its non-empty `username` and `password` values are
+required. Unknown keys are rejected so misspelled settings do not silently fall
+back to defaults. Successful logins use an HTTP-only cookie backed by one JSON
+file per session in `~/.local/share/sessions/`; logout removes that file.
 
 #### SSH-backed agents
 
@@ -291,6 +298,8 @@ paths are rejected rather than resolved against the default directory.
 port = 3000
 bind = "0.0.0.0"
 log = "log/server.log"
+username = "admin"
+password = "replace-with-a-long-private-password"
 
 # Minimal SSH-backed agent. Its name defaults to "example.com" and SSH uses
 # the username from the target, port 22, and the versioned remote binary path.
@@ -318,10 +327,10 @@ log = "log/local.log"
 ### Running the Server
 
 ```sh
-# CLI flags only
+# Uses ~/.config/redoor/config.toml
 cargo run --bin redoor -- server --port 4000
 
-# With a config file (server settings + auto-started agents)
+# Uses an explicit config file (server settings + optional auto-started agents)
 cargo run --bin redoor -- server --config config.toml
 ```
 

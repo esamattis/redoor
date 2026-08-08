@@ -19,6 +19,9 @@ import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
 import type { TerminalSize } from "../../bindings/TerminalSize";
 import type { TerminalClientMessage } from "../../bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "../../bindings/TerminalServerMessage";
+import type { LoginRequest } from "../../bindings/LoginRequest";
+import type { LoginResponse } from "../../bindings/LoginResponse";
+import type { LogoutResponse } from "../../bindings/LogoutResponse";
 
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
@@ -62,6 +65,68 @@ type CopyFileResponseJson = {
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
+type RequestContext = {
+    getSessionCookie?: () => string | null;
+    onUnauthorized?: () => void;
+};
+
+/** Preserves HTTP status so authentication failures stay distinct from agent errors. */
+export class ApiError extends Error {
+    status: number;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.name = "ApiError";
+        this.status = status;
+    }
+}
+
+/** Adds browser credentials and the explicit cookie needed by Node-based integration clients. */
+function withAuthentication(
+    options: RequestInit | undefined,
+    context: RequestContext,
+): RequestInit {
+    const headers = new Headers(options?.headers);
+    const sessionCookie = context.getSessionCookie?.();
+    if (sessionCookie) {
+        headers.set("Cookie", sessionCookie);
+    }
+    return {
+        ...options,
+        credentials: "same-origin",
+        headers,
+    };
+}
+
+/** Converts failed responses into typed errors and reports expired browser sessions once. */
+async function requireSuccessfulResponse(
+    response: Response,
+    context: RequestContext,
+): Promise<void> {
+    if (response.ok) {
+        return;
+    }
+    if (response.status === 401) {
+        context.onUnauthorized?.();
+    }
+
+    const text = await response.text();
+    if (text) {
+        try {
+            const error = JSON.parse(text) as ErrorResponse;
+            throw new ApiError(response.status, error.error);
+        } catch (error) {
+            if (error instanceof ApiError) {
+                throw error;
+            }
+        }
+    }
+    throw new ApiError(
+        response.status,
+        `Request failed: ${response.status} ${response.statusText}`,
+    );
+}
+
 /** Encodes each filesystem component while preserving `/` as a URL path separator. */
 export function encodeFilesystemPath(path: string): string {
     if (!path.startsWith("/")) {
@@ -96,10 +161,22 @@ export function isLsFileResponse(
 export class Agent {
     private baseUrl: string;
     private info: AgentInfoResponse;
+    private requestContext: RequestContext;
 
-    constructor(baseUrl: string, info: AgentInfoResponse) {
+    constructor(
+        baseUrl: string,
+        info: AgentInfoResponse,
+        requestContext: RequestContext = {},
+    ) {
         this.baseUrl = baseUrl;
         this.info = info;
+        this.requestContext = requestContext;
+    }
+
+    /** Returns authentication headers for lower-level streaming tests and integrations. */
+    getAuthHeaders(): Record<string, string> {
+        const sessionCookie = this.requestContext.getSessionCookie?.();
+        return sessionCookie ? { Cookie: sessionCookie } : {};
     }
 
     get id(): string {
@@ -118,6 +195,8 @@ export class Agent {
         return apiRequest(
             this.baseUrl,
             `/api/v1/agents/${encodeURIComponent(this.info.id)}`,
+            undefined,
+            this.requestContext,
         );
     }
 
@@ -128,6 +207,8 @@ export class Agent {
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls`,
                 path,
             ),
+            undefined,
+            this.requestContext,
         );
     }
 
@@ -146,6 +227,7 @@ export class Agent {
                 },
                 body: JSON.stringify(request),
             },
+            this.requestContext,
         );
     }
 
@@ -187,44 +269,29 @@ export class Agent {
     }
 
     async upload(path: string, file: File): Promise<Response> {
-        const response = await fetch(this.getRawUrl(path), {
-            method: "PUT",
-            headers: {
-                "Content-Type": file.type || "application/octet-stream",
-            },
-            body: file,
-        });
-
-        if (!response.ok) {
-            const text = await response.text();
-            if (text) {
-                const error: ErrorResponse = JSON.parse(text);
-                throw new Error(error.error);
-            }
-            throw new Error(
-                `Request failed: ${response.status} ${response.statusText}`,
-            );
-        }
-
+        const response = await fetch(
+            this.getRawUrl(path),
+            withAuthentication(
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": file.type || "application/octet-stream",
+                    },
+                    body: file,
+                },
+                this.requestContext,
+            ),
+        );
+        await requireSuccessfulResponse(response, this.requestContext);
         return response;
     }
 
     async deleteFile(path: string): Promise<RawDeleteResponse> {
-        const response = await fetch(this.getRawUrl(path), {
-            method: "DELETE",
-        });
-
-        if (!response.ok) {
-            const text = await response.text();
-            if (text) {
-                const error: ErrorResponse = JSON.parse(text);
-                throw new Error(error.error);
-            }
-            throw new Error(
-                `Request failed: ${response.status} ${response.statusText}`,
-            );
-        }
-
+        const response = await fetch(
+            this.getRawUrl(path),
+            withAuthentication({ method: "DELETE" }, this.requestContext),
+        );
+        await requireSuccessfulResponse(response, this.requestContext);
         return response.json();
     }
 
@@ -234,22 +301,14 @@ export class Agent {
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir`,
                 path,
             )}`,
-            {
-                method: "POST",
-            },
+            withAuthentication(
+                {
+                    method: "POST",
+                },
+                this.requestContext,
+            ),
         );
-
-        if (!response.ok) {
-            const text = await response.text();
-            if (text) {
-                const error: ErrorResponse = JSON.parse(text);
-                throw new Error(error.error);
-            }
-            throw new Error(
-                `Request failed: ${response.status} ${response.statusText}`,
-            );
-        }
-
+        await requireSuccessfulResponse(response, this.requestContext);
         return response.json();
     }
 
@@ -277,6 +336,7 @@ export class Agent {
                 },
                 body: JSON.stringify(request),
             },
+            this.requestContext,
         );
 
         return {
@@ -314,18 +374,14 @@ export class Agent {
             }
         }
 
-        const response = await fetch(url, fetchOptions);
+        const response = await fetch(
+            url,
+            withAuthentication(fetchOptions, this.requestContext),
+        );
 
-        // 416 Range Not Satisfiable is a valid response for range requests
-        if (!response.ok && response.status !== 416) {
-            const text = await response.text();
-            if (text) {
-                const error: ErrorResponse = JSON.parse(text);
-                throw new Error(error.error);
-            }
-            throw new Error(
-                `Request failed: ${response.status} ${response.statusText}`,
-            );
+        // 416 Range Not Satisfiable is a valid response for range requests.
+        if (response.status !== 416) {
+            await requireSuccessfulResponse(response, this.requestContext);
         }
 
         return response;
@@ -336,29 +392,73 @@ async function apiRequest<T>(
     baseUrl: string,
     endpoint: string,
     options?: RequestInit,
+    context: RequestContext = {},
 ): Promise<T> {
     const url = `${baseUrl}${endpoint}`;
-    const response = await fetch(url, options);
-
-    if (!response.ok) {
-        const text = await response.text();
-        if (text) {
-            const error: ErrorResponse = JSON.parse(text);
-            throw new Error(error.error);
-        }
-        throw new Error(
-            `Request failed: ${response.status} ${response.statusText}`,
-        );
-    }
-
+    const response = await fetch(url, withAuthentication(options, context));
+    await requireSuccessfulResponse(response, context);
     return response.json();
 }
 
 export class ApiClient {
     baseUrl: string;
+    private sessionCookie: string | null = null;
+    private unauthorizedHandler: (() => void) | undefined;
 
     constructor(baseUrl: string) {
         this.baseUrl = baseUrl;
+    }
+
+    /** Installs navigation behavior after the router exists, avoiding an API-to-router dependency. */
+    setUnauthorizedHandler(handler: () => void): void {
+        this.unauthorizedHandler = handler;
+    }
+
+    /** Returns authentication headers for direct streaming requests outside this wrapper. */
+    getAuthHeaders(): Record<string, string> {
+        return this.sessionCookie ? { Cookie: this.sessionCookie } : {};
+    }
+
+    /** Shares current cookie and expiry handling with agents created by this client. */
+    private requestContext(): RequestContext {
+        return {
+            getSessionCookie: () => this.sessionCookie,
+            onUnauthorized: () => this.unauthorizedHandler?.(),
+        };
+    }
+
+    /** Establishes a browser cookie and captures it explicitly when running under Node fetch. */
+    async login(username: string, password: string): Promise<LoginResponse> {
+        const request: LoginRequest = { username, password };
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/login`,
+            withAuthentication(
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(request),
+                },
+                { getSessionCookie: () => this.sessionCookie },
+            ),
+        );
+        await requireSuccessfulResponse(response, {});
+        const setCookie = response.headers.get("set-cookie");
+        if (setCookie) {
+            this.sessionCookie = setCookie.split(";", 1)[0] ?? null;
+        }
+        return response.json();
+    }
+
+    /** Deletes the server-side session and forgets any Node-managed cookie. */
+    async logout(): Promise<LogoutResponse> {
+        const response = await apiRequest<LogoutResponse>(
+            this.baseUrl,
+            "/api/v1/logout",
+            { method: "POST" },
+            this.requestContext(),
+        );
+        this.sessionCookie = null;
+        return response;
     }
 
     getUiWebSocketUrl(): string {
@@ -371,14 +471,20 @@ export class ApiClient {
         const response = await apiRequest<AgentListResponse>(
             this.baseUrl,
             "/api/v1/agents",
+            undefined,
+            this.requestContext(),
         );
-        return response.agents.map((info) => new Agent(this.baseUrl, info));
+        return response.agents.map(
+            (info) => new Agent(this.baseUrl, info, this.requestContext()),
+        );
     }
 
     async getTransferProgress(): Promise<TransferProgressListResponse> {
         const response = await apiRequest<TransferProgressListResponseJson>(
             this.baseUrl,
             "/api/v1/transfers/progress",
+            undefined,
+            this.requestContext(),
         );
 
         return {

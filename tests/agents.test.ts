@@ -82,9 +82,13 @@ describe("Agents API", () => {
         // Relative --dir is resolved once against the process launch directory.
         expect(registeredAgent?.cwd).toBe(expectedDefault);
         // A relative log remains launch-cwd-relative, proving --dir did not mutate process cwd.
-        await expect(fs.stat(path.join(launchDirectory, "relative-agent.log"))).resolves.toBeDefined();
+        await expect(
+            fs.stat(path.join(launchDirectory, "relative-agent.log")),
+        ).resolves.toBeDefined();
         // The default directory must not become an ambient base for unrelated relative options.
-        await expect(fs.stat(path.join(expectedDefault, "relative-agent.log"))).rejects.toThrow();
+        await expect(
+            fs.stat(path.join(expectedDefault, "relative-agent.log")),
+        ).rejects.toThrow();
     });
 
     it("should get agent details", async () => {
@@ -280,9 +284,9 @@ describe("Agents API", () => {
 
         // Verify original test agent is still connected
         const agentsAfterReplacement = await apiClient.listAgents();
-        expect(
-            agentsAfterReplacement.some((a) => a.name === AGENT_NAME),
-        ).toBe(true);
+        expect(agentsAfterReplacement.some((a) => a.name === AGENT_NAME)).toBe(
+            true,
+        );
     });
 
     it("should echo message back from connected agent", async () => {
@@ -330,11 +334,18 @@ describe("Agents API", () => {
 
     it("should return 404 for non-existent agent details", async () => {
         const nonExistentAgentId = "non-existent-agent-id";
-        const agent = new Agent(apiClient.baseUrl, {
-            id: nonExistentAgentId,
-            name: "non-existent",
-            cwd: "/tmp",
-        });
+        const agent = new Agent(
+            apiClient.baseUrl,
+            {
+                id: nonExistentAgentId,
+                name: "non-existent",
+                cwd: "/tmp",
+            },
+            {
+                getSessionCookie: () =>
+                    apiClient.getAuthHeaders().Cookie ?? null,
+            },
+        );
         // Verify that requesting details for non-existent agent throws an error
         await expect(agent.getDetails()).rejects.toThrow("Agent not found");
     });

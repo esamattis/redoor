@@ -53,11 +53,13 @@
         "@types/node": "^26.1.2",
         "@types/react": "^19.2.18",
         "@types/react-dom": "^19.2.4",
+        "@types/ws": "^8.18.1",
         "@vitejs/plugin-react": "^6.0.5",
         "jsdom": "^30.0.1",
         "typescript": "^7.0.2",
         "vite": "^8.2.1",
         "vitest": "^4.1.10",
-        "web-vitals": "^6.1.0"
+        "web-vitals": "^6.1.0",
+        "ws": "^8.21.2"
     }
 }

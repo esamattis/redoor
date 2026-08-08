@@ -18,6 +18,7 @@ import {
     Trash2,
     LoaderCircle,
     ArrowLeftRight,
+    LogOut,
 } from "lucide-react";
 import {
     ApiClient,
@@ -190,7 +191,14 @@ export class RefreshListener {
 }
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
-    loader: async ({ context }) => {
+    loader: async ({ context, location }) => {
+        if (location.pathname === "/login") {
+            return {
+                agents: [],
+                transferProgress: { transfers: [] },
+            } satisfies RootLoaderData;
+        }
+
         const [agents, transferProgress] = await Promise.all([
             context.api.listAgents(),
             context.api.getTransferProgress(),
@@ -201,12 +209,20 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
             transferProgress,
         } satisfies RootLoaderData;
     },
-    component: RootLayout,
+    component: RootRouteLayout,
 });
+
+/** Keeps the login form outside the authenticated application chrome. */
+function RootRouteLayout() {
+    const location = useLocation();
+    return location.pathname === "/login" ? <Outlet /> : <RootLayout />;
+}
 
 function RootLayout() {
     const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
+    const router = useRouter();
+    const { api } = Route.useRouteContext();
     const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
     const terminalCwd = useMatches({
         select: (matches) => {
@@ -237,6 +253,12 @@ function RootLayout() {
             location.pathname.startsWith(`${routePrefix}/`)
         );
     });
+
+    React.useEffect(() => {
+        const refreshListener = new RefreshListener(api, router);
+        refreshListener.start();
+        return () => refreshListener.stop();
+    }, [api, router]);
 
     React.useEffect(() => {
         if (!activeAgent) {
@@ -297,7 +319,20 @@ function TopTabStrip(props: {
     pathname: string;
 }) {
     const agentTabLocations = useAtomValue(agentTabLocationsAtom);
+    const { api } = Route.useRouteContext();
     const transfersActive = props.pathname.startsWith("/transfers");
+    const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+
+    /** Removes the durable session before leaving authenticated application state. */
+    const logout = async () => {
+        setIsLoggingOut(true);
+        try {
+            await api.logout();
+            window.location.replace("/login");
+        } finally {
+            setIsLoggingOut(false);
+        }
+    };
 
     return (
         <header
@@ -308,7 +343,7 @@ function TopTabStrip(props: {
             <div
                 role="tablist"
                 aria-label="Agents and transfers"
-                className="flex min-h-0 items-end gap-1 overflow-x-auto pb-0"
+                className="flex min-h-0 flex-1 items-end gap-1 overflow-x-auto pb-0"
             >
                 {props.agents.length === 0 ? (
                     <span className="px-3 pb-2 text-sm text-slate-500">
@@ -370,6 +405,19 @@ function TopTabStrip(props: {
                     <span className="font-medium">Transfers</span>
                 </Link>
             </div>
+            <button
+                type="button"
+                onClick={logout}
+                disabled={isLoggingOut}
+                className="mb-1 flex shrink-0 items-center gap-2 rounded px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:cursor-wait disabled:opacity-60"
+            >
+                {isLoggingOut ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                    <LogOut className="h-4 w-4" />
+                )}
+                {isLoggingOut ? "Logging out…" : "Log out"}
+            </button>
         </header>
     );
 }

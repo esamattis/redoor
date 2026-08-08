@@ -4,6 +4,8 @@
 # port = 3006          # optional; also settable via --port / REDOOR_PORT
 # bind = "0.0.0.0"     # optional; default 0.0.0.0
 # log = "log/server.log" # optional; also settable via --log
+username = "admin"       # required; used by the browser login form
+password = "change-me"   # required; choose a long, private password
 
 [[agents]]
 target = "devbox"

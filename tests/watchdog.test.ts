@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, onTestFinished } from "vitest";
+import {
+    describe,
+    it,
+    expect,
+    beforeAll,
+    afterAll,
+    onTestFinished,
+} from "vitest";
 import { ApiClient, Agent } from "@/api-client";
 import { writeFileSync, rmSync } from "node:fs";
 import {
@@ -7,6 +14,8 @@ import {
     VITEST_SERVER_PORT,
     waitForValue,
     waitForPort,
+    TEST_PASSWORD,
+    TEST_USERNAME,
 } from "./test-utils";
 
 const AGENT_NAME = "watchdog-test-agent";
@@ -33,7 +42,16 @@ beforeAll(async () => {
     rmSync(agentLogPath, { force: true });
     writeFileSync(
         configPath,
-        `[[agents]]\nlocal = true\nname = "${AGENT_NAME}"\ndir = "${agentDir}"\nlog = "${agentLogPath}"\n`,
+        `[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+
+[[agents]]
+local = true
+name = "${AGENT_NAME}"
+dir = "${agentDir}"
+log = "${agentLogPath}"
+`,
     );
 
     // Capture the server's own log to a file so the test can
@@ -49,6 +67,7 @@ beforeAll(async () => {
     });
 
     await waitForPort(serverPort);
+    await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
     // The supervisor-spawned agent registers automatically once the
     // server is up. Wait for it via the REST API rather than a
@@ -130,76 +149,72 @@ describe("Watchdog supervisor", () => {
         expect(replacementDetails.pid).toBe(replacement.pid);
     }, 30000);
 
-    it(
-        "restarts the subprocess when the WebSocket goes stale",
-        async () => {
-            // Stale detection is timed in seconds (ping interval 10s,
-            // stale timeout 30s, stale check every 5s) so this test
-            // can take up to ~40s end to end. We pad the timeout to
-            // 60s so a slow CI host still completes it.
-            const firstDetails = await waitForValue({
-                timeoutMs: 15000,
-                description: "watchdog agent to be responsive after restart",
-                predicate: async () => {
-                    const agent = await getWatchdogAgent();
-                    return agent.getDetails();
-                },
-            });
-            const firstPid = firstDetails.pid;
-            expect(firstPid).toBeGreaterThan(0);
+    it("restarts the subprocess when the WebSocket goes stale", async () => {
+        // Stale detection is timed in seconds (ping interval 10s,
+        // stale timeout 30s, stale check every 5s) so this test
+        // can take up to ~40s end to end. We pad the timeout to
+        // 60s so a slow CI host still completes it.
+        const firstDetails = await waitForValue({
+            timeoutMs: 15000,
+            description: "watchdog agent to be responsive after restart",
+            predicate: async () => {
+                const agent = await getWatchdogAgent();
+                return agent.getDetails();
+            },
+        });
+        const firstPid = firstDetails.pid;
+        expect(firstPid).toBeGreaterThan(0);
 
-            // SIGSTOP freezes the agent without killing it. The
-            // kernel still has a live process, so the supervisor's
-            // `child.wait()` does not fire; the WebSocket session,
-            // however, sees zero frames and the stale check fires
-            // after 30s of silence. The supervisor then SIGKILLs
-            // the frozen process (SIGKILL works on a stopped
-            // process) and respawns a fresh agent.
-            process.kill(firstPid, "SIGSTOP");
+        // SIGSTOP freezes the agent without killing it. The
+        // kernel still has a live process, so the supervisor's
+        // `child.wait()` does not fire; the WebSocket session,
+        // however, sees zero frames and the stale check fires
+        // after 30s of silence. The supervisor then SIGKILLs
+        // the frozen process (SIGKILL works on a stopped
+        // process) and respawns a fresh agent.
+        process.kill(firstPid, "SIGSTOP");
 
-            // Register cleanup at the top of the test so it is
-            // visible and runs even if the test times out (vitest
-            // skips the body of a timed-out test, so a
-            // `try/finally` here would not always fire).
-            onTestFinished(() => {
-                // Resume the frozen process if it is still alive so
-                // it can receive the SIGKILL cleanly. If the
-                // supervisor already killed it, the kill returns
-                // ESRCH which we ignore.
-                try {
-                    process.kill(firstPid, "SIGCONT");
-                } catch {
-                    // process already gone, nothing to resume
+        // Register cleanup at the top of the test so it is
+        // visible and runs even if the test times out (vitest
+        // skips the body of a timed-out test, so a
+        // `try/finally` here would not always fire).
+        onTestFinished(() => {
+            // Resume the frozen process if it is still alive so
+            // it can receive the SIGKILL cleanly. If the
+            // supervisor already killed it, the kill returns
+            // ESRCH which we ignore.
+            try {
+                process.kill(firstPid, "SIGCONT");
+            } catch {
+                // process already gone, nothing to resume
+            }
+        });
+
+        const replacement = await waitForValue({
+            timeoutMs: 60000,
+            description:
+                "watchdog agent to be restarted after WebSocket went stale",
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                const a = agents.find((x) => x.name === AGENT_NAME);
+                if (!a) {
+                    return undefined;
                 }
-            });
+                const details = await a.getDetails();
+                return details.pid !== firstPid ? details : undefined;
+            },
+        });
 
-            const replacement = await waitForValue({
-                timeoutMs: 60000,
-                description:
-                    "watchdog agent to be restarted after WebSocket went stale",
-                predicate: async () => {
-                    const agents = await apiClient.listAgents();
-                    const a = agents.find((x) => x.name === AGENT_NAME);
-                    if (!a) {
-                        return undefined;
-                    }
-                    const details = await a.getDetails();
-                    return details.pid !== firstPid ? details : undefined;
-                },
-            });
+        // A new, different PID proves the supervisor
+        // actually killed the frozen process and respawned
+        // a fresh one in response to the stale signal.
+        expect(replacement.pid).not.toBe(firstPid);
+        expect(replacement.pid).toBeGreaterThan(0);
 
-            // A new, different PID proves the supervisor
-            // actually killed the frozen process and respawned
-            // a fresh one in response to the stale signal.
-            expect(replacement.pid).not.toBe(firstPid);
-            expect(replacement.pid).toBeGreaterThan(0);
-
-            // The replacement should be responsive via the REST
-            // API, confirming the new WebSocket is live.
-            const replacementAgent = await getWatchdogAgent();
-            const echo = await replacementAgent.echo("alive");
-            expect(echo.message).toBe("alive");
-        },
-        90000,
-    );
+        // The replacement should be responsive via the REST
+        // API, confirming the new WebSocket is live.
+        const replacementAgent = await getWatchdogAgent();
+        const echo = await replacementAgent.echo("alive");
+        expect(echo.message).toBe("alive");
+    }, 90000);
 });

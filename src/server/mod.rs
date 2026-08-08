@@ -1,5 +1,6 @@
 mod agent_helpers;
 mod agents;
+mod auth;
 mod config;
 mod files;
 mod raw;
@@ -12,7 +13,8 @@ mod ui;
 mod watchdog;
 mod ws;
 
-pub(crate) use config::{parse_config_file, spawn_agents};
+pub(crate) use auth::AuthState;
+pub(crate) use config::{create_default_config_if_missing, parse_config_file, spawn_agents};
 pub(crate) use redoor::watchdog::WatchdogRegistry;
 pub(crate) use routes::build_app;
 pub(crate) use state::{CoordinatorArgs, ServerState};

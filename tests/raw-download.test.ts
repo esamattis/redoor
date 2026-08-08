@@ -89,11 +89,18 @@ describe("Raw Download API", () => {
     });
 
     it("should return error for non-existent agent", async () => {
-        const fakeAgent = new Agent(apiClient.baseUrl, {
-            id: "non-existent-agent-id",
-            name: "fake",
-            cwd: "/tmp",
-        });
+        const fakeAgent = new Agent(
+            apiClient.baseUrl,
+            {
+                id: "non-existent-agent-id",
+                name: "fake",
+                cwd: "/tmp",
+            },
+            {
+                getSessionCookie: () =>
+                    apiClient.getAuthHeaders().Cookie ?? null,
+            },
+        );
         // Server should return an error instead of hanging forever
         await expect(fakeAgent.raw("/tmp/somefile")).rejects.toThrow(
             /not found/i,
@@ -148,7 +155,9 @@ describe("Raw Download API", () => {
 
         // Waiting for observable transfer progress ensures we interrupt a real in-flight download
         // without depending on a specific agent log line format.
-        const downloadPromise = fetch(ephemeralAgent.getRawUrl(testFilePath));
+        const downloadPromise = fetch(ephemeralAgent.getRawUrl(testFilePath), {
+            headers: ephemeralAgent.getAuthHeaders(),
+        });
 
         const observedTransfer = await waitForValue({
             description: "active or finished download progress row",
@@ -408,6 +417,7 @@ describe("Raw Download API", () => {
             proxiedAgent.getRawUrl(sourcePath),
             {
                 signal: controller.signal,
+                headers: proxiedAgent.getAuthHeaders(),
             },
         );
 

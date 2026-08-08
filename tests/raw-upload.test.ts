@@ -144,6 +144,7 @@ describe("Raw Upload API", () => {
             headers: {
                 "Content-Type": "application/octet-stream",
                 "Content-Length": totalBytes.toString(),
+                ...testAgent.getAuthHeaders(),
             },
             body: uploadBody,
             duplex: "half",
@@ -225,8 +226,7 @@ describe("Raw Upload API", () => {
         const uploadedFilePath = tempFiles.tempFile({ suffix: ".bin" });
         const controller = new AbortController();
         let streamController:
-            | ReadableStreamDefaultController<Uint8Array>
-            | undefined;
+            ReadableStreamDefaultController<Uint8Array> | undefined;
 
         const uploadBody = new ReadableStream<Uint8Array>({
             start(bodyController) {
@@ -240,6 +240,7 @@ describe("Raw Upload API", () => {
             headers: {
                 "Content-Type": "application/octet-stream",
                 "Content-Length": totalBytes.toString(),
+                ...testAgent.getAuthHeaders(),
             },
             body: uploadBody,
             duplex: "half",
@@ -325,11 +326,18 @@ describe("Raw Upload API", () => {
     });
 
     it("should return error for upload to non-existent agent", async () => {
-        const fakeAgent = new Agent(apiClient.baseUrl, {
-            id: "non-existent-agent-id",
-            name: "fake",
-            cwd: "/tmp",
-        });
+        const fakeAgent = new Agent(
+            apiClient.baseUrl,
+            {
+                id: "non-existent-agent-id",
+                name: "fake",
+                cwd: "/tmp",
+            },
+            {
+                getSessionCookie: () =>
+                    apiClient.getAuthHeaders().Cookie ?? null,
+            },
+        );
         const uploadFile = new File(["content"], "content.txt", {
             type: "text/plain",
         });

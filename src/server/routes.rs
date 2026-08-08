@@ -1,5 +1,5 @@
 use axum::{
-    Router,
+    Router, middleware,
     routing::{get, post},
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -9,6 +9,7 @@ use super::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
         ls_agent_handler,
     },
+    auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
     raw::{raw_agent_handler, raw_agent_put_handler},
     state::ServerState,
@@ -18,9 +19,14 @@ use super::{
     ws::{ui_websocket_handler, websocket_handler},
 };
 
+/// Builds public login/agent entry points and protects every browser-facing API route.
 pub(crate) fn build_app(server_state: ServerState) -> Router {
+    let auth = server_state.auth.clone();
+
     Router::new()
         .route("/ws", get(websocket_handler))
+        .route("/api/v1/login", post(login_handler))
+        .route("/api/v1/logout", post(logout_handler))
         .route("/api/v1/ui/ws", get(ui_websocket_handler))
         .route(
             "/api/v1/agents/{agent}/terminal/ws",
@@ -62,6 +68,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route("/api/v1/copy", post(copy_file_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
+        .layer(middleware::from_fn_with_state(auth, require_authentication))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

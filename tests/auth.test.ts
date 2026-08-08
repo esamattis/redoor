@@ -1,0 +1,101 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
+
+import { join } from "node:path";
+
+import { ApiClient } from "@/api-client";
+import {
+    ProcessManager,
+    TEST_PASSWORD,
+    TEST_SERVER_HOME,
+    TEST_USERNAME,
+    VITEST_SERVER_PORT,
+    waitForPort,
+} from "./test-utils";
+
+const processManager = new ProcessManager();
+const baseUrl = `http://127.0.0.1:${VITEST_SERVER_PORT}`;
+
+beforeAll(async () => {
+    process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
+    processManager.spawnServer({});
+    await waitForPort(VITEST_SERVER_PORT);
+});
+
+afterAll(() => {
+    processManager.killAll();
+});
+
+/** Extracts the opaque identifier while keeping cookie attributes out of request headers. */
+function sessionIdFromCookie(cookie: string): string {
+    const value = cookie.split("=", 2)[1];
+    if (!value) {
+        throw new Error("Session cookie did not contain an identifier");
+    }
+    return value;
+}
+
+describe("HTTP authentication", () => {
+    it("protects REST APIs while leaving the login endpoint public", async () => {
+        const protectedResponse = await fetch(`${baseUrl}/api/v1/agents`);
+        // Missing login state must be distinguishable from remote filesystem permission failures.
+        expect(protectedResponse.status).toBe(401);
+        // Clients rely on the standard error envelope for actionable failures.
+        expect(await protectedResponse.json()).toEqual({
+            error: "Authentication required",
+        });
+
+        const invalidLogin = await fetch(`${baseUrl}/api/v1/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: TEST_USERNAME,
+                password: "incorrect",
+            }),
+        });
+        // Invalid credentials must not create an authenticated browser session.
+        expect(invalidLogin.status).toBe(401);
+        // Login failures should not expose which credential was incorrect.
+        expect(await invalidLogin.json()).toEqual({
+            error: "Invalid username or password",
+        });
+    });
+
+    it("persists login state and removes it during logout", async () => {
+        const api = new ApiClient(baseUrl);
+        await api.login(TEST_USERNAME, TEST_PASSWORD);
+        const cookie = api.getAuthHeaders().Cookie;
+        // Node clients must retain the same opaque cookie a browser receives automatically.
+        expect(cookie).toMatch(/^redoor_session=[0-9a-f-]{36}$/);
+        if (!cookie) {
+            throw new Error("Login did not return a session cookie");
+        }
+
+        const sessionId = sessionIdFromCookie(cookie);
+        const sessionPath = join(
+            TEST_SERVER_HOME,
+            ".local/share/sessions",
+            `session_${sessionId}.json`,
+        );
+        // A successful login must have one durable server-side file as its source of truth.
+        expect(existsSync(sessionPath)).toBe(true);
+
+        const agents = await api.listAgents();
+        // The persisted cookie must authorize protected APIs even when no agents are connected.
+        expect(agents).toEqual([]);
+
+        const tamperedResponse = await fetch(`${baseUrl}/api/v1/agents`, {
+            headers: {
+                Cookie: "redoor_session=00000000-0000-4000-8000-000000000000",
+            },
+        });
+        // Guessing a syntactically valid identifier without its session file must not authenticate.
+        expect(tamperedResponse.status).toBe(401);
+
+        const logout = await api.logout();
+        // Logout confirms completion only after deleting the durable session.
+        expect(logout).toEqual({ logged_out: true });
+        // The session file must be gone before the response is considered successful.
+        expect(existsSync(sessionPath)).toBe(false);
+    });
+});

@@ -8,7 +8,6 @@ import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
 import { ApiClient } from "@/api-client";
-import { RefreshListener } from "@/routes/__root";
 
 // The API lives on the same origin as the page: the redoor binary
 // embeds the UI alongside the API on a single port, and during local
@@ -29,8 +28,14 @@ const router = createRouter({
     defaultPreloadStaleTime: 0,
 });
 
-export const refreshListener = new RefreshListener(api, router);
-refreshListener.start();
+api.setUnauthorizedHandler(() => {
+    if (window.location.pathname === "/login") {
+        return;
+    }
+    const returnPath = `${window.location.pathname}${window.location.search}`;
+    const search = new URLSearchParams({ redirect: returnPath });
+    window.location.replace(`/login?${search.toString()}`);
+});
 
 // Register the router instance for type safety
 declare module "@tanstack/react-router" {

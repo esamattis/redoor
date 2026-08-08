@@ -3,6 +3,8 @@ use redoor::actors;
 use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
 
+use super::auth::AuthState;
+
 #[derive(Clone)]
 pub(crate) struct ServerState {
     pub(crate) router_ref: actors::router::RouterHandle,
@@ -12,6 +14,8 @@ pub(crate) struct ServerState {
     pub(crate) watchdog_registry: WatchdogRegistry,
     /// Pairs short-lived browser and dedicated agent terminal connections.
     pub(crate) terminal_registry: TerminalRegistry,
+    /// Validates opaque cookies against durable, server-side session files.
+    pub(crate) auth: AuthState,
 }
 
 impl ServerState {
@@ -19,11 +23,13 @@ impl ServerState {
         router_ref: actors::router::RouterHandle,
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
+        auth: AuthState,
     ) -> Self {
         Self {
             router_ref,
             watchdog_registry,
             terminal_registry,
+            auth,
         }
     }
 }
@@ -53,8 +59,9 @@ pub(crate) struct CoordinatorArgs {
     /// When not set, logging goes to stderr.
     #[arg(long)]
     pub(crate) log: Option<String>,
-    /// Path to a TOML config file with an optional `[server]` table and a
-    /// required `[[agents]]` array. Each `[[agents]]` entry is either an
+    /// Path to the TOML config file. When omitted, Redoor loads or creates
+    /// `~/.config/redoor/config.toml`. Its `[server]` table contains required
+    /// login credentials, while each optional `[[agents]]` entry is either an
     /// ssh-backed agent (with a `target` host) that connects back to this
     /// server through a reverse tunnel, or a local agent (with `local = true`)
     /// that the server launches as a plain `redoor agent` child process.

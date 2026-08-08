@@ -41,11 +41,18 @@ export async function createToxiproxyAgent(options: {
         upstream: `127.0.0.1:${options.serverPort}`,
     });
 
-    const proxiedAgent = new Agent(`http://${proxy.listen}`, {
-        id: options.agent.id,
-        name: options.agent.name,
-        cwd: options.agent.cwd,
-    });
+    const proxiedAgent = new Agent(
+        `http://${proxy.listen}`,
+        {
+            id: options.agent.id,
+            name: options.agent.name,
+            cwd: options.agent.cwd,
+        },
+        {
+            getSessionCookie: () =>
+                options.agent.getAuthHeaders().Cookie ?? null,
+        },
+    );
 
     return {
         toxiproxy,
@@ -161,6 +168,16 @@ export const SERVER_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor");
 export const AGENT_PATH = SERVER_PATH;
 // A per-worktree port lets Vitest run alongside development and other worktrees.
 export const VITEST_SERVER_PORT = testPorts.vitest;
+export const TEST_USERNAME = "test-user";
+export const TEST_PASSWORD = "test-password";
+const DEFAULT_TEST_CONFIG = join(
+    tmpdir(),
+    `redoor-vitest-${VITEST_SERVER_PORT}.toml`,
+);
+export const TEST_SERVER_HOME = join(
+    tmpdir(),
+    `redoor-vitest-home-${VITEST_SERVER_PORT}`,
+);
 
 export type SpawnAgentArgs = {
     wsAddress: string;
@@ -179,7 +196,12 @@ export class ProcessManager {
     private processes: Map<number, ChildProcess> = new Map();
     private stdoutBuffers: Map<number, OutputBuffer> = new Map();
 
-    spawn(command: string, args: string[], cwd = PROJECT_ROOT): number {
+    spawn(
+        command: string,
+        args: string[],
+        cwd = PROJECT_ROOT,
+        env?: NodeJS.ProcessEnv,
+    ): number {
         const proc = spawn(command, args, {
             detached: true,
             stdio: ["ignore", "pipe", "inherit"],
@@ -187,6 +209,7 @@ export class ProcessManager {
             env: {
                 ...process.env,
                 RUST_BACKTRACE: "1",
+                ...env,
             },
         });
 
@@ -227,17 +250,27 @@ export class ProcessManager {
 
     spawnServer(args: SpawnServerArgs): number {
         const cliArgs: string[] = ["server"];
+        const configPath = args.config ?? DEFAULT_TEST_CONFIG;
+        if (args.config === undefined) {
+            writeFileSync(
+                configPath,
+                `[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+`,
+            );
+        }
+        cliArgs.push("--config", configPath);
 
         if (args.log !== undefined) {
             rmSync(args.log, { force: true });
             cliArgs.push("--log", args.log);
         }
 
-        if (args.config !== undefined) {
-            cliArgs.push("--config", args.config);
-        }
-
-        return this.spawn(SERVER_PATH, cliArgs);
+        mkdirSync(TEST_SERVER_HOME, { recursive: true });
+        return this.spawn(SERVER_PATH, cliArgs, PROJECT_ROOT, {
+            HOME: TEST_SERVER_HOME,
+        });
     }
 
     kill(pid: number): void {
@@ -309,6 +342,7 @@ export async function startServerAndAgent(options: {
     const serverPid = options.processManager.spawnServer({});
 
     await waitForPort(serverPort);
+    await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
     const serverProcess = options.processManager.getProcess(serverPid);
     if (!serverProcess) {
@@ -354,7 +388,7 @@ export async function waitForPort(
             const response = await fetch(
                 `http://127.0.0.1:${port}/api/v1/agents`,
             );
-            if (response.ok) {
+            if (response.ok || response.status === 401) {
                 return;
             }
         } catch {
