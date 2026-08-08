@@ -27,7 +27,8 @@
 - Add comments to test assertions why they are there
 - Always after changes run `./scripts/build-and-test`
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
-- Never make git commit unless asked to!
+- When making git commits always add description explaining why the change was made, not what it does
+- Make multiple commits if there are clear distinct edits
 - On test failures see the ./log dir for related logs
 - When a single test needs cleanup, always use onTestFinished() instead of try-finally
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
