@@ -166,9 +166,9 @@ async fn resolve_agent_settings(
     let explicit_config = args.config.is_some();
     let config_path = match args.config {
         Some(path) => Some(PathBuf::from(path)),
-        None => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".config/redoor/config.toml")),
+        // Conventional path is optional for agents so fully CLI/env-configured
+        // runs still work when HOME is unset or the file is missing.
+        None => crate::server::default_config_path().ok(),
     };
 
     let file_config = match config_path {

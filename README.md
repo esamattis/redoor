@@ -6,7 +6,7 @@ Each connected agent maintains one authoritative control WebSocket for commands,
 
 ## Shared config
 
-Server and agent use the same TOML file and the same parser. Default path: `~/.config/redoor/config.toml`.
+Server and agent use the same TOML file and the same parser. Default path: `/etc/redoor/config.toml` when running as root, otherwise `~/.config/redoor/config.toml`.
 
 Precedence for every overridable setting: **CLI > env > config file > default**.
 
@@ -74,12 +74,12 @@ redoor server --port 3000 --bind 127.0.0.1 --log log/server.log
 
 | Flag | Env | Config | Default |
 |------|-----|--------|---------|
-| `--config` | | | `~/.config/redoor/config.toml` (created on first run) |
+| `--config` | | | `/etc/redoor/config.toml` as root, else `~/.config/redoor/config.toml` (created on first run) |
 | `--port` | `REDOOR_PORT` | `[server].port` | `3000` |
 | `--bind` | | `[server].bind` | `127.0.0.1` |
 | `--log` | | `[server].log` | stderr |
 
-First start without `--config` creates `~/.config/redoor/config.toml` and prints generated secrets once.
+First start without `--config` creates the conventional path above and prints generated secrets once.
 
 ## Agent
 
@@ -97,27 +97,31 @@ redoor agent wss://example.com/ws --name edge -d /var/app --log log/agent.log
 | `[WS_ADDRESS]` | `REDOOR_AGENT_WS` | `[agent].ws_address` | (required from one source) |
 | `--name` | `REDOOR_AGENT_NAME` | `[agent].name` | (required from one source) |
 | `--token` | `REDOOR_AGENT_TOKEN` | top-level `agent_token` | (required from one source) |
-| `--config` | | | `~/.config/redoor/config.toml` when present |
+| `--config` | | | `/etc/redoor/config.toml` as root, else `~/.config/redoor/config.toml` when present |
 | `-d` / `--dir` | `REDOOR_AGENT_DIR` | `[agent].dir` | process cwd |
 | `--log` | `REDOOR_AGENT_LOG` | `[agent].log` | stderr |
 
 When every required field is set in the TOML, `redoor agent` needs no flags. Startup errors if `ws_address`, `name`, or `agent_token` are still missing after applying precedence.
 
-## systemd (Linux user services)
+## systemd (Linux)
 
-Install and start a lingering user service so the process keeps running after logout:
+Install and start a service. Non-root installs a lingering user unit; root installs a system unit.
 
 ```bash
-redoor setup-systemd --user --mode server
-redoor setup-systemd --user --mode agent
+# as your user (user systemd + linger)
+redoor setup-systemd --mode server
+redoor setup-systemd --mode agent
+
+# as root (system systemd)
+sudo redoor setup-systemd --mode server
+sudo redoor setup-systemd --mode agent
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--user` | Required. Install into the current non-root user's systemd manager |
-| `--mode server` | Writes and enables `~/.config/systemd/user/redoor-server.service` |
-| `--mode agent` | Writes and enables `~/.config/systemd/user/redoor-agent.service` |
+| `--mode server` | Non-root: `~/.config/systemd/user/redoor-server.service`. Root: `/etc/systemd/system/redoor-server.service` running as the `redoor` system user |
+| `--mode agent` | Non-root: `~/.config/systemd/user/redoor-agent.service`. Root: `/etc/systemd/system/redoor-agent.service` running as root |
 
-Creates `~/.config/redoor/config.toml` when missing (server prints generated secrets once; agent prompts for the token and writes a complete `[agent]` section). Enables linger via `loginctl`, then `systemctl --user enable --now` for the unit.
+Creates the conventional config when missing (`~/.config/redoor/config.toml` non-root, `/etc/redoor/config.toml` as root). Server setup prints generated secrets once; agent setup prompts for the token and writes a complete `[agent]` section. Non-root enables linger via `loginctl`, then `systemctl --user enable --now`. Root creates the `redoor` user when installing the server, chowns `/etc/redoor` to that user, then `systemctl enable --now`.
 
 The agent unit runs bare `redoor agent` with **no CLI flags or environment variables** — configure everything in the TOML (`agent_token` + `[agent]`). Setup refuses to install if the existing file is incomplete for standalone agent startup.

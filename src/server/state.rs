@@ -84,11 +84,11 @@ pub(crate) struct CoordinatorArgs {
     #[arg(long)]
     pub(crate) log: Option<String>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates
-    /// `~/.config/redoor/config.toml`. Top-level `agent_token` is required;
-    /// `[server]` holds listener/auth settings (browser `username`/`password`
-    /// may be omitted together on Linux for PAM). Optional `[[agents]]` entries
-    /// are either ssh-backed (`target`) or local (`local = true`) and start
-    /// lazily from the UI or management API.
+    /// `/etc/redoor/config.toml` as root, otherwise `~/.config/redoor/config.toml`.
+    /// Top-level `agent_token` is required; `[server]` holds listener/auth
+    /// settings (browser `username`/`password` may be omitted together on Linux
+    /// for PAM). Optional `[[agents]]` entries are either ssh-backed (`target`)
+    /// or local (`local = true`) and start lazily from the UI or management API.
     #[arg(long)]
     pub(crate) config: Option<String>,
 }

@@ -56,13 +56,13 @@ async fn run_server(args: server::CoordinatorArgs) {
     let config_path = match args.config.clone() {
         Some(path) => PathBuf::from(path),
         None => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    eprintln!("HOME is not set; pass --config with a config.toml path");
+            let path = match server::default_config_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("{error:#}");
                     std::process::exit(1);
-                });
-            let path = home.join(".config/redoor/config.toml");
+                }
+            };
             match server::create_default_config_if_missing(&path).await {
                 Ok(Some(created)) => {
                     if let Some(password) = created.password {

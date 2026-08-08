@@ -23,7 +23,8 @@ mod ws;
 pub(crate) use auth::{AuthState, LoginCredentials};
 pub(crate) use config::{
     create_default_config_if_missing, create_default_config_if_missing_with_options,
-    parse_config_file, require_server_section, standalone_agent_is_fully_configured,
+    default_config_path, parse_config_file, require_server_section,
+    standalone_agent_is_fully_configured,
 };
 pub(crate) use redoor::watchdog::WatchdogRegistry;
 pub(crate) use reload::reexec_current_process;

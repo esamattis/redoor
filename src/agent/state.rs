@@ -31,7 +31,8 @@ pub(crate) struct AgentArgs {
     /// Overrides `REDOOR_AGENT_TOKEN` and the config file.
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
     pub(crate) token: Option<String>,
-    /// Path to the shared TOML config. Defaults to `~/.config/redoor/config.toml`.
+    /// Path to the shared TOML config. Defaults to `/etc/redoor/config.toml` when
+    /// root, otherwise `~/.config/redoor/config.toml`.
     #[arg(long)]
     pub(crate) config: Option<String>,
     /// Agent log file path. Overrides `REDOOR_AGENT_LOG` and `[agent].log`.

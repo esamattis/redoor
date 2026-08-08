@@ -8,10 +8,39 @@
 
 use anyhow::{Context, Result, bail};
 use redoor::{Level, log};
-use std::{path::Path, process::Stdio};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 use sysinfo::System;
 use tokio::{io::AsyncWriteExt, process::Command};
 use toml_edit::Document;
+
+/// Conventional config path for the current process privileges.
+///
+/// Root loads `/etc/redoor/config.toml` so system units and admin installs share
+/// one file; non-root uses the XDG-style home path under `~/.config/redoor`.
+pub(crate) fn default_config_path() -> Result<PathBuf> {
+    if effective_uid_is_root() {
+        return Ok(PathBuf::from("/etc/redoor/config.toml"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set; pass --config with a config.toml path")?;
+    Ok(home.join(".config/redoor/config.toml"))
+}
+
+/// Whether the process effective UID is root (system-install / privileged path).
+fn effective_uid_is_root() -> bool {
+    #[cfg(unix)]
+    {
+        nix::unistd::Uid::effective().is_root()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
 
 /// Shorthand for the [`Document`] type produced by [`Document::parse`], whose
 /// key storage is borrowed from the parsed source. Used in helper signatures
