@@ -248,13 +248,12 @@ function RootLayout() {
             const browserMatch = matches.find(
                 (match) => match.routeId === "/agents/$agentId/browser/$",
             );
-            if (
-                browserMatch?.loaderData &&
-                isLsDirectoryResponse(browserMatch.loaderData.lsResult)
-            ) {
+            const browserData = browserMatch?.loaderData;
+            const lsResult = browserData?.lsResult;
+            if (browserData && lsResult && isLsDirectoryResponse(lsResult)) {
                 return {
-                    agentId: browserMatch.loaderData.agentId,
-                    path: browserMatch.loaderData.path,
+                    agentId: browserData.agentId,
+                    path: browserData.path,
                 };
             }
 
@@ -274,7 +273,12 @@ function RootLayout() {
                 (match) => match.routeId === "/agents/$agentId/browser/$",
             );
             if (browserMatch?.loaderData) {
-                return isLsFileResponse(browserMatch.loaderData.lsResult)
+                const lsResult = browserMatch.loaderData.lsResult;
+                // Missing paths still expose a cwd so the terminal can open near the attempted location.
+                if (!lsResult) {
+                    return browserMatch.loaderData.path;
+                }
+                return isLsFileResponse(lsResult)
                     ? getParentPath(browserMatch.loaderData.path)
                     : browserMatch.loaderData.path;
             }
