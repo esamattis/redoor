@@ -25,9 +25,11 @@ import {
     EyeOff,
     Info,
     List,
+    ClipboardPaste,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
+import { requestClipboardPaste } from "../components/global-file-import-handler";
 import { atomWithLocalStorage } from "../utils/local-storage-atom";
 import { formatSize } from "../utils/path";
 import {
@@ -771,6 +773,17 @@ function BrowserHeader(props: {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1">
+                    {!props.isDetailsView ? (
+                        <button
+                            type="button"
+                            onClick={requestClipboardPaste}
+                            aria-label="Paste files or text"
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                        >
+                            <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                            Paste
+                        </button>
+                    ) : null}
                     <CreateDirectoryAction
                         agent={props.agent}
                         directoryPath={props.directoryPath}
