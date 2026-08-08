@@ -211,6 +211,16 @@ test.describe.serial("File Operations", () => {
 
         await deleteSelectedItemsButton.click();
 
+        const deleteSelectedItemsDialog = page.getByRole("dialog", {
+            name: "Delete this item?",
+        });
+
+        // The confirmation must appear before the destructive selected-items request can run.
+        await expect(deleteSelectedItemsDialog).toBeVisible();
+        await deleteSelectedItemsDialog
+            .getByRole("button", { name: "Delete item" })
+            .click();
+
         // The file name is rendered in both the listing and the selected-items panel, so wait on disk state first.
         await expect
             .poll(async () => {

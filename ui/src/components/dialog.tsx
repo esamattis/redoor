@@ -1,18 +1,39 @@
 import React from "react";
 import { X } from "lucide-react";
 
-export function BrowserActionDialog(props: {
+/**
+ * Provides consistent modal structure and dismissal behavior for UI workflows.
+ */
+export function Dialog(props: {
     isOpen: boolean;
     title: string;
-    description: React.ReactNode;
-    dialogTitleId: string;
-    dialogDescriptionId: string;
+    description?: React.ReactNode;
     closeAriaLabel: string;
-    isBusy: boolean;
-    errorMessage: string | null;
+    isBusy?: boolean;
+    errorMessage?: string | null;
+    role?: "dialog" | "alertdialog";
     children: React.ReactNode;
     onClose: () => void;
 }) {
+    const titleId = React.useId();
+    const descriptionId = React.useId();
+
+    React.useEffect(() => {
+        if (!props.isOpen || props.isBusy) {
+            return;
+        }
+
+        /** Closes an idle dialog from the keyboard for accessible dismissal. */
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                props.onClose();
+            }
+        };
+
+        document.addEventListener("keydown", handleKeyDown);
+        return () => document.removeEventListener("keydown", handleKeyDown);
+    }, [props.isBusy, props.isOpen, props.onClose]);
+
     if (!props.isOpen) {
         return null;
     }
@@ -20,26 +41,33 @@ export function BrowserActionDialog(props: {
     return (
         <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-            role="dialog"
+            role={props.role ?? "dialog"}
             aria-modal="true"
-            aria-labelledby={props.dialogTitleId}
-            aria-describedby={props.dialogDescriptionId}
+            aria-labelledby={titleId}
+            aria-describedby={props.description ? descriptionId : undefined}
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !props.isBusy) {
+                    props.onClose();
+                }
+            }}
         >
             <div className="w-full max-w-md rounded-xl border border-slate-700 bg-[#11141b] p-6 shadow-2xl shadow-black/40">
                 <div className="flex items-start justify-between gap-4">
                     <div>
                         <h2
-                            id={props.dialogTitleId}
+                            id={titleId}
                             className="text-lg font-semibold text-slate-100"
                         >
                             {props.title}
                         </h2>
-                        <div
-                            id={props.dialogDescriptionId}
-                            className="mt-2 text-sm text-slate-400"
-                        >
-                            {props.description}
-                        </div>
+                        {props.description ? (
+                            <div
+                                id={descriptionId}
+                                className="mt-2 text-sm text-slate-400"
+                            >
+                                {props.description}
+                            </div>
+                        ) : null}
                     </div>
                     <button
                         type="button"

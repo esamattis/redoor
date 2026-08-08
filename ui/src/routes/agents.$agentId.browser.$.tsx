@@ -24,7 +24,8 @@ import {
     Eye,
     EyeOff,
 } from "lucide-react";
-import { BrowserActionDialog } from "../components/browser-action-dialog";
+import { ConfirmationDialog } from "../components/confirmation-dialog";
+import { Dialog } from "../components/dialog";
 import { formatSize } from "../utils/path";
 import {
     type Agent,
@@ -589,12 +590,10 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
                 New directory
             </button>
 
-            <BrowserActionDialog
+            <Dialog
                 isOpen={isDialogOpen}
                 title="Create directory"
                 description="Create a new directory in the current location."
-                dialogTitleId="create-directory-title"
-                dialogDescriptionId="create-directory-description"
                 closeAriaLabel="Close create directory dialog"
                 isBusy={isCreating}
                 errorMessage={
@@ -657,7 +656,7 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
                         </button>
                     </div>
                 </form>
-            </BrowserActionDialog>
+            </Dialog>
         </>
     );
 }
@@ -1187,7 +1186,7 @@ function FileDetailView(props: {
                 </div>
             </div>
 
-            <DeleteConfirmationDialog
+            <ConfirmationDialog
                 isOpen={isConfirmDeleteOpen}
                 title="Delete this file?"
                 description={
@@ -1199,74 +1198,20 @@ function FileDetailView(props: {
                         from the agent filesystem.
                     </>
                 }
-                pathDisplay={props.lsResult.path}
                 confirmLabel="Delete file"
-                deleteState={deleteState}
-                dialogTitleId="delete-file-title"
-                dialogDescriptionId="delete-file-description"
+                busyLabel="Deleting..."
+                isBusy={deleteState.type === "deleting"}
+                errorMessage={
+                    deleteState.type === "error" ? deleteState.message : null
+                }
                 onClose={closeDeleteDialog}
                 onConfirm={handleDelete}
-            />
-        </div>
-    );
-}
-
-function DeleteConfirmationDialog(props: {
-    isOpen: boolean;
-    title: string;
-    description: React.ReactNode;
-    pathDisplay: string;
-    confirmLabel: string;
-    deleteState: DeleteState;
-    dialogTitleId: string;
-    dialogDescriptionId: string;
-    onClose: () => void;
-    onConfirm: () => void;
-}) {
-    return (
-        <BrowserActionDialog
-            isOpen={props.isOpen}
-            title={props.title}
-            description={props.description}
-            dialogTitleId={props.dialogTitleId}
-            dialogDescriptionId={props.dialogDescriptionId}
-            closeAriaLabel="Close delete confirmation"
-            isBusy={props.deleteState.type === "deleting"}
-            errorMessage={
-                props.deleteState.type === "error"
-                    ? props.deleteState.message
-                    : null
-            }
-            onClose={props.onClose}
-        >
-            <div className="mt-4">
+            >
                 <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
-                    {props.pathDisplay}
+                    {props.lsResult.path}
                 </p>
-
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
-                        type="button"
-                        onClick={props.onClose}
-                        disabled={props.deleteState.type === "deleting"}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        type="button"
-                        onClick={props.onConfirm}
-                        disabled={props.deleteState.type === "deleting"}
-                        className="inline-flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                        {props.deleteState.type === "deleting"
-                            ? "Deleting..."
-                            : props.confirmLabel}
-                    </button>
-                </div>
-            </div>
-        </BrowserActionDialog>
+            </ConfirmationDialog>
+        </div>
     );
 }
 
