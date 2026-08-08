@@ -103,9 +103,9 @@ pub(crate) struct SshAgentConfig {
     pub(crate) log: Option<String>,
 }
 
-/// Result of probing a remote host: which OS/arch it runs and what its
-/// existing redoor binary reports for `--version` (empty if there is no
-/// runnable binary at the configured path).
+/// Result of probing a remote host: which OS/arch it runs, what its existing
+/// redoor binary reports for `--version`, and the SHA-1 of that binary file
+/// (empty version/sha1 when there is no readable binary at the path).
 struct RemoteSniff {
     os: String,
     arch: String,
@@ -113,12 +113,17 @@ struct RemoteSniff {
     /// stripped. Empty when the binary is missing, not executable, or
     /// otherwise fails to run, in which case it needs to be (re)installed.
     version_output: String,
+    /// Lowercase hex SHA-1 of the remote binary file contents. Empty when the
+    /// file is missing or unreadable. Used to skip re-upload when the remote
+    /// bytes already match the local binary (critical for debug builds where
+    /// `--version` stays constant across rebuilds).
+    sha1sum: String,
 }
 
 /// Probes the remote host with a single ssh command that reports its OS,
-/// CPU architecture, and the `--version` output of the configured redoor
-/// binary. Batching all three into one round-trip avoids paying ssh
-/// setup latency three times for what is conceptually one "is the host
+/// CPU architecture, the `--version` output of the configured redoor binary,
+/// and that binary's SHA-1. Batching into one round-trip avoids paying ssh
+/// setup latency multiple times for what is conceptually one "is the host
 /// ready" check.
 async fn sniff_remote(
     host: &SshHost,
@@ -129,17 +134,20 @@ async fn sniff_remote(
     // exists at the path but is broken, the wrong program, or a stale
     // version still gets reinstalled -- we trust the remote report only
     // when it matches the version this client was built against.
+    // SHA-1 is collected in the same pass so debug deploys can skip upload
+    // when the remote file already matches the local bytes. Prefer
+    // `sha1sum` (Linux) and fall back to `shasum` (macOS).
     let shell_command = format!(
-        "echo \"$(uname),$(uname -m),$({} --version 2>/dev/null)\"",
-        remote_bin
+        "echo \"$(uname),$(uname -m),$({bin} --version 2>/dev/null),$((sha1sum {bin} 2>/dev/null || shasum -a 1 {bin} 2>/dev/null) | awk '{{print $1}}')\"",
+        bin = remote_bin
     );
     let options = SshRunOptions::default().compressed();
     let output = host.run_captured(&shell_command, &options).await?;
     let trimmed = output.trim();
     let parts: Vec<&str> = trimmed.split(',').collect();
-    if parts.len() != 3 {
+    if parts.len() != 4 {
         return Err(format!(
-            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<version>'",
+            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<version>,<sha1sum>'",
             trimmed
         )
         .into());
@@ -159,25 +167,49 @@ async fn sniff_remote(
         other => return Err(format!("unsupported remote arch '{}'", other).into()),
     };
     let version_output = parts[2].trim().to_string();
+    let sha1sum = parts[3].trim().to_string();
     log!(
         Level::Info,
-        "Remote sniff: os={}, arch={}, version_output='{}'",
+        "Remote sniff: os={}, arch={}, version_output='{}', sha1sum='{}'",
         os,
         arch,
-        version_output
+        version_output,
+        sha1sum
     );
     Ok(RemoteSniff {
         os: os.to_string(),
         arch: arch.to_string(),
         version_output,
+        sha1sum,
     })
 }
 
+/// Streams `path` through SHA-1 so large binaries never need to sit fully in
+/// memory, matching the same digest the remote `sha1sum`/`shasum` probe uses.
+async fn file_sha1sum(path: &Path) -> Result<String, std::io::Error> {
+    use sha1::{Digest, Sha1};
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha1::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Ensures the remote host has the appropriate redoor binary and returns the
-/// remote path the agent should run. A debug server always uploads its local
-/// debug binary to the dedicated `debug` install path when it exists and
-/// matches the remote platform, so debug deploys never clobber a versioned
-/// release install. Otherwise, a matching remote version is retained at the
+/// remote path the agent should run. A debug server uploads its local debug
+/// binary to the dedicated `debug` install path when it exists and matches
+/// the remote platform, so debug deploys never clobber a versioned release
+/// install. Upload is skipped when the remote file's SHA-1 already matches
+/// the local binary, which is how debug rebuilds avoid a full copy on every
+/// agent restart. Otherwise, a matching remote version is retained at the
 /// versioned path and stale binaries are replaced with the matching GitHub
 /// release artifact. The post-upload probe catches wrong-architecture or
 /// corrupted uploads before agent startup.
@@ -190,9 +222,9 @@ async fn ensure_remote_binary(
     let debug_binary = available_debug_binary(&sniff.os, &sniff.arch).await?;
 
     let (local_path, remote_bin) = if let Some(debug_binary) = debug_binary {
-        // Upload on every preparation because `--version` cannot tell whether
-        // the remote executable contains the current local debug code. Use a
-        // dedicated path so a debug binary never overwrites the versioned one.
+        // Use a dedicated path so a debug binary never overwrites the versioned one.
+        // Content equality is decided by SHA-1 below because `--version` cannot
+        // tell whether the remote executable contains the current local debug code.
         let remote_bin = debug_remote_bin();
         log!(
             Level::Info,
@@ -218,8 +250,44 @@ async fn ensure_remote_binary(
         (local_path, versioned_remote_bin.to_string())
     };
 
+    let local_sha1 = file_sha1sum(&local_path).await?;
+    // Initial sniff targets the versioned path; debug installs live elsewhere
+    // and need their own SHA-1 before we can decide whether to upload.
+    let remote_sha1 = if remote_bin == versioned_remote_bin {
+        sniff.sha1sum.clone()
+    } else {
+        sniff_remote(host, &remote_bin).await?.sha1sum
+    };
+
+    if !remote_sha1.is_empty() && remote_sha1 == local_sha1 {
+        log!(
+            Level::Info,
+            "Remote binary already matches local sha1sum, skipping upload: remote_bin={}, sha1sum={}",
+            remote_bin,
+            local_sha1
+        );
+        return Ok(remote_bin);
+    }
+
+    log!(
+        Level::Info,
+        "Remote binary sha1sum differs or missing (remote='{}', local='{}'), uploading: remote_bin={}",
+        remote_sha1,
+        local_sha1,
+        remote_bin
+    );
+
     upload_binary(host, &local_path, &remote_bin).await?;
     let post_upload = sniff_remote(host, &remote_bin).await?;
+    // Prefer SHA-1 over `--version` for integrity: debug builds keep the same
+    // version string across rebuilds, so only the digest proves the bytes landed.
+    if post_upload.sha1sum != local_sha1 {
+        return Err(format!(
+            "remote binary at {} sha1sum mismatch after upload: got '{}', want '{}'",
+            remote_bin, post_upload.sha1sum, local_sha1
+        )
+        .into());
+    }
     if post_upload.version_output != expected {
         return Err(format!(
             "remote binary at {} did not report expected version after upload: got '{}', want '{}'",
@@ -229,8 +297,9 @@ async fn ensure_remote_binary(
     }
     log!(
         Level::Info,
-        "Remote binary version verified after upload: '{}'",
-        post_upload.version_output
+        "Remote binary verified after upload: version='{}', sha1sum='{}'",
+        post_upload.version_output,
+        post_upload.sha1sum
     );
     Ok(remote_bin)
 }
@@ -824,6 +893,10 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
 #[derive(Clone)]
 pub(crate) struct PreparedSshAgent {
     host: SshHost,
+    /// Agent registration name; used to kill orphaned remote processes that
+    /// would otherwise reconnect through a new reverse tunnel and steal this
+    /// name from the freshly spawned agent.
+    agent_name: String,
     remote_bin: String,
     remote_argv: Vec<String>,
     options: SshRunOptions,
@@ -834,12 +907,77 @@ impl PreparedSshAgent {
     /// `Child` is owned by the caller (the supervisor) so it can wait
     /// for normal exit or kill it when the WebSocket goes stale.
     pub(crate) async fn spawn(&self) -> Result<tokio::process::Child, std::io::Error> {
+        // Local `kill_on_drop` only terminates the ssh client; a previous
+        // remote agent can survive as PPID 1 and immediately reconnect via the
+        // new `-R` tunnel under the same agent name. Clear those first.
+        kill_stale_remote_agents(&self.host, &self.agent_name).await?;
+
         // Re-borrow the argv as a slice of &str for the spawn helper.
         let argv_refs: Vec<&str> = self.remote_argv.iter().map(String::as_str).collect();
         self.host
             .spawn(&self.remote_bin, &argv_refs, &self.options)
             .await
     }
+}
+
+/// Best-effort kill of leftover remote `redoor agent --name <agent_name>`
+/// processes. Orphans from a dead ssh session keep trying `localhost:<port>`
+/// and will race the newly tunneled agent for registration.
+async fn kill_stale_remote_agents(host: &SshHost, agent_name: &str) -> Result<(), std::io::Error> {
+    // Pattern matches the argv shape from prepare_ssh_agent
+    // (`.../redoor agent ... --name <name> ...`). Regex-escape the name, then
+    // single-quote the whole pattern for the remote shell so metacharacters
+    // cannot break out of the pkill argument.
+    let pattern = format!(
+        "redoor agent .*--name {}( |$)",
+        regex_escape_basic(agent_name)
+    );
+    let shell_command = format!(
+        "pkill -f -- {} 2>/dev/null || true",
+        shell_single_quote(&pattern)
+    );
+    let options = SshRunOptions::default().compressed();
+    log!(
+        Level::Info,
+        "Clearing stale remote agents before spawn: name={}",
+        agent_name
+    );
+    // Capture stdout so a chatty remote shell profile cannot pollute logs; ignore
+    // status via the remote `|| true` so missing pkill/no matches are fine.
+    let _ = host.run_captured(&shell_command, &options).await?;
+    Ok(())
+}
+
+/// Escapes basic-regex metacharacters so an agent name is matched literally by
+/// `pkill -f`.
+fn regex_escape_basic(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Wraps `value` in single quotes for safe inclusion in a remote shell command.
+/// Internal single quotes are escaped with the usual `'\''` sequence.
+fn shell_single_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// One-time setup for an ssh-backed agent: resolves the remote binary
@@ -916,6 +1054,7 @@ pub(crate) async fn prepare_ssh_agent(
 
     Ok(PreparedSshAgent {
         host,
+        agent_name,
         remote_bin,
         remote_argv,
         options,
@@ -937,11 +1076,9 @@ pub(crate) async fn start_ssh_agent(
     agent_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prepared = prepare_ssh_agent(&config, redoor_port, agent_token).await?;
-    let argv_refs: Vec<&str> = prepared.remote_argv.iter().map(String::as_str).collect();
-    let status = prepared
-        .host
-        .run(&prepared.remote_bin, &argv_refs, &prepared.options)
-        .await?;
+    // Use spawn so stale remote agents are cleared the same way as the watchdog path.
+    let mut child = prepared.spawn().await?;
+    let status = child.wait().await?;
     if !status.success() {
         return Err(format!(
             "ssh agent exited with status {}",
@@ -954,8 +1091,40 @@ pub(crate) async fn start_ssh_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::{debug_binary_candidate, debug_remote_bin};
+    use super::{debug_binary_candidate, debug_remote_bin, file_sha1sum};
     use std::path::{Path, PathBuf};
+
+    /// Verifies local SHA-1 matches the well-known digest for a fixed payload so
+    /// remote `sha1sum` comparisons cannot drift from a buggy hasher.
+    #[tokio::test]
+    async fn file_sha1sum_matches_known_digest() {
+        let dir = std::env::temp_dir().join(format!("redoor-sha1-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("payload.bin");
+        tokio::fs::write(&path, b"redoor").await.unwrap();
+
+        // echo -n redoor | sha1sum
+        let digest = file_sha1sum(&path).await.unwrap();
+        assert_eq!(digest, "5cd57297d6ccaa26976cb250ba018adbc98d5907");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Verifies remote shell quoting keeps apostrophes inside the single-quoted
+    /// pattern so pkill cannot see an unescaped break-out.
+    #[test]
+    fn shell_single_quote_escapes_apostrophes() {
+        assert_eq!(super::shell_single_quote("devbox"), "'devbox'");
+        assert_eq!(super::shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    /// Verifies agent names with regex metacharacters stay literal in the
+    /// pkill pattern and cannot match unrelated processes.
+    #[test]
+    fn regex_escape_basic_escapes_metacharacters() {
+        assert_eq!(super::regex_escape_basic("devbox"), "devbox");
+        assert_eq!(super::regex_escape_basic("a.b+c"), r"a\.b\+c");
+    }
 
     /// Verifies debug uploads target a dedicated install path rather than the
     /// versioned release layout, so both can coexist on one remote host.

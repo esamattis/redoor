@@ -5,4 +5,5 @@ playwright-report
 test-results
 /test_ports.json
 dev_agents
+*.log
 .opencode/package-lock.json

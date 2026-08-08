@@ -34,7 +34,6 @@
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
 - Always write multiline strings with real newlines inside the quotes, never escaped `\n` sequences.
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
-- If you are asked to make a code review: Write the negative findings into a `<CODEREVIEW>comment</CODEREVIEW>` right into the code files
 - When you see a transient flaky test that succeeds on second run log them to `./flaky-tests.md`
 
 
