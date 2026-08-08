@@ -1,5 +1,13 @@
 import * as React from "react";
-import { Plus, RotateCcw, SquareTerminal, X } from "lucide-react";
+import {
+    CircleCheck,
+    CircleX,
+    LoaderCircle,
+    Plus,
+    RotateCcw,
+    SquareTerminal,
+    X,
+} from "lucide-react";
 import type {
     FitAddon as GhosttyFitAddon,
     IDisposable,
@@ -29,6 +37,26 @@ type TerminalTab = {
     state: TerminalState;
     restartGeneration: number;
 };
+
+/** Gives each terminal tab its own concise lifecycle label and color. */
+function getTerminalStatus(state: TerminalState) {
+    if (state.type === "connected") {
+        return {
+            label: "Connected",
+            color: "text-emerald-400",
+        };
+    }
+    if (state.type === "disconnected") {
+        return {
+            label: "Disconnected",
+            color: "text-red-400",
+        };
+    }
+    return {
+        label: "Connecting",
+        color: "text-slate-400",
+    };
+}
 
 /** Validates untrusted socket text before it enters the typed lifecycle. */
 function parseServerMessage(value: unknown): TerminalServerMessage | null {
@@ -142,6 +170,7 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
                     : tab,
             ),
         );
+        setActiveTabId(tabId);
         setIsCollapsed(false);
     };
 
@@ -164,22 +193,6 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
         event.preventDefault();
     };
 
-    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-    const statusLabel =
-        activeTab === null
-            ? "No terminals"
-            : activeTab.state.type === "connected"
-              ? "Connected"
-              : activeTab.state.type === "disconnected"
-                ? "Disconnected"
-                : "Connecting";
-    const statusColor =
-        activeTab?.state.type === "connected"
-            ? "bg-emerald-500/10 text-emerald-400"
-            : activeTab?.state.type === "disconnected"
-              ? "bg-red-500/10 text-red-400"
-              : "bg-slate-800 text-slate-400";
-
     return (
         <CollapsibleBottomPanel
             title="Terminal"
@@ -188,9 +201,12 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
             badge={
                 <span
                     role="status"
-                    className={`rounded-md px-2 py-0.5 text-xs font-medium ${statusColor}`}
+                    aria-label="Terminal count"
+                    className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-400"
                 >
-                    {statusLabel}
+                    {tabs.length === 0
+                        ? "No terminals"
+                        : `${tabs.length} terminal${tabs.length === 1 ? "" : "s"}`}
                 </span>
             }
             actions={
@@ -201,44 +217,87 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
                             aria-label="Terminal tabs"
                             className="flex min-h-8 min-w-px items-center gap-1"
                         >
-                            {tabs.map((tab, tabIndex) => (
-                                <div
-                                    key={tab.id}
-                                    className="flex shrink-0 items-center rounded-md border border-slate-700 bg-slate-900"
-                                    title={`${tab.title}: ${tab.cwd}`}
-                                >
-                                    <button
-                                        type="button"
-                                        id={`terminal-tab-${tab.id}`}
-                                        role="tab"
-                                        aria-selected={tab.id === activeTabId}
-                                        aria-controls={`terminal-panel-${tab.id}`}
-                                        tabIndex={
-                                            tab.id === activeTabId ? 0 : -1
-                                        }
-                                        onClick={() => setActiveTabId(tab.id)}
-                                        onKeyDown={(event) =>
-                                            handleTabKeyDown(event, tabIndex)
-                                        }
-                                        className={`h-8 px-2.5 text-xs font-medium transition-colors ${
-                                            tab.id === activeTabId
-                                                ? "bg-slate-700 text-slate-100"
-                                                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                            {tabs.map((tab, tabIndex) => {
+                                const status = getTerminalStatus(tab.state);
+                                const isActive = tab.id === activeTabId;
+                                return (
+                                    <div
+                                        key={tab.id}
+                                        className={`flex shrink-0 items-center overflow-hidden rounded-md border transition-colors ${
+                                            isActive
+                                                ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
+                                                : "border-slate-700 bg-slate-900"
                                         }`}
+                                        title={`${tab.title}: ${tab.cwd}`}
                                     >
-                                        {tab.title}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        aria-label={`Close ${tab.title}`}
-                                        title={`Close ${tab.title}`}
-                                        onClick={() => closeTerminal(tab.id)}
-                                        className="inline-flex h-8 w-7 items-center justify-center text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                                    >
-                                        <X className="h-3.5 w-3.5" />
-                                    </button>
-                                </div>
-                            ))}
+                                        <button
+                                            type="button"
+                                            id={`terminal-tab-${tab.id}`}
+                                            role="tab"
+                                            aria-label={tab.title}
+                                            aria-selected={isActive}
+                                            aria-controls={`terminal-panel-${tab.id}`}
+                                            tabIndex={isActive ? 0 : -1}
+                                            onClick={() =>
+                                                setActiveTabId(tab.id)
+                                            }
+                                            onKeyDown={(event) =>
+                                                handleTabKeyDown(
+                                                    event,
+                                                    tabIndex,
+                                                )
+                                            }
+                                            className={`flex h-8 items-center gap-2 px-2.5 text-xs font-medium transition-colors ${
+                                                isActive
+                                                    ? "text-slate-100"
+                                                    : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                                            }`}
+                                        >
+                                            <span>{tab.title}</span>
+                                            <span
+                                                role="status"
+                                                aria-label={`${tab.title}: ${status.label}`}
+                                                title={status.label}
+                                                className={status.color}
+                                            >
+                                                {tab.state.type ===
+                                                "connected" ? (
+                                                    <CircleCheck className="h-3.5 w-3.5" />
+                                                ) : tab.state.type ===
+                                                  "disconnected" ? (
+                                                    <CircleX className="h-3.5 w-3.5" />
+                                                ) : (
+                                                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                                )}
+                                            </span>
+                                        </button>
+                                        {tab.state.type === "disconnected" ? (
+                                            <button
+                                                type="button"
+                                                aria-label={`Restart ${tab.title}`}
+                                                title={`Restart ${tab.title}`}
+                                                onClick={() =>
+                                                    restartTerminal(tab.id)
+                                                }
+                                                className="inline-flex h-8 w-7 items-center justify-center border-l border-red-500/20 text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                                            >
+                                                <RotateCcw className="h-3.5 w-3.5" />
+                                            </button>
+                                        ) : null}
+                                        <button
+                                            type="button"
+                                            aria-label={`Close ${tab.title}`}
+                                            title={`Close ${tab.title}`}
+                                            onClick={() =>
+                                                closeTerminal(tab.id)
+                                            }
+                                            className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                        >
+                                            <X className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                );
+                            })}
                         </div>
                         <button
                             type="button"
@@ -250,16 +309,6 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
                             <Plus className="h-4 w-4" />
                         </button>
                     </div>
-                    {activeTab?.state.type === "disconnected" ? (
-                        <button
-                            type="button"
-                            onClick={() => restartTerminal(activeTab.id)}
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                            Restart
-                        </button>
-                    ) : null}
                 </div>
             }
             actionsAlignment="start"

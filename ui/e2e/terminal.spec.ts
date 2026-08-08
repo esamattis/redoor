@@ -37,7 +37,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
 
         await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
         await page.getByRole("button", { name: "New terminal" }).click();
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 1: Connected" }),
+        ).toBeVisible();
 
         const terminalInput = page
             .getByLabel(`Terminal 1 for ${ctx.agentName}`)
@@ -79,7 +81,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(page.getByRole("status")).toHaveText("No terminals");
+        await expect(
+            page.getByRole("status", { name: "Terminal count" }),
+        ).toHaveText("No terminals");
         // Rendering the empty tab strip must not eagerly open a terminal socket.
         expect(terminalSockets).toHaveLength(0);
 
@@ -87,7 +91,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("tab", { name: "Terminal 1" }),
         ).toHaveAttribute("aria-selected", "true");
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 1: Connected" }),
+        ).toBeVisible();
         // The first tab snapshots the canonical cwd from the browser root.
         expect(terminalSockets).toHaveLength(1);
         expect(
@@ -103,7 +109,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await page
             .getByRole("button", { name: "Expand Terminal" })
             .press("Enter");
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 1: Connected" }),
+        ).toBeVisible();
         // Minimize and re-expand retain the existing terminal session.
         expect(terminalSockets).toHaveLength(1);
 
@@ -115,7 +123,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
         await page.getByRole("button", { name: "New terminal" }).click();
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 2: Connected" }),
+        ).toBeVisible();
         // A terminal created in a directory uses the committed canonical path.
         expect(terminalSockets).toHaveLength(2);
         expect(
@@ -144,7 +154,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("file1.txt");
         await page.getByRole("button", { name: "New terminal" }).click();
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 3: Connected" }),
+        ).toBeVisible();
         // An open file contributes its parent directory, not the file path.
         expect(terminalSockets).toHaveLength(3);
         expect(
@@ -189,12 +201,18 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(page.getByRole("status")).toHaveText("No terminals");
+        await expect(
+            page.getByRole("status", { name: "Terminal count" }),
+        ).toHaveText("No terminals");
 
         await page.getByRole("button", { name: "New terminal" }).click();
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 4: Connected" }),
+        ).toBeVisible();
         await page.getByRole("button", { name: "New terminal" }).click();
-        await expect(page.getByRole("status")).toHaveText("Connected");
+        await expect(
+            page.getByRole("status", { name: "Terminal 5: Connected" }),
+        ).toBeVisible();
         const fourthSocket = terminalSockets[3];
         const fifthSocket = terminalSockets[4];
         if (!fourthSocket || !fifthSocket) {
@@ -210,13 +228,50 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(page.getByRole("status")).toHaveText("No terminals");
+        await expect(
+            page.getByRole("status", { name: "Terminal count" }),
+        ).toHaveText("No terminals");
         expect(terminalSockets).toHaveLength(5);
 
         await page.getByRole("tab", { name: "Transfers" }).click();
         // Non-agent routes must not retain the terminal panel.
         await expect(
             page.getByRole("heading", { name: "Terminal" }),
+        ).toHaveCount(0);
+    });
+
+    test("shows connection state and restart on the owning tab", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(
+            page.getByRole("status", { name: "Terminal 1: Connected" }),
+        ).toBeVisible();
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(
+            page.getByRole("status", { name: "Terminal 2: Connected" }),
+        ).toBeVisible();
+
+        await page.getByRole("tab", { name: "Terminal 1" }).click();
+        const firstTerminalInput = page
+            .getByLabel(`Terminal 1 for ${ctx.agentName}`)
+            .locator("textarea");
+        await firstTerminalInput.pressSequentially("exit");
+        await firstTerminalInput.press("Enter");
+
+        await expect(
+            page.getByRole("status", { name: "Terminal 1: Disconnected" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("status", { name: "Terminal 2: Connected" }),
+        ).toBeVisible();
+        // Recovery belongs to the failed tab instead of appearing as a shared panel action.
+        await expect(
+            page.getByRole("button", { name: "Restart Terminal 1" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Restart Terminal 2" }),
         ).toHaveCount(0);
     });
 });
