@@ -4,6 +4,7 @@ import path from "node:path";
 import {
     setupTestDir,
     teardownTestDir,
+    encodeFilesystemPath,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -69,7 +70,7 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/file1.txt`)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
         await expect(
             page.getByRole("heading", { name: "File name" }),

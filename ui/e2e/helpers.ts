@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ApiClient } from "../src/api-client";
+import { ApiClient, encodeFilesystemPath } from "../src/api-client";
 import { testPorts } from "../../test-ports.ts";
+
+export { encodeFilesystemPath };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,7 +71,7 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
         agentBrowserUrl: `${WEB_BASE_URL}${agent.getBrowserUrl(agent.cwd)}`,
         agent2BrowserUrl: `${WEB_BASE_URL}${agent2.getBrowserUrl(agent2.cwd)}`,
         testDirName,
-        testDirUrlPath: encodeURIComponent(testDirPath),
+        testDirUrlPath: encodeFilesystemPath(testDirPath),
         testDirPath,
     };
 }

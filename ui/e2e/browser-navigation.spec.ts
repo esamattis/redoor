@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
     setupTestDir,
     teardownTestDir,
+    encodeFilesystemPath,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -146,7 +147,7 @@ test.describe.serial("File Browser Navigation", () => {
         // after the route loader has rendered the nested page rather than
         // racing with the intermediate URL change.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir2/deep`)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir2/deep`)}`,
         );
         await expect(
             page.getByRole("link", { name: "nested3.txt", exact: true }),
@@ -156,7 +157,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         // One Up click should remove only the deepest path segment.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir2`)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir2`)}`,
         );
         // Seeing the child directory confirms we landed in the immediate parent directory.
         await expect(
@@ -198,7 +199,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page).not.toHaveURL(ctx.agentBrowserUrl);
 
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent("/")}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath("/")}`,
         );
         // Only the filesystem root has no parent navigation target.
         await expect(upButton).toHaveAttribute("aria-disabled", "true");
@@ -226,11 +227,11 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         const agent1DirectoryPath = `${ctx.testDirPath}/subdir1`;
-        const agent1DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(agent1DirectoryPath)}`;
+        const agent1DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(agent1DirectoryPath)}`;
         const agent2DirectoryPath = `${ctx.testDirPath}/subdir2/deep`;
-        const agent2DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeURIComponent(agent2DirectoryPath)}`;
+        const agent2DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(agent2DirectoryPath)}`;
         const agent2FilePath = `${agent2DirectoryPath}/nested3.txt`;
-        const agent2FileUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeURIComponent(agent2FilePath)}`;
+        const agent2FileUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(agent2FilePath)}`;
 
         await page.goto(ctx.agentBrowserUrl);
         await page.goto(agent1DirectoryUrl);
@@ -239,7 +240,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("tab", { name: ctx.agentName, exact: true }),
         ).toHaveAttribute(
             "href",
-            `/agents/${ctx.agentId}/browser/${encodeURIComponent(agent1DirectoryPath)}`,
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(agent1DirectoryPath)}`,
         );
 
         await page

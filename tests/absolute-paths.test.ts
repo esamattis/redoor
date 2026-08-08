@@ -72,27 +72,22 @@ describe("absolute filesystem path contract", () => {
 
     it("rejects relative paths at every public boundary", async () => {
         const agentId = encodeURIComponent(agent.id);
-        const endpoints: Array<{ method: string; path: string; body?: BodyInit }> = [
-            { method: "GET", path: `/api/v1/agents/${agentId}/ls/relative` },
-            { method: "GET", path: `/api/v1/agents/${agentId}/cat/relative` },
-            { method: "GET", path: `/api/v1/agents/${agentId}/raw/relative` },
-            { method: "PUT", path: `/api/v1/agents/${agentId}/raw/relative`, body: "x" },
-            { method: "DELETE", path: `/api/v1/agents/${agentId}/raw/relative` },
-            { method: "POST", path: `/api/v1/agents/${agentId}/mkdir/relative` },
-        ];
-
-        for (const endpoint of endpoints) {
-            const response = await fetch(`${api.baseUrl}${endpoint.path}`, {
-                method: endpoint.method,
-                body: endpoint.body,
-            });
-            // Every route validates malformed addressing before agent lookup or filesystem work.
-            expect(response.status).toBe(400);
-            // A stable message gives REST consumers one contract across all operations.
-            expect(await response.text(), endpoint.path).toBe(
-                JSON.stringify({ error: "Filesystem path must be absolute" }),
-            );
-        }
+        // Browser routes must reject cwd-relative addressing before building a URL.
+        expect(() => agent.getBrowserUrl("relative")).toThrow(
+            "Filesystem path must be absolute",
+        );
+        // REST listing must reject cwd-relative addressing before sending a request.
+        await expect(agent.ls("relative")).rejects.toThrow(
+            "Filesystem path must be absolute",
+        );
+        // Raw URLs are public boundaries used by download, upload, and delete operations.
+        expect(() => agent.getRawUrl("relative")).toThrow(
+            "Filesystem path must be absolute",
+        );
+        // Directory creation must not reinterpret a relative destination beneath cwd.
+        await expect(agent.createDirectory("relative")).rejects.toThrow(
+            "Filesystem path must be absolute",
+        );
 
         for (const request of [
             {
@@ -153,6 +148,8 @@ describe("absolute filesystem path contract", () => {
         );
 
         // No rejected relative destination may be resolved beneath the default directory.
-        await expect(fs.stat(path.join(defaultDirectory, "relative"))).rejects.toThrow();
+        await expect(
+            fs.stat(path.join(defaultDirectory, "relative")),
+        ).rejects.toThrow();
     });
 });

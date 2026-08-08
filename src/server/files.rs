@@ -11,19 +11,18 @@ use redoor::{
 };
 
 use super::{
-    agent_helpers::require_absolute_path, responses::command_error_status, state::ServerState,
+    agent_helpers::{AgentFilePath, absolute_path_from_url},
+    responses::command_error_status,
+    state::ServerState,
 };
 
 /// Route: `DELETE /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_delete_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    let resolved_path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let resolved_path = absolute_path_from_url(path.unwrap_or_default());
 
     match state
         .router_ref
@@ -68,14 +67,11 @@ pub(crate) async fn raw_agent_delete_handler(
 
 /// Route: `POST /api/v1/agents/{agent}/mkdir/{*path}`
 pub(crate) async fn create_directory_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
-    let resolved_path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let resolved_path = absolute_path_from_url(path.unwrap_or_default());
 
     match state
         .router_ref

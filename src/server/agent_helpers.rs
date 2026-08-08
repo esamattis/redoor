@@ -9,6 +9,8 @@ use redoor::{
     types::AgentId,
 };
 
+use serde::Deserialize;
+
 use super::{responses::command_error_status, state::ServerState};
 
 /// Fetches detailed runtime and immutable registration metadata for one agent.
@@ -49,6 +51,18 @@ pub(crate) async fn get_agent_details(
     }
 }
 
+/// Extracts an agent and its optional file path from exact-root and wildcard routes.
+#[derive(Deserialize)]
+pub(crate) struct AgentFilePath {
+    pub(crate) agent: String,
+    pub(crate) path: Option<String>,
+}
+
+/// Restores the implicit filesystem root omitted from REST wildcard URL segments.
+pub(crate) fn absolute_path_from_url(path: String) -> String {
+    format!("/{path}")
+}
+
 /// Rejects cwd-dependent filesystem addressing without canonicalizing valid destinations.
 pub(crate) fn require_absolute_path(path: String) -> Result<String, Response> {
     if std::path::Path::new(&path).is_absolute() {
@@ -67,6 +81,18 @@ pub(crate) fn require_absolute_path(path: String) -> Result<String, Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies URL splats become absolute without requiring a doubled route separator.
+    #[test]
+    fn restores_implicit_url_root() {
+        // The empty splat addresses the filesystem root.
+        assert_eq!(absolute_path_from_url(String::new()), "/");
+        // Nested URL segments retain their filesystem hierarchy.
+        assert_eq!(
+            absolute_path_from_url("home/user".to_string()),
+            "/home/user"
+        );
+    }
 
     /// Verifies lexical validation accepts absolute destinations without requiring existence.
     #[test]

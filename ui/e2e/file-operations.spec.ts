@@ -5,6 +5,7 @@ import path from "node:path";
 import {
     setupTestDir,
     teardownTestDir,
+    encodeFilesystemPath,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -37,7 +38,7 @@ test.describe.serial("File Operations", () => {
                     `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
                 )
                 .click();
-            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir3`)}`;
+            const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
             await Promise.all([
                 page.waitForURL(uploadDestinationUrl),
                 page.getByRole("link", { name: "subdir3" }).click(),
@@ -175,7 +176,7 @@ test.describe.serial("File Operations", () => {
         // Redirecting back to the parent directory confirms the delete request completed successfully.
         await expect(page).toHaveURL(
             new RegExp(
-                `/agents/${ctx.agentId}/browser/${encodeURIComponent(`${ctx.testDirPath}/subdir3`)}$`,
+                `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}$`,
             ),
         );
         // The deleted entry disappearing from the listing proves the route refreshed with the new filesystem state.

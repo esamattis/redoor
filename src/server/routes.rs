@@ -36,13 +36,25 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(list_transfer_progress_handler),
         )
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
+        .route("/api/v1/agents/{agent}/ls", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
+        .route("/api/v1/agents/{agent}/cat", get(cat_agent_handler))
         .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
+        .route(
+            "/api/v1/agents/{agent}/raw",
+            get(raw_agent_handler)
+                .put(raw_agent_put_handler)
+                .delete(raw_agent_delete_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/raw/{*path}",
             get(raw_agent_handler)
                 .put(raw_agent_put_handler)
                 .delete(raw_agent_delete_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/mkdir",
+            post(create_directory_handler),
         )
         .route(
             "/api/v1/agents/{agent}/mkdir/{*path}",

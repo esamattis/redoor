@@ -14,7 +14,7 @@ use redoor::{
 };
 
 use super::{
-    agent_helpers::{get_agent_details, require_absolute_path},
+    agent_helpers::{AgentFilePath, absolute_path_from_url, get_agent_details},
     responses::command_error_status,
     state::ServerState,
 };
@@ -81,13 +81,10 @@ pub(crate) async fn get_agent_details_handler(
 
 /// Route: `GET /api/v1/agents/{agent}/ls/{*path}`
 pub(crate) async fn ls_agent_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref
@@ -145,13 +142,10 @@ pub(crate) async fn ls_agent_handler(
 
 /// Route: `GET /api/v1/agents/{agent}/cat/{*path}`
 pub(crate) async fn cat_agent_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    let path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
     match state
         .router_ref

@@ -62,12 +62,23 @@ type CopyFileResponseJson = {
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
-/** Encodes a complete absolute path as browser splat data. */
-export function getBrowserUrl(agentId: string, path: string): string {
+/** Encodes each filesystem component while preserving `/` as a URL path separator. */
+export function encodeFilesystemPath(path: string): string {
     if (!path.startsWith("/")) {
         throw new Error("Filesystem path must be absolute");
     }
-    return `/agents/${encodeURIComponent(agentId)}/browser/${encodeURIComponent(path)}`;
+    return path.slice(1).split("/").map(encodeURIComponent).join("/");
+}
+
+/** Appends a filesystem path without leaving a trailing slash for the implicit root. */
+function appendFilesystemPath(route: string, path: string): string {
+    const encodedPath = encodeFilesystemPath(path);
+    return encodedPath ? `${route}/${encodedPath}` : route;
+}
+
+/** Builds a browser route whose filesystem components remain visible as URL segments. */
+export function getBrowserUrl(agentId: string, path: string): string {
+    return `/agents/${encodeURIComponent(agentId)}/browser/${encodeFilesystemPath(path)}`;
 }
 
 export function isLsDirectoryResponse(
@@ -103,14 +114,6 @@ export class Agent {
         return this.info.cwd;
     }
 
-    /** Validates and encodes one complete absolute filesystem path for REST routes. */
-    private encodeFilesystemPath(path: string): string {
-        if (!path.startsWith("/")) {
-            throw new Error("Filesystem path must be absolute");
-        }
-        return path.split("/").map(encodeURIComponent).join("/");
-    }
-
     async getDetails(): Promise<AgentDetailsResponse> {
         return apiRequest(
             this.baseUrl,
@@ -121,7 +124,10 @@ export class Agent {
     async ls(path: string): Promise<LsResponse> {
         return apiRequest<LsResponse>(
             this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls/${this.encodeFilesystemPath(path)}`,
+            appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls`,
+                path,
+            ),
         );
     }
 
@@ -149,17 +155,17 @@ export class Agent {
     }
 
     getRawUrl(path: string, options?: { download?: boolean }): string {
-        const encodedPath = this.encodeFilesystemPath(path);
-        let url = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/raw/${encodedPath}`;
+        let url = `${this.baseUrl}${appendFilesystemPath(
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/raw`,
+            path,
+        )}`;
         if (options?.download) {
             url += "?download=1";
         }
         return url;
     }
 
-    /// Returns the browser view URL for a given path on this agent.
-    /// The full path is encoded so absolute paths survive URL parsing
-    /// without their leading `/` being swallowed by the router.
+    /** Returns a browser URL that keeps filesystem separators readable. */
     getBrowserUrl(path: string): string {
         return getBrowserUrl(this.info.id, path);
     }
@@ -223,9 +229,11 @@ export class Agent {
     }
 
     async createDirectory(path: string): Promise<CreateDirectoryResponse> {
-        const encodedPath = this.encodeFilesystemPath(path);
         const response = await fetch(
-            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir/${encodedPath}`,
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir`,
+                path,
+            )}`,
             {
                 method: "POST",
             },
@@ -249,8 +257,8 @@ export class Agent {
         destination: CopyEndpoint,
         sourcePath: string,
     ): Promise<CopyFileResponse> {
-        this.encodeFilesystemPath(sourcePath);
-        this.encodeFilesystemPath(destination.path);
+        encodeFilesystemPath(sourcePath);
+        encodeFilesystemPath(destination.path);
         const request: CopyFileRequest = {
             source: {
                 agent: this.info.id,

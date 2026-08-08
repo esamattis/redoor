@@ -16,7 +16,7 @@ use redoor::{
 use serde::Deserialize;
 
 use super::{
-    agent_helpers::require_absolute_path,
+    agent_helpers::{AgentFilePath, absolute_path_from_url},
     responses::{command_error_status, router_error_response},
     state::ServerState,
 };
@@ -161,15 +161,12 @@ fn parse_range_header(range: &RangeHeader, file_size: u64) -> Option<(u64, u64)>
 
 /// Route: `GET /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     Query(params): Query<RawQueryParams>,
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
     let metadata = match state
         .router_ref
@@ -373,15 +370,12 @@ pub(crate) async fn raw_agent_handler(
 
 /// Route: `PUT /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_put_handler(
-    Path((agent, path)): Path<(String, String)>,
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
-    let path = match require_absolute_path(path) {
-        Ok(path) => path,
-        Err(response) => return response,
-    };
+    let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
     let total_bytes = match headers.get(axum::http::header::CONTENT_LENGTH) {
         Some(header_value) => match header_value.to_str() {

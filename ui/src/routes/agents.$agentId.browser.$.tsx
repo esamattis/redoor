@@ -91,10 +91,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         );
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
-        const path = params._splat;
-        if (!path?.startsWith("/")) {
-            throw new Error("Filesystem path must be absolute");
-        }
+        const path = `/${params._splat ?? ""}`;
         const lsResult: LsResponse = await agent.ls(path);
         const downloadUrl = isLsFileResponse(lsResult)
             ? agent.getRawUrl(lsResult.path)
