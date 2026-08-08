@@ -24,7 +24,7 @@ use crate::server::WatchdogRegistry;
 use crate::ssh::SshAgentConfig;
 
 /// Looks up the effective OS account off the async runtime because passwd databases may block.
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 async fn current_process_username() -> Result<String> {
     let uid = nix::unistd::Uid::current();
     let user = tokio::task::spawn_blocking(move || nix::unistd::User::from_uid(uid))
@@ -50,6 +50,7 @@ fn default_config_content(
     username: Option<&str>,
     password: Option<&str>,
     agent_token: &str,
+    agent_token_was_generated: bool,
 ) -> String {
     let agent_token = toml_edit::Value::from(agent_token).to_string();
     let credentials = match (username, password) {
@@ -69,10 +70,17 @@ fn default_config_content(
             .to_string()
         }
     };
-    let header = if username.is_some() {
-        "# A random password and agent_token were generated on first start."
-    } else {
-        "# A random agent_token was generated on first start.\n# Browser login uses the process owner's system username/password (Linux PAM)."
+    let header = match (username.is_some(), agent_token_was_generated) {
+        (true, true) => "# A random password and agent_token were generated on first start.",
+        (true, false) => {
+            "# A random browser password was generated; agent_token was supplied during setup."
+        }
+        (false, true) => {
+            "# A random agent_token was generated on first start.\n# Browser login uses the process owner's system username/password (Linux PAM)."
+        }
+        (false, false) => {
+            "# agent_token was supplied during setup.\n# Browser login uses the process owner's system username/password (Linux PAM)."
+        }
     };
     format!(
         r#"# Redoor server configuration.
@@ -114,15 +122,32 @@ pub(crate) struct CreatedDefaultConfig {
     pub(crate) agent_token: String,
 }
 
-/// Creates the conventional config once without overwriting a file created by another process.
+/// Creates the conventional config with a random token without overwriting an existing file.
 pub(crate) async fn create_default_config_if_missing(
     path: &Path,
+) -> Result<Option<CreatedDefaultConfig>> {
+    create_default_config_if_missing_with_token(path, None).await
+}
+
+/// Creates the conventional config with an optional caller-supplied agent token.
+///
+/// Systemd agent setup uses the supplied-token path because an agent must share
+/// the secret from its server, while ordinary server bootstrap generates one.
+pub(crate) async fn create_default_config_if_missing_with_token(
+    path: &Path,
+    agent_token: Option<&str>,
 ) -> Result<Option<CreatedDefaultConfig>> {
     if tokio::fs::try_exists(path).await? {
         return Ok(None);
     }
 
-    let agent_token = generate_secret();
+    if agent_token.is_some_and(str::is_empty) {
+        bail!("agent token must not be empty");
+    }
+    let agent_token_was_generated = agent_token.is_none();
+    let agent_token = agent_token
+        .map(str::to_owned)
+        .unwrap_or_else(generate_secret);
     // Linux can authenticate via PAM without embedding a second password; other
     // platforms still need an explicit username/password pair in the file.
     #[cfg(target_os = "linux")]
@@ -153,7 +178,12 @@ pub(crate) async fn create_default_config_if_missing(
                 .with_context(|| format!("Failed to create default config '{}'", path.display()));
         }
     };
-    let content = default_config_content(username.as_deref(), password.as_deref(), &agent_token);
+    let content = default_config_content(
+        username.as_deref(),
+        password.as_deref(),
+        &agent_token,
+        agent_token_was_generated,
+    );
     file.write_all(content.as_bytes())
         .await
         .with_context(|| format!("Failed to write default config '{}'", path.display()))?;
@@ -247,6 +277,33 @@ pub(crate) async fn parse_config_file(path: &str) -> Result<ServerConfig> {
     let agents = parse_agents_array(&doc, path)?;
 
     Ok(ServerConfig { server, agents })
+}
+
+/// Reads only the shared agent token from a server-compatible TOML file.
+///
+/// Agents intentionally ignore unrelated server and managed-agent settings so
+/// they can consume the same file without validating configuration they do not use.
+pub(crate) async fn parse_agent_token_file(path: &Path) -> Result<String> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read config file '{}'", path.display()))?;
+    let doc = Document::parse(&content).map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to parse config file '{}': {}",
+            path.display(),
+            error
+        )
+    })?;
+    let table = doc
+        .get("server")
+        .and_then(|item| item.as_table())
+        .with_context(|| "config file must contain a [server] table")?;
+    table
+        .get("agent_token")
+        .and_then(|item| item.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .with_context(|| "server.agent_token must be a non-empty string")
 }
 
 /// Parses required login credentials and optional listener settings from `[server]`.
@@ -1337,6 +1394,62 @@ target = "host"
         );
 
         tokio::fs::remove_dir_all(directory).await.ok();
+    }
+
+    /// Verifies agent setup can seed the shared config with the server's existing token.
+    #[tokio::test]
+    async fn test_create_default_config_with_supplied_agent_token() {
+        let directory = std::env::temp_dir().join(format!(
+            "redoor-agent-default-config-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("config.toml");
+
+        let created = create_default_config_if_missing_with_token(&path, Some("shared-token"))
+            .await
+            .unwrap()
+            .expect("a missing agent config should be created");
+        let parsed_token = parse_agent_token_file(&path).await.unwrap();
+
+        assert_eq!(
+            created.agent_token, "shared-token",
+            "the bootstrap result should report the supplied shared token"
+        );
+        assert_eq!(
+            parsed_token, "shared-token",
+            "the agent token reader should recover the supplied token from the common config"
+        );
+
+        tokio::fs::remove_dir_all(directory).await.ok();
+    }
+
+    /// Verifies agents ignore unrelated server keys because they consume only the shared token.
+    #[tokio::test]
+    async fn test_parse_agent_token_file_ignores_unrelated_settings() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-agent-token-test-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::write(
+            &path,
+            "[server]\nagent_token = \"agent-only-token\"\nfuture_server_setting = true\n",
+        )
+        .await
+        .unwrap();
+
+        let token = parse_agent_token_file(&path).await.unwrap();
+        tokio::fs::remove_file(&path).await.ok();
+
+        assert_eq!(
+            token, "agent-only-token",
+            "agent startup should not validate settings it does not consume"
+        );
     }
 
     /// Verifies Linux accepts a credentials-free [server] table for PAM login.

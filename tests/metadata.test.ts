@@ -125,4 +125,28 @@ describe("Metadata Content-Type Detection", () => {
         // Should be text/plain based on extension, not image/png based on content
         expect(response.headers.get("Content-Type")).toBe("text/plain");
     });
+
+    it("should mark valid UTF-8 files editable regardless of extension", async () => {
+        const filePath = tempFiles.create("plain content", { suffix: "" });
+        const metadata = await testAgent.metadata(filePath);
+        // Extensionless UTF-8 still opens in the editor after agent-side sniffing.
+        expect(metadata.editable).toBe(true);
+    });
+
+    it("should not mark invalid UTF-8 files editable even with text extension", async () => {
+        const filePath = tempFiles.create(Buffer.from([0xff, 0xfe, 0xfd]), {
+            suffix: ".txt",
+        });
+        const metadata = await testAgent.metadata(filePath);
+        // Extension must not override the UTF-8 validity check used by the editor gate.
+        expect(metadata.editable).toBe(false);
+    });
+
+    it("should not mark multi-megabyte UTF-8 files editable", async () => {
+        const largeContent = Buffer.alloc(2 * 1024 * 1024 + 1, 0x61);
+        const filePath = tempFiles.create(largeContent, { suffix: ".txt" });
+        const metadata = await testAgent.metadata(filePath);
+        // Large files stay download-only so the browser never loads them into a textarea.
+        expect(metadata.editable).toBe(false);
+    });
 });

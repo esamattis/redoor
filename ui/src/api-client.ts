@@ -22,8 +22,9 @@ import type { TerminalServerMessage } from "../../bindings/TerminalServerMessage
 import type { LoginRequest } from "../../bindings/LoginRequest";
 import type { LoginResponse } from "../../bindings/LoginResponse";
 import type { LogoutResponse } from "../../bindings/LogoutResponse";
+import type { MetadataResponse } from "../../bindings/MetadataResponse";
 
-export type { LsDirectoryResponse, LsFileResponse };
+export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
     RawDeleteResponse,
     CreateDirectoryResponse,
@@ -234,6 +235,19 @@ export class Agent {
     async raw(path: string): Promise<ArrayBuffer> {
         const response = await this.download(path);
         return response.arrayBuffer();
+    }
+
+    /** Fetches agent-side file sniffing results including the UTF-8 editable gate. */
+    async metadata(path: string): Promise<MetadataResponse> {
+        return apiRequest<MetadataResponse>(
+            this.baseUrl,
+            appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/metadata`,
+                path,
+            ),
+            undefined,
+            this.requestContext,
+        );
     }
 
     getRawUrl(path: string, options?: { download?: boolean }): string {

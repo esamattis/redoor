@@ -197,6 +197,49 @@ pub(crate) async fn cat_agent_handler(
     }
 }
 
+/// Route: `GET /api/v1/agents/{agent}/metadata/{*path}`
+pub(crate) async fn metadata_agent_handler(
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let path = absolute_path_from_url(path.unwrap_or_default());
+    let agent_id = AgentId::from(agent.clone());
+    match state
+        .router_ref
+        .request(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: Command::Metadata { path },
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(result) => match result {
+            CommandResult::Metadata(metadata) => (StatusCode::OK, Json(metadata)).into_response(),
+            CommandResult::Error { kind, message } => {
+                let status = command_error_status(&kind);
+                (status, Json(ErrorResponse { error: message })).into_response()
+            }
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected result type".to_string(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(error) => {
+            let error_msg = format!("Failed to execute metadata command: {:?}", error);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: error_msg }),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Route: `POST /api/v1/agents/{agent}/echo`
 pub(crate) async fn echo_agent_handler(
     Path(agent): Path<String>,
