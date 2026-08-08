@@ -222,6 +222,59 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page).toHaveURL(new RegExp(`/agents/${ctx.agentId}$`));
     });
 
+    test("should remember each agent tab location across switches and reloads", async ({
+        page,
+    }) => {
+        const agent1DirectoryPath = `${ctx.testDirPath}/subdir1`;
+        const agent1DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeURIComponent(agent1DirectoryPath)}`;
+        const agent2DirectoryPath = `${ctx.testDirPath}/subdir2/deep`;
+        const agent2DirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeURIComponent(agent2DirectoryPath)}`;
+        const agent2FilePath = `${agent2DirectoryPath}/nested3.txt`;
+        const agent2FileUrl = `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeURIComponent(agent2FilePath)}`;
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page.goto(agent1DirectoryUrl);
+        // The first tab must capture its directory before another agent becomes active.
+        await expect(
+            page.getByRole("tab", { name: ctx.agentName, exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeURIComponent(agent1DirectoryPath)}`,
+        );
+
+        await page
+            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .click();
+        await page.goto(agent2DirectoryUrl);
+        await page
+            .getByRole("link", { name: "nested3.txt", exact: true })
+            .click();
+        // Opening a file must make that exact file the second tab's destination.
+        await expect(page).toHaveURL(agent2FileUrl);
+
+        await page
+            .getByRole("tab", { name: ctx.agentName, exact: true })
+            .click();
+        // Switching back must restore the first agent's independent directory.
+        await expect(page).toHaveURL(agent1DirectoryUrl);
+
+        await page.reload();
+        await page
+            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .click();
+        // Reloading must not discard the inactive tab's remembered file.
+        await expect(page).toHaveURL(agent2FileUrl);
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("nested3.txt");
+
+        await page
+            .getByRole("tab", { name: ctx.agentName, exact: true })
+            .click();
+        // Both persisted entries must remain independent after the refresh.
+        await expect(page).toHaveURL(agent1DirectoryUrl);
+    });
+
     test("should display correct icons and sizes", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page

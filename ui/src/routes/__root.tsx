@@ -38,6 +38,11 @@ import { TransferList } from "../components/transfer-list";
 import { CollapsibleBottomPanel } from "../components/collapsible-bottom-panel";
 import { TerminalPanel } from "../components/terminal-panel";
 import { getParentPath } from "../utils/path";
+import {
+    agentTabLocationsAtom,
+    getAgentTabLocation,
+    rememberAgentTabLocationAtom,
+} from "../agent-tab-locations";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -202,6 +207,7 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
 function RootLayout() {
     const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
+    const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
     const terminalCwd = useMatches({
         select: (matches) => {
             const browserMatch = matches.find(
@@ -231,6 +237,17 @@ function RootLayout() {
             location.pathname.startsWith(`${routePrefix}/`)
         );
     });
+
+    React.useEffect(() => {
+        if (!activeAgent) {
+            return;
+        }
+
+        rememberAgentTabLocation({
+            agentId: activeAgent.id,
+            pathname: location.pathname,
+        });
+    }, [activeAgent, location.pathname, rememberAgentTabLocation]);
 
     return (
         <div className="flex h-screen flex-col bg-[#0b0d12]">
@@ -279,6 +296,7 @@ function TopTabStrip(props: {
     agents: RootLoaderData["agents"];
     pathname: string;
 }) {
+    const agentTabLocations = useAtomValue(agentTabLocationsAtom);
     const transfersActive = props.pathname.startsWith("/transfers");
 
     return (
@@ -305,7 +323,11 @@ function TopTabStrip(props: {
                         return (
                             <Link
                                 key={agent.id}
-                                to={agent.getBrowserUrl(agent.cwd)}
+                                to={getAgentTabLocation(
+                                    agentTabLocations,
+                                    agent.id,
+                                    agent.getBrowserUrl(agent.cwd),
+                                )}
                                 role="tab"
                                 aria-selected={isActive}
                                 className={`group flex max-w-56 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
