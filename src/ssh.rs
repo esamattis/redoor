@@ -60,6 +60,12 @@ fn default_remote_bin() -> String {
     format!("~/.local/redoor/{}/redoor", env!("CARGO_PKG_VERSION"))
 }
 
+/// Dedicated remote path for local debug binary uploads so iterative debug
+/// deploys never overwrite a versioned release install on the same host.
+fn debug_remote_bin() -> String {
+    "~/.local/redoor/debug/redoor".to_string()
+}
+
 /// Derives a default agent name from the ssh target by stripping any
 /// `user@` prefix so the name reflects the host being connected to.
 pub(crate) fn default_agent_name(target: &str) -> String {
@@ -167,34 +173,39 @@ async fn sniff_remote(
     })
 }
 
-/// Ensures the remote host has the appropriate redoor binary. A debug server
-/// always uploads its local debug binary when it exists and matches the remote
-/// platform because debug and release binaries have indistinguishable version
-/// output. Otherwise, a matching remote version is retained and stale binaries
-/// are replaced with the matching GitHub release artifact. The post-upload
-/// probe catches wrong-architecture or corrupted uploads before agent startup.
+/// Ensures the remote host has the appropriate redoor binary and returns the
+/// remote path the agent should run. A debug server always uploads its local
+/// debug binary to the dedicated `debug` install path when it exists and
+/// matches the remote platform, so debug deploys never clobber a versioned
+/// release install. Otherwise, a matching remote version is retained at the
+/// versioned path and stale binaries are replaced with the matching GitHub
+/// release artifact. The post-upload probe catches wrong-architecture or
+/// corrupted uploads before agent startup.
 async fn ensure_remote_binary(
     host: &SshHost,
-    remote_bin: &str,
+    versioned_remote_bin: &str,
     sniff: &RemoteSniff,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let expected = format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let debug_binary = available_debug_binary(&sniff.os, &sniff.arch).await?;
 
-    let local_path = if let Some(debug_binary) = debug_binary {
+    let (local_path, remote_bin) = if let Some(debug_binary) = debug_binary {
         // Upload on every preparation because `--version` cannot tell whether
-        // the remote executable contains the current local debug code.
+        // the remote executable contains the current local debug code. Use a
+        // dedicated path so a debug binary never overwrites the versioned one.
+        let remote_bin = debug_remote_bin();
         log!(
             Level::Info,
-            "Using local debug binary for matching remote platform: path={}, os={}, arch={}",
+            "Using local debug binary for matching remote platform: path={}, remote_bin={}, os={}, arch={}",
             debug_binary.display(),
+            remote_bin,
             sniff.os,
             sniff.arch
         );
-        debug_binary
+        (debug_binary, remote_bin)
     } else {
         if sniff.version_output == expected {
-            return Ok(());
+            return Ok(versioned_remote_bin.to_string());
         }
         log!(
             Level::Info,
@@ -202,11 +213,13 @@ async fn ensure_remote_binary(
             sniff.version_output,
             expected
         );
-        ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?
+        let local_path =
+            ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
+        (local_path, versioned_remote_bin.to_string())
     };
 
-    upload_binary(host, &local_path, remote_bin).await?;
-    let post_upload = sniff_remote(host, remote_bin).await?;
+    upload_binary(host, &local_path, &remote_bin).await?;
+    let post_upload = sniff_remote(host, &remote_bin).await?;
     if post_upload.version_output != expected {
         return Err(format!(
             "remote binary at {} did not report expected version after upload: got '{}', want '{}'",
@@ -219,7 +232,7 @@ async fn ensure_remote_binary(
         "Remote binary version verified after upload: '{}'",
         post_upload.version_output
     );
-    Ok(())
+    Ok(remote_bin)
 }
 
 /// Returns the workspace debug binary path when the running server was built
@@ -858,11 +871,14 @@ pub(crate) async fn prepare_ssh_agent(
     //
     // When the user supplied their own `remote_bin`, we trust it as-is:
     // probing and (re)installing would clobber a binary the operator
-    // intentionally placed at that path.
-    if config.remote_bin.is_none() {
+    // intentionally placed at that path. Auto-install may redirect debug
+    // uploads to the dedicated `debug` path instead of the versioned default.
+    let remote_bin = if config.remote_bin.is_none() {
         let sniff = sniff_remote(&host, &remote_bin).await?;
-        ensure_remote_binary(&host, &remote_bin, &sniff).await?;
-    }
+        ensure_remote_binary(&host, &remote_bin, &sniff).await?
+    } else {
+        remote_bin
+    };
 
     // The reverse forward is a run-time option because it describes the
     // tunnel, not the remote command itself. ExitOnForwardFailure is always
@@ -938,8 +954,16 @@ pub(crate) async fn start_ssh_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::debug_binary_candidate;
+    use super::{debug_binary_candidate, debug_remote_bin};
     use std::path::{Path, PathBuf};
+
+    /// Verifies debug uploads target a dedicated install path rather than the
+    /// versioned release layout, so both can coexist on one remote host.
+    #[test]
+    fn debug_remote_bin_uses_dedicated_debug_version() {
+        // Operators keep versioned release installs under ~/.local/redoor/<semver>.
+        assert_eq!(debug_remote_bin(), "~/.local/redoor/debug/redoor");
+    }
 
     /// Verifies a debug server can provision its exact local build to a host
     /// that can execute the same operating-system and CPU artifact.
