@@ -45,7 +45,7 @@ enum PasswordBackend {
     ConfiguredHash(String),
     /// Linux PAM against the OS account running the server process.
     #[cfg(target_os = "linux")]
-    SystemPam,
+    SystemPam(super::pam::PamApi),
 }
 
 /// Holds hashed credentials and the durable directory used to validate opaque cookies.
@@ -62,6 +62,9 @@ pub(crate) struct AuthState {
     /// Shared secret agents must present at registration to prevent unauthenticated hijacks.
     agent_token: String,
     login_limiter: std::sync::Arc<LoginRateLimiter>,
+    /// Serializes PAM because blocking checks can otherwise exhaust Tokio's blocking pool.
+    #[cfg(target_os = "linux")]
+    pam_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 /// Browser login credentials resolved from the config file (or Linux system account).
@@ -71,6 +74,16 @@ pub(crate) enum LoginCredentials {
     /// Authenticate as the process owner via Linux PAM when TOML omits credentials.
     #[cfg(target_os = "linux")]
     SystemUser,
+}
+
+/// Distinguishes rejected credentials from temporary PAM saturation for correct HTTP responses.
+enum LoginVerification {
+    /// Authentication succeeded, so the handler may create a session.
+    Authenticated,
+    /// Authentication failed, so the rate limiter must record the rejected attempt.
+    Rejected,
+    /// PAM is already running, so callers should retry without counting a credential failure.
+    Busy,
 }
 
 /// Tracks recent failed logins so online guessing cannot run unbounded.
@@ -172,24 +185,27 @@ impl AuthState {
             }
             #[cfg(target_os = "linux")]
             LoginCredentials::SystemUser => {
-                // Resolve off the async runtime: passwd lookups may block on NSS.
-                let username = tokio::task::spawn_blocking(|| {
+                // Dynamic library loading and passwd lookups can block on filesystem or NSS work,
+                // so validate the complete PAM backend away from Tokio's async worker threads.
+                let (username, pam_api) = tokio::task::spawn_blocking(|| {
+                    let pam_api = super::pam::PamApi::load()?;
                     let uid = nix::unistd::Uid::current();
-                    nix::unistd::User::from_uid(uid)
+                    let username = nix::unistd::User::from_uid(uid)
                         .map_err(|error| {
                             anyhow::anyhow!("failed to look up process user: {error}")
                         })?
-                        .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))
-                        .map(|user| user.name)
+                        .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))?
+                        .name;
+                    Ok::<_, anyhow::Error>((username, pam_api))
                 })
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!("failed to join process-user lookup: {error}")
+                    anyhow::anyhow!("failed to join PAM authentication startup task: {error}")
                 })??;
                 // Fixed marker: OS password changes do not bulk-invalidate PAM sessions;
                 // sessions still expire via SESSION_LIFETIME.
                 let fingerprint = credentials_fingerprint("pam-system-auth-v1");
-                (username, PasswordBackend::SystemPam, fingerprint)
+                (username, PasswordBackend::SystemPam(pam_api), fingerprint)
             }
         };
 
@@ -213,6 +229,8 @@ impl AuthState {
             cookie_secure,
             agent_token,
             login_limiter: std::sync::Arc::new(LoginRateLimiter::new()),
+            #[cfg(target_os = "linux")]
+            pam_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         };
 
         // Drop sessions issued under a previous password so rotation takes effect immediately.
@@ -333,20 +351,33 @@ impl AuthState {
 
     /// Verifies username + password against the configured backend.
     ///
-    /// Always runs the password check (even on username mismatch) so timing does not
-    /// reveal which half of the credential pair was wrong for configured auth. PAM
-    /// still runs on username mismatch against the real process user for the same reason.
-    async fn verify_login(&self, username: &str, password: &str) -> bool {
+    /// Always verifies configured password hashes on username mismatch so timing does not
+    /// reveal which half of the credential pair was wrong. PAM rejects mismatched usernames
+    /// before entering its serialized blocking verification path.
+    async fn verify_login(&self, username: &str, password: &str) -> LoginVerification {
         let username_ok = constant_time_eq(username, &self.username);
         let password_ok = match &self.password_backend {
             PasswordBackend::ConfiguredHash(password_hash) => {
                 verify_password_hash(password, password_hash)
             }
             #[cfg(target_os = "linux")]
-            PasswordBackend::SystemPam => {
+            PasswordBackend::SystemPam(pam_api) => {
+                // Configured auth still runs Argon2 for a wrong username so its cost does not
+                // reveal whether that username exists. PAM must return early instead: many PAM
+                // stacks delay wrong passwords but accept the correct password quickly, so
+                // checking the real account here would let a mismatched username probe whether
+                // a candidate system password is valid.
+                if !username_ok {
+                    return LoginVerification::Rejected;
+                }
+                let Ok(permit) = self.pam_semaphore.clone().try_acquire_owned() else {
+                    return LoginVerification::Busy;
+                };
                 let password = password.to_string();
+                let pam_api = pam_api.clone();
                 match tokio::task::spawn_blocking(move || {
-                    super::pam::verify_current_user_password(&password)
+                    let _permit = permit;
+                    pam_api.verify_current_user_password(&password)
                 })
                 .await
                 {
@@ -362,7 +393,11 @@ impl AuthState {
                 }
             }
         };
-        username_ok && password_ok
+        if username_ok && password_ok {
+            LoginVerification::Authenticated
+        } else {
+            LoginVerification::Rejected
+        }
     }
 }
 
@@ -503,21 +538,33 @@ pub(crate) async fn login_handler(
             .into_response();
     }
 
-    // Backend always checks the password (even on username mismatch) so timing does not
-    // reveal which half of the credential pair was wrong.
-    if !state
+    // Configured auth verifies the hash on username mismatch to avoid a timing signal,
+    // while PAM rejects mismatched usernames before its blocking check.
+    match state
         .auth
         .verify_login(&request.username, &request.password)
         .await
     {
-        state.auth.login_limiter.record_failure(client_ip);
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "Invalid username or password".to_string(),
-            }),
-        )
-            .into_response();
+        LoginVerification::Authenticated => {}
+        LoginVerification::Rejected => {
+            state.auth.login_limiter.record_failure(client_ip);
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Invalid username or password".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        LoginVerification::Busy => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "Authentication is busy. Try again later.".to_string(),
+                }),
+            )
+                .into_response();
+        }
     }
 
     let session_id = match state.auth.create_session().await {
