@@ -75,6 +75,18 @@ function getBrowserPathHref(agent: Agent, path: string) {
     return agent.getBrowserUrl(path);
 }
 
+/** Detects missing filesystem paths so the browser chrome can stay mounted. */
+function isPathMissingError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+    const errorMessage = error.message.toLowerCase();
+    return (
+        errorMessage.includes("no such file or directory") ||
+        errorMessage.includes("directory not found")
+    );
+}
+
 /**
  * Sort entries case-insensitively with dot-prefixed entries first.
  */
@@ -111,24 +123,44 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
 
         const path = `/${params._splat ?? ""}`;
-        const lsResult: LsResponse = await agent.ls(path);
-        const downloadUrl = isLsFileResponse(lsResult)
-            ? agent.getRawUrl(lsResult.path)
-            : undefined;
-        const metadata = isLsFileResponse(lsResult)
-            ? await agent.metadata(lsResult.path)
-            : null;
 
-        return {
-            agent,
-            agentId: agent.id,
-            agentName: agent.name,
-            path,
-            lsResult,
-            downloadUrl,
-            metadata,
-            agents: rootLoaderData.agents,
-        };
+        // Missing paths still resolve the route so breadcrumbs stay available for correction.
+        try {
+            const lsResult: LsResponse = await agent.ls(path);
+            const downloadUrl = isLsFileResponse(lsResult)
+                ? agent.getRawUrl(lsResult.path)
+                : undefined;
+            const metadata = isLsFileResponse(lsResult)
+                ? await agent.metadata(lsResult.path)
+                : null;
+
+            return {
+                agent,
+                agentId: agent.id,
+                agentName: agent.name,
+                path,
+                lsResult,
+                downloadUrl,
+                metadata,
+                agents: rootLoaderData.agents,
+                pathMissing: false as const,
+            };
+        } catch (error) {
+            if (isPathMissingError(error)) {
+                return {
+                    agent,
+                    agentId: agent.id,
+                    agentName: agent.name,
+                    path,
+                    lsResult: null,
+                    downloadUrl: undefined,
+                    metadata: null,
+                    agents: rootLoaderData.agents,
+                    pathMissing: true as const,
+                };
+            }
+            throw error;
+        }
     },
     component: FileBrowser,
     errorComponent: FileBrowserError,
@@ -136,11 +168,34 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const { agent, agentId, agentName, path, lsResult } = data;
+    const { agent, agentId, agentName, path, lsResult, pathMissing } = data;
     const search = Route.useSearch();
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
 
     const parentPath = getImmediateParentPath(path);
+
+    if (pathMissing || lsResult === null) {
+        return (
+            <div className="p-6">
+                <div className="mx-auto max-w-6xl">
+                    <BrowserHeader
+                        agent={agent}
+                        agentId={agentId}
+                        path={path}
+                        parentPath={parentPath}
+                        directoryPath={path}
+                        showHiddenFiles={showHiddenFiles}
+                        isDetailsView={false}
+                        pathMissing={true}
+                        onToggleHiddenFiles={() =>
+                            setShowHiddenFiles((prev) => !prev)
+                        }
+                    />
+                    <MissingPathSkeleton />
+                </div>
+            </div>
+        );
+    }
 
     if (isLsDirectoryResponse(lsResult)) {
         const filterHidden = (files: typeof lsResult.files) => {
@@ -714,12 +769,19 @@ function BrowserHeader(props: {
     directoryPath: string;
     showHiddenFiles: boolean;
     isDetailsView: boolean;
+    pathMissing?: boolean;
     onToggleHiddenFiles: () => void;
 }) {
+    const pathMissing = props.pathMissing === true;
+
     return (
         <header className="mb-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <Breadcrumbs agent={props.agent} path={props.path} />
+                <Breadcrumbs
+                    agent={props.agent}
+                    path={props.path}
+                    startEditing={pathMissing}
+                />
                 <Link
                     to="/agents/$agentId"
                     params={{ agentId: props.agentId }}
@@ -750,93 +812,175 @@ function BrowserHeader(props: {
                         <ArrowUp className="h-4 w-4" />
                         Up
                     </Link>
-                    <div className="mx-1 h-5 w-px bg-slate-700" />
-                    {props.isDetailsView ? (
-                        <Link
-                            to={getBrowserPathHref(
-                                props.agent,
-                                props.directoryPath,
-                            )}
-                            search={{}}
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
-                        >
-                            <List className="h-4 w-4" />
-                            View files
-                        </Link>
-                    ) : (
+                    {!pathMissing ? (
                         <>
-                            <Link
-                                to={getBrowserPathHref(
-                                    props.agent,
-                                    props.directoryPath,
-                                )}
-                                search={{ view: "details" }}
-                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                            >
-                                <Info className="h-4 w-4" />
-                                View details
-                            </Link>
-                            <button
-                                type="button"
-                                onClick={props.onToggleHiddenFiles}
-                                aria-pressed={props.showHiddenFiles}
-                                aria-label={
-                                    props.showHiddenFiles
-                                        ? "Hide hidden files"
-                                        : "Show hidden files"
-                                }
-                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
-                            >
-                                {props.showHiddenFiles ? (
-                                    <EyeOff className="h-4 w-4" />
-                                ) : (
-                                    <Eye className="h-4 w-4" />
-                                )}
-                                {props.showHiddenFiles
-                                    ? "Hide hidden"
-                                    : "Show hidden"}
-                            </button>
+                            <div className="mx-1 h-5 w-px bg-slate-700" />
+                            {props.isDetailsView ? (
+                                <Link
+                                    to={getBrowserPathHref(
+                                        props.agent,
+                                        props.directoryPath,
+                                    )}
+                                    search={{}}
+                                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
+                                >
+                                    <List className="h-4 w-4" />
+                                    View files
+                                </Link>
+                            ) : (
+                                <>
+                                    <Link
+                                        to={getBrowserPathHref(
+                                            props.agent,
+                                            props.directoryPath,
+                                        )}
+                                        search={{ view: "details" }}
+                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                                    >
+                                        <Info className="h-4 w-4" />
+                                        View details
+                                    </Link>
+                                    <button
+                                        type="button"
+                                        onClick={props.onToggleHiddenFiles}
+                                        aria-pressed={props.showHiddenFiles}
+                                        aria-label={
+                                            props.showHiddenFiles
+                                                ? "Hide hidden files"
+                                                : "Show hidden files"
+                                        }
+                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
+                                    >
+                                        {props.showHiddenFiles ? (
+                                            <EyeOff className="h-4 w-4" />
+                                        ) : (
+                                            <Eye className="h-4 w-4" />
+                                        )}
+                                        {props.showHiddenFiles
+                                            ? "Hide hidden"
+                                            : "Show hidden"}
+                                    </button>
+                                </>
+                            )}
                         </>
-                    )}
+                    ) : null}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1">
-                    {!props.isDetailsView ? (
-                        <button
-                            type="button"
-                            onClick={requestClipboardPaste}
-                            aria-label="Paste files or text"
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                        >
-                            <ClipboardPaste className="h-4 w-4 text-slate-400" />
-                            Paste
-                        </button>
-                    ) : null}
-                    <CreateDirectoryAction
-                        agent={props.agent}
-                        directoryPath={props.directoryPath}
-                    />
-                    <UploadFilesAction
-                        agent={props.agent}
-                        directoryPath={props.directoryPath}
-                    />
-                </div>
+                {!pathMissing ? (
+                    <div className="flex flex-wrap items-center gap-1">
+                        {!props.isDetailsView ? (
+                            <button
+                                type="button"
+                                onClick={requestClipboardPaste}
+                                aria-label="Paste files or text"
+                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                            >
+                                <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                                Paste
+                            </button>
+                        ) : null}
+                        <CreateDirectoryAction
+                            agent={props.agent}
+                            directoryPath={props.directoryPath}
+                        />
+                        <UploadFilesAction
+                            agent={props.agent}
+                            directoryPath={props.directoryPath}
+                        />
+                    </div>
+                ) : null}
             </div>
         </header>
     );
 }
 
+/** Keeps the file table chrome visible while the user corrects a missing path. */
+function MissingPathSkeleton() {
+    return (
+        <div className="space-y-3">
+            <p role="status" className="text-sm text-slate-400">
+                Directory not found
+            </p>
+            <table
+                aria-label="File list"
+                aria-busy="true"
+                className="w-full rounded-lg border border-slate-800 bg-[#11141b]"
+            >
+                <thead>
+                    <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Select
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Type
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Name
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Size
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Owner
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Group
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td
+                            colSpan={6}
+                            className="p-6 text-center text-sm text-slate-500"
+                        >
+                            Enter a valid path to browse files
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
 /** Shows the current path as links while allowing direct path navigation. */
-function Breadcrumbs(props: { agent: Agent; path: string }) {
+function Breadcrumbs(props: {
+    agent: Agent;
+    path: string;
+    /** Opens the path editor immediately so a missing path can be corrected in place. */
+    startEditing?: boolean;
+}) {
     const navigate = useNavigate();
     const breadcrumbsRef = React.useRef<HTMLElement>(null);
-    const [isEditing, setIsEditing] = React.useState(false);
+    const pathInputRef = React.useRef<HTMLInputElement>(null);
+    const [isEditing, setIsEditing] = React.useState(
+        props.startEditing === true,
+    );
     const [editedPath, setEditedPath] = React.useState(props.path);
     const [editorWidth, setEditorWidth] = React.useState<number | undefined>();
 
     const parts = props.path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
     let accumulatedPath = "";
+
+    // Keep the editor aligned with route changes, including missing-path landings.
+    React.useEffect(() => {
+        setEditedPath(props.path);
+        if (props.startEditing) {
+            setIsEditing(true);
+        } else {
+            setIsEditing(false);
+        }
+    }, [props.path, props.startEditing]);
+
+    // Focus after paint so keyboard correction works immediately on missing paths.
+    React.useEffect(() => {
+        if (!isEditing) {
+            return;
+        }
+        pathInputRef.current?.focus();
+        pathInputRef.current?.select();
+    }, [isEditing, props.path]);
 
     /** Preserves the breadcrumb width so editing does not shift surrounding actions. */
     const startEditing = () => {
@@ -858,10 +1002,10 @@ function Breadcrumbs(props: { agent: Agent; path: string }) {
                   ? editedPath
                   : `/${editedPath}`;
 
+        // Destination route decides whether the editor stays open (missing path).
         await navigate({
             to: props.agent.getBrowserUrl(targetPath),
         });
-        setIsEditing(false);
     };
 
     return (
@@ -872,6 +1016,7 @@ function Breadcrumbs(props: { agent: Agent; path: string }) {
                     className="flex min-w-0 items-center gap-1"
                 >
                     <input
+                        ref={pathInputRef}
                         type="text"
                         value={editedPath}
                         onChange={(event) => setEditedPath(event.target.value)}
@@ -881,8 +1026,9 @@ function Breadcrumbs(props: { agent: Agent; path: string }) {
                             }
                         }}
                         aria-label="File path"
-                        autoFocus
-                        style={{ width: editorWidth }}
+                        style={{
+                            width: editorWidth ?? "min(100%, 28rem)",
+                        }}
                         className="min-w-0 max-w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                     />
                     <button

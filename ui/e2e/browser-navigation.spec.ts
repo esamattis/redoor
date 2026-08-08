@@ -224,6 +224,56 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should keep path editor focused when breadcrumb path does not exist", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        const missingPath = `${ctx.testDirPath}/does-not-exist`;
+        const missingUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(missingPath)}`;
+        const nestedPath = `${ctx.testDirPath}/subdir1`;
+        const nestedUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}`;
+        await page.goto(directoryUrl);
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        const pathInput = page.getByRole("textbox", { name: "File path" });
+        await pathInput.fill(missingPath);
+        await pathInput.press("Enter");
+
+        // Navigation still commits the missing path in the URL.
+        await expect(page).toHaveURL(missingUrl);
+        // Browser chrome stays mounted so the path can be corrected in place.
+        await expect(page.getByLabel("File browser actions")).toBeVisible();
+        await expect(
+            page.getByRole("table", { name: "File list" }),
+        ).toBeVisible();
+        // Missing path is reported without replacing the file browser skeleton.
+        await expect(
+            page.getByText("Directory not found", { exact: true }),
+        ).toBeVisible();
+
+        const missingPathInput = page.getByRole("textbox", {
+            name: "File path",
+        });
+        // The editor reopens automatically so the user can fix the path immediately.
+        await expect(missingPathInput).toBeVisible();
+        await expect(missingPathInput).toHaveValue(missingPath);
+        // Focus stays in the input for immediate correction after a failed path.
+        await expect(missingPathInput).toBeFocused();
+
+        await missingPathInput.fill(nestedPath);
+        await missingPathInput.press("Enter");
+
+        // Correcting the path recovers into the real directory listing.
+        await expect(page).toHaveURL(nestedUrl);
+        await expect(
+            page.getByRole("link", { name: "nested1.txt", exact: true }),
+        ).toBeVisible();
+        // Successful navigation closes the editor again.
+        await expect(
+            page.getByRole("textbox", { name: "File path" }),
+        ).not.toBeVisible();
+    });
+
     test("should navigate using Up button", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page
