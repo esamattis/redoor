@@ -41,7 +41,7 @@ async fn main() {
             }
         }
         Commands::Ssh(args) => {
-            logging::init(None);
+            logging::init(None).await;
             if let Err(error) = ssh::run(args).await {
                 eprintln!("{error}");
                 std::process::exit(1);
@@ -134,7 +134,7 @@ async fn run_server(args: server::CoordinatorArgs) {
 
     let log = args.log.clone().or_else(|| config.server.log.clone());
 
-    logging::init(log.clone());
+    logging::init(log.clone()).await;
     log!(
         Level::Info,
         "Loaded server config: path={}",

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LogsRouteImport } from './routes/logs'
 import { Route as TestRouteImport } from './routes/test'
 import { Route as ConfigReloadRouteImport } from './routes/config.reload'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
@@ -25,6 +26,11 @@ const IndexRoute = IndexRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogsRoute = LogsRouteImport.update({
+  id: '/logs',
+  path: '/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TestRoute = TestRouteImport.update({
@@ -57,6 +63,7 @@ const AgentsAgentIdBrowserSplatRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
   '/transfers/': typeof TransfersIndexRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
   '/transfers': typeof TransfersIndexRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
   '/transfers/': typeof TransfersIndexRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/logs'
     | '/test'
     | '/config/reload'
     | '/transfers/'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/logs'
     | '/test'
     | '/config/reload'
     | '/transfers'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/login'
+    | '/logs'
     | '/test'
     | '/config/reload'
     | '/transfers/'
@@ -115,6 +127,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  LogsRoute: typeof LogsRoute
   TestRoute: typeof TestRoute
   ConfigReloadRoute: typeof ConfigReloadRoute
   TransfersIndexRoute: typeof TransfersIndexRoute
@@ -136,6 +149,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logs': {
+      id: '/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof LogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/test': {
@@ -179,6 +199,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  LogsRoute: LogsRoute,
   TestRoute: TestRoute,
   ConfigReloadRoute: ConfigReloadRoute,
   TransfersIndexRoute: TransfersIndexRoute,

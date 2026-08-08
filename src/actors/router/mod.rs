@@ -298,7 +298,7 @@ mod tests {
 
     #[tokio::test]
     async fn slow_upload_send_does_not_block_unrelated_router_work() {
-        crate::logging::init(None);
+        crate::logging::init(None).await;
 
         let (router_ref, router_task) = spawn_router(TerminalRegistry::new());
 

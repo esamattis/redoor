@@ -125,7 +125,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let agent_id = AgentId::from(agent_name.clone());
 
-    redoor::logging::init(log_file);
+    redoor::logging::init(log_file).await;
     log!(Level::Info, "Starting agent '{}'", agent_name);
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);

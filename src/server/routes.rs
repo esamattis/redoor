@@ -11,6 +11,7 @@ use super::{
     },
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
+    logs::server_logs_websocket_handler,
     raw::{raw_agent_handler, raw_agent_put_handler},
     reload::reload_config_handler,
     state::ServerState,
@@ -29,6 +30,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route("/api/v1/login", post(login_handler))
         .route("/api/v1/logout", post(logout_handler))
         .route("/api/v1/ui/ws", get(ui_websocket_handler))
+        .route("/api/v1/server/logs/ws", get(server_logs_websocket_handler))
         .route(
             "/api/v1/agents/{agent}/terminal/ws",
             get(browser_terminal_websocket_handler),

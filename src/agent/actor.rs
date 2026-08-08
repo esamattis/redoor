@@ -285,7 +285,7 @@ mod tests {
     /// Verifies a delayed writer failure cannot clear a newer live connection.
     #[tokio::test]
     async fn stale_connection_loss_does_not_clear_replacement_connection() {
-        redoor::logging::init(None);
+        redoor::logging::init(None).await;
         let mut runtime = AgentRuntime::new(
             AgentId::from("agent"),
             "agent".to_string(),

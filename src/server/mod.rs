@@ -3,6 +3,7 @@ mod agents;
 mod auth;
 mod config;
 mod files;
+mod logs;
 #[cfg(target_os = "linux")]
 mod pam;
 mod raw;

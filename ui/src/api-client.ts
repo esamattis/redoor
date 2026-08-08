@@ -27,6 +27,7 @@ import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
+import type { ServerLogEvent } from "../../bindings/ServerLogEvent";
 
 export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
@@ -47,6 +48,7 @@ export type {
     ServerAuthMode,
     ServerBuildMode,
     ReloadConfigResponse,
+    ServerLogEvent,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -495,6 +497,13 @@ export class ApiClient {
 
     getUiWebSocketUrl(): string {
         const url = new URL("/api/v1/ui/ws", this.baseUrl);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        return url.toString();
+    }
+
+    /** Builds the authenticated, route-scoped server-log socket URL. */
+    getServerLogsWebSocketUrl(): string {
+        const url = new URL("/api/v1/server/logs/ws", this.baseUrl);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         return url.toString();
     }
