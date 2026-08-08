@@ -4,7 +4,7 @@ import { writeFileSync, rmSync } from "node:fs";
 import {
     ProcessManager,
     TempFileManager,
-    getAvailablePort,
+    VITEST_SERVER_PORT,
     waitForValue,
     waitForPort,
 } from "./test-utils";
@@ -20,7 +20,7 @@ let configPath: string;
 let serverLogPath: string;
 
 beforeAll(async () => {
-    serverPort = await getAvailablePort();
+    serverPort = VITEST_SERVER_PORT;
     apiClient = new ApiClient(`http://127.0.0.1:${serverPort}`);
 
     // Build a temp config file with one local agent so the server's
@@ -82,8 +82,14 @@ async function getWatchdogAgent(): Promise<Agent> {
 
 describe("Watchdog supervisor", () => {
     it("restarts the subprocess when the agent process is killed", async () => {
-        const agent = await getWatchdogAgent();
-        const firstDetails = await agent.getDetails();
+        const firstDetails = await waitForValue({
+            timeoutMs: 15000,
+            description: "watchdog agent to be responsive after startup",
+            predicate: async () => {
+                const agent = await getWatchdogAgent();
+                return agent.getDetails();
+            },
+        });
         const firstPid = firstDetails.pid;
         // A positive PID is the cheapest sanity check that the agent
         // actually ran a subprocess and reported it back to the server.
@@ -131,8 +137,14 @@ describe("Watchdog supervisor", () => {
             // stale timeout 30s, stale check every 5s) so this test
             // can take up to ~40s end to end. We pad the timeout to
             // 60s so a slow CI host still completes it.
-            const agent = await getWatchdogAgent();
-            const firstDetails = await agent.getDetails();
+            const firstDetails = await waitForValue({
+                timeoutMs: 15000,
+                description: "watchdog agent to be responsive after restart",
+                predicate: async () => {
+                    const agent = await getWatchdogAgent();
+                    return agent.getDetails();
+                },
+            });
             const firstPid = firstDetails.pid;
             expect(firstPid).toBeGreaterThan(0);
 

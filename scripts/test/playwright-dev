@@ -5,17 +5,22 @@ set -eu
 cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 
 rm -f log/playwright-*.log
+REDOOR_PORT="$(node -e "const fs = require('node:fs'); process.stdout.write(String(JSON.parse(fs.readFileSync('test_ports.json', 'utf8')).playwright))")"
+export REDOOR_PORT
 # The UI is now embedded in the redoor binary, so a single server
 # serves both the API and the SPA. No separate Vite preview is needed.
 pnpm run build
 cargo build --bin redoor
-# Start each process directly because pnpm's parallel-run argument handling differs
-# between versions and can interpret script names as workspace filters.
-pnpm run playwright-server:server &
+# Start each process directly so pnpm cannot add color codes while expanding the port.
+./target/debug/redoor server --port "$REDOOR_PORT" --log log/playwright-redoor.log &
 server_pid=$!
-pnpm run playwright-server:agent1 &
+./target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent1_src --log log/playwright-agent1_src.log &
 agent1_pid=$!
-pnpm run playwright-server:agent2 &
+(
+    mkdir -p dev_agents/agent2
+    cd dev_agents/agent2
+    exec ../../target/debug/redoor agent "ws://127.0.0.1:$REDOOR_PORT/ws" --name agent2_custom --log ../../log/playwright-agent2_custom.log
+) &
 agent2_pid=$!
 
 # Ensure Playwright termination also cleans up all background processes.

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ApiClient } from "../src/api-client";
+import { testPorts } from "../../test-ports.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,8 +10,8 @@ const BASE_TEST_DIR = path.join(__dirname, "..", "..", ".test");
 
 // The UI is served from the same redoor server as the API, so both
 // the browser and the API client target the same origin.
-export const WEB_BASE_URL = "http://localhost:3000";
-export const API_BASE_URL = "http://localhost:3000";
+export const WEB_BASE_URL = `http://localhost:${testPorts.playwright}`;
+export const API_BASE_URL = WEB_BASE_URL;
 
 export interface TestContext {
     agentId: string;
