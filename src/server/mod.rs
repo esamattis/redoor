@@ -3,6 +3,8 @@ mod agents;
 mod auth;
 mod config;
 mod files;
+#[cfg(target_os = "linux")]
+mod pam;
 mod raw;
 mod responses;
 mod routes;
@@ -13,7 +15,7 @@ mod ui;
 mod watchdog;
 mod ws;
 
-pub(crate) use auth::AuthState;
+pub(crate) use auth::{AuthState, LoginCredentials};
 pub(crate) use config::{create_default_config_if_missing, parse_config_file, spawn_agents};
 pub(crate) use redoor::watchdog::WatchdogRegistry;
 pub(crate) use routes::build_app;

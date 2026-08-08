@@ -57,12 +57,20 @@ async fn run_server(args: server::CoordinatorArgs) {
             let path = home.join(".config/redoor/config.toml");
             match server::create_default_config_if_missing(&path).await {
                 Ok(Some(created)) => {
-                    eprintln!(
-                        "Created default config '{}'.\n  username password: {}\n  agent_token: {}\nStore these secrets securely; they will not be shown again.",
-                        path.display(),
-                        created.password,
-                        created.agent_token
-                    );
+                    if let Some(password) = created.password {
+                        eprintln!(
+                            "Created default config '{}'.\n  username password: {}\n  agent_token: {}\nStore these secrets securely; they will not be shown again.",
+                            path.display(),
+                            password,
+                            created.agent_token
+                        );
+                    } else {
+                        eprintln!(
+                            "Created default config '{}'.\n  browser login: process owner's system username/password (PAM)\n  agent_token: {}\nStore the agent_token securely; it will not be shown again.",
+                            path.display(),
+                            created.agent_token
+                        );
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -126,9 +134,28 @@ async fn run_server(args: server::CoordinatorArgs) {
         config_path.display()
     );
 
-    let auth = server::AuthState::new(
+    let credentials = match (
         config.server.username.clone(),
         config.server.password.clone(),
+    ) {
+        (Some(username), Some(password)) => {
+            server::LoginCredentials::Configured { username, password }
+        }
+        (None, None) => {
+            // Config parser already rejects this pair on non-Linux platforms.
+            #[cfg(target_os = "linux")]
+            {
+                server::LoginCredentials::SystemUser
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                unreachable!("config parser requires username/password on non-Linux");
+            }
+        }
+        _ => unreachable!("config parser rejects partial username/password pairs"),
+    };
+    let auth = server::AuthState::new(
+        credentials,
         config.server.agent_token.clone(),
         config.server.cookie_secure,
     )

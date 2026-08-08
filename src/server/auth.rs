@@ -38,13 +38,23 @@ const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
 const LOGIN_MAX_FAILURES_GLOBAL: u32 = 60;
 const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 
+/// How browser login passwords are verified after the username check succeeds.
+#[derive(Clone)]
+enum PasswordBackend {
+    /// Argon2id PHC hash of a password stored in the TOML config.
+    ConfiguredHash(String),
+    /// Linux PAM against the OS account running the server process.
+    #[cfg(target_os = "linux")]
+    SystemPam,
+}
+
 /// Holds hashed credentials and the durable directory used to validate opaque cookies.
 #[derive(Clone)]
 pub(crate) struct AuthState {
     username: String,
-    /// Argon2id PHC hash only — plaintext never stays in process memory after startup.
-    password_hash: String,
-    /// Stable digest of the configured password so password rotation invalidates old sessions.
+    /// Either a config password hash or Linux PAM for the process owner.
+    password_backend: PasswordBackend,
+    /// Stable digest so password rotation (configured mode) invalidates old sessions.
     credentials_fingerprint: String,
     sessions_directory: PathBuf,
     /// When true, Set-Cookie includes `Secure` so browsers only send the session over HTTPS.
@@ -52,6 +62,15 @@ pub(crate) struct AuthState {
     /// Shared secret agents must present at registration to prevent unauthenticated hijacks.
     agent_token: String,
     login_limiter: std::sync::Arc<LoginRateLimiter>,
+}
+
+/// Browser login credentials resolved from the config file (or Linux system account).
+pub(crate) enum LoginCredentials {
+    /// Explicit username/password pair from `[server]` in the TOML config.
+    Configured { username: String, password: String },
+    /// Authenticate as the process owner via Linux PAM when TOML omits credentials.
+    #[cfg(target_os = "linux")]
+    SystemUser,
 }
 
 /// Tracks recent failed logins so online guessing cannot run unbounded.
@@ -133,17 +152,46 @@ struct SessionFile {
 impl AuthState {
     /// Creates the private session directory before requests arrive so login failures are actionable.
     pub(crate) async fn new(
-        username: String,
-        password: String,
+        credentials: LoginCredentials,
         agent_token: String,
         cookie_secure: bool,
     ) -> anyhow::Result<Self> {
-        let password_hash = hash_password(&password)?;
-        // Fingerprint is independent of the per-process argon2 salt so sessions survive restarts
-        // until the operator actually changes the configured password.
-        let credentials_fingerprint = credentials_fingerprint(&password);
-        // Drop the only plaintext copy once derived secrets exist.
-        drop(password);
+        let (username, password_backend, credentials_fingerprint) = match credentials {
+            LoginCredentials::Configured { username, password } => {
+                let password_hash = hash_password(&password)?;
+                // Fingerprint is independent of the per-process argon2 salt so sessions survive
+                // restarts until the operator actually changes the configured password.
+                let fingerprint = credentials_fingerprint(&password);
+                // Drop the only plaintext copy once derived secrets exist.
+                drop(password);
+                (
+                    username,
+                    PasswordBackend::ConfiguredHash(password_hash),
+                    fingerprint,
+                )
+            }
+            #[cfg(target_os = "linux")]
+            LoginCredentials::SystemUser => {
+                // Resolve off the async runtime: passwd lookups may block on NSS.
+                let username = tokio::task::spawn_blocking(|| {
+                    let uid = nix::unistd::Uid::current();
+                    nix::unistd::User::from_uid(uid)
+                        .map_err(|error| {
+                            anyhow::anyhow!("failed to look up process user: {error}")
+                        })?
+                        .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))
+                        .map(|user| user.name)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to join process-user lookup: {error}")
+                })??;
+                // Fixed marker: OS password changes do not bulk-invalidate PAM sessions;
+                // sessions still expire via SESSION_LIFETIME.
+                let fingerprint = credentials_fingerprint("pam-system-auth-v1");
+                (username, PasswordBackend::SystemPam, fingerprint)
+            }
+        };
 
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             anyhow::anyhow!("HOME is not set; cannot locate the session directory")
@@ -159,7 +207,7 @@ impl AuthState {
 
         let auth = Self {
             username,
-            password_hash,
+            password_backend,
             credentials_fingerprint: credentials_fingerprint.clone(),
             sessions_directory: sessions_directory.clone(),
             cookie_secure,
@@ -283,9 +331,38 @@ impl AuthState {
         Ok(())
     }
 
-    /// Verifies a candidate password against the argon2 hash without ever comparing plaintext.
-    fn verify_password(&self, candidate: &str) -> bool {
-        verify_password_hash(candidate, &self.password_hash)
+    /// Verifies username + password against the configured backend.
+    ///
+    /// Always runs the password check (even on username mismatch) so timing does not
+    /// reveal which half of the credential pair was wrong for configured auth. PAM
+    /// still runs on username mismatch against the real process user for the same reason.
+    async fn verify_login(&self, username: &str, password: &str) -> bool {
+        let username_ok = constant_time_eq(username, &self.username);
+        let password_ok = match &self.password_backend {
+            PasswordBackend::ConfiguredHash(password_hash) => {
+                verify_password_hash(password, password_hash)
+            }
+            #[cfg(target_os = "linux")]
+            PasswordBackend::SystemPam => {
+                let password = password.to_string();
+                match tokio::task::spawn_blocking(move || {
+                    super::pam::verify_current_user_password(&password)
+                })
+                .await
+                {
+                    Ok(Ok(valid)) => valid,
+                    Ok(Err(error)) => {
+                        log!(Level::Error, "PAM authentication failed: {error}");
+                        false
+                    }
+                    Err(error) => {
+                        log!(Level::Error, "PAM authentication task failed: {error}");
+                        false
+                    }
+                }
+            }
+        };
+        username_ok && password_ok
     }
 }
 
@@ -426,12 +503,13 @@ pub(crate) async fn login_handler(
             .into_response();
     }
 
-    // Always argon2-verify the password (even on username mismatch) so timing does not
+    // Backend always checks the password (even on username mismatch) so timing does not
     // reveal which half of the credential pair was wrong.
-    let username_ok = constant_time_eq(&request.username, &state.auth.username);
-    let password_ok = state.auth.verify_password(&request.password);
-
-    if !(username_ok && password_ok) {
+    if !state
+        .auth
+        .verify_login(&request.username, &request.password)
+        .await
+    {
         state.auth.login_limiter.record_failure(client_ip);
         return (
             StatusCode::UNAUTHORIZED,

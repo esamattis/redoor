@@ -60,13 +60,14 @@ pub(crate) struct CoordinatorArgs {
     #[arg(long)]
     pub(crate) log: Option<String>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates
-    /// `~/.config/redoor/config.toml`. Its `[server]` table contains required
-    /// login credentials, while each optional `[[agents]]` entry is either an
-    /// ssh-backed agent (with a `target` host) that connects back to this
-    /// server through a reverse tunnel, or a local agent (with `local = true`)
-    /// that the server launches as a plain `redoor agent` child process.
-    /// Mixing both in the same file is supported, so a single server process
-    /// can bring up an entire fleet — remote hosts and a local agent —
+    /// `~/.config/redoor/config.toml`. Its `[server]` table requires
+    /// `agent_token`; browser `username`/`password` may be omitted together on
+    /// Linux to use PAM system-account login. Each optional `[[agents]]` entry
+    /// is either an ssh-backed agent (with a `target` host) that connects back
+    /// to this server through a reverse tunnel, or a local agent (with
+    /// `local = true`) that the server launches as a plain `redoor agent` child
+    /// process. Mixing both in the same file is supported, so a single server
+    /// process can bring up an entire fleet — remote hosts and a local agent —
     /// without separate `redoor ssh` / `redoor agent` invocations per host.
     #[arg(long)]
     pub(crate) config: Option<String>,
