@@ -1,7 +1,11 @@
 
-Rust Tokio app using Axum and the Ractor Actor framework.
+# Tools
 
-Architecture:
+- Node.js, mise, pnpm
+- Rust, Tokio, Axum
+
+
+# Architecture
 
 - REST API and Websocket server
 - redoor agents connects to the server via Websockets
@@ -10,8 +14,7 @@ Architecture:
 - Control commands should stay response even during long streaming downloads or uploads.
 
 
-
-Guidelines
+# Guidelines
 
 - Always use async apis from tokio instead of sync apis instead
 - Always comments to functions, structs, enums and methods
@@ -30,6 +33,7 @@ Guidelines
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
 - If you are asked to make a code review: Write the negative findings into a `<CODEREVIEW>comment</CODEREVIEW>` right into the code files
+
 
 
 # UI
