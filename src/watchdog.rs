@@ -354,7 +354,7 @@ mod tests {
         // hanging the suite. The default test timeout is generous
         // (60s) and the signal is delivered synchronously, so this
         // resolves immediately in practice.
-        let _ = tokio::time::timeout(Duration::from_secs(1), looked_up.stale_signal.notified())
+        tokio::time::timeout(Duration::from_secs(1), looked_up.stale_signal.notified())
             .await
             .expect("stale_signal.notified() should resolve after signal_stale()");
     }

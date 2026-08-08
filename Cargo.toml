@@ -8,29 +8,29 @@ name = "redoor"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1.42", features = ["full"] }
-axum = { version = "0.8", features = ["ws"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tokio-tungstenite = "0.26"
-futures-util = "0.3"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["serde", "v4"] }
-chrono = "0.4"
-ts-rs = "11.1.0"
-sysinfo = "0.33"
-tower-http = { version = "0.6", features = ["cors"] }
-nix = { version = "0.30.1", features = ["user"] }
-fastrand = "2.0"
-async-stream = "0.3"
-bytes = "1.0"
+tokio = { version = "1.53.1", features = ["full"] }
+axum = { version = "0.8.9", features = ["ws"] }
+axum-extra = { version = "0.12.6", features = ["typed-header"] }
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+uuid = { version = "1.24.0", features = ["serde", "v4"] }
+chrono = "0.4.45"
+ts-rs = "12.0.1"
+sysinfo = "0.39.6"
+tower-http = { version = "0.7.0", features = ["cors"] }
+nix = { version = "0.31.3", features = ["user"] }
+fastrand = "2.5.0"
+async-stream = "0.3.6"
+bytes = "1.12.1"
 mime_guess = "2.0.5"
-headers = "0.4"
-tar = "0.4.45"
-clap = { version = "4.6.0", features = ["derive", "env"] }
-anyhow = "1.0.102"
-thiserror = "2.0.18"
+headers = "0.4.1"
+tar = "0.4.46"
+clap = { version = "4.6.6", features = ["derive", "env"] }
+anyhow = "1.0.104"
+thiserror = "2.0.20"
 reqwest = { version = "0.13.4", features = ["stream"] }
 axum-embed = "0.1.0"
-rust-embed = "8.11"
-toml_edit = "0.25.12"
+rust-embed = "8.12.0"
+toml_edit = "0.25.13"

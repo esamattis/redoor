@@ -247,7 +247,7 @@ pub(crate) fn transferred_bytes(state: &RouterState, transfer_id: TransferId) ->
 /// Returns all progress entries sorted newest-first for REST and UI consumers.
 pub(crate) fn list_transfer_progress(state: &RouterState) -> TransferProgressListResponse {
     let mut transfers: Vec<_> = state.progress.entries.values().cloned().collect();
-    transfers.sort_by(|left, right| right.request_id.cmp(&left.request_id));
+    transfers.sort_by_key(|transfer| std::cmp::Reverse(transfer.request_id));
     TransferProgressListResponse { transfers }
 }
 

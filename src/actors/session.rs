@@ -207,9 +207,7 @@ impl SessionRuntime {
                 }
             },
             WsMessage::Binary(bytes) => {
-                if !self.handle_binary_message(bytes.to_vec()).await {
-                    return false;
-                }
+                return self.handle_binary_message(bytes.to_vec()).await;
             }
             _ => {}
         }

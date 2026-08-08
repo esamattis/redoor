@@ -111,11 +111,11 @@ async fn run_server(args: server::CoordinatorArgs) {
     // lifetime. A duplicate agent name (e.g. two [[agents]] entries
     // resolving to the same default key) is fatal at startup so the
     // operator notices the misconfiguration immediately.
-    if let Some(config) = &config {
-        if let Err(error) = server::spawn_agents(&config.agents, port, &watchdog_registry) {
-            eprintln!("Failed to start agent supervisors: {error}");
-            std::process::exit(1);
-        }
+    if let Some(config) = &config
+        && let Err(error) = server::spawn_agents(&config.agents, port, &watchdog_registry)
+    {
+        eprintln!("Failed to start agent supervisors: {error}");
+        std::process::exit(1);
     }
 
     axum::serve(listener, app).await.unwrap();
