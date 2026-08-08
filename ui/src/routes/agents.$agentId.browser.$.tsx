@@ -1,5 +1,5 @@
 import React from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
     createFileRoute,
     Link,
@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
+import { atomWithLocalStorage } from "../utils/local-storage-atom";
 import { formatSize } from "../utils/path";
 import {
     type Agent,
@@ -50,6 +51,12 @@ type CreateDirectoryState =
     | { type: "idle" }
     | { type: "creating" }
     | { type: "error"; message: string };
+
+/** Keeps the hidden-file visibility preference consistent across reloads. */
+const showHiddenFilesAtom = atomWithLocalStorage(
+    "redoor.browser.show-hidden-files",
+    true,
+);
 
 function getImmediateParentPath(path: string): string | null {
     const normalizedPath = path.replace(/\/+$/, "");
@@ -114,7 +121,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { agent, agentId, agentName, path, lsResult } = data;
-    const [showHiddenFiles, setShowHiddenFiles] = React.useState(true);
+    const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
 
     const parentPath = getImmediateParentPath(path);
 
