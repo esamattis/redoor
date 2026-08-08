@@ -1,4 +1,5 @@
 mod agent_helpers;
+mod agent_logs;
 mod agents;
 mod auth;
 mod config;
@@ -15,6 +16,7 @@ mod terminals;
 mod transfers;
 mod ui;
 mod watchdog;
+mod websocket_security;
 mod ws;
 
 pub(crate) use auth::{AuthState, LoginCredentials};

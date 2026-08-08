@@ -1,10 +1,12 @@
-use super::{agent_helpers::require_absolute_path, state::ServerState};
+use super::{
+    agent_helpers::require_absolute_path, state::ServerState, websocket_security::is_same_origin,
+};
 use axum::{
     extract::{
         Path, Query, State as AxumState,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures_util::{
@@ -93,32 +95,6 @@ pub(crate) async fn agent_terminal_websocket_handler(
             authenticate_agent_socket(socket, terminal_id, state.terminal_registry)
         })
         .into_response()
-}
-
-/// Enforces the browser Origin authority against the HTTP Host authority.
-fn is_same_origin(headers: &HeaderMap) -> bool {
-    let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let Some(origin) = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    else {
-        // Browser WebSocket handshakes always carry Origin; non-browser API
-        // clients have no ambient browser credentials to protect here.
-        return true;
-    };
-    let Ok(origin) = origin.parse::<axum::http::Uri>() else {
-        return false;
-    };
-    matches!(origin.scheme_str(), Some("http" | "https"))
-        && origin
-            .authority()
-            .map(|authority| authority.as_str().eq_ignore_ascii_case(host))
-            .unwrap_or(false)
 }
 
 /// Registers setup before notifying the authoritative agent control socket.
@@ -370,21 +346,4 @@ async fn forward_agent_to_browser(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_same_origin_authority() {
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, "localhost:3000".parse().unwrap());
-        headers.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
-        // A matching browser authority is permitted even though the schemes differ from WS.
-        assert!(is_same_origin(&headers));
-        headers.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
-        // A cross-site browser cannot use ambient access to open a remote shell.
-        assert!(!is_same_origin(&headers));
-    }
 }

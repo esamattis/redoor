@@ -30,7 +30,7 @@ import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
-import type { ServerLogEvent } from "../../bindings/ServerLogEvent";
+import type { LogEvent } from "../../bindings/LogEvent";
 
 export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
@@ -51,7 +51,7 @@ export type {
     ServerAuthMode,
     ServerBuildMode,
     ReloadConfigResponse,
-    ServerLogEvent,
+    LogEvent,
     AgentConnectionStatus,
     StartAgentResponse,
     ShutdownAgentResponse,
@@ -325,6 +325,16 @@ export class Agent {
     /** Returns a browser URL that keeps filesystem separators readable. */
     getBrowserUrl(path: string): string {
         return getBrowserUrl(this.info.id, path);
+    }
+
+    /** Builds the authenticated browser endpoint for one ephemeral agent log tunnel. */
+    getLogsWebSocketUrl(): string {
+        const url = new URL(
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/logs/ws`,
+            this.baseUrl,
+        );
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        return url.toString();
     }
 
     /** Builds one terminal socket with the directory captured by its UI tab. */

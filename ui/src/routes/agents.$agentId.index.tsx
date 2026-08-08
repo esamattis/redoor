@@ -16,6 +16,7 @@ import {
     AlertCircle,
     FolderOpen,
     LoaderCircle,
+    ScrollText,
 } from "lucide-react";
 import { getBrowserUrl, type Agent } from "../api-client";
 import type { AgentDetailsResponse } from "../../../bindings/AgentDetailsResponse";
@@ -254,15 +255,24 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             <HardDrive className="h-8 w-8 text-blue-400" />
                             {props.details.name}
                         </h1>
-                        <Link
-                            to={getBrowserUrl(
-                                props.details.id,
-                                props.details.cwd,
-                            )}
-                            className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
-                        >
-                            <FolderOpen className="h-4 w-4" /> Browse Files
-                        </Link>
+                        <div className="flex items-center gap-2">
+                            <Link
+                                to="/agents/$agentId/logs"
+                                params={{ agentId: props.details.id }}
+                                className="flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
+                            >
+                                <ScrollText className="h-4 w-4" /> View logs
+                            </Link>
+                            <Link
+                                to={getBrowserUrl(
+                                    props.details.id,
+                                    props.details.cwd,
+                                )}
+                                className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+                            >
+                                <FolderOpen className="h-4 w-4" /> Browse Files
+                            </Link>
+                        </div>
                     </div>
                     <p className="mt-1 text-sm text-slate-500">
                         ID: {props.details.id}

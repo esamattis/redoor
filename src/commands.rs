@@ -75,32 +75,6 @@ pub struct ReloadConfigResponse {
     pub reloaded: bool,
 }
 
-/// Carries bounded history and live updates over the route-scoped server-log WebSocket.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum ServerLogEvent {
-    /// Replaces the browser's rolling window after an initial connection or reconnect.
-    Snapshot {
-        /// Preserves chronological source order so the newest retained entry renders last.
-        entries: Vec<String>,
-        /// Explains whether persistent history was available without exposing a server path.
-        file_logging_enabled: bool,
-    },
-    /// Appends one logger record accepted after the snapshot's exact cutoff.
-    Entry {
-        /// Uses the logger's formatted output so file and live rendering stay consistent.
-        entry: String,
-    },
-    /// Tells a slow browser to reconnect because bounded delivery intentionally dropped records.
-    Lagged {
-        /// Quantifies the missed records for diagnostics while remaining safe for JavaScript.
-        #[ts(type = "number")]
-        skipped: u64,
-    },
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {

@@ -495,8 +495,13 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 fn is_public_path(path: &str) -> bool {
     let is_agent_terminal_socket =
         path.starts_with("/api/v1/terminals/") && path.ends_with("/agent/ws");
+    let is_agent_log_socket = path
+        .strip_prefix("/api/v1/log-streams/")
+        .and_then(|remainder| remainder.strip_suffix("/agent/ws"))
+        .is_some_and(|stream_id| !stream_id.is_empty() && !stream_id.contains('/'));
     path == "/ws"
         || is_agent_terminal_socket
+        || is_agent_log_socket
         || path == "/api/v1/login"
         || path == "/api/v1/logout"
         || !path.starts_with("/api/")
@@ -631,4 +636,24 @@ pub(crate) async fn logout_handler(
         HeaderValue::from_str(&cookie).expect("generated cookie contains only safe ASCII"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_public_path;
+
+    /// Protects the dedicated agent exception without exposing browser or neighboring API routes.
+    #[test]
+    fn only_exact_agent_log_socket_shape_is_public() {
+        // A dedicated agent socket must reach its one-time-token handshake without a browser cookie.
+        assert!(is_public_path(
+            "/api/v1/log-streams/00000000-0000-0000-0000-000000000001/agent/ws"
+        ));
+        // The browser-owned endpoint must remain protected by normal session authentication.
+        assert!(!is_public_path("/api/v1/agents/agent-1/logs/ws"));
+        // Nested paths cannot exploit broad prefix/suffix matching to bypass authentication.
+        assert!(!is_public_path("/api/v1/log-streams/not/a-stream/agent/ws"));
+        // Unrelated resources under the log-stream namespace remain private.
+        assert!(!is_public_path("/api/v1/log-streams/example/status"));
+    }
 }

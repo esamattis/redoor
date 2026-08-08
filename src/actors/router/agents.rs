@@ -1,8 +1,8 @@
 use super::RouterError;
 use super::cleanup;
 use super::messages::{
-    AgentListEntry, ApplyManagedLifecycleRequest, ExecuteCommandRequest, OpenTerminalRequest,
-    RegisterAgentRequest, RegisterManagedAgentRequest,
+    AgentListEntry, ApplyManagedLifecycleRequest, ExecuteCommandRequest, OpenAgentLogStreamRequest,
+    OpenTerminalRequest, RegisterAgentRequest, RegisterManagedAgentRequest,
 };
 use super::state::{AgentConnection, KnownAgent, RouterState};
 use super::ui;
@@ -167,6 +167,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
         // belonged to the old connection before the new one takes over.
         cleanup::cleanup_agent_requests(state, &old_agent_id).await;
         state.terminal_registry.remove_agent_pending(&old_agent_id);
+        state.log_registry.remove_agent(&old_agent_id);
     }
 
     let agent_id = request.agent_id.clone();
@@ -267,6 +268,7 @@ pub(crate) async fn apply_managed_lifecycle(
             });
             cleanup::cleanup_agent_requests(state, &agent_id).await;
             state.terminal_registry.remove_agent_pending(&agent_id);
+            state.log_registry.remove_agent(&agent_id);
         }
     }
     ui::notify_refresh(state);
@@ -321,6 +323,25 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
             format!("Agent not found: {}", request.agent_id),
         ));
     }
+}
+
+/// Queues only the log bootstrap secret on the existing control connection.
+pub(crate) fn open_log_stream(state: &RouterState, request: OpenAgentLogStreamRequest) {
+    let result = state
+        .agents
+        .by_id
+        .get(&request.agent_id)
+        .filter(|connection| {
+            connection.send_message(Message::LogStreamOpen {
+                log_stream_id: request.log_stream_id.clone(),
+                token: request.token.clone(),
+            })
+        })
+        .map(|_| ())
+        .ok_or_else(|| RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        });
+    let _ = request.reply.send(result);
 }
 
 /// Queues only the terminal bootstrap secret on the existing control connection.

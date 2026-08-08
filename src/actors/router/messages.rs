@@ -3,6 +3,7 @@ use super::state::CopyContentKind;
 use crate::commands::{
     AgentConnectionStatus, Command, CommandResult, TransferProgressListResponse, UiEvent,
 };
+use crate::log_protocol::LogStreamId;
 use crate::terminal_protocol::{TerminalId, TerminalSize};
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use crate::watchdog::WatchdogSnapshot;
@@ -254,6 +255,14 @@ pub struct OpenTerminalRequest {
     pub reply: RouterReply<Result<(), RouterError>>,
 }
 
+/// Requests a connected agent to establish one dedicated log socket.
+pub struct OpenAgentLogStreamRequest {
+    pub agent_id: AgentId,
+    pub log_stream_id: LogStreamId,
+    pub token: String,
+    pub reply: RouterReply<Result<(), RouterError>>,
+}
+
 /// Enumerates router work so live streams and lifecycle controls share explicit lanes.
 pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
@@ -292,6 +301,7 @@ pub enum RouterMsg {
     StartCopyRest(StartCopyRequest),
     TransferProgressUpdate(TransferProgressUpdateRequest),
     OpenTerminal(OpenTerminalRequest),
+    OpenAgentLogStream(OpenAgentLogStreamRequest),
     CheckPendingUiRefresh,
     Shutdown,
 }

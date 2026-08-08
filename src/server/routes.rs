@@ -5,6 +5,7 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 
 use super::{
+    agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agents::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
         ls_agent_handler, metadata_agent_handler, server_info_handler, shutdown_agent_handler,
@@ -32,6 +33,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route("/api/v1/logout", post(logout_handler))
         .route("/api/v1/ui/ws", get(ui_websocket_handler))
         .route("/api/v1/server/logs/ws", get(server_logs_websocket_handler))
+        .route(
+            "/api/v1/agents/{agent}/logs/ws",
+            get(browser_agent_logs_websocket_handler),
+        )
+        .route(
+            "/api/v1/log-streams/{log_stream_id}/agent/ws",
+            get(agent_logs_websocket_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/terminal/ws",
             get(browser_terminal_websocket_handler),

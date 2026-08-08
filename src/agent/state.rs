@@ -1,5 +1,6 @@
 use clap::Args;
 use redoor::{
+    log_protocol::LogStreamId,
     streaming,
     terminal_protocol::TerminalId,
     types::{AgentId, RequestId},
@@ -202,6 +203,74 @@ impl ActiveTerminals {
     }
 }
 
+/// Holds only the cancellation signal needed to stop one ephemeral log stream.
+#[derive(Clone)]
+pub(crate) struct LogStreamSessionHandle {
+    pub(crate) cancel_sender: watch::Sender<bool>,
+}
+
+/// Tracks log stream cancellation without retaining logger receivers or sockets.
+#[derive(Clone, Default)]
+pub(crate) struct ActiveLogStreams {
+    inner: Arc<Mutex<HashMap<LogStreamId, LogStreamSessionHandle>>>,
+}
+
+impl ActiveLogStreams {
+    const MAX_ACTIVE: usize = 8;
+
+    /// Creates the shared log stream registry used by control and dedicated tasks.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a stream only when its identifier is fresh and the task cap has room.
+    pub(crate) fn insert_if_absent(
+        &self,
+        log_stream_id: LogStreamId,
+        handle: LogStreamSessionHandle,
+    ) -> bool {
+        let mut streams = self
+            .inner
+            .lock()
+            .expect("active log streams mutex poisoned");
+        if streams.contains_key(&log_stream_id) || streams.len() >= Self::MAX_ACTIVE {
+            return false;
+        }
+        streams.insert(log_stream_id, handle);
+        true
+    }
+
+    /// Removes only the completed stream so concurrent viewers keep their cancellation handles.
+    pub(crate) fn remove(&self, log_stream_id: &LogStreamId) {
+        self.inner
+            .lock()
+            .expect("active log streams mutex poisoned")
+            .remove(log_stream_id);
+    }
+
+    /// Signals every dedicated task before forgetting handles on authoritative disconnect.
+    pub(crate) fn clear(&self) {
+        let mut streams = self
+            .inner
+            .lock()
+            .expect("active log streams mutex poisoned");
+        for stream in streams.values() {
+            let _ = stream.cancel_sender.send(true);
+        }
+        streams.clear();
+    }
+
+    /// Counts active handles only for deterministic cleanup tests.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("active log streams mutex poisoned")
+            .len()
+    }
+}
+
+/// Owns mutable control-plane state while dedicated data-plane tasks use cloned handles.
 pub(crate) struct AgentState {
     pub(crate) agent_id: AgentId,
     pub(crate) agent_name: String,
@@ -216,6 +285,7 @@ pub(crate) struct AgentState {
     pub(crate) active_uploads: ActiveUploads,
     pub(crate) active_downloads: ActiveDownloads,
     pub(crate) active_terminals: ActiveTerminals,
+    pub(crate) active_log_streams: ActiveLogStreams,
 }
 
 impl AgentState {
@@ -239,6 +309,7 @@ impl AgentState {
             active_uploads: ActiveUploads::new(),
             active_downloads: ActiveDownloads::new(),
             active_terminals: ActiveTerminals::new(),
+            active_log_streams: ActiveLogStreams::new(),
         }
     }
 
@@ -246,5 +317,73 @@ impl AgentState {
     pub(crate) fn advance_connection_generation(&mut self) -> u64 {
         self.connection_generation = self.connection_generation.wrapping_add(1);
         self.connection_generation
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    /// Protects authoritative disconnect cleanup across every active dedicated log task.
+    #[test]
+    fn clearing_log_streams_signals_all_tasks_and_empties_registry() {
+        let streams = ActiveLogStreams::new();
+        let first_id = LogStreamId(Uuid::from_u128(1));
+        let second_id = LogStreamId(Uuid::from_u128(2));
+        let (first_sender, first_receiver) = watch::channel(false);
+        let (second_sender, second_receiver) = watch::channel(false);
+        // Both unique sessions must fit under the bounded active-task cap.
+        assert!(streams.insert_if_absent(
+            first_id,
+            LogStreamSessionHandle {
+                cancel_sender: first_sender
+            },
+        ));
+        // A second browser viewer must remain independently tracked.
+        assert!(streams.insert_if_absent(
+            second_id,
+            LogStreamSessionHandle {
+                cancel_sender: second_sender
+            },
+        ));
+
+        streams.clear();
+
+        // Clearing must synchronously publish cancellation before handles are forgotten.
+        assert!(*first_receiver.borrow());
+        // Every tracked task, not only the first, must receive the disconnect signal.
+        assert!(*second_receiver.borrow());
+        // No stale active-session capacity may remain after cleanup.
+        assert_eq!(streams.len(), 0);
+    }
+
+    /// Protects completion cleanup from canceling or removing another browser's stream.
+    #[test]
+    fn removing_completed_log_stream_preserves_other_sessions() {
+        let streams = ActiveLogStreams::new();
+        let first_id = LogStreamId(Uuid::from_u128(1));
+        let second_id = LogStreamId(Uuid::from_u128(2));
+        let (first_sender, _first_receiver) = watch::channel(false);
+        let (second_sender, second_receiver) = watch::channel(false);
+        assert!(streams.insert_if_absent(
+            first_id.clone(),
+            LogStreamSessionHandle {
+                cancel_sender: first_sender
+            },
+        ));
+        assert!(streams.insert_if_absent(
+            second_id,
+            LogStreamSessionHandle {
+                cancel_sender: second_sender
+            },
+        ));
+
+        streams.remove(&first_id);
+
+        // Task completion must remove exactly its own handle.
+        assert_eq!(streams.len(), 1);
+        // Removing a sibling must not spuriously cancel the still-active viewer.
+        assert!(!*second_receiver.borrow());
     }
 }

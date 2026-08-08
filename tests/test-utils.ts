@@ -345,6 +345,7 @@ export async function startServerAndAgent(options: {
 }): Promise<{
     serverPort: number;
     serverPid: number;
+    agentPid: number;
     apiClient: ApiClient;
     testAgent: Agent;
     wsUrl: string;
@@ -370,7 +371,7 @@ export async function startServerAndAgent(options: {
         10000,
     );
 
-    options.processManager.spawnAgent({
+    const agentPid = options.processManager.spawnAgent({
         wsAddress: wsUrl,
         name: options.agentName,
         cwd: options.agentCwd,
@@ -388,6 +389,7 @@ export async function startServerAndAgent(options: {
     return {
         serverPort,
         serverPid,
+        agentPid,
         apiClient,
         testAgent,
         wsUrl,

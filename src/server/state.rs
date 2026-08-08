@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Args;
 use redoor::actors;
 use redoor::commands::ServerAuthMode;
+use redoor::log_registry::LogRegistry;
 use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
 
@@ -18,6 +19,8 @@ pub(crate) struct ServerState {
     pub(crate) watchdog_registry: WatchdogRegistry,
     /// Pairs short-lived browser and dedicated agent terminal connections.
     pub(crate) terminal_registry: TerminalRegistry,
+    /// Pairs short-lived browser and dedicated agent log connections.
+    pub(crate) log_registry: LogRegistry,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
     /// Absolute path of the TOML config loaded at process start (for the server
@@ -35,6 +38,7 @@ impl ServerState {
         router_ref: actors::router::RouterHandle,
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
+        log_registry: LogRegistry,
         auth: AuthState,
         config_path: PathBuf,
         auth_mode: ServerAuthMode,
@@ -44,6 +48,7 @@ impl ServerState {
             router_ref,
             watchdog_registry,
             terminal_registry,
+            log_registry,
             auth,
             config_path,
             auth_mode,

@@ -1,4 +1,4 @@
-use redoor::terminal_protocol::TerminalId;
+use redoor::{log_protocol::LogStreamId, terminal_protocol::TerminalId};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Internal events consumed by the single agent runtime actor.
@@ -24,6 +24,9 @@ pub(crate) enum AgentMsg {
     },
     TerminalFinished {
         terminal_id: TerminalId,
+    },
+    LogStreamFinished {
+        log_stream_id: LogStreamId,
     },
     ExitWithError,
 }

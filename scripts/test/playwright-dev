@@ -5,7 +5,7 @@ set -eu
 cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 
 rm -f log/playwright-*.log
-node -e 'const fs = require("node:fs"); const lines = Array.from({ length: 510 }, (_, index) => `[history-fixture] ${String(index + 1).padStart(3, "0")}`); fs.writeFileSync("log/playwright-redoor.log", `${lines.join("\n")}\n`);'
+node -e 'const fs = require("node:fs"); const lines = Array.from({ length: 510 }, (_, index) => `[history-fixture] ${String(index + 1).padStart(3, "0")}`); fs.writeFileSync("log/playwright-redoor.log", `${lines.join("\n")}\n`); const agentLines = Array.from({ length: 510 }, (_, index) => `[agent-history-fixture] ${String(index + 1).padStart(3, "0")}`); fs.writeFileSync("log/playwright-agent1_src.log", `${agentLines.join("\n")}\n`);'
 REDOOR_PORT="$(node -e "const fs = require('node:fs'); process.stdout.write(String(JSON.parse(fs.readFileSync('test_ports.json', 'utf8')).playwright))")"
 export REDOOR_PORT
 # The UI is now embedded in the redoor binary, so a single server

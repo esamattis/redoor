@@ -9,8 +9,9 @@ mod ui;
 
 pub use error::RouterError;
 pub use messages::{
-    ApplyManagedLifecycleRequest, ExecuteCommandRequest, ExecuteStreamRequest, OpenTerminalRequest,
-    RegisterAgentRequest, RegisterManagedAgentRequest, RegisterUiSubscriberRequest, RouteResponse,
+    ApplyManagedLifecycleRequest, ExecuteCommandRequest, ExecuteStreamRequest,
+    OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
+    RegisterManagedAgentRequest, RegisterUiSubscriberRequest, RouteResponse,
     RouteStreamChunkRequest, RouterMsg, SendStreamChunkRequest, StartCopyRequest,
     StartUploadRequest, TransferProgressUpdateRequest,
 };
@@ -18,6 +19,7 @@ pub use state::CopyContentKind;
 
 use crate::commands::CommandResult;
 use crate::log;
+use crate::log_registry::LogRegistry;
 use crate::logging::Level;
 use crate::terminal_registry::TerminalRegistry;
 use crate::types::RequestId;
@@ -91,6 +93,7 @@ pub enum RouterCallError {
 /// Spawns the router task and returns its handle plus join handle.
 pub fn spawn_router(
     terminal_registry: TerminalRegistry,
+    log_registry: LogRegistry,
 ) -> (RouterHandle, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel::<RouterMsg>(ROUTER_MAILBOX_CAPACITY);
     let router_handle = RouterHandle::new(sender);
@@ -98,6 +101,7 @@ pub fn spawn_router(
         receiver,
         router_handle.clone(),
         terminal_registry,
+        log_registry,
     ));
     (router_handle, task_handle)
 }
@@ -169,11 +173,13 @@ async fn run_router(
     mut receiver: mpsc::Receiver<RouterMsg>,
     router_handle: RouterHandle,
     terminal_registry: TerminalRegistry,
+    log_registry: LogRegistry,
 ) {
     log!(Level::Info, "Router task started");
     let mut state = RouterState::new(
         ui::start_refresh_check_task(router_handle.clone()),
         terminal_registry,
+        log_registry,
     );
 
     while let Some(message) = receiver.recv().await {
@@ -220,6 +226,7 @@ async fn run_router(
                     ui::notify_refresh(&mut state);
                     cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
                     state.terminal_registry.remove_agent_pending(&agent_id);
+                    state.log_registry.remove_agent(&agent_id);
                 } else {
                     log!(
                         Level::Debug,
@@ -290,6 +297,9 @@ async fn run_router(
             RouterMsg::OpenTerminal(request) => {
                 agents::open_terminal(&state, request);
             }
+            RouterMsg::OpenAgentLogStream(request) => {
+                agents::open_log_stream(&state, request);
+            }
             RouterMsg::CheckPendingUiRefresh => {
                 ui::check_pending_refresh(&mut state);
             }
@@ -319,7 +329,7 @@ mod tests {
     async fn slow_upload_send_does_not_block_unrelated_router_work() {
         crate::logging::init(None).await;
 
-        let (router_ref, router_task) = spawn_router(TerminalRegistry::new());
+        let (router_ref, router_task) = spawn_router(TerminalRegistry::new(), LogRegistry::new());
 
         let (text_tx, _text_rx) = mpsc::unbounded_channel::<WsMessage>();
         let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
