@@ -240,7 +240,7 @@ describe("Agents API", () => {
 
         await waitForLogMessage(
             serverProcess,
-            /Agent registered: agent_id=duplicate-test-agent/,
+            /Transfer socket registered: agent_id=duplicate-test-agent,/,
         );
 
         const agentsAfterFirst = await apiClient.listAgents();

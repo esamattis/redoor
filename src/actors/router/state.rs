@@ -8,17 +8,32 @@ use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// Bounded payload transport attached to one authoritative control connection.
 #[derive(Clone, Debug)]
-/// Registration metadata and websocket send handles for one connected agent.
+pub struct TransferConnection {
+    /// Distinguishes the current transfer socket from stale teardown events.
+    pub socket_id: SocketId,
+    /// Keeps a slow transfer peer from causing unbounded payload buffering.
+    pub outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
+    /// Lets control or transfer replacement stop both socket halves promptly.
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone, Debug)]
+/// Registration metadata and control websocket handle for one connected agent.
 pub struct AgentConnection {
+    /// Stable identity used in transfer readiness errors and routing logs.
+    pub agent_id: AgentId,
     /// Human-readable name shown in the UI.
     pub agent_name: String,
     /// Unique websocket session identifier for logging.
     pub socket_id: SocketId,
     /// Unbounded control-message lane for websocket text frames.
     pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
-    /// Bounded binary-message lane for websocket streaming frames.
-    pub outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
+    /// Secret accepted only while this control connection remains authoritative.
+    pub transfer_token: String,
+    /// Payload transport may be absent briefly while the agent reconnects it.
+    pub transfer: Option<TransferConnection>,
     /// Registration timestamp stored by the router.
     pub connected_at: UnixTimestampSeconds,
     /// Operating system string reported at registration time.
@@ -91,6 +106,10 @@ pub struct DirectUpload {
     /// Optional final-result channel for REST uploads that expect completion.
     pub(crate) completion_sender:
         Option<tokio::sync::oneshot::Sender<Result<CommandResult, RouterError>>>,
+    /// Delays the HTTP body producer until the upload worker exists on the other socket.
+    pub(crate) start_sender: Option<tokio::sync::oneshot::Sender<Result<RequestId, RouterError>>>,
+    /// Records the cross-socket setup barrier for routing and diagnostics.
+    pub(crate) ready: bool,
     /// Whether the REST side has already requested cancellation.
     pub(crate) canceled_by_rest: bool,
 }
@@ -170,6 +189,8 @@ pub(crate) struct CopyRequest {
     pub(crate) execution: CopyExecution,
     /// Streaming/content mode for command and payload validation.
     pub(crate) content_kind: CopyContentKind,
+    /// Defers source production until the destination upload worker acknowledges readiness.
+    pub(crate) pending_source_command: Option<Command>,
 }
 
 #[derive(Default)]

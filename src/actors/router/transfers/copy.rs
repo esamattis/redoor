@@ -16,7 +16,7 @@ use crate::types::{AgentId, ChunkIndex, RequestId, TransferId};
 
 /// Reframes one source chunk into destination-sized frames and forwards them incrementally.
 pub(crate) async fn send_framed_copy_chunk(
-    agent_connection: &super::super::state::AgentConnection,
+    transfer_connection: &super::super::state::TransferConnection,
     chunk_index: &mut ChunkIndex,
     request: StreamChunkFrameRequest<'_>,
 ) -> (usize, bool) {
@@ -27,7 +27,7 @@ pub(crate) async fn send_framed_copy_chunk(
 
     for chunk in frames.by_ref() {
         emitted += 1;
-        if !agent_connection.send_binary(chunk.to_bytes()).await {
+        if !transfer_connection.send_binary(chunk.to_bytes()).await {
             send_succeeded = false;
             break;
         }
@@ -95,6 +95,7 @@ pub(crate) fn abort_copy_upload(
             agent_id: copy_request.dest_agent_id.to_string(),
         });
     };
+    let transfer_connection = agent_connection.transfer_connection()?;
 
     let dest_request_id = *dest_request_id;
     let starting_chunk_index = *next_chunk_index;
@@ -103,7 +104,7 @@ pub(crate) fn abort_copy_upload(
     tokio::spawn(async move {
         let mut next_chunk_index = starting_chunk_index;
         let _ = send_framed_copy_chunk(
-            &agent_connection,
+            &transfer_connection,
             &mut next_chunk_index,
             StreamChunkFrameRequest::new(dest_request_id, error_message.as_bytes())
                 .payload_kind(payload_kind)
@@ -122,6 +123,17 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
 
     match (source_agent_connection, dest_agent_connection) {
         (Some(source_agent_connection), Some(dest_agent_connection)) => {
+            if request.source_agent_id != request.dest_agent_id {
+                if let Err(error) = source_agent_connection.transfer_connection() {
+                    let _ = request.reply.send(Err(error));
+                    return;
+                }
+                if let Err(error) = dest_agent_connection.transfer_connection() {
+                    let _ = request.reply.send(Err(error));
+                    return;
+                }
+            }
+
             let public_request_id = state.next_id().as_transfer_id();
 
             progress::record_copy_start(
@@ -153,6 +165,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                             request_id: local_request_id,
                         },
                         content_kind: request.content_kind,
+                        pending_source_command: None,
                     },
                 );
                 state.streams.uploads.insert(
@@ -160,6 +173,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     DirectUpload {
                         agent_id: request.source_agent_id.clone(),
                         completion_sender: None,
+                        start_sender: None,
+                        ready: true,
                         canceled_by_rest: false,
                     },
                 );
@@ -209,6 +224,9 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                         next_chunk_index: ChunkIndex::new(0),
                     },
                     content_kind: request.content_kind,
+                    pending_source_command: Some(
+                        request.content_kind.download_command(request.source_path),
+                    ),
                 },
             );
 
@@ -225,6 +243,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 DirectUpload {
                     agent_id: request.dest_agent_id.clone(),
                     completion_sender: None,
+                    start_sender: None,
+                    ready: false,
                     canceled_by_rest: false,
                 },
             );
@@ -236,12 +256,6 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     .content_kind
                     .upload_command(request.dest_path.clone()),
             });
-            source_agent_connection.send_message(Message::Command {
-                agent_id: request.source_agent_id.clone(),
-                request_id: source_request_id,
-                command: request.content_kind.download_command(request.source_path),
-            });
-
             let _ = request.reply.send(Ok(public_request_id));
         }
         (None, _) => {
@@ -254,6 +268,51 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 agent_id: request.dest_agent_id.to_string(),
             }));
         }
+    }
+}
+
+/// Starts remote-copy production only after the destination upload worker is registered.
+pub(crate) fn start_source_after_destination_ready(
+    state: &mut RouterState,
+    dest_agent_id: AgentId,
+    dest_request_id: RequestId,
+) {
+    let Some(public_request_id) = state.copies.public_id_for_internal(dest_request_id) else {
+        return;
+    };
+    let source_start = state
+        .copies
+        .by_public_id
+        .get_mut(&public_request_id)
+        .and_then(|request| {
+            if request.dest_agent_id != dest_agent_id {
+                return None;
+            }
+            let CopyExecution::RemoteStream {
+                source_request_id,
+                dest_request_id: expected_dest_request_id,
+                ..
+            } = request.execution
+            else {
+                return None;
+            };
+            if expected_dest_request_id != dest_request_id {
+                return None;
+            }
+            request
+                .pending_source_command
+                .take()
+                .map(|command| (request.source_agent_id.clone(), source_request_id, command))
+        });
+    let Some((source_agent_id, source_request_id, command)) = source_start else {
+        return;
+    };
+    if let Some(source) = state.agents.by_id.get(&source_agent_id) {
+        source.send_message(Message::Command {
+            agent_id: source_agent_id,
+            request_id: source_request_id,
+            command,
+        });
     }
 }
 
@@ -323,6 +382,16 @@ pub(crate) fn route_chunk(
         let _ = reply.send(());
         return;
     };
+    let dest_transfer_connection = match dest_agent_connection.transfer_connection() {
+        Ok(connection) => connection,
+        Err(error) => {
+            progress::mark_transfer_errored(state, public_request_id, error.to_string());
+            cleanup::cancel_transfer(state, chunk.request_id, agent_id);
+            cleanup_copy_tracking(state, public_request_id);
+            let _ = reply.send(());
+            return;
+        }
+    };
 
     if chunk.is_error {
         let error_message = if chunk.data.is_empty() {
@@ -360,7 +429,7 @@ pub(crate) fn route_chunk(
 
     tokio::spawn(async move {
         let (_, send_succeeded) = send_framed_copy_chunk(
-            &dest_agent_connection,
+            &dest_transfer_connection,
             &mut chunk_index,
             StreamChunkFrameRequest::new(dest_request_id, &chunk_data)
                 .payload_kind(payload_kind)

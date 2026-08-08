@@ -6,6 +6,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use super::{
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
+    agent_transfers::agent_transfer_websocket_handler,
     agents::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
         ls_agent_handler, metadata_agent_handler, server_info_handler, shutdown_agent_handler,
@@ -29,6 +30,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
 
     Router::new()
         .route("/ws", get(websocket_handler))
+        .route(
+            "/api/v1/agent-transfer/ws",
+            get(agent_transfer_websocket_handler),
+        )
         .route("/api/v1/login", post(login_handler))
         .route("/api/v1/logout", post(logout_handler))
         .route("/api/v1/ui/ws", get(ui_websocket_handler))

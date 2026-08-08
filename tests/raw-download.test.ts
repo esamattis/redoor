@@ -131,7 +131,7 @@ describe("Raw Download API", () => {
 
         const waitForEphemeralAgent = waitForLogMessage(
             serverProcess,
-            new RegExp(`Agent registered:.*agent_name=${ephemeralAgentName}`),
+            new RegExp(`Transfer socket registered: agent_id=${ephemeralAgentName},`),
             10000,
         );
 
@@ -275,7 +275,7 @@ describe("Raw Download API", () => {
         const proxiedAgentName = "raw-download-proxied-agent";
         const waitForProxiedAgent = waitForLogMessage(
             serverProcess,
-            new RegExp(`Agent registered:.*agent_name=${proxiedAgentName}`),
+            new RegExp(`Transfer socket registered: agent_id=${proxiedAgentName},`),
             10000,
         );
         const proxiedAgentPid = processManager.spawnAgent({
@@ -381,7 +381,7 @@ describe("Raw Download API", () => {
         const proxiedAgentName = "raw-download-cancel-agent";
         const waitForProxiedAgent = waitForLogMessage(
             serverProcess,
-            new RegExp(`Agent registered:.*agent_name=${proxiedAgentName}`),
+            new RegExp(`Transfer socket registered: agent_id=${proxiedAgentName},`),
             10000,
         );
         const proxiedAgentPid = processManager.spawnAgent({

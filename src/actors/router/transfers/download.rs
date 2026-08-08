@@ -23,6 +23,15 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
     );
 
     if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
+        if let Err(error) = agent_connection.transfer_connection() {
+            log!(
+                Level::Warning,
+                "Transfer unavailable for download: agent_id={}",
+                request.agent_id
+            );
+            let _ = request.reply.send(Err(error));
+            return;
+        }
         progress::record_download_start(
             state,
             DownloadStartContext {

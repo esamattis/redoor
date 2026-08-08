@@ -1,4 +1,5 @@
 use redoor::{log_protocol::LogStreamId, terminal_protocol::TerminalId};
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Internal events consumed by the single agent runtime actor.
@@ -11,9 +12,22 @@ pub(crate) enum AgentMsg {
         connection_generation: u64,
         text: String,
     },
-    WebSocketBinaryMessage {
-        connection_generation: u64,
-        bytes: Vec<u8>,
+    TransferConnected {
+        control_generation: u64,
+        transfer_generation: u64,
+        token: String,
+        sender: mpsc::Sender<WsMessage>,
+        shutdown: watch::Sender<bool>,
+    },
+    TransferConnectionLost {
+        control_generation: u64,
+        transfer_generation: u64,
+        reason: String,
+    },
+    ReconnectTransfer {
+        control_generation: u64,
+        transfer_generation: u64,
+        token: String,
     },
     ConnectionLost {
         connection_generation: u64,

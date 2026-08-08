@@ -216,6 +216,11 @@ pub enum Message {
         token: String,
     },
 
+    /// Instructs the authoritative control session to establish its persistent
+    /// payload socket with a secret that stale sessions cannot reuse.
+    #[serde(rename = "transfer_socket_open")]
+    TransferSocketOpen { token: String },
+
     /// Optional explicit teardown signal from an agent asking the router to
     /// remove it from the active registry; websocket session shutdown also
     /// triggers the same cleanup automatically.
@@ -231,6 +236,13 @@ pub enum Message {
         agent_id: AgentId,
         request_id: RequestId,
         command: crate::commands::Command,
+    },
+
+    /// Confirms that an upload worker exists before bytes cross the independent transfer socket.
+    #[serde(rename = "transfer_ready")]
+    TransferReady {
+        agent_id: AgentId,
+        request_id: RequestId,
     },
 
     /// Sent by an agent when a request reaches its terminal result.

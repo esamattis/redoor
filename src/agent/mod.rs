@@ -5,6 +5,7 @@ mod protocol;
 mod raw;
 pub(crate) mod state;
 mod terminal;
+mod transfer;
 mod transfers;
 mod ws;
 

@@ -370,6 +370,10 @@ export async function startServerAndAgent(options: {
         new RegExp(`Agent registered:.*agent_name=${options.agentName}`),
         10000,
     );
+    const waitForTransferPromise = waitForAgentTransfer(
+        serverProcess,
+        options.agentName,
+    );
 
     const agentPid = options.processManager.spawnAgent({
         wsAddress: wsUrl,
@@ -378,7 +382,7 @@ export async function startServerAndAgent(options: {
         dir: options.agentCwd,
     });
 
-    await waitForAgentPromise;
+    await Promise.all([waitForAgentPromise, waitForTransferPromise]);
 
     const agents = await apiClient.listAgents();
     const testAgent = agents.find((agent) => agent.name === options.agentName);
@@ -394,6 +398,18 @@ export async function startServerAndAgent(options: {
         testAgent,
         wsUrl,
     };
+}
+
+/** Waits until the agent's payload socket is router-owned before tests start streamed work. */
+export async function waitForAgentTransfer(
+    serverProcess: ChildProcess,
+    agentId: string,
+): Promise<void> {
+    await waitForLogMessage(
+        serverProcess,
+        new RegExp(`Transfer socket registered: agent_id=${agentId},`),
+        10000,
+    );
 }
 
 export async function waitForPort(

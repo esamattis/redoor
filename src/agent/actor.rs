@@ -1,5 +1,6 @@
 use super::{
     AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState,
+    transfer::{begin_transfer_connection, schedule_transfer_reconnect},
     ws::{spawn_read_task, spawn_stdin_task},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -10,18 +11,6 @@ use redoor::{
 use sysinfo::System;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-
-/// Converts a channel receive result into the next outbound websocket frame
-/// while marking the lane closed once its sender side is gone.
-fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> Option<WsMessage> {
-    match message {
-        Some(message) => Some(message),
-        None => {
-            *lane_closed = true;
-            None
-        }
-    }
-}
 
 impl AgentRuntime {
     /// Creates the initial agent runtime state before any websocket connection exists.
@@ -55,8 +44,8 @@ impl AgentRuntime {
             }
         }
 
-        self.state.ws_text_tx = None;
-        self.state.ws_binary_tx = None;
+        self.state.ws_control_tx = None;
+        self.state.clear_transfer_connection();
         self.state.active_uploads.clear();
         self.state.active_downloads.clear();
         self.state.active_terminals.clear();
@@ -75,7 +64,7 @@ impl AgentRuntime {
 
         match message {
             AgentMsg::Connect => {
-                if self.state.ws_text_tx.is_none() && self.state.ws_binary_tx.is_none() {
+                if self.state.ws_control_tx.is_none() {
                     self.connect(handle).await;
                 }
             }
@@ -97,27 +86,77 @@ impl AgentRuntime {
                 if connection_generation != self.state.connection_generation {
                     return true;
                 }
-                if let (Some(tx_text), Some(tx_binary)) = (
-                    self.state.ws_text_tx.as_ref().cloned(),
-                    self.state.ws_binary_tx.as_ref().cloned(),
-                ) {
+                if let Some(tx_control) = self.state.ws_control_tx.as_ref().cloned() {
                     agent
-                        .handle_incoming_message(
-                            text,
-                            &mut self.state,
-                            &tx_text,
-                            &tx_binary,
-                            handle,
-                        )
+                        .handle_incoming_message(text, &mut self.state, &tx_control, handle)
                         .await;
                 }
             }
-            AgentMsg::WebSocketBinaryMessage {
-                connection_generation,
-                bytes,
+            AgentMsg::TransferConnected {
+                control_generation,
+                transfer_generation,
+                token,
+                sender,
+                shutdown,
             } => {
-                if connection_generation == self.state.connection_generation {
-                    agent.handle_upload_chunk(&mut self.state, bytes).await;
+                let is_current = control_generation == self.state.connection_generation
+                    && transfer_generation == self.state.transfer_generation
+                    && self.state.transfer_token.as_ref() == Some(&token);
+                if is_current {
+                    self.state.ws_transfer_tx = Some(sender);
+                    self.state.transfer_shutdown = Some(shutdown);
+                } else {
+                    let _ = shutdown.send(true);
+                }
+            }
+            AgentMsg::TransferConnectionLost {
+                control_generation,
+                transfer_generation,
+                reason,
+            } => {
+                if control_generation != self.state.connection_generation
+                    || transfer_generation != self.state.transfer_generation
+                {
+                    log!(
+                        Level::Debug,
+                        "Ignoring stale transfer loss: generation={}",
+                        transfer_generation
+                    );
+                    return true;
+                }
+                log!(
+                    Level::Warning,
+                    "Transfer connection lost: agent_id={}, reason={}",
+                    self.state.agent_id,
+                    reason
+                );
+                self.state.ws_transfer_tx = None;
+                self.state.transfer_shutdown = None;
+                self.state.active_uploads.clear();
+                self.state.active_downloads.clear();
+                let next_generation = self.state.advance_transfer_generation();
+                if let Some(token) = self.state.transfer_token.clone() {
+                    log!(
+                        Level::Info,
+                        "Transfer reconnect scheduled: agent_id={}, generation={}",
+                        self.state.agent_id,
+                        next_generation
+                    );
+                    schedule_transfer_reconnect(handle, control_generation, next_generation, token);
+                }
+            }
+            AgentMsg::ReconnectTransfer {
+                control_generation,
+                transfer_generation,
+                token,
+            } => {
+                if control_generation == self.state.connection_generation
+                    && transfer_generation == self.state.transfer_generation
+                    && self.state.transfer_token.as_ref() == Some(&token)
+                    && self.state.ws_control_tx.is_some()
+                    && self.state.ws_transfer_tx.is_none()
+                {
+                    begin_transfer_connection(&mut self.state, handle, token);
                 }
             }
             AgentMsg::ConnectionLost {
@@ -133,7 +172,7 @@ impl AgentRuntime {
                     );
                     return true;
                 }
-                if self.state.ws_text_tx.is_none() && self.state.ws_binary_tx.is_none() {
+                if self.state.ws_control_tx.is_none() {
                     log!(
                         Level::Debug,
                         "Ignoring duplicate connection loss: {}",
@@ -146,8 +185,8 @@ impl AgentRuntime {
                     "Connection lost: {}, scheduling reconnect in 5s",
                     reason
                 );
-                self.state.ws_text_tx = None;
-                self.state.ws_binary_tx = None;
+                self.state.ws_control_tx = None;
+                self.state.clear_transfer_connection();
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
                 self.state.active_terminals.clear();
@@ -158,7 +197,7 @@ impl AgentRuntime {
                 });
             }
             AgentMsg::SendWebSocketMessage { msg } => {
-                if let Some(tx) = &self.state.ws_text_tx
+                if let Some(tx) = &self.state.ws_control_tx
                     && tx.send(msg).await.is_err()
                 {
                     log!(
@@ -203,33 +242,17 @@ impl AgentRuntime {
                 );
 
                 let (write, read) = ws_stream.split();
-                let (text_tx, mut text_rx) = mpsc::channel::<WsMessage>(32);
-                let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
+                let (control_tx, mut control_rx) = mpsc::channel::<WsMessage>(32);
                 let connection_generation = self.state.advance_connection_generation();
 
-                self.state.ws_text_tx = Some(text_tx.clone());
-                self.state.ws_binary_tx = Some(binary_tx.clone());
+                self.state.ws_control_tx = Some(control_tx.clone());
 
                 spawn_read_task(read, handle.clone(), connection_generation).await;
 
                 let writer_handle = handle.clone();
                 tokio::spawn(async move {
                     let mut write = write;
-                    let mut text_closed = false;
-                    let mut binary_closed = false;
-
-                    loop {
-                        let next_message = tokio::select! {
-                            biased;
-                            message = text_rx.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
-                            message = binary_rx.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
-                            else => break,
-                        };
-
-                        let Some(message) = next_message else {
-                            continue;
-                        };
-
+                    while let Some(message) = control_rx.recv().await {
                         if write.send(message).await.is_err() {
                             log!(Level::Warning, "Failed to send WebSocket message");
                             let _ = writer_handle
@@ -267,7 +290,7 @@ impl AgentRuntime {
                         self.state.agent_id,
                         self.state.agent_name
                     );
-                    if let Err(error) = text_tx.send(WsMessage::text(json)).await {
+                    if let Err(error) = control_tx.send(WsMessage::text(json)).await {
                         log!(Level::Error, "Failed to send agent registration: {}", error);
                     }
                 }
@@ -300,10 +323,10 @@ mod tests {
         );
         let stale_generation = runtime.state.advance_connection_generation();
         let current_generation = runtime.state.advance_connection_generation();
-        let (text_tx, _text_rx) = mpsc::channel(1);
-        let (binary_tx, _binary_rx) = mpsc::channel(1);
-        runtime.state.ws_text_tx = Some(text_tx);
-        runtime.state.ws_binary_tx = Some(binary_tx);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (transfer_tx, _transfer_rx) = mpsc::channel(1);
+        runtime.state.ws_control_tx = Some(control_tx);
+        runtime.state.ws_transfer_tx = Some(transfer_tx);
         let (sender, _receiver) = mpsc::channel(1);
         let handle = AgentHandle { sender };
 
@@ -320,7 +343,50 @@ mod tests {
         // The stale event must not stop the actor or detach the current writer lanes.
         assert!(keep_running);
         assert_eq!(runtime.state.connection_generation, current_generation);
-        assert!(runtime.state.ws_text_tx.is_some());
-        assert!(runtime.state.ws_binary_tx.is_some());
+        // The current control sender must survive a delayed loss from the old generation.
+        assert!(runtime.state.ws_control_tx.is_some());
+        // The independently attached transfer sender must also remain available.
+        assert!(runtime.state.ws_transfer_tx.is_some());
+    }
+
+    /// Verifies delayed transfer teardown cannot detach a newer payload socket.
+    #[tokio::test]
+    async fn stale_transfer_loss_does_not_clear_replacement_sender() {
+        redoor::logging::init(None).await;
+        let mut runtime = AgentRuntime::new(
+            AgentId::from("agent"),
+            "agent".to_string(),
+            "ws://localhost".to_string(),
+            "/tmp".to_string(),
+            "test-token".to_string(),
+        );
+        runtime.state.advance_connection_generation();
+        let stale_generation = runtime.state.advance_transfer_generation();
+        let current_generation = runtime.state.advance_transfer_generation();
+        runtime.state.transfer_token = Some("session-token".to_string());
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (transfer_tx, _transfer_rx) = mpsc::channel(1);
+        runtime.state.ws_control_tx = Some(control_tx);
+        runtime.state.ws_transfer_tx = Some(transfer_tx);
+        let (sender, _receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        let keep_running = runtime
+            .handle_message(
+                handle,
+                AgentMsg::TransferConnectionLost {
+                    control_generation: runtime.state.connection_generation,
+                    transfer_generation: stale_generation,
+                    reason: "old transfer reader ended".to_string(),
+                },
+            )
+            .await;
+
+        // A stale transfer event must not stop the authoritative control actor.
+        assert!(keep_running);
+        // The current transfer generation must remain unchanged by delayed teardown.
+        assert_eq!(runtime.state.transfer_generation, current_generation);
+        // The replacement payload sender must remain installed and usable.
+        assert!(runtime.state.ws_transfer_tx.is_some());
     }
 }

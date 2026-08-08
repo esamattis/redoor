@@ -6,6 +6,7 @@ pub mod logging;
 pub mod streaming;
 pub mod terminal_protocol;
 pub mod terminal_registry;
+pub mod transfer_protocol;
 pub mod types;
 pub mod watchdog;
 

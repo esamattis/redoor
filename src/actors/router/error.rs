@@ -8,6 +8,12 @@ pub enum RouterError {
     /// The requested agent or transfer target no longer exists in router state.
     #[error("Agent not found: {agent_id}")]
     AgentNotFound { agent_id: String },
+    /// The control connection exists but its isolated payload transport is not ready.
+    #[error("Transfer connection unavailable: agent_id={agent_id}")]
+    TransferConnectionUnavailable { agent_id: String },
+    /// A transfer handshake could not be bound without exposing which credential was wrong.
+    #[error("Transfer socket authentication failed")]
+    TransferAuthenticationFailed,
     /// The requested upload or copy stream no longer exists in router state.
     #[error("Upload stream not found: agent_id={agent_id}, request_id={request_id}")]
     StreamNotFound {
@@ -43,6 +49,8 @@ impl RouterError {
             Self::AgentNotFound { .. }
             | Self::StreamNotFound { .. }
             | Self::CopyStreamNotFound { .. } => StatusCode::NOT_FOUND,
+            Self::TransferConnectionUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::TransferAuthenticationFailed => StatusCode::UNAUTHORIZED,
             Self::ClientCanceledUpload => StatusCode::BAD_REQUEST,
             Self::UploadForwardFailed { .. }
             | Self::RouterStopped { .. }

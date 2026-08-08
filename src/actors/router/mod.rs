@@ -11,9 +11,9 @@ pub use error::RouterError;
 pub use messages::{
     ApplyManagedLifecycleRequest, ExecuteCommandRequest, ExecuteStreamRequest,
     OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
-    RegisterManagedAgentRequest, RegisterUiSubscriberRequest, RouteResponse,
-    RouteStreamChunkRequest, RouterMsg, SendStreamChunkRequest, StartCopyRequest,
-    StartUploadRequest, TransferProgressUpdateRequest,
+    RegisterManagedAgentRequest, RegisterTransferConnectionRequest, RegisterUiSubscriberRequest,
+    RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg,
+    SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
 };
 pub use state::CopyContentKind;
 
@@ -187,6 +187,15 @@ async fn run_router(
             RouterMsg::RegisterAgent(request) => {
                 agents::register(&mut state, request).await;
             }
+            RouterMsg::RegisterTransferConnection(request) => {
+                agents::register_transfer(&mut state, request);
+            }
+            RouterMsg::UnregisterTransferConnection {
+                agent_id,
+                socket_id,
+            } => {
+                agents::unregister_transfer(&mut state, agent_id, socket_id).await;
+            }
             RouterMsg::RegisterManagedAgent(request) => {
                 agents::register_managed(&mut state, request);
             }
@@ -210,7 +219,9 @@ async fn run_router(
 
                 if is_current {
                     log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
-                    state.agents.by_id.remove(&agent_id);
+                    if let Some(connection) = state.agents.by_id.remove(&agent_id) {
+                        connection.shutdown_transfer();
+                    }
                     if let Some(known) = state.agents.known_by_id.get_mut(&agent_id) {
                         known.connected_at = None;
                         known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
@@ -238,6 +249,9 @@ async fn run_router(
             }
             RouterMsg::RouteResponse(response) => {
                 route_response(&mut state, response);
+            }
+            RouterMsg::RouteTransferReady(request) => {
+                transfers::upload::mark_ready(&mut state, request.agent_id, request.request_id);
             }
             RouterMsg::GetAgentList { reply } => {
                 let _ = reply.send(agents::list_agents(&state));
@@ -321,7 +335,7 @@ mod tests {
     use crate::streaming::{StreamChunk, StreamPayloadKind};
     use crate::types::{AgentId, SocketId};
     use axum::extract::ws::Message as WsMessage;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::{mpsc, oneshot, watch};
     use tokio::time::{Duration, timeout};
     use uuid::Uuid;
 
@@ -331,7 +345,7 @@ mod tests {
 
         let (router_ref, router_task) = spawn_router(TerminalRegistry::new(), LogRegistry::new());
 
-        let (text_tx, _text_rx) = mpsc::unbounded_channel::<WsMessage>();
+        let (text_tx, mut text_rx) = mpsc::unbounded_channel::<WsMessage>();
         let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
 
         router_ref
@@ -340,7 +354,6 @@ mod tests {
                 agent_name: "agent-1".to_string(),
                 socket_id: SocketId::from(Uuid::from_u128(1)),
                 outgoing_text: text_tx,
-                outgoing_binary: binary_tx,
                 os: "macos".to_string(),
                 arch: "arm64".to_string(),
                 hostname: "host".to_string(),
@@ -350,23 +363,72 @@ mod tests {
             }))
             .expect("agent registered");
 
-        let (completion_tx, _completion_rx) = oneshot::channel();
-        let request_id = router_ref
+        let transfer_token = match text_rx.recv().await.expect("transfer bootstrap queued") {
+            WsMessage::Text(text) => match serde_json::from_str::<crate::types::Message>(&text)
+                .expect("transfer bootstrap is valid control JSON")
+            {
+                crate::types::Message::TransferSocketOpen { token } => token,
+                other => panic!("unexpected control message: {other:?}"),
+            },
+            other => panic!("unexpected websocket frame: {other:?}"),
+        };
+        let (transfer_shutdown, _transfer_shutdown_rx) = watch::channel(false);
+        router_ref
             .request(1_000, |reply| {
-                RouterMsg::StartUploadStreamRest(StartUploadRequest {
+                RouterMsg::RegisterTransferConnection(RegisterTransferConnectionRequest {
                     agent_id: AgentId::from("agent-1"),
-                    command: Command::RawUpload {
-                        path: "/tmp/file.bin".to_string(),
-                    },
-                    path: "/tmp/file.bin".to_string(),
-                    total_bytes: 32,
-                    completion_sender: completion_tx,
+                    token: transfer_token,
+                    socket_id: SocketId::from(Uuid::from_u128(2)),
+                    outgoing_binary: binary_tx,
+                    shutdown: transfer_shutdown,
                     reply,
                 })
             })
             .await
+            .expect("transfer registration rpc succeeded")
+            .expect("valid transfer token accepted");
+
+        let (completion_tx, _completion_rx) = oneshot::channel();
+        let router_for_start = router_ref.clone();
+        let upload_start = tokio::spawn(async move {
+            router_for_start
+                .request(1_000, |reply| {
+                    RouterMsg::StartUploadStreamRest(StartUploadRequest {
+                        agent_id: AgentId::from("agent-1"),
+                        command: Command::RawUpload {
+                            path: "/tmp/file.bin".to_string(),
+                        },
+                        path: "/tmp/file.bin".to_string(),
+                        total_bytes: 32,
+                        completion_sender: completion_tx,
+                        reply,
+                    })
+                })
+                .await
+        });
+        let request_id = match text_rx.recv().await.expect("upload command queued") {
+            WsMessage::Text(text) => match serde_json::from_str::<crate::types::Message>(&text)
+                .expect("upload command is valid control JSON")
+            {
+                crate::types::Message::Command { request_id, .. } => request_id,
+                other => panic!("unexpected control message: {other:?}"),
+            },
+            other => panic!("unexpected websocket frame: {other:?}"),
+        };
+        router_ref
+            .send_async(RouterMsg::RouteTransferReady(RouteTransferReadyRequest {
+                agent_id: AgentId::from("agent-1"),
+                request_id,
+            }))
+            .await
+            .expect("upload readiness queued");
+        let started_request_id = upload_start
+            .await
+            .expect("upload start task joined")
             .expect("upload start rpc succeeded")
             .expect("upload start accepted");
+        // The readiness acknowledgement must release the same upload request the command created.
+        assert_eq!(started_request_id, request_id);
 
         // Holding the first queued binary frame keeps the bounded lane full so the
         // second forwarded chunk must wait in the background task instead of the router.

@@ -24,6 +24,15 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
     );
 
     if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
+        if let Err(error) = agent_connection.transfer_connection() {
+            log!(
+                Level::Warning,
+                "Transfer unavailable for upload: agent_id={}",
+                request.agent_id
+            );
+            let _ = request.reply.send(Err(error));
+            return;
+        }
         progress::record_upload_start(
             state,
             UploadStartContext {
@@ -32,6 +41,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
                 path: request.path,
                 total_bytes: request.total_bytes,
                 completion_sender: request.completion_sender,
+                start_sender: request.reply,
             },
         );
 
@@ -40,7 +50,6 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             request_id,
             command: request.command,
         });
-        let _ = request.reply.send(Ok(request_id));
     } else {
         log!(
             Level::Warning,
@@ -51,6 +60,25 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             agent_id: request.agent_id.to_string(),
         }));
     }
+}
+
+/// Releases direct producers only after the destination worker confirms cross-socket readiness.
+pub(crate) fn mark_ready(
+    state: &mut RouterState,
+    agent_id: AgentId,
+    request_id: crate::types::RequestId,
+) {
+    let Some(upload) = state.streams.uploads.get_mut(&request_id) else {
+        return;
+    };
+    if upload.agent_id != agent_id || upload.ready {
+        return;
+    }
+    upload.ready = true;
+    if let Some(start_sender) = upload.start_sender.take() {
+        let _ = start_sender.send(Ok(request_id));
+    }
+    super::copy::start_source_after_destination_ready(state, agent_id, request_id);
 }
 
 /// Forwards one REST upload chunk to the target agent's bounded binary lane.
@@ -99,6 +127,18 @@ pub(crate) fn route_chunk(
     }
 
     if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {
+        let transfer_connection = match agent_connection.transfer_connection() {
+            Ok(connection) => connection,
+            Err(error) => {
+                progress::mark_transfer_errored(
+                    state,
+                    request.request_id.as_transfer_id(),
+                    error.to_string(),
+                );
+                let _ = request.reply.send(Err(error));
+                return;
+            }
+        };
         let bytes = request.chunk.data.len() as u64;
         let is_error = request.chunk.is_error;
         let payload = request.chunk.to_bytes();
@@ -117,7 +157,7 @@ pub(crate) fn route_chunk(
         }
 
         tokio::spawn(async move {
-            let send_succeeded = agent_connection.send_binary(payload).await;
+            let send_succeeded = transfer_connection.send_binary(payload).await;
             let send_result =
                 myself.send(RouterMsg::FinishRoutedUploadChunk(FinishUploadChunkRoute {
                     agent_id,
@@ -262,7 +302,11 @@ pub(crate) fn finish_transfer(
                 );
                 return;
             }
-            (transfer.canceled_by_rest, transfer.completion_sender.take())
+            (
+                transfer.canceled_by_rest,
+                transfer.completion_sender.take(),
+                transfer.start_sender.take(),
+            )
         }
         None => {
             if state.streams.downloads.contains_key(&request_id) {
@@ -283,7 +327,7 @@ pub(crate) fn finish_transfer(
         }
     };
 
-    let (canceled_by_rest, completion_sender) = transfer_state;
+    let (canceled_by_rest, completion_sender, start_sender) = transfer_state;
 
     if canceled_by_rest {
         // After REST has already gone away, the agent response only acts as a
@@ -300,6 +344,9 @@ pub(crate) fn finish_transfer(
         ui::notify_refresh(state);
 
         if let Some(sender) = completion_sender {
+            let _ = sender.send(Err(RouterError::ClientCanceledUpload));
+        }
+        if let Some(sender) = start_sender {
             let _ = sender.send(Err(RouterError::ClientCanceledUpload));
         }
         return;
@@ -352,5 +399,10 @@ pub(crate) fn finish_transfer(
 
     if let Some(sender) = completion_sender {
         let _ = sender.send(completion_result);
+    }
+    if let Some(sender) = start_sender {
+        let _ = sender.send(Err(RouterError::UnexpectedResponseType {
+            operation: "waiting for upload readiness",
+        }));
     }
 }

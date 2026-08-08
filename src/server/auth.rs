@@ -500,6 +500,7 @@ fn is_public_path(path: &str) -> bool {
         .and_then(|remainder| remainder.strip_suffix("/agent/ws"))
         .is_some_and(|stream_id| !stream_id.is_empty() && !stream_id.contains('/'));
     path == "/ws"
+        || path == "/api/v1/agent-transfer/ws"
         || is_agent_terminal_socket
         || is_agent_log_socket
         || path == "/api/v1/login"
@@ -649,6 +650,10 @@ mod tests {
         assert!(is_public_path(
             "/api/v1/log-streams/00000000-0000-0000-0000-000000000001/agent/ws"
         ));
+        // The exact payload socket must reach its session-token handshake without a browser cookie.
+        assert!(is_public_path("/api/v1/agent-transfer/ws"));
+        // Neighboring transfer paths must not inherit the public authentication exception.
+        assert!(!is_public_path("/api/v1/agent-transfer/ws/extra"));
         // The browser-owned endpoint must remain protected by normal session authentication.
         assert!(!is_public_path("/api/v1/agents/agent-1/logs/ws"));
         // Nested paths cannot exploit broad prefix/suffix matching to bypass authentication.

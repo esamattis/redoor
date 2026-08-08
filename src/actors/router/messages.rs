@@ -22,8 +22,6 @@ pub struct RegisterAgentRequest {
     pub socket_id: SocketId,
     /// Unbounded control-message lane for websocket text frames.
     pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
-    /// Bounded binary-message lane for websocket streaming frames.
-    pub outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
     /// Operating system string reported by the agent.
     pub os: String,
     /// CPU architecture string reported by the agent.
@@ -77,6 +75,30 @@ pub struct ApplyManagedLifecycleRequest {
     pub snapshot: WatchdogSnapshot,
     /// Allows control endpoints to wait until inventory and socket cleanup are consistent.
     pub reply: Option<RouterReply<()>>,
+}
+
+/// Requests that a payload socket attach to the current control connection.
+pub struct RegisterTransferConnectionRequest {
+    /// Agent identity submitted by the transfer handshake.
+    pub agent_id: AgentId,
+    /// Session-scoped secret submitted by the transfer handshake.
+    pub token: String,
+    /// Unique socket identity used to reject stale teardown.
+    pub socket_id: SocketId,
+    /// Bounded lane used only for binary stream frames.
+    pub outgoing_binary: tokio::sync::mpsc::Sender<WsMessage>,
+    /// Stops an older or control-orphaned transfer task promptly.
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// Confirms that router state owns the connection before payload is accepted.
+    pub reply: RouterReply<Result<(), RouterError>>,
+}
+
+/// Confirms destination upload setup before payload producers are allowed to run.
+pub struct RouteTransferReadyRequest {
+    /// Agent that registered the destination-side upload worker.
+    pub agent_id: AgentId,
+    /// Upload request whose bounded worker channel is now available.
+    pub request_id: RequestId,
 }
 
 /// Final command response routed back from an agent to the original caller.
@@ -266,6 +288,12 @@ pub struct OpenAgentLogStreamRequest {
 /// Enumerates router work so live streams and lifecycle controls share explicit lanes.
 pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
+    RegisterTransferConnection(RegisterTransferConnectionRequest),
+    UnregisterTransferConnection {
+        agent_id: AgentId,
+        /// Prevents a replaced transfer socket from clearing its successor.
+        socket_id: SocketId,
+    },
     RegisterManagedAgent(RegisterManagedAgentRequest),
     ApplyManagedLifecycle(ApplyManagedLifecycleRequest),
     UnregisterAgent {
@@ -276,6 +304,7 @@ pub enum RouterMsg {
         socket_id: SocketId,
     },
     RouteResponse(RouteResponse),
+    RouteTransferReady(RouteTransferReadyRequest),
     GetAgentList {
         reply: RouterReply<Vec<AgentListEntry>>,
     },

@@ -28,17 +28,15 @@ pub(super) async fn spawn_read_task(
                         break;
                     }
                 }
-                Ok(WsMessage::Binary(bytes)) => {
-                    if agent_ref
-                        .send(AgentMsg::WebSocketBinaryMessage {
+                Ok(WsMessage::Binary(_)) => {
+                    connection_loss_reported = true;
+                    let _ = agent_ref
+                        .send(AgentMsg::ConnectionLost {
                             connection_generation,
-                            bytes: bytes.to_vec(),
+                            reason: "Binary frame received on control socket".to_string(),
                         })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                        .await;
+                    break;
                 }
                 Ok(WsMessage::Close(_)) => {
                     connection_loss_reported = true;

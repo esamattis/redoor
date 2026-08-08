@@ -121,18 +121,19 @@ async fn handle_command_message(
 }
 
 impl AgentActor {
-    /// Dispatches one incoming control message from the server and routes
-    /// transfer-producing commands onto the binary websocket sender.
+    /// Dispatches one incoming control message while keeping payload work on the transfer sender.
     pub(crate) async fn handle_incoming_message(
         &self,
         text: String,
         state: &mut AgentState,
         write_text: &mpsc::Sender<WsMessage>,
-        write_binary: &mpsc::Sender<WsMessage>,
         agent_ref: AgentHandle,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
             match redoor_msg {
+                Message::TransferSocketOpen { token } => {
+                    super::transfer::begin_transfer_connection(state, agent_ref, token);
+                }
                 Message::Command {
                     request_id,
                     command,
@@ -145,6 +146,28 @@ impl AgentActor {
                         request_id,
                         command
                     );
+                    let requires_transfer = matches!(
+                        command,
+                        Command::RawUpload { .. }
+                            | Command::TarUpload { .. }
+                            | Command::RawDownload { .. }
+                            | Command::TarDownload { .. }
+                    );
+                    let transfer_sender = state.ws_transfer_tx.as_ref().cloned();
+                    if requires_transfer && transfer_sender.is_none() {
+                        self.send_command_response(
+                            write_text,
+                            &state.agent_id,
+                            request_id,
+                            CommandResult::error(
+                                CommandErrorKind::Internal,
+                                "Transfer connection unavailable",
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
+
                     if !self
                         .start_upload_session(
                             state.active_uploads.clone(),
@@ -155,9 +178,13 @@ impl AgentActor {
                         )
                         .await
                     {
+                        let transfer_sender = match transfer_sender {
+                            Some(sender) => sender,
+                            None => write_text.clone(),
+                        };
                         tokio::spawn(handle_command_message(
                             write_text.clone(),
-                            write_binary.clone(),
+                            transfer_sender,
                             state.agent_id.clone(),
                             request_id,
                             command,
@@ -323,12 +350,28 @@ impl AgentActor {
     ) -> bool {
         match command {
             Command::RawUpload { path } => {
-                self.start_raw_upload_session(active_uploads, write, agent_id, request_id, path)
+                self.start_raw_upload_session(
+                    active_uploads.clone(),
+                    write,
+                    agent_id,
+                    request_id,
+                    path,
+                )
+                .await;
+                self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)
                     .await;
                 true
             }
             Command::TarUpload { path } => {
-                self.start_tar_upload_session(active_uploads, write, agent_id, request_id, path)
+                self.start_tar_upload_session(
+                    active_uploads.clone(),
+                    write,
+                    agent_id,
+                    request_id,
+                    path,
+                )
+                .await;
+                self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)
                     .await;
                 true
             }
@@ -336,47 +379,65 @@ impl AgentActor {
         }
     }
 
-    pub(crate) async fn handle_upload_chunk(&self, state: &mut AgentState, bytes: Vec<u8>) {
-        let chunk = match streaming::StreamChunk::from_bytes(&bytes) {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                log!(
-                    Level::Warning,
-                    "Failed to parse binary stream chunk: {}",
-                    error
-                );
-                return;
-            }
+    /// Acknowledges worker registration so the independent payload socket cannot race control setup.
+    async fn send_transfer_ready_if_started(
+        &self,
+        active_uploads: &ActiveUploads,
+        write: &mpsc::Sender<WsMessage>,
+        agent_id: &AgentId,
+        request_id: RequestId,
+    ) {
+        if !active_uploads.contains(request_id) {
+            return;
+        }
+        let message = Message::TransferReady {
+            agent_id: agent_id.clone(),
+            request_id,
         };
+        if let Ok(json) = serde_json::to_string(&message) {
+            let _ = write.send(WsMessage::text(json)).await;
+        }
+    }
+}
 
-        let request_id = chunk.request_id;
-        let Some(tx) = state.ws_text_tx.as_ref().cloned() else {
+/// Routes one payload frame directly to its bounded upload worker without entering the control mailbox.
+pub(crate) async fn route_upload_chunk(
+    active_uploads: ActiveUploads,
+    control_sender: mpsc::Sender<WsMessage>,
+    agent_id: AgentId,
+    bytes: Vec<u8>,
+) {
+    let chunk = match streaming::StreamChunk::from_bytes(&bytes) {
+        Ok(chunk) => chunk,
+        Err(error) => {
             log!(
                 Level::Warning,
-                "Upload chunk received without active websocket sender: request_id={}",
-                request_id
+                "Failed to parse binary stream chunk: {}",
+                error
             );
-            state.active_uploads.remove(request_id);
             return;
-        };
+        }
+    };
 
-        let upload_handle = state.active_uploads.get(request_id);
+    let request_id = chunk.request_id;
+    let upload_handle = active_uploads.get(request_id);
 
-        let Some(upload_handle) = upload_handle else {
-            return;
-        };
+    let Some(upload_handle) = upload_handle else {
+        return;
+    };
 
-        if upload_handle.chunk_sender.send(chunk).await.is_err() {
-            log!(
-                Level::Warning,
-                "Upload worker dropped before chunk delivery: request_id={}, path={}",
-                request_id,
-                upload_handle.path
-            );
-            state.active_uploads.remove(request_id);
-            self.send_command_response(
-                &tx,
-                &state.agent_id,
+    if upload_handle.chunk_sender.send(chunk).await.is_err() {
+        log!(
+            Level::Warning,
+            "Upload worker dropped before chunk delivery: request_id={}, path={}",
+            request_id,
+            upload_handle.path
+        );
+        active_uploads.remove(request_id);
+        AgentActor
+            .send_command_response(
+                &control_sender,
+                &agent_id,
                 request_id,
                 AgentCommandError::raw_upload(
                     CommandErrorKind::Internal,
@@ -385,6 +446,5 @@ impl AgentActor {
                 .into(),
             )
             .await;
-        }
     }
 }

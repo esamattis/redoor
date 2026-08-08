@@ -1,5 +1,5 @@
 use crate::actors::router::{
-    RegisterAgentRequest, RouteResponse, RouteStreamChunkRequest, RouterHandle, RouterMsg,
+    RegisterAgentRequest, RouteResponse, RouteTransferReadyRequest, RouterHandle, RouterMsg,
     TransferProgressUpdateRequest,
 };
 use crate::log;
@@ -65,9 +65,7 @@ struct SessionRuntime {
     /// Sends control and other small text frames without backpressure so router
     /// notifications stay responsive.
     outgoing_text: mpsc::UnboundedSender<WsMessage>,
-    /// Sends binary frames on a bounded lane so large stream transfers apply
-    /// backpressure instead of growing memory usage without bound.
-    outgoing_binary: mpsc::Sender<WsMessage>,
+
     /// Populated after `AgentRegister` if the registered agent name has a
     /// matching watchdog supervisor. The stale check uses this to signal
     /// the supervisor when the WebSocket goes silent. Stays `None` for
@@ -153,7 +151,6 @@ impl SessionRuntime {
                         agent_name,
                         socket_id: self.socket_id.clone(),
                         outgoing_text: self.outgoing_text.clone(),
-                        outgoing_binary: self.outgoing_binary.clone(),
                         os,
                         arch,
                         hostname,
@@ -171,6 +168,17 @@ impl SessionRuntime {
                     agent_id,
                     socket_id: self.socket_id.clone(),
                 });
+            }
+            Message::TransferReady {
+                agent_id,
+                request_id,
+            } => {
+                let _ = self.router_ref.send(RouterMsg::RouteTransferReady(
+                    RouteTransferReadyRequest {
+                        agent_id,
+                        request_id,
+                    },
+                ));
             }
             Message::CommandResponse {
                 agent_id,
@@ -202,33 +210,6 @@ impl SessionRuntime {
             }
             _ => {}
         }
-    }
-
-    /// Forwards one parsed binary stream chunk and waits until the router has finished routing it.
-    async fn handle_binary_message(&mut self, bytes: Vec<u8>) -> bool {
-        let Ok(chunk) = crate::streaming::StreamChunk::from_bytes(&bytes) else {
-            return true;
-        };
-
-        let Some(agent_id) = self.agent_id.clone() else {
-            return true;
-        };
-
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .router_ref
-            .send_async(RouterMsg::RouteStreamChunk(RouteStreamChunkRequest {
-                agent_id,
-                chunk,
-                reply: reply_tx,
-            }))
-            .await
-            .is_err()
-        {
-            return false;
-        }
-
-        reply_rx.await.is_ok()
     }
 
     /// Unregisters the session's agent after the websocket goes away.
@@ -266,8 +247,13 @@ impl SessionRuntime {
                     );
                 }
             },
-            WsMessage::Binary(bytes) => {
-                return self.handle_binary_message(bytes.to_vec()).await;
+            WsMessage::Binary(_) => {
+                log!(
+                    Level::Warning,
+                    "Binary frame on control socket: socket_id={}",
+                    self.socket_id
+                );
+                return false;
             }
             _ => {}
         }
@@ -288,16 +274,12 @@ pub async fn handle_websocket(
     // Text frames carry control-plane messages, so they stay unbounded to avoid
     // stalling router notifications behind a concurrent large transfer.
     let (tx_out_text, mut rx_out_text) = mpsc::unbounded_channel::<WsMessage>();
-    // Binary frames can be large and continuous, so this lane stays bounded to
-    // propagate backpressure instead of buffering an unbounded stream in memory.
-    let (tx_out_binary, mut rx_out_binary) = mpsc::channel::<WsMessage>(1);
 
     let mut runtime = SessionRuntime {
         socket_id: socket_id.clone(),
         router_ref,
         agent_id: None,
         outgoing_text: tx_out_text,
-        outgoing_binary: tx_out_binary,
         watchdog: None,
         agent_token,
     };
@@ -311,7 +293,6 @@ pub async fn handle_websocket(
 
     let writer_task = tokio::spawn(async move {
         let mut text_closed = false;
-        let mut binary_closed = false;
         let mut ping_interval = tokio::time::interval(WEBSOCKET_PING_INTERVAL);
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Consume the first immediate tick so the first ping fires one interval
@@ -331,9 +312,7 @@ pub async fn handle_websocket(
                     continue;
                 }
                 message = rx_out_text.recv(), if !text_closed => take_outbound_message(message, &mut text_closed),
-                message = rx_out_binary.recv(), if !binary_closed => take_outbound_message(message, &mut binary_closed),
-                // Both outbound lanes are closed, so no future websocket frames can
-                // be produced and the writer task can stop cleanly.
+                // The control lane is closed, so no future application frames can be produced.
                 else => break,
             };
 

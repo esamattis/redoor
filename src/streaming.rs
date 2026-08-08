@@ -5,8 +5,8 @@ pub const PROTOCOL_MAGIC: u32 = 0x52415844;
 pub const HEADER_SIZE: usize = 23;
 /// Preferred file read size for disk IO before websocket framing.
 pub const CHUNK_SIZE: usize = 64 * 1024;
-/// Control messages can only preempt transfer traffic between websocket frames,
-/// so all streamed binary transfers share one payload cap.
+/// Keeps allocations and bounded queue residency small while allowing fair
+/// multiplexing among concurrent streams sharing one persistent transfer socket.
 pub const MAX_TRANSFER_FRAME_PAYLOAD_BYTES: usize = 8 * 1024;
 
 /// Identifies how the chunk payload bytes should be interpreted by the receiver.

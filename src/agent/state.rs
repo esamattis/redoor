@@ -279,8 +279,16 @@ pub(crate) struct AgentState {
     pub(crate) default_directory: String,
     /// Shared secret presented during registration so the server can reject impostors.
     pub(crate) token: String,
-    pub(crate) ws_text_tx: Option<mpsc::Sender<WsMessage>>,
-    pub(crate) ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
+    /// Current control writer used for commands, responses, cancellation, and lifecycle traffic.
+    pub(crate) ws_control_tx: Option<mpsc::Sender<WsMessage>>,
+    /// Current payload writer used exclusively for binary stream chunks.
+    pub(crate) ws_transfer_tx: Option<mpsc::Sender<WsMessage>>,
+    /// Session-scoped secret issued by the current authoritative server control connection.
+    pub(crate) transfer_token: Option<String>,
+    /// Stops both halves of the current transfer socket on replacement or control loss.
+    pub(crate) transfer_shutdown: Option<watch::Sender<bool>>,
+    /// Separates stale transfer task events from the current payload connection.
+    pub(crate) transfer_generation: u64,
     pub(crate) connection_generation: u64,
     pub(crate) active_uploads: ActiveUploads,
     pub(crate) active_downloads: ActiveDownloads,
@@ -303,8 +311,11 @@ impl AgentState {
             server_url,
             default_directory,
             token,
-            ws_text_tx: None,
-            ws_binary_tx: None,
+            ws_control_tx: None,
+            ws_transfer_tx: None,
+            transfer_token: None,
+            transfer_shutdown: None,
+            transfer_generation: 0,
             connection_generation: 0,
             active_uploads: ActiveUploads::new(),
             active_downloads: ActiveDownloads::new(),
@@ -317,6 +328,22 @@ impl AgentState {
     pub(crate) fn advance_connection_generation(&mut self) -> u64 {
         self.connection_generation = self.connection_generation.wrapping_add(1);
         self.connection_generation
+    }
+
+    /// Advances payload identity so delayed transfer loss cannot clear a replacement sender.
+    pub(crate) fn advance_transfer_generation(&mut self) -> u64 {
+        self.transfer_generation = self.transfer_generation.wrapping_add(1);
+        self.transfer_generation
+    }
+
+    /// Invalidates and stops payload transport when the authoritative control session changes.
+    pub(crate) fn clear_transfer_connection(&mut self) {
+        if let Some(shutdown) = self.transfer_shutdown.take() {
+            let _ = shutdown.send(true);
+        }
+        self.ws_transfer_tx = None;
+        self.transfer_token = None;
+        self.advance_transfer_generation();
     }
 }
 
