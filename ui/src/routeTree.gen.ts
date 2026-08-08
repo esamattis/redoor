@@ -9,20 +9,20 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TestRouteImport } from './routes/test'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TestRouteImport } from './routes/test'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
 import { Route as AgentsAgentIdBrowserSplatRouteImport } from './routes/agents.$agentId.browser.$'
 
-const TestRoute = TestRouteImport.update({
-  id: '/test',
-  path: '/test',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TestRoute = TestRouteImport.update({
+  id: '/test',
+  path: '/test',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TransfersIndexRoute = TransfersIndexRouteImport.update({
@@ -45,8 +45,8 @@ const AgentsAgentIdBrowserSplatRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/test': typeof TestRoute
-  '/transfers': typeof TransfersIndexRoute
-  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
+  '/transfers/': typeof TransfersIndexRoute
+  '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
 export interface FileRoutesByTo {
@@ -69,8 +69,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/test'
-    | '/transfers'
-    | '/agents/$agentId'
+    | '/transfers/'
+    | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -98,13 +98,6 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/test': {
-      id: '/test'
-      path: '/test'
-      fullPath: '/test'
-      preLoaderRoute: typeof TestRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -112,17 +105,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/test': {
+      id: '/test'
+      path: '/test'
+      fullPath: '/test'
+      preLoaderRoute: typeof TestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/transfers/': {
       id: '/transfers/'
       path: '/transfers'
-      fullPath: '/transfers'
+      fullPath: '/transfers/'
       preLoaderRoute: typeof TransfersIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents/$agentId/': {
       id: '/agents/$agentId/'
       path: '/agents/$agentId'
-      fullPath: '/agents/$agentId'
+      fullPath: '/agents/$agentId/'
       preLoaderRoute: typeof AgentsAgentIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }

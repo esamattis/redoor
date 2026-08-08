@@ -14,10 +14,7 @@ export default defineConfig({
         testTimeout: 10000,
         exclude: ["node_modules", "**/e2e/**", ".opencode"],
         pool: "forks",
-        poolOptions: {
-            forks: {
-                singleFork: true,
-            },
-        },
+        maxWorkers: 1,
+        isolate: false,
     },
 });
