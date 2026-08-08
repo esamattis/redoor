@@ -354,29 +354,38 @@ function CopySelectedFilesAction(props: {
     };
 
     return (
-        <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="mb-4 flex min-h-12 flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/35 px-3 py-2">
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+                <span className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-800 text-slate-300">
+                    <Copy className="h-3.5 w-3.5" />
+                </span>
+                <span>
+                    {selectedFiles.length === 0
+                        ? "Select files to copy them here"
+                        : `${selectedFiles.length} ${selectedFiles.length === 1 ? "item" : "items"} selected`}
+                </span>
+                {statusMessage ? (
+                    <span
+                        role={copyState.type === "error" ? "alert" : "status"}
+                        aria-live="polite"
+                        className={`ml-2 ${copyState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
+                    >
+                        {statusMessage}
+                    </span>
+                ) : null}
+            </div>
             <button
                 type="button"
                 onClick={handleCopySelectedFiles}
+                aria-label="Copy selected files here"
                 disabled={
                     selectedFiles.length === 0 || isCopying || isRoutePending
                 }
-                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 shadow-sm transition-colors hover:border-slate-600 hover:bg-slate-700 disabled:cursor-not-allowed disabled:border-slate-800 disabled:bg-transparent disabled:text-slate-600"
             >
-                <Copy className="h-4 w-4" />
-                {isCopying
-                    ? "Copying selected files..."
-                    : "Copy selected files here"}
+                <Copy className="h-3.5 w-3.5" />
+                {isCopying ? "Copying..." : "Copy here"}
             </button>
-            {statusMessage ? (
-                <span
-                    role={copyState.type === "error" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`text-sm ${copyState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
-                >
-                    {statusMessage}
-                </span>
-            ) : null}
         </div>
     );
 }
@@ -486,11 +495,12 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
             <button
                 type="button"
                 onClick={openFilePicker}
+                aria-label="Upload files"
                 disabled={isUploading}
-                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
                 <Upload className="h-4 w-4" />
-                {isUploading ? "Uploading..." : "Upload files"}
+                {isUploading ? "Uploading..." : "Upload"}
             </button>
             {statusMessage ? (
                 <span
@@ -505,6 +515,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
     );
 }
 
+/** Opens a focused dialog so directory creation does not crowd the toolbar. */
 function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
     const router = useRouter();
     const inputId = React.useId();
@@ -571,10 +582,11 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
             <button
                 type="button"
                 onClick={openDialog}
-                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
+                aria-label="Create directory"
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
             >
-                <FolderPlus className="h-4 w-4" />
-                Create directory
+                <FolderPlus className="h-4 w-4 text-slate-400" />
+                New directory
             </button>
 
             <BrowserActionDialog
@@ -650,6 +662,7 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
     );
 }
 
+/** Separates location context, navigation, and directory actions by purpose. */
 function BrowserHeader(props: {
     agent: Agent;
     agentId: string;
@@ -662,22 +675,37 @@ function BrowserHeader(props: {
     onToggleHiddenFiles: () => void;
 }) {
     return (
-        <div className="mb-6">
-            <div className="mb-4 flex flex-col gap-3">
+        <header className="mb-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <Breadcrumbs
                     agentId={props.agentId}
                     agentName={props.agentName}
                     relativePath={props.relativePath}
                 />
-                <div className="flex flex-wrap items-center gap-2">
+                <Link
+                    to="/agents/$agentId"
+                    params={{ agentId: props.agentId }}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    Back to Agent
+                </Link>
+            </div>
+
+            <div
+                aria-label="File browser actions"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+            >
+                <div className="flex flex-wrap items-center gap-1">
                     <Link
                         to={getBrowserPathHref(props.agentId, props.parentPath)}
-                        className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
                         disabled={props.isAtCwd}
                     >
                         <ArrowUp className="h-4 w-4" />
                         Up
                     </Link>
+                    <div className="mx-1 h-5 w-px bg-slate-700" />
                     <button
                         type="button"
                         onClick={props.onToggleHiddenFiles}
@@ -687,7 +715,7 @@ function BrowserHeader(props: {
                                 ? "Hide hidden files"
                                 : "Show hidden files"
                         }
-                        className="inline-flex items-center gap-2 rounded border border-slate-700 bg-slate-800/60 px-4 py-2 text-slate-200 hover:bg-slate-700/60"
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
                     >
                         {props.showHiddenFiles ? (
                             <EyeOff className="h-4 w-4" />
@@ -696,6 +724,9 @@ function BrowserHeader(props: {
                         )}
                         {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
                     </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1">
                     <CreateDirectoryAction
                         agent={props.agent}
                         directoryPath={props.directoryPath}
@@ -704,16 +735,9 @@ function BrowserHeader(props: {
                         agent={props.agent}
                         directoryPath={props.directoryPath}
                     />
-                    <Link
-                        to="/agents/$agentId"
-                        params={{ agentId: props.agentId }}
-                        className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
-                    >
-                        Back to Agent
-                    </Link>
                 </div>
             </div>
-        </div>
+        </header>
     );
 }
 
