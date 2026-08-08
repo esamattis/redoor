@@ -23,6 +23,7 @@ import type { LoginRequest } from "../../bindings/LoginRequest";
 import type { LoginResponse } from "../../bindings/LoginResponse";
 import type { LogoutResponse } from "../../bindings/LogoutResponse";
 import type { MetadataResponse } from "../../bindings/MetadataResponse";
+import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
 
 export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
@@ -473,6 +474,16 @@ export class ApiClient {
         );
         this.sessionCookie = null;
         return response;
+    }
+
+    /** Asks the server to re-read config.toml by restarting the process in place. */
+    async reloadConfig(): Promise<ReloadConfigResponse> {
+        return apiRequest<ReloadConfigResponse>(
+            this.baseUrl,
+            "/api/v1/config/reload",
+            { method: "POST" },
+            this.requestContext(),
+        );
     }
 
     getUiWebSocketUrl(): string {

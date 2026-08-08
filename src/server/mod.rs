@@ -6,6 +6,7 @@ mod files;
 #[cfg(target_os = "linux")]
 mod pam;
 mod raw;
+mod reload;
 mod responses;
 mod routes;
 pub(crate) mod state;
@@ -21,5 +22,6 @@ pub(crate) use config::{
     parse_agent_token_file, parse_config_file, spawn_agents,
 };
 pub(crate) use redoor::watchdog::WatchdogRegistry;
+pub(crate) use reload::reexec_current_process;
 pub(crate) use routes::build_app;
 pub(crate) use state::{CoordinatorArgs, ServerState};

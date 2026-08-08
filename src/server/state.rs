@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use clap::Args;
 use redoor::actors;
 use redoor::terminal_registry::TerminalRegistry;
@@ -16,6 +19,12 @@ pub(crate) struct ServerState {
     pub(crate) terminal_registry: TerminalRegistry,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
+    /// Absolute path of the config file loaded at startup so reload can
+    /// re-validate the same file the process was started with.
+    pub(crate) config_path: PathBuf,
+    /// Signals axum graceful shutdown; reload fires this after a successful
+    /// pre-validation so the listener is dropped before exec.
+    pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl ServerState {
@@ -24,12 +33,16 @@ impl ServerState {
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
         auth: AuthState,
+        config_path: PathBuf,
+        shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     ) -> Self {
         Self {
             router_ref,
             watchdog_registry,
             terminal_registry,
             auth,
+            config_path,
+            shutdown_tx,
         }
     }
 }

@@ -24,6 +24,13 @@ pub struct LogoutResponse {
     pub logged_out: bool,
 }
 
+/// Confirms the server accepted a config reload and is about to restart.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReloadConfigResponse {
+    pub reloaded: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {

@@ -3,7 +3,7 @@ mod server;
 mod setup_systemd;
 mod ssh;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use redoor::{Level, actors, log, logging};
@@ -182,11 +182,16 @@ async fn run_server(args: server::CoordinatorArgs) {
     // registry exists by the time the first WebSocket connects.
     let watchdog_registry = server::WatchdogRegistry::new();
 
+    // Oneshot so reload can drop the axum listener before self-exec; keeping
+    // the listen FD open would race the restarted process on the same port.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let app = server::build_app(server::ServerState::new(
         router_ref.clone(),
         watchdog_registry.clone(),
         terminal_registry,
         auth,
+        config_path.clone(),
+        Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
     ));
 
     let addr = format!("{bind}:{port}");
@@ -217,6 +222,14 @@ async fn run_server(args: server::CoordinatorArgs) {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(async {
+        shutdown_rx.await.ok();
+    })
     .await
     .unwrap();
+
+    // Only reached after reload (or future shutdown paths). Replace this
+    // process with the same binary+argv so startup re-reads config.toml.
+    // kill_on_drop agent children are already torn down with the supervisors.
+    server::reexec_current_process();
 }
