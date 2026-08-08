@@ -2,6 +2,6 @@
 import type { AgentInfoResponse } from "./AgentInfoResponse";
 
 /**
- * Returns the complete in-process inventory rather than only live sockets.
+ * Confirms that a managed supervisor accepted an idempotent start request.
  */
-export type AgentListResponse = { agents: Array<AgentInfoResponse>, };
+export type StartAgentResponse = { agent: AgentInfoResponse, };

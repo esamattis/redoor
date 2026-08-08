@@ -7,7 +7,8 @@ use tower_http::cors::{Any, CorsLayer};
 use super::{
     agents::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
-        ls_agent_handler, metadata_agent_handler, server_info_handler,
+        ls_agent_handler, metadata_agent_handler, server_info_handler, shutdown_agent_handler,
+        start_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
@@ -44,6 +45,11 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(list_transfer_progress_handler),
         )
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
+        .route("/api/v1/agents/{agent}/start", post(start_agent_handler))
+        .route(
+            "/api/v1/agents/{agent}/shutdown",
+            post(shutdown_agent_handler),
+        )
         .route("/api/v1/agents/{agent}/ls", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/ls/{*path}", get(ls_agent_handler))
         .route("/api/v1/agents/{agent}/cat", get(cat_agent_handler))

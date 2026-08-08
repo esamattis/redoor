@@ -1,6 +1,5 @@
 //! Parses the required server config: authenticated `[server]` settings plus
-//! optional `[[agents]]`, and spawns one agent per entry as a background
-//! task when the server starts.
+//! optional `[[agents]]`, and registers each entry for lazy lifecycle control.
 //!
 //! Each `[[agents]]` entry is either an ssh-backed agent (default, identified
 //! by `target`) or a local agent (`local = true`) that the server launches
@@ -20,7 +19,6 @@ use toml_edit::Document;
 /// so we don't have to spell out the generic parameter on every function.
 type ParsedDocument<'a> = Document<&'a String>;
 
-use crate::server::WatchdogRegistry;
 use crate::ssh::SshAgentConfig;
 
 /// Looks up the effective OS account off the async runtime because passwd databases may block.
@@ -219,8 +217,8 @@ pub(crate) struct LocalAgentConfig {
 }
 
 /// One configured agent entry from the agents toml. The variant decides
-/// whether the server spawns an ssh-wrapped agent or a plain local one,
-/// so the dispatcher in [`spawn_agents`] can pick the right transport
+/// whether the server can start an ssh-wrapped agent or a plain local one,
+/// so the dispatcher in `register_agents` can pick the right transport
 /// without inspecting the per-variant fields itself.
 #[derive(Debug, Clone)]
 pub(crate) enum AgentConfig {
@@ -583,30 +581,6 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
 /// agent actually uses.
 pub(crate) fn default_local_agent_name() -> String {
     System::host_name().unwrap_or_else(|| "local".to_string())
-}
-
-/// Spawns one tokio task per agent config. The file has already been parsed
-/// by [`parse_config_file`], so this function only owns the spawn loop.
-///
-/// Made sync (no `async`) because it no longer does any I/O — removing the
-/// `async` avoids a clippy `unused_async` warning and makes the call site in
-/// `run_server` simpler. Errors in individual agents are logged but do not
-/// abort the server or the other agents, so one unreachable host does not take
-/// down the whole fleet. The function returns synchronously (without waiting
-/// for the agents to connect) so the server can proceed to `axum::serve`
-/// immediately.
-///
-/// The actual agent lifecycle (subprocess death / WebSocket staleness
-/// detection and restart) is owned by the watchdog supervisor
-/// (see [`crate::server::watchdog`]) so this function just hands the
-/// configs off.
-pub(crate) fn spawn_agents(
-    configs: &[AgentConfig],
-    redoor_port: u16,
-    agent_token: &str,
-    registry: &WatchdogRegistry,
-) -> Result<()> {
-    crate::server::watchdog::spawn_agents(configs, redoor_port, agent_token, registry)
 }
 
 /// Spawns `redoor agent` as a local child process and returns the running

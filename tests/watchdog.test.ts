@@ -20,6 +20,7 @@ import {
 } from "./test-utils";
 
 const AGENT_NAME = "watchdog-test-agent";
+const FAILING_AGENT_NAME = "watchdog-failing-agent";
 
 const processManager = new ProcessManager();
 const tempFiles = new TempFileManager();
@@ -53,6 +54,12 @@ local = true
 name = "${AGENT_NAME}"
 dir = "${agentDir}"
 log = "${agentLogPath}"
+
+[[agents]]
+local = true
+name = "${FAILING_AGENT_NAME}"
+dir = "${agentDir}/does-not-exist"
+log = "${agentLogPath}.failing"
 `,
     );
 
@@ -71,17 +78,28 @@ log = "${agentLogPath}"
     await waitForPort(serverPort);
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
-    // The supervisor-spawned agent registers automatically once the
-    // server is up. Wait for it via the REST API rather than a
-    // stdout log match: the supervisor may register the agent
-    // before the test attaches a stdout listener, so the log-based
-    // waitForLogMessage helper would miss it.
-    await waitForValue({
+    const configuredAgent = await waitForValue({
         timeoutMs: 15000,
-        description: `watchdog agent ${AGENT_NAME} to be listed`,
+        description: `watchdog agent ${AGENT_NAME} inventory registration`,
         predicate: async () => {
             const agents = await apiClient.listAgents();
-            return agents.find((a) => a.name === AGENT_NAME);
+            return agents.find((agent) => agent.name === AGENT_NAME);
+        },
+    });
+    // Configuration must create visible inventory without eagerly launching a subprocess.
+    expect(configuredAgent.managed).toBe(true);
+    expect(configuredAgent.status).toBe("stopped");
+
+    await configuredAgent.start();
+    await waitForValue({
+        timeoutMs: 15000,
+        description: `watchdog agent ${AGENT_NAME} to connect after explicit start`,
+        predicate: async () => {
+            const agents = await apiClient.listAgents();
+            return agents.find(
+                (agent) =>
+                    agent.name === AGENT_NAME && agent.status === "connected",
+            );
         },
     });
 }, 30000);
@@ -94,7 +112,9 @@ afterAll(() => {
 /** Returns the single watchdog-spawned agent, asserting it's present. */
 async function getWatchdogAgent(): Promise<Agent> {
     const agents = await apiClient.listAgents();
-    const agent = agents.find((a) => a.name === AGENT_NAME);
+    const agent = agents.find(
+        (entry) => entry.name === AGENT_NAME && entry.status === "connected",
+    );
     if (!agent) {
         throw new Error(`Watchdog agent ${AGENT_NAME} not found`);
     }
@@ -128,7 +148,11 @@ describe("Watchdog supervisor", () => {
             description: "watchdog agent to be re-registered with a new PID",
             predicate: async () => {
                 const agents = await apiClient.listAgents();
-                const a = agents.find((x) => x.name === AGENT_NAME);
+                const a = agents.find(
+                    (entry) =>
+                        entry.name === AGENT_NAME &&
+                        entry.status === "connected",
+                );
                 if (!a) {
                     return undefined;
                 }
@@ -198,7 +222,11 @@ describe("Watchdog supervisor", () => {
                 "watchdog agent to be restarted after WebSocket went stale",
             predicate: async () => {
                 const agents = await apiClient.listAgents();
-                const a = agents.find((x) => x.name === AGENT_NAME);
+                const a = agents.find(
+                    (entry) =>
+                        entry.name === AGENT_NAME &&
+                        entry.status === "connected",
+                );
                 if (!a) {
                     return undefined;
                 }
@@ -219,4 +247,65 @@ describe("Watchdog supervisor", () => {
         const echo = await replacementAgent.echo("alive");
         expect(echo.message).toBe("alive");
     }, 90000);
+
+    it("intentionally shuts down and can restart a managed agent", async () => {
+        const agent = await getWatchdogAgent();
+        const details = await agent.getDetails();
+        const oldPid = details.pid;
+        const response = await agent.shutdown();
+
+        // Shutdown acknowledgement guarantees the public inventory has settled stopped.
+        expect(response.agent.status).toBe("stopped");
+        const stopped = (await apiClient.listAgents()).find(
+            (entry) => entry.name === AGENT_NAME,
+        );
+        // Intentional shutdown retains the managed row rather than removing it.
+        expect(stopped?.status).toBe("stopped");
+        expect(stopped?.managed).toBe(true);
+        // Reaping guarantees the previously reported child PID no longer exists.
+        expect(() => process.kill(oldPid, 0)).toThrow();
+
+        if (!stopped) throw new Error("Stopped managed agent disappeared");
+        await stopped.start();
+        await waitForValue({
+            timeoutMs: 15000,
+            description: "managed agent to reconnect after restart",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (entry) =>
+                        entry.name === AGENT_NAME &&
+                        entry.status === "connected",
+                ),
+        });
+    }, 30000);
+
+    it("surfaces managed startup issues without blocking control APIs", async () => {
+        const failingAgent = (await apiClient.listAgents()).find(
+            (entry) => entry.name === FAILING_AGENT_NAME,
+        );
+        if (!failingAgent)
+            throw new Error("Failing configured agent not found");
+        onTestFinished(async () => {
+            await failingAgent.shutdown();
+        });
+
+        await failingAgent.start();
+        const issue = await waitForValue({
+            timeoutMs: 15000,
+            description: "failing managed agent connection issue",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (entry) =>
+                        entry.name === FAILING_AGENT_NAME &&
+                        entry.connectionIssue !== null,
+                ),
+        });
+
+        // Concrete child failures remain visible while desired-running retries continue.
+        expect(issue.status).toBe("starting");
+        expect(issue.connectionIssue).toBeTruthy();
+        const inventory = await apiClient.listAgents();
+        // An unrelated list control remains responsive while the broken supervisor retries.
+        expect(inventory.some((entry) => entry.name === AGENT_NAME)).toBe(true);
+    }, 30000);
 });

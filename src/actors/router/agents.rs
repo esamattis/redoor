@@ -1,11 +1,12 @@
 use super::RouterError;
 use super::cleanup;
 use super::messages::{
-    AgentListEntry, ExecuteCommandRequest, OpenTerminalRequest, RegisterAgentRequest,
+    AgentListEntry, ApplyManagedLifecycleRequest, ExecuteCommandRequest, OpenTerminalRequest,
+    RegisterAgentRequest, RegisterManagedAgentRequest,
 };
-use super::state::{AgentConnection, RouterState};
+use super::state::{AgentConnection, KnownAgent, RouterState};
 use super::ui;
-use crate::commands::CommandResult;
+use crate::commands::{AgentConnectionStatus, CommandResult};
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
@@ -79,6 +80,46 @@ impl AgentConnection {
     }
 }
 
+/// Commits live routing and retained inventory together after lifecycle admission.
+fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
+    log!(
+        Level::Info,
+        "Agent registered: agent_id={}, agent_name={}, socket_id={}",
+        request.agent_id,
+        request.agent_name,
+        request.socket_id
+    );
+    let agent_id = request.agent_id.clone();
+    let connection = AgentConnection::from_register_request(request);
+    let connected_at = connection.connected_at;
+    let socket_id = connection.socket_id.clone();
+    let name = connection.agent_name.clone();
+    let default_directory = connection.default_directory.clone();
+    state.agents.by_id.insert(agent_id.clone(), connection);
+    let known = state
+        .agents
+        .known_by_id
+        .entry(agent_id.clone())
+        .or_insert_with(|| KnownAgent {
+            id: agent_id,
+            name: name.clone(),
+            default_directory: None,
+            managed: false,
+            status: AgentConnectionStatus::Disconnected,
+            connected_at: None,
+            last_seen_at: None,
+            connection_issue: None,
+            socket_id: None,
+        });
+    known.name = name;
+    known.default_directory = Some(default_directory);
+    known.status = AgentConnectionStatus::Connected;
+    known.connected_at = Some(connected_at);
+    known.connection_issue = None;
+    known.socket_id = Some(socket_id);
+    ui::notify_refresh(state);
+}
+
 /// Registers a connected agent, replacing any existing connection that
 /// already owns the same agent name.
 ///
@@ -108,6 +149,13 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
         );
 
         if let Some(old_connection) = state.agents.by_id.remove(&old_agent_id) {
+            if let Some(known) = state.agents.known_by_id.get_mut(&old_agent_id) {
+                known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+                    chrono::Utc::now().timestamp(),
+                ));
+                known.connected_at = None;
+                known.socket_id = None;
+            }
             // Notify the old session so its agent process exits promptly
             // instead of lingering as a zombie.
             let _ = old_connection.send_message(Message::Error {
@@ -121,31 +169,127 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
         state.terminal_registry.remove_agent_pending(&old_agent_id);
     }
 
-    log!(
-        Level::Info,
-        "Agent registered: agent_id={}, agent_name={}, socket_id={}",
-        request.agent_id,
-        request.agent_name,
-        request.socket_id
-    );
     let agent_id = request.agent_id.clone();
-    state
-        .agents
-        .by_id
-        .insert(agent_id, AgentConnection::from_register_request(request));
-    ui::notify_refresh(state);
+    let rejection_sender = request.outgoing_text.clone();
+    let watchdog = request.watchdog.clone();
+    let accepted = match watchdog.as_ref() {
+        Some(watchdog) => watchdog
+            .while_desired_running(|| commit_registration(state, request))
+            .is_some(),
+        None => {
+            commit_registration(state, request);
+            true
+        }
+    };
+    if !accepted {
+        let rejection = serde_json::to_string(&Message::Error {
+            message: "Managed agent is intentionally stopped".to_string(),
+        });
+        if let Ok(rejection) = rejection {
+            let _ = rejection_sender.send(WsMessage::Text(rejection.into()));
+        }
+        log!(
+            Level::Warning,
+            "Ignoring managed registration that lost a shutdown race: agent_id={}",
+            agent_id
+        );
+    }
 }
 
-/// Projects registration metadata needed for complete agent-tab navigation.
+/// Adds a configured stopped record before its dormant supervisor can be controlled.
+pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManagedAgentRequest) {
+    let id = request.agent_id;
+    state.agents.known_by_id.insert(
+        id.clone(),
+        KnownAgent {
+            id: id.clone(),
+            name: id.to_string(),
+            default_directory: request.default_directory,
+            managed: true,
+            status: AgentConnectionStatus::Stopped,
+            connected_at: None,
+            last_seen_at: None,
+            connection_issue: None,
+            socket_id: None,
+        },
+    );
+    let _ = request.reply.send(());
+}
+
+/// Projects supervisor changes into retained inventory without touching streaming lanes.
+pub(crate) async fn apply_managed_lifecycle(
+    state: &mut RouterState,
+    request: ApplyManagedLifecycleRequest,
+) {
+    let ApplyManagedLifecycleRequest {
+        agent_id,
+        snapshot,
+        reply,
+    } = request;
+    let Some(known) = state.agents.known_by_id.get_mut(&agent_id) else {
+        if let Some(reply) = reply {
+            let _ = reply.send(());
+        }
+        return;
+    };
+    if !known.managed {
+        if let Some(reply) = reply {
+            let _ = reply.send(());
+        }
+        return;
+    }
+
+    let live_socket = state
+        .agents
+        .by_id
+        .get(&agent_id)
+        .map(|connection| connection.socket_id.clone());
+    if live_socket.is_some() && snapshot.status != AgentConnectionStatus::Stopped {
+        known.status = AgentConnectionStatus::Connected;
+        known.connection_issue = snapshot.connection_issue;
+    } else {
+        known.status = snapshot.status.clone();
+        known.connection_issue = snapshot.connection_issue;
+        known.socket_id = snapshot.socket_id;
+        if known.status != AgentConnectionStatus::Connected {
+            known.connected_at = None;
+        }
+    }
+
+    if known.status == AgentConnectionStatus::Stopped {
+        if let Some(connection) = state.agents.by_id.remove(&agent_id) {
+            known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+                chrono::Utc::now().timestamp(),
+            ));
+            known.socket_id = None;
+            let _ = connection.send_message(crate::types::Message::Error {
+                message: "Managed agent was shut down".to_string(),
+            });
+            cleanup::cleanup_agent_requests(state, &agent_id).await;
+            state.terminal_registry.remove_agent_pending(&agent_id);
+        }
+    }
+    ui::notify_refresh(state);
+    if let Some(reply) = reply {
+        let _ = reply.send(());
+    }
+}
+
+/// Projects every retained inventory entry for deterministic REST sorting.
 pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
     state
         .agents
-        .by_id
-        .iter()
-        .map(|(id, info)| AgentListEntry {
-            id: id.clone(),
-            name: info.agent_name.clone(),
+        .known_by_id
+        .values()
+        .map(|info| AgentListEntry {
+            id: info.id.clone(),
+            name: info.name.clone(),
             default_directory: info.default_directory.clone(),
+            managed: info.managed,
+            status: info.status.clone(),
+            connected_at: info.connected_at,
+            last_seen_at: info.last_seen_at,
+            connection_issue: info.connection_issue.clone(),
         })
         .collect()
 }

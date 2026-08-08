@@ -12,12 +12,25 @@ export REDOOR_PORT
 pnpm run build
 cargo build --bin redoor
 rm -rf .test-playwright-home
-mkdir -p .test-playwright-home
+mkdir -p .test-playwright-home/lazy-agent
+rm -rf .test-playwright-home/missing-agent-directory
 cat > .test-playwright-config.toml <<'EOF'
 [server]
 username = "test-user"
 password = "test-password"
 agent_token = "test-agent-token"
+
+[[agents]]
+local = true
+name = "lazy_managed"
+dir = ".test-playwright-home/lazy-agent"
+log = "log/playwright-lazy-managed.log"
+
+[[agents]]
+local = true
+name = "failing_managed"
+dir = ".test-playwright-home/missing-agent-directory"
+log = "log/playwright-failing-managed.log"
 EOF
 # Start each process directly so pnpm cannot add color codes while expanding the port.
 HOME="$PWD/.test-playwright-home" ./target/debug/redoor server --config .test-playwright-config.toml --port "$REDOOR_PORT" --log log/playwright-redoor.log &

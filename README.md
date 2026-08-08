@@ -230,8 +230,13 @@ examples of every available option. On Linux the starter config omits
 `username`/`password` so browser login uses the process owner's system account
 via PAM; on other platforms it embeds a generated username/password pair.
 Store the printed secrets securely. The required `[server]` table always needs
-`agent_token`. The optional `[[agents]]` array starts SSH-backed or local agent
-processes; SSH and local entries can be mixed in the same file.
+`agent_token`. The optional `[[agents]]` array registers SSH-backed or local
+managed agents; SSH and local entries can be mixed in the same file. Configured
+agents start lazily when their tab/status page is opened or when **Start** is
+used from the **Agents** management view. That view retains stopped and
+previously disconnected agents, shows connection recency and startup issues,
+and offers shutdown controls only for TOML-managed entries. Externally launched
+agents remain observation-only.
 
 #### Server settings
 
@@ -239,14 +244,14 @@ Server settings can come from CLI flags, the config file, environment variables,
 or built-in defaults. Precedence is CLI flag, config file, environment variable,
 then default. Only the port has an environment-variable fallback.
 
-| Config key | Type | CLI flag | Env var | Default | Description |
-| ---------- | ---- | -------- | ------- | ------- | ----------- |
-| `server.port` | integer | `--port` | `REDOOR_PORT` | `3000` | HTTP and WebSocket listener port. Must fit in an unsigned 16-bit integer. |
-| `server.bind` | string | `--bind` | — | `0.0.0.0` | Address on which the server listens. Use `127.0.0.1` for local-only access. |
-| `server.log` | string | `--log` | — | stderr | Server log file path. |
-| `server.username` | string | — | — | optional* | Username accepted by the browser login form. |
-| `server.password` | string | — | — | optional* | Password accepted by the browser login form. Keep the config file private. |
-| `server.agent_token` | string | — | — | required | Shared secret agents must present when registering. |
+| Config key           | Type    | CLI flag | Env var       | Default   | Description                                                                 |
+| -------------------- | ------- | -------- | ------------- | --------- | --------------------------------------------------------------------------- |
+| `server.port`        | integer | `--port` | `REDOOR_PORT` | `3000`    | HTTP and WebSocket listener port. Must fit in an unsigned 16-bit integer.   |
+| `server.bind`        | string  | `--bind` | —             | `0.0.0.0` | Address on which the server listens. Use `127.0.0.1` for local-only access. |
+| `server.log`         | string  | `--log`  | —             | stderr    | Server log file path.                                                       |
+| `server.username`    | string  | —        | —             | optional* | Username accepted by the browser login form.                                |
+| `server.password`    | string  | —        | —             | optional* | Password accepted by the browser login form. Keep the config file private.  |
+| `server.agent_token` | string  | —        | —             | required  | Shared secret agents must present when registering.                         |
 
 \* `username` and `password` must both be set or both omitted. On Linux, omitting
 both authenticates browser logins against the process owner's system account via
@@ -264,29 +269,29 @@ connects to the target through SSH, ensures the configured Redoor binary is
 available on the remote host, starts the remote agent, and creates a reverse
 port forward back to the server.
 
-| Key | Type | Required | Default | Description |
-| --- | ---- | -------- | ------- | ----------- |
-| `target` | string | Yes | — | SSH host or `user@host` target. |
-| `local` | boolean | No | `false` | Leave unset or set to `false` for an SSH-backed agent. |
-| `username` | string | No | SSH configuration or the user in `target` | SSH login username, equivalent to `ssh -l`. |
-| `ssh_port` | integer | No | `22` | SSH server port, equivalent to `ssh -p`. Must fit in an unsigned 16-bit integer. |
-| `name` | string | No | Host portion of `target` | Name under which the agent registers with the server. |
-| `remote_bin` | string | No | `~/.local/redoor/<version>/redoor` | Redoor binary path on the remote host. |
-| `dir` | string | No | Remote shell's current directory | Default directory opened when the UI agent tab is clicked. |
-| `log` | string | No | Inherit server stdio | Local file to which the SSH process's stdout and stderr are appended. |
+| Key          | Type    | Required | Default                                   | Description                                                                      |
+| ------------ | ------- | -------- | ----------------------------------------- | -------------------------------------------------------------------------------- |
+| `target`     | string  | Yes      | —                                         | SSH host or `user@host` target.                                                  |
+| `local`      | boolean | No       | `false`                                   | Leave unset or set to `false` for an SSH-backed agent.                           |
+| `username`   | string  | No       | SSH configuration or the user in `target` | SSH login username, equivalent to `ssh -l`.                                      |
+| `ssh_port`   | integer | No       | `22`                                      | SSH server port, equivalent to `ssh -p`. Must fit in an unsigned 16-bit integer. |
+| `name`       | string  | No       | Host portion of `target`                  | Name under which the agent registers with the server.                            |
+| `remote_bin` | string  | No       | `~/.local/redoor/<version>/redoor`        | Redoor binary path on the remote host.                                           |
+| `dir`        | string  | No       | Remote shell's current directory          | Default directory opened when the UI agent tab is clicked.                       |
+| `log`        | string  | No       | Inherit server stdio                      | Local file to which the SSH process's stdout and stderr are appended.            |
 
 #### Local agents
 
-Set `local = true` to launch an agent on the same machine and from the same
-Redoor executable as the server. Local entries must not contain `target`,
+Set `local = true` to make a lazily launched managed agent use the same machine
+and Redoor executable as the server. Local entries must not contain `target`,
 `username`, `ssh_port`, or `remote_bin`.
 
-| Key | Type | Required | Default | Description |
-| --- | ---- | -------- | ------- | ----------- |
-| `local` | boolean | Yes | — | Must be `true` to select a local agent. |
-| `name` | string | No | System hostname, or `local` if unavailable | Name under which the agent registers with the server. |
-| `dir` | string | No | Server process's current directory | Default directory opened when the UI agent tab is clicked. |
-| `log` | string | No | Inherit server stdio | File to which the agent process's stdout and stderr are appended. |
+| Key     | Type    | Required | Default                                    | Description                                                       |
+| ------- | ------- | -------- | ------------------------------------------ | ----------------------------------------------------------------- |
+| `local` | boolean | Yes      | —                                          | Must be `true` to select a local agent.                           |
+| `name`  | string  | No       | System hostname, or `local` if unavailable | Name under which the agent registers with the server.             |
+| `dir`   | string  | No       | Server process's current directory         | Default directory opened when the UI agent tab is clicked.        |
+| `log`   | string  | No       | Inherit server stdio                       | File to which the agent process's stdout and stderr are appended. |
 
 Agent names must be unique. The server rejects duplicate names during startup.
 Agent log paths are opened on the server machine for both SSH-backed and local

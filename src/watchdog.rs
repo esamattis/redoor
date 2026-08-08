@@ -1,64 +1,33 @@
-//! Generic per-key watchdog supervisors that own a long-lived subprocess
-//! lifecycle.
+//! Lazy per-key watchdog supervisors for managed agent subprocesses.
 //!
-//! The watchdog is intentionally decoupled from any specific subprocess
-//! type. The [`WatchdogSupervisor`] takes a closure that knows how to
-//! spawn one child process; the supervisor loops:
-//!
-//! 1. Call the spawn closure to get a [`tokio::process::Child`].
-//! 2. Wait for either:
-//!    - the child to exit on its own, or
-//!    - a stale signal from the session layer
-//!      ([`WatchdogHandle::signal_stale`]).
-//! 3. Kill the child (if still alive) and reap it.
-//! 4. Sleep for a backoff that resets on a stable run and grows on
-//!    repeated quick failures.
-//! 5. Restart.
-//!
-//! The supervisor runs forever for the lifetime of the server. The
-//! server instantiates one supervisor per configured agent and passes
-//! in a closure that knows how to spawn that agent's subprocess
-//! (local `redoor agent` or `ssh` wrapping a remote one).
-//!
-//! The watchdog is exposed as a library module so the actor session
-//! (in [`crate::actors::session`]) can look up the right supervisor
-//! by name after the agent registers. The server wires the
-//! `WatchdogRegistry` into its own axum state and forwards it to the
-//! session.
+//! A supervisor is registered at server startup but remains dormant until a
+//! control request asks it to start. Once desired-running, it owns spawning,
+//! registration tracking, stale-session recovery, bounded restart backoff, and
+//! intentional shutdown without coupling the generic lifecycle code to Axum.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use tokio::process::Child;
+use tokio::sync::{Notify, mpsc, oneshot};
 
+use crate::commands::AgentConnectionStatus;
 use crate::log;
 use crate::logging::Level;
-use tokio::process::Child;
-use tokio::sync::Notify;
-use tokio::time::sleep;
+use crate::types::SocketId;
 
-/// Backoff for the first restart after a quick failure or spawn error.
+/// Backoff for the first retry after a quick failure.
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-
-/// Cap on the backoff to avoid waiting forever between restart attempts
-/// against a persistently broken host.
+/// Caps retries so a broken managed host does not spin continuously.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-
-/// A run of at least this long is considered "stable" and resets the
-/// backoff. A crash after a long stable run is treated as a fresh
-/// transient event rather than an escalating outage.
+/// Resets retry escalation after a subprocess has remained useful for a while.
 const STABLE_RUNTIME: Duration = Duration::from_secs(30);
+/// Surfaces a useful issue when a live child has not registered promptly.
+const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Spawn strategy for one supervisor. Returning an error means the
-/// supervisor backs off and retries on the next cycle. The inner
-/// closure is `Send + Sync + 'static` so the supervisor can own it
-/// across restarts.
-///
-/// Construct with [`SpawnFn::new`] to avoid hand-writing the
-/// `Arc::new(move || Box::pin(async move { ... }))` triple-nesting at
-/// every call site: pass an `Fn() -> Fut` and the constructor boxes
-/// each future for you.
+/// Spawn strategy kept transport-agnostic so local and SSH agents share lifecycle code.
 pub struct SpawnFn {
     inner: Arc<
         dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync,
@@ -66,10 +35,7 @@ pub struct SpawnFn {
 }
 
 impl SpawnFn {
-    /// Wraps an `Fn() -> Fut` into a [`SpawnFn`] by boxing each call's
-    /// future. Callers pass a plain function/closure that returns a
-    /// future; the `Arc<dyn Fn ...>` + `BoxFuture` plumbing is handled
-    /// here once instead of being repeated at every construction site.
+    /// Boxes a reusable async spawn closure once at the supervisor boundary.
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -80,434 +46,702 @@ impl SpawnFn {
         }
     }
 
-    /// Runs one spawn invocation, returning a future that resolves to
-    /// the spawned child or an error string.
+    /// Starts one transport-specific preparation/spawn attempt.
     fn spawn(&self) -> futures_util::future::BoxFuture<'static, Result<Child, String>> {
         (self.inner)()
     }
 }
 
-/// Handle the WebSocket session uses to signal that its connection has
-/// gone stale. The supervisor listens on the inner `Notify` and treats
-/// the signal as "kill the subprocess and start a new cycle."
+/// Public lifecycle snapshot shared with inventory and REST projections.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchdogSnapshot {
+    /// Separates operator intent from transient connection state.
+    pub desired_running: bool,
+    /// Gives clients the lifecycle state without exposing process details.
+    pub status: AgentConnectionStatus,
+    /// Retains the latest actionable spawn, exit, or startup issue.
+    pub connection_issue: Option<String>,
+    /// Protects replacement connections from stale disconnect events.
+    pub socket_id: Option<SocketId>,
+}
+
+impl WatchdogSnapshot {
+    /// Creates the intentionally dormant state used for every configured agent.
+    fn stopped() -> Self {
+        Self {
+            desired_running: false,
+            status: AgentConnectionStatus::Stopped,
+            connection_issue: None,
+            socket_id: None,
+        }
+    }
+}
+
+/// Callback used by server wiring to project lifecycle changes into the router.
+pub type SnapshotCallback = Arc<dyn Fn(WatchdogSnapshot) + Send + Sync>;
+
+/// Commands are independent from the stale signal so shutdown remains selectable everywhere.
+enum SupervisorCommand {
+    Start,
+    Shutdown {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Connected(SocketId),
+    Disconnected(SocketId),
+}
+
+/// Cloneable control handle for one configured supervisor.
 #[derive(Clone)]
 pub struct WatchdogHandle {
     key: String,
+    commands: mpsc::UnboundedSender<SupervisorCommand>,
     stale_signal: Arc<Notify>,
+    snapshot: Arc<Mutex<WatchdogSnapshot>>,
+    callback: SnapshotCallback,
+}
+
+impl std::fmt::Debug for WatchdogHandle {
+    /// Avoids requiring the callback closure to implement `Debug`.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WatchdogHandle")
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl WatchdogHandle {
-    /// Returns the key this handle is bound to. Used for logging when
-    /// the session signals staleness.
+    /// Returns the stable configured name used by sessions and management routes.
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    /// Tells the supervisor the WebSocket is no longer responsive. The
-    /// supervisor kills the subprocess (if still alive) and starts a
-    /// new cycle.
+    /// Requests desired-running and immediately publishes an optimistic starting state.
+    pub fn start(&self) -> Result<(), String> {
+        let should_publish = {
+            let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+            if snapshot.desired_running {
+                self.commands
+                    .send(SupervisorCommand::Start)
+                    .map_err(|_| format!("Watchdog supervisor stopped: {}", self.key))?;
+                false
+            } else {
+                self.commands
+                    .send(SupervisorCommand::Start)
+                    .map_err(|_| format!("Watchdog supervisor stopped: {}", self.key))?;
+                snapshot.desired_running = true;
+                snapshot.status = AgentConnectionStatus::Starting;
+                snapshot.connection_issue = None;
+                snapshot.socket_id = None;
+                true
+            }
+        };
+        if should_publish {
+            (self.callback)(self.snapshot());
+        }
+        Ok(())
+    }
+
+    /// Waits until startup/backoff is canceled and any owned child is killed and reaped.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        {
+            let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+            snapshot.desired_running = false;
+            self.commands
+                .send(SupervisorCommand::Shutdown { reply })
+                .map_err(|_| format!("Watchdog supervisor stopped: {}", self.key))?;
+        }
+        response
+            .await
+            .map_err(|_| format!("Watchdog shutdown acknowledgement dropped: {}", self.key))?
+    }
+
+    /// Marks a matching managed registration and rejects connections after shutdown intent.
+    pub fn mark_connected(&self, socket_id: SocketId) -> bool {
+        let snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+        snapshot.desired_running
+            && self
+                .commands
+                .send(SupervisorCommand::Connected(socket_id))
+                .is_ok()
+    }
+
+    /// Reports socket teardown while letting the supervisor ignore stale generations.
+    pub fn mark_disconnected(&self, socket_id: SocketId) {
+        let _ = self
+            .commands
+            .send(SupervisorCommand::Disconnected(socket_id));
+    }
+
+    /// Runs a registration commit while shutdown is unable to revoke desired-running.
+    pub fn while_desired_running<T>(&self, commit: impl FnOnce() -> T) -> Option<T> {
+        let snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+        snapshot.desired_running.then(commit)
+    }
+
+    /// Returns a cheap current snapshot without awaiting subprocess work.
+    pub fn snapshot(&self) -> WatchdogSnapshot {
+        self.snapshot
+            .lock()
+            .expect("watchdog snapshot poisoned")
+            .clone()
+    }
+
+    /// Requests restart of a subprocess whose WebSocket stopped responding.
     pub fn signal_stale(&self) {
         self.stale_signal.notify_one();
     }
+
+    /// Publishes one state transition after updating the shared snapshot.
+    fn publish(&self, snapshot: WatchdogSnapshot) {
+        *self.snapshot.lock().expect("watchdog snapshot poisoned") = snapshot.clone();
+        (self.callback)(snapshot);
+    }
 }
 
-/// Shared map from key to the supervisor's `Notify`. The server hands
-/// one to the axum state so the WebSocket session can look up the
-/// right supervisor after the agent sends its `AgentRegister` frame.
+/// Shared lookup from configured effective name to its lifecycle handle.
 #[derive(Clone, Default)]
 pub struct WatchdogRegistry {
-    inner: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    inner: Arc<Mutex<HashMap<String, WatchdogHandle>>>,
 }
 
 impl WatchdogRegistry {
-    /// Creates a new, empty registry. The server builds one before
-    /// spawning the axum app and before [`spawn_supervisor`].
+    /// Creates an empty registry before configured entries are validated.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Allocates a fresh `Notify` and stores it under `key`, then
-    /// returns a handle bound to it. The supervisor keeps the returned
-    /// handle and waits on its inner `Notify` for the rest of its
-    /// lifetime.
-    ///
-    /// Returns an error if the key is already registered. Two
-    /// supervisors sharing the same key would race on the same
-    /// `Notify`, with each one killing the other's subprocess on
-    /// stale signals, so the second registration is rejected instead
-    /// of being silently aliased.
-    pub fn register(&self, key: String) -> Result<WatchdogHandle> {
-        let mut map = self.inner.lock().expect("watchdog registry poisoned");
-        if map.contains_key(&key) {
-            bail!("Watchdog key already registered: key={}", key);
+    /// Stops every managed child before process replacement so exec cannot orphan agents.
+    pub async fn shutdown_all(&self) {
+        let handles = self
+            .inner
+            .lock()
+            .expect("watchdog registry poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for handle in handles {
+            if let Err(error) = handle.shutdown().await {
+                log!(
+                    Level::Warning,
+                    "Failed to shut down watchdog during server teardown: key={}, error={}",
+                    handle.key(),
+                    error
+                );
+            }
         }
-        let stale_signal = Arc::new(Notify::new());
-        map.insert(key.clone(), stale_signal.clone());
-        Ok(WatchdogHandle { key, stale_signal })
     }
 
-    /// Looks up the handle for an already-registered key. Returns
-    /// `None` if no supervisor owns the given key (e.g. an external
-    /// agent spawned outside the server). The session treats `None` as
-    /// "this agent is not supervised, so don't signal on stale" — a
-    /// half-open connection to an external agent is the operator's
-    /// problem to detect, not the watchdog's.
+    /// Returns the managed handle for a configured name, or `None` for external agents.
     pub fn lookup(&self, key: &str) -> Option<WatchdogHandle> {
         self.inner
             .lock()
             .expect("watchdog registry poisoned")
             .get(key)
-            .map(|stale_signal| WatchdogHandle {
-                key: key.to_string(),
-                stale_signal: stale_signal.clone(),
-            })
+            .cloned()
+    }
+
+    /// Registers all control primitives atomically before the supervisor task is spawned.
+    fn register(
+        &self,
+        key: String,
+        callback: SnapshotCallback,
+    ) -> Result<(WatchdogHandle, mpsc::UnboundedReceiver<SupervisorCommand>)> {
+        let mut map = self.inner.lock().expect("watchdog registry poisoned");
+        if map.contains_key(&key) {
+            bail!("Watchdog key already registered: key={key}");
+        }
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let handle = WatchdogHandle {
+            key: key.clone(),
+            commands,
+            stale_signal: Arc::new(Notify::new()),
+            snapshot: Arc::new(Mutex::new(WatchdogSnapshot::stopped())),
+            callback,
+        };
+        map.insert(key, handle.clone());
+        Ok((handle, receiver))
     }
 }
 
-/// Outcome of one supervisor cycle. Drives the next backoff and the
-/// log line that explains why the cycle ended.
-enum CycleOutcome {
-    /// Subprocess exited on its own. Wraps the OS-level result so
-    /// the supervisor can distinguish a clean exit from a `wait()`
-    /// failure (e.g. the child was already reaped by a signal).
-    Exited(std::io::Result<std::process::ExitStatus>),
-    /// Watchdog notified the supervisor that the WebSocket went
-    /// stale. The subprocess has already been killed and reaped.
-    Stale,
-    /// Spawn itself failed (e.g. binary not found).
-    SpawnFailed(String),
-}
-
-/// Spawns one supervisor task for a single key and returns
-/// immediately. The supervisor lives for the lifetime of the server
-/// and keeps restarting its subprocess forever.
-///
-/// `key` is the identifier used to look up the supervisor from the
-/// session (typically the agent's name). `spawn` is called once per
-/// cycle; it must be re-entrant because the supervisor invokes it on
-/// every restart.
-///
-/// Returns an error if `key` is already registered; see
-/// [`WatchdogRegistry::register`] for the rationale. On success,
-/// returns the supervisor task's `JoinHandle` so callers (notably
-/// tests) can abort it and avoid orphaning the current subprocess
-/// when they no longer need the supervisor. Production callers ignore
-/// the handle — the supervisor is meant to run for the server's
-/// lifetime.
+/// Registers a dormant supervisor and returns its task for test cleanup.
 pub fn spawn_supervisor(
     key: String,
     spawn: SpawnFn,
     registry: &WatchdogRegistry,
+    callback: SnapshotCallback,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let watchdog = registry.register(key.clone())?;
+    let (watchdog, commands) = registry.register(key.clone(), callback)?;
     log!(Level::Info, "Watchdog supervisor registered: key={}", key);
-    Ok(tokio::spawn(run_supervisor(key, spawn, watchdog)))
+    Ok(tokio::spawn(run_supervisor(key, spawn, watchdog, commands)))
 }
 
-/// Runs one supervisor loop until the process exits. Cycles through
-/// spawn → wait/kill → sleep forever, adjusting the backoff based on
-/// what ended the previous cycle.
-async fn run_supervisor(key: String, spawn: SpawnFn, watchdog: WatchdogHandle) {
-    let mut backoff = INITIAL_BACKOFF;
-    loop {
-        let started = Instant::now();
-        let outcome = run_one_cycle(&spawn, &watchdog).await;
-        let runtime = started.elapsed();
+/// Waits for start commands while acknowledging harmless shutdowns in the dormant state.
+async fn wait_until_running(
+    watchdog: &WatchdogHandle,
+    commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+) -> bool {
+    while let Some(command) = commands.recv().await {
+        match command {
+            SupervisorCommand::Start => return true,
+            SupervisorCommand::Shutdown { reply } => {
+                watchdog.publish(WatchdogSnapshot {
+                    desired_running: false,
+                    status: AgentConnectionStatus::Stopped,
+                    connection_issue: watchdog.snapshot().connection_issue,
+                    socket_id: None,
+                });
+                let _ = reply.send(Ok(()));
+            }
+            SupervisorCommand::Connected(_) | SupervisorCommand::Disconnected(_) => {}
+        }
+    }
+    false
+}
 
-        match outcome {
-            CycleOutcome::Exited(Ok(status)) => {
-                log!(
-                    Level::Info,
-                    "Watchdog subprocess exited: key={}, status={}, runtime={:?}",
-                    key,
-                    status,
-                    runtime
-                );
-                if runtime >= STABLE_RUNTIME && status.success() {
-                    // Long-stable run then a clean exit: treat as a
-                    // fresh transient event, restart quickly. A
-                    // non-zero exit after a long run (e.g. a crash
-                    // after 31s) is NOT treated as clean — a
-                    // reproducible crash (memory leak that OOMs every
-                    // ~30s) would otherwise produce a tight
-                    // crash-restart loop at `INITIAL_BACKOFF` forever.
-                    backoff = INITIAL_BACKOFF;
-                } else {
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
+/// Runs desired-running cycles while every long operation remains cancelable by commands.
+async fn run_supervisor(
+    key: String,
+    spawn: SpawnFn,
+    watchdog: WatchdogHandle,
+    mut commands: mpsc::UnboundedReceiver<SupervisorCommand>,
+) {
+    while wait_until_running(&watchdog, &mut commands).await {
+        let mut backoff = INITIAL_BACKOFF;
+        let mut desired_running = true;
+        while desired_running {
+            watchdog.publish(WatchdogSnapshot {
+                desired_running: true,
+                status: AgentConnectionStatus::Starting,
+                connection_issue: watchdog.snapshot().connection_issue,
+                socket_id: None,
+            });
+            let started = Instant::now();
+            let cycle = run_started_cycle(&spawn, &watchdog, &mut commands).await;
+            desired_running = cycle.desired_running;
+            if !desired_running {
+                break;
+            }
+            if started.elapsed() >= STABLE_RUNTIME && cycle.was_connected {
+                backoff = INITIAL_BACKOFF;
+            }
+            log!(
+                Level::Info,
+                "Watchdog retry scheduled: key={}, backoff={:?}",
+                key,
+                backoff
+            );
+            desired_running = wait_for_restart(&watchdog, &mut commands, backoff).await;
+            if desired_running {
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        }
+        watchdog.publish(WatchdogSnapshot {
+            desired_running: false,
+            status: AgentConnectionStatus::Stopped,
+            connection_issue: watchdog.snapshot().connection_issue,
+            socket_id: None,
+        });
+    }
+}
+
+/// Captures the information needed to decide whether another cycle should run.
+struct CycleResult {
+    desired_running: bool,
+    was_connected: bool,
+}
+
+/// Keeps spawning cancelable so slow SSH preparation never blocks shutdown controls.
+async fn run_started_cycle(
+    spawn: &SpawnFn,
+    watchdog: &WatchdogHandle,
+    commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+) -> CycleResult {
+    let spawn_future = spawn.spawn();
+    tokio::pin!(spawn_future);
+    let child = loop {
+        tokio::select! {
+            result = &mut spawn_future => break result,
+            command = commands.recv() => {
+                if handle_pre_spawn_command(watchdog, command).await == CommandAction::Stop {
+                    return CycleResult { desired_running: false, was_connected: false };
                 }
             }
-            CycleOutcome::Exited(Err(error)) => {
-                log!(
-                    Level::Error,
-                    "Watchdog subprocess wait failed: key={}, error={}, runtime={:?}",
-                    key,
-                    error,
-                    runtime
-                );
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-            CycleOutcome::Stale => {
-                log!(
-                    Level::Warning,
-                    "Watchdog connection went stale, restarting: key={}, runtime={:?}",
-                    key,
-                    runtime
-                );
-                // A stale WebSocket is often transient (network
-                // glitch, tunnel bouncing), but a persistently broken
-                // path (e.g. firewall dropping idle connections every
-                // 30s) would produce a tight restart loop if we reset
-                // to `INITIAL_BACKOFF` every time. Escalate the
-                // backoff here too; a one-off blip still restarts
-                // quickly because the previous long run already
-                // reset the backoff in the `Exited(Ok(_))` arm, while
-                // a persistent staleness escalates up to `MAX_BACKOFF`.
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-            CycleOutcome::SpawnFailed(error) => {
-                log!(
-                    Level::Error,
-                    "Watchdog spawn failed: key={}, error={}, retrying in {:?}",
-                    key,
-                    error,
-                    backoff
-                );
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    };
+
+    match child {
+        Ok(child) => wait_for_child(child, watchdog, commands).await,
+        Err(error) => {
+            log!(
+                Level::Error,
+                "Watchdog spawn failed: key={}, error={}",
+                watchdog.key(),
+                error
+            );
+            publish_issue(watchdog, error);
+            CycleResult {
+                desired_running: true,
+                was_connected: false,
             }
         }
-
-        sleep(backoff).await;
     }
 }
 
-/// Runs one supervisor cycle: spawn the subprocess, wait for either
-/// subprocess exit or a stale-WebSocket signal, return the outcome.
-async fn run_one_cycle(spawn: &SpawnFn, watchdog: &WatchdogHandle) -> CycleOutcome {
-    let mut child = match spawn.spawn().await {
-        Ok(child) => child,
-        Err(error) => return CycleOutcome::SpawnFailed(error),
-    };
+/// Reduces command handling during preparation to an explicit continue/stop decision.
+async fn handle_pre_spawn_command(
+    watchdog: &WatchdogHandle,
+    command: Option<SupervisorCommand>,
+) -> CommandAction {
+    match command {
+        Some(SupervisorCommand::Shutdown { reply }) => {
+            publish_stopped(watchdog);
+            let _ = reply.send(Ok(()));
+            CommandAction::Stop
+        }
+        Some(SupervisorCommand::Connected(socket_id)) => {
+            publish_connected(watchdog, socket_id);
+            CommandAction::Continue
+        }
+        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Disconnected(_)) => {
+            CommandAction::Continue
+        }
+        None => CommandAction::Stop,
+    }
+}
 
-    tokio::select! {
-        status = child.wait() => CycleOutcome::Exited(status),
-        _ = watchdog.stale_signal.notified() => {
-            // Kill the subprocess and reap it so we don't leave a
-            // zombie between restarts. `start_kill` is non-blocking;
-            // the explicit `wait()` collects the exit status.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            CycleOutcome::Stale
+/// Watches child exit, registration timeout, stale signal, and controls concurrently.
+async fn wait_for_child(
+    mut child: Child,
+    watchdog: &WatchdogHandle,
+    commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+) -> CycleResult {
+    let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
+    tokio::pin!(startup_timeout);
+    let mut connected = false;
+    let mut timeout_reported = false;
+
+    loop {
+        tokio::select! {
+            status = child.wait() => {
+                let issue = match status {
+                    Ok(status) => format!("Agent process exited with status {status}"),
+                    Err(error) => format!("Failed to wait for agent process: {error}"),
+                };
+                publish_issue(watchdog, issue);
+                return CycleResult { desired_running: true, was_connected: connected };
+            }
+            _ = watchdog.stale_signal.notified() => {
+                kill_and_reap(&mut child).await;
+                publish_issue(watchdog, "Agent connection went stale".to_string());
+                return CycleResult { desired_running: true, was_connected: connected };
+            }
+            _ = &mut startup_timeout, if !connected && !timeout_reported => {
+                timeout_reported = true;
+                publish_issue(watchdog, "Agent process started but has not connected within 15 seconds".to_string());
+            }
+            command = commands.recv() => {
+                match handle_running_command(watchdog, command, &mut child, &mut connected).await {
+                    CommandAction::Continue => {}
+                    CommandAction::Stop => return CycleResult { desired_running: false, was_connected: connected },
+                }
+            }
         }
     }
+}
+
+/// Applies one command while a child is owned, including guaranteed shutdown reaping.
+async fn handle_running_command(
+    watchdog: &WatchdogHandle,
+    command: Option<SupervisorCommand>,
+    child: &mut Child,
+    connected: &mut bool,
+) -> CommandAction {
+    match command {
+        Some(SupervisorCommand::Shutdown { reply }) => {
+            kill_and_reap(child).await;
+            publish_stopped(watchdog);
+            let _ = reply.send(Ok(()));
+            CommandAction::Stop
+        }
+        Some(SupervisorCommand::Connected(socket_id)) => {
+            *connected = true;
+            publish_connected(watchdog, socket_id);
+            CommandAction::Continue
+        }
+        Some(SupervisorCommand::Disconnected(socket_id)) => {
+            if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
+                *connected = false;
+                watchdog.publish(WatchdogSnapshot {
+                    desired_running: true,
+                    status: AgentConnectionStatus::Starting,
+                    connection_issue: watchdog.snapshot().connection_issue,
+                    socket_id: None,
+                });
+            }
+            CommandAction::Continue
+        }
+        Some(SupervisorCommand::Start) => CommandAction::Continue,
+        None => {
+            kill_and_reap(child).await;
+            CommandAction::Stop
+        }
+    }
+}
+
+/// Waits through restart backoff while allowing shutdown to win immediately.
+async fn wait_for_restart(
+    watchdog: &WatchdogHandle,
+    commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+    backoff: Duration,
+) -> bool {
+    let delay = tokio::time::sleep(backoff);
+    tokio::pin!(delay);
+    loop {
+        tokio::select! {
+            _ = &mut delay => return true,
+            command = commands.recv() => {
+                match command {
+                    Some(SupervisorCommand::Shutdown { reply }) => {
+                        publish_stopped(watchdog);
+                        let _ = reply.send(Ok(()));
+                        return false;
+                    }
+                    Some(SupervisorCommand::Connected(socket_id)) => publish_connected(watchdog, socket_id),
+                    Some(SupervisorCommand::Disconnected(_)) => {},
+                    Some(SupervisorCommand::Start) => {}
+                    None => return false,
+                }
+            }
+        }
+    }
+}
+
+/// Keeps command branch results compact inside `tokio::select!` call sites.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandAction {
+    Continue,
+    Stop,
+}
+
+/// Settles intentional shutdown before acknowledging the management request.
+fn publish_stopped(watchdog: &WatchdogHandle) {
+    watchdog.publish(WatchdogSnapshot {
+        desired_running: false,
+        status: AgentConnectionStatus::Stopped,
+        connection_issue: watchdog.snapshot().connection_issue,
+        socket_id: None,
+    });
+}
+
+/// Publishes successful registration and clears stale diagnostic text.
+fn publish_connected(watchdog: &WatchdogHandle, socket_id: SocketId) {
+    watchdog.publish(WatchdogSnapshot {
+        desired_running: true,
+        status: AgentConnectionStatus::Connected,
+        connection_issue: None,
+        socket_id: Some(socket_id),
+    });
+}
+
+/// Retains a concrete lifecycle issue while the desired-running retry loop continues.
+fn publish_issue(watchdog: &WatchdogHandle, issue: String) {
+    watchdog.publish(WatchdogSnapshot {
+        desired_running: true,
+        status: AgentConnectionStatus::Starting,
+        connection_issue: Some(issue),
+        socket_id: watchdog.snapshot().socket_id,
+    });
+}
+
+/// Terminates and reaps the owned child so intentional shutdown cannot leave zombies.
+async fn kill_and_reap(child: &mut Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::process::Command;
 
-    /// RAII guard that aborts a supervisor task on drop. Tests hold
-    /// one for every supervisor they spawn so the supervisor (and its
-    /// in-flight subprocess, when constructed with `kill_on_drop`)
-    /// is cleaned up on every exit path, including early returns and
-    /// panics. Mirrors the role of `onTestFinished` in the TS suite
-    /// for Rust tests, which have no such hook of their own.
-    struct SupervisorGuard {
-        handle: Option<tokio::task::JoinHandle<()>>,
-    }
-
-    impl SupervisorGuard {
-        fn new(handle: tokio::task::JoinHandle<()>) -> Self {
-            Self {
-                handle: Some(handle),
-            }
-        }
-    }
+    /// Aborts a supervisor on every test exit path while child `kill_on_drop` handles cleanup.
+    struct SupervisorGuard(tokio::task::JoinHandle<()>);
 
     impl Drop for SupervisorGuard {
+        /// Prevents a failed assertion from leaking a supervisor into later tests.
         fn drop(&mut self) {
-            if let Some(handle) = self.handle.take() {
-                handle.abort();
-            }
+            self.0.abort();
         }
     }
 
-    /// Verifies `register` then `lookup` returns a handle bound to the
-    /// same `Notify`, and that `signal_stale` on the registered
-    /// handle wakes a task waiting on the looked-up handle's
-    /// `notified()`.
-    #[tokio::test]
-    async fn test_registry_lookup_round_trips_stale_signal() {
-        let registry = WatchdogRegistry::new();
-        let handle = registry
-            .register("agent-1".to_string())
-            .expect("first register should succeed");
-
-        let looked_up = registry
-            .lookup("agent-1")
-            .expect("agent-1 must be registered");
-
-        // Signal via the original handle; the looked-up handle's
-        // `notified()` future should resolve because both handles
-        // share the same `Arc<Notify>`.
-        handle.signal_stale();
-        // Bound the wait so a regression deadlocks the test instead of
-        // hanging the suite. The default test timeout is generous
-        // (60s) and the signal is delivered synchronously, so this
-        // resolves immediately in practice.
-        tokio::time::timeout(Duration::from_secs(1), looked_up.stale_signal.notified())
-            .await
-            .expect("stale_signal.notified() should resolve after signal_stale()");
+    /// Builds a no-op callback because unit tests inspect the shared snapshot directly.
+    fn callback() -> SnapshotCallback {
+        Arc::new(|_| {})
     }
 
-    /// Verifies `lookup` returns `None` for an unknown key so the
-    /// session can tell a server-spawned supervised agent apart from a
-    /// manually-spawned external one.
-    #[tokio::test]
-    async fn test_registry_lookup_returns_none_for_unknown_key() {
-        let registry = WatchdogRegistry::new();
-        assert!(registry.lookup("ghost-agent").is_none());
+    /// Polls a condition cooperatively without adding fixed sleeps to lifecycle tests.
+    async fn wait_until(mut predicate: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !predicate() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("watchdog condition should become observable");
     }
 
-    /// Verifies the supervisor restarts a subprocess that exits
-    /// immediately. Uses `sh -c "exit 0"` (a command guaranteed to
-    /// exist on macOS and Linux) as a stand-in for a real agent.
-    /// The test passes if the supervisor keeps the loop going for
-    /// several cycles without panicking and the subprocess count
-    /// advances; we use a short `MAX_BACKOFF` would normally be the
-    /// cap, but a quick-exit subprocess doubles the backoff up to
-    /// the cap, so we just verify the process spawned at least twice
-    /// by checking a counter via a shared atomic.
     #[tokio::test]
-    async fn test_supervisor_restarts_subprocess_on_quick_exit() {
-        use std::process::Stdio;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::process::Command;
-
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_for_spawn = counter.clone();
+    async fn supervisor_is_dormant_until_started_and_start_is_idempotent() {
+        crate::logging::init(None);
+        let count = Arc::new(AtomicUsize::new(0));
+        let spawn_count = count.clone();
         let spawn = SpawnFn::new(move || {
-            let counter = counter_for_spawn.clone();
+            let spawn_count = spawn_count.clone();
             async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-                // `kill_on_drop(true)` ensures any in-flight child is
-                // reaped when the aborted supervisor drops its `Child`.
+                spawn_count.fetch_add(1, Ordering::SeqCst);
                 Command::new("sh")
                     .arg("-c")
-                    .arg("exit 0")
+                    .arg("cat")
                     .kill_on_drop(true)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn()
-                    .map_err(|e| e.to_string())
+                    .map_err(|error| error.to_string())
             }
         });
-
         let registry = WatchdogRegistry::new();
-        // Abort the supervisor when the test exits so we don't keep
-        // spawning `sh -c "exit 0"` cycles into a dropped runtime.
-        let _guard = SupervisorGuard::new(
-            spawn_supervisor("quick-exit".to_string(), spawn, &registry)
-                .expect("spawn_supervisor should register the key"),
+        let _guard = SupervisorGuard(
+            spawn_supervisor("lazy".into(), spawn, &registry, callback()).expect("register"),
         );
+        let handle = registry.lookup("lazy").expect("managed handle");
 
-        // Wait for the counter to reach at least 3 spawns to prove
-        // the supervisor kept restarting instead of stopping after
-        // the first quick exit.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if counter.load(Ordering::SeqCst) >= 3 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let observed = counter.load(Ordering::SeqCst);
-        assert!(
-            observed >= 3,
-            "supervisor should have spawned the subprocess at least 3 times, got {}",
-            observed
-        );
+        // Registration must not eagerly invoke the process factory.
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        // The initial public state makes the dormant agent visible to clients.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+
+        handle.start().expect("first start accepted");
+        handle.start().expect("duplicate start accepted");
+        wait_until(|| count.load(Ordering::SeqCst) == 1).await;
+        // Duplicate UI/direct-route requests must not create concurrent children.
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        handle.shutdown().await.expect("shutdown acknowledged");
+        // Acknowledgement guarantees the supervisor has settled intentionally stopped.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
     }
 
-    /// Verifies the supervisor kills a still-running subprocess when
-    /// the WebSocket signals stale, and then starts a new one.
-    /// Uses `sleep 60` as a stand-in for an agent that won't exit on
-    /// its own. The test passes if the PID changes after a stale
-    /// signal, proving the old subprocess was killed and replaced.
     #[tokio::test]
-    async fn test_supervisor_kills_subprocess_on_stale_signal() {
-        use std::process::Stdio;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use tokio::process::Command;
-
-        let pid_counter = Arc::new(AtomicU32::new(0));
-        let pid_counter_for_spawn = pid_counter.clone();
-        let spawn = SpawnFn::new(move || {
-            let pid_counter = pid_counter_for_spawn.clone();
-            async move {
-                // `kill_on_drop(true)` ensures the replacement
-                // `sleep 60` is reaped when the aborted supervisor
-                // drops its `Child`, instead of orphaning it for up
-                // to 60s after the test returns.
-                let child = Command::new("sleep")
-                    .arg("60")
-                    .kill_on_drop(true)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .map_err(|e| e.to_string())?;
-                pid_counter.store(child.id().unwrap_or(0), Ordering::SeqCst);
-                Ok(child)
-            }
-        });
-
+    async fn shutdown_revokes_registration_and_interrupts_pending_spawn() {
+        crate::logging::init(None);
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let observed_spawn = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        // Abort the supervisor on test exit so the replacement
-        // `sleep 60` (and any later cycles) is killed via
-        // `kill_on_drop` instead of outliving the test.
-        let _guard = SupervisorGuard::new(
-            spawn_supervisor("stale-test".to_string(), spawn, &registry)
-                .expect("spawn_supervisor should register the key"),
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "pending".into(),
+                SpawnFn::new(move || {
+                    let observed_spawn = observed_spawn.clone();
+                    async move {
+                        observed_spawn.fetch_add(1, Ordering::SeqCst);
+                        std::future::pending::<Result<Child, String>>().await
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
         );
+        let handle = registry.lookup("pending").expect("managed handle");
+        handle.start().expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
 
-        // Wait for the first sleep to be spawned.
-        let first_pid = {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                let pid = pid_counter.load(Ordering::SeqCst);
-                if pid != 0 {
-                    break pid;
-                }
-                if Instant::now() >= deadline {
-                    panic!("supervisor did not spawn the first subprocess in time");
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        };
+        let shutdown_handle = handle.clone();
+        let shutdown = tokio::spawn(async move { shutdown_handle.shutdown().await });
+        wait_until(|| !handle.snapshot().desired_running).await;
+        // Once shutdown intent wins, a socket parsed earlier cannot register late.
+        assert!(!handle.mark_connected(SocketId::new()));
+        shutdown
+            .await
+            .expect("shutdown task should complete")
+            .expect("pending spawn should be canceled");
+        // Acknowledgement proves cancellation settled without waiting for spawn preparation.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+        // Canceling preparation must not accidentally schedule another spawn cycle.
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+    }
 
-        // Signal stale via the looked-up handle.
-        let handle = registry
-            .lookup("stale-test")
-            .expect("stale-test must be registered");
-        handle.signal_stale();
+    #[tokio::test]
+    async fn spawn_errors_are_visible_and_shutdown_interrupts_backoff() {
+        crate::logging::init(None);
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "broken".into(),
+                SpawnFn::new(|| async { Err("missing executable".to_string()) }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("broken").expect("managed handle");
+        handle.start().expect("start accepted");
+        wait_until(|| handle.snapshot().connection_issue.is_some()).await;
 
-        // Wait for a new PID to appear, proving the old subprocess
-        // was killed and a new one started.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let new_pid = pid_counter.load(Ordering::SeqCst);
-            if new_pid != first_pid && new_pid != 0 {
-                return;
-            }
-            if Instant::now() >= deadline {
-                panic!(
-                    "supervisor did not restart the subprocess with a new PID after stale signal; first_pid={}, new_pid={}",
-                    first_pid,
-                    pid_counter.load(Ordering::SeqCst)
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        // Spawn failures remain actionable while retry intent stays active.
+        assert_eq!(
+            handle.snapshot().connection_issue.as_deref(),
+            Some("missing executable")
+        );
+        assert!(handle.snapshot().desired_running);
+        handle.shutdown().await.expect("backoff interrupted");
+        // Shutdown must win over a pending retry timer.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn connection_generation_clears_issue_and_ignores_stale_disconnect() {
+        crate::logging::init(None);
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "generation".into(),
+                SpawnFn::new(|| async {
+                    Command::new("sh")
+                        .arg("-c")
+                        .arg("cat")
+                        .kill_on_drop(true)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|error| error.to_string())
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("generation").expect("managed handle");
+        handle.start().expect("start accepted");
+        let old_socket = SocketId::new();
+        let new_socket = SocketId::new();
+        assert!(handle.mark_connected(old_socket.clone()));
+        assert!(handle.mark_connected(new_socket.clone()));
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&new_socket)).await;
+        handle.mark_disconnected(old_socket);
+        tokio::task::yield_now().await;
+
+        // A replacement connection stays authoritative when an old session exits late.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Connected);
+        assert_eq!(handle.snapshot().socket_id.as_ref(), Some(&new_socket));
+        // Successful registration removes an earlier lifecycle diagnostic.
+        assert_eq!(handle.snapshot().connection_issue, None);
+        handle.shutdown().await.expect("shutdown acknowledged");
     }
 }

@@ -53,16 +53,21 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
 
     const apiClient = new ApiClient(API_BASE_URL);
     await apiClient.login("test-user", "test-password");
-    await apiClient.waitForAgentNames(["agent1_src", "agent2_custom"], 120000);
+    await apiClient.waitForConnectedAgentNames(
+        ["agent1_src", "agent2_custom"],
+        120000,
+    );
     const agents = await apiClient.listAgents();
     const agent = agents.find((entry) => entry.name === "agent1_src");
-    if (!agent) {
-        throw new Error("Agent agent1_src not available for testing");
+    if (!agent || agent.status !== "connected" || agent.cwd === null) {
+        throw new Error("Connected agent agent1_src not available for testing");
     }
 
     const agent2 = agents.find((entry) => entry.name === "agent2_custom");
-    if (!agent2) {
-        throw new Error("Agent agent2_custom not available for testing");
+    if (!agent2 || agent2.status !== "connected" || agent2.cwd === null) {
+        throw new Error(
+            "Connected agent agent2_custom not available for testing",
+        );
     }
 
     return {

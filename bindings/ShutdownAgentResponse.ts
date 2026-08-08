@@ -2,6 +2,6 @@
 import type { AgentInfoResponse } from "./AgentInfoResponse";
 
 /**
- * Returns the complete in-process inventory rather than only live sockets.
+ * Confirms that intentional shutdown completed child cleanup.
  */
-export type AgentListResponse = { agents: Array<AgentInfoResponse>, };
+export type ShutdownAgentResponse = { agent: AgentInfoResponse, };

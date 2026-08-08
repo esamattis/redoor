@@ -365,14 +365,16 @@ test.describe.serial("File Browser Navigation", () => {
         await page.goto(agent1DirectoryUrl);
         // The first tab must capture its directory before another agent becomes active.
         await expect(
-            page.getByRole("tab", { name: ctx.agentName, exact: true }),
+            page.getByRole("tab", {
+                name: new RegExp(`^${ctx.agentName}, connected$`),
+            }),
         ).toHaveAttribute(
             "href",
             `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(agent1DirectoryPath)}`,
         );
 
         await page
-            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .getByRole("tab", { name: "agent2_custom, connected" })
             .click();
         await page.goto(agent2DirectoryUrl);
         await page
@@ -382,14 +384,16 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page).toHaveURL(agent2FileUrl);
 
         await page
-            .getByRole("tab", { name: ctx.agentName, exact: true })
+            .getByRole("tab", {
+                name: new RegExp(`^${ctx.agentName}, connected$`),
+            })
             .click();
         // Switching back must restore the first agent's independent directory.
         await expect(page).toHaveURL(agent1DirectoryUrl);
 
         await page.reload();
         await page
-            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .getByRole("tab", { name: "agent2_custom, connected" })
             .click();
         // Reloading must not discard the inactive tab's remembered file.
         await expect(page).toHaveURL(agent2FileUrl);
@@ -398,7 +402,9 @@ test.describe.serial("File Browser Navigation", () => {
         ).toContainText("nested3.txt");
 
         await page
-            .getByRole("tab", { name: ctx.agentName, exact: true })
+            .getByRole("tab", {
+                name: new RegExp(`^${ctx.agentName}, connected$`),
+            })
             .click();
         // Both persisted entries must remain independent after the refresh.
         await expect(page).toHaveURL(agent1DirectoryUrl);

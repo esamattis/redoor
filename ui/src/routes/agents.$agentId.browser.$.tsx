@@ -6,6 +6,7 @@ import {
     useNavigate,
     useRouter,
     useRouterState,
+    redirect,
 } from "@tanstack/react-router";
 import {
     Folder,
@@ -121,6 +122,12 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             (entry) => entry.id === params.agentId,
         );
         if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
+        if (agent.status !== "connected" || agent.cwd === null) {
+            throw redirect({
+                to: "/agents/$agentId",
+                params: { agentId: params.agentId },
+            });
+        }
 
         const path = `/${params._splat ?? ""}`;
 

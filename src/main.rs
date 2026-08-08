@@ -204,21 +204,20 @@ async fn run_server(args: server::CoordinatorArgs) {
         .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
     println!("Server running on http://{addr}");
 
-    // Start configured agents after the listener is bound (so reverse-ssh
-    // tunnels and local agents both have a server to connect to) but before
-    // axum::serve blocks the current task. spawn_agents returns immediately
-    // after handing each entry off to its supervisor task; the
-    // supervisors themselves run in the background for the server's
-    // lifetime. A duplicate agent name (e.g. two [[agents]] entries
-    // resolving to the same default key) is fatal at startup so the
-    // operator notices the misconfiguration immediately.
-    if let Err(error) = server::spawn_agents(
+    // Register configured agents after binding so later lazy starts can connect to
+    // a resolved port. Registration creates dormant supervisors only; no local or
+    // SSH subprocess starts until a tab, direct status route, or management action
+    // requests it. Duplicate effective names remain fatal before HTTP serving.
+    if let Err(error) = server::register_agents(
         &config.agents,
         port,
         &config.server.agent_token,
         &watchdog_registry,
-    ) {
-        eprintln!("Failed to start agent supervisors: {error}");
+        &router_ref,
+    )
+    .await
+    {
+        eprintln!("Failed to register managed agents: {error}");
         std::process::exit(1);
     }
 
@@ -232,8 +231,12 @@ async fn run_server(args: server::CoordinatorArgs) {
     .await
     .unwrap();
 
-    // Only reached after reload (or future shutdown paths). Replace this
-    // process with the same binary+argv so startup re-reads config.toml.
-    // kill_on_drop agent children are already torn down with the supervisors.
+    // Exec preserves process memory rather than dropping Rust values, so explicitly
+    // stop and reap managed children before replacing the server image. Configured
+    // inventory will be recreated dormant by the new process.
+    watchdog_registry.shutdown_all().await;
+
+    // Only reached after reload (or future shutdown paths). Replace this process
+    // with the same binary and arguments so startup re-reads config.toml.
     server::reexec_current_process();
 }

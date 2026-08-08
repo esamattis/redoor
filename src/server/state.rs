@@ -83,10 +83,9 @@ pub(crate) struct CoordinatorArgs {
     /// Linux to use PAM system-account login. Each optional `[[agents]]` entry
     /// is either an ssh-backed agent (with a `target` host) that connects back
     /// to this server through a reverse tunnel, or a local agent (with
-    /// `local = true`) that the server launches as a plain `redoor agent` child
-    /// process. Mixing both in the same file is supported, so a single server
-    /// process can bring up an entire fleet — remote hosts and a local agent —
-    /// without separate `redoor ssh` / `redoor agent` invocations per host.
+    /// `local = true`) that the server can launch as a plain `redoor agent` child
+    /// process. Entries are registered as stopped and start lazily from the UI
+    /// or management API, so configuration does not eagerly launch a fleet.
     #[arg(long)]
     pub(crate) config: Option<String>,
 }
