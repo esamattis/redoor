@@ -6,7 +6,7 @@
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use redoor::{Level, log};
@@ -501,10 +501,20 @@ fn parent_dir_of(path: &str) -> String {
     }
 }
 
-/// Uploads the locally cached binary to the remote host by piping it
-/// through `ssh ... 'cat > remote_path'`. Creates the remote parent
-/// directory and marks the binary executable so it is ready to run
-/// immediately, even when `cat` did not preserve the local mode bits.
+/// Sibling temp path for atomic remote binary replace. Keeping the temp file
+/// in the same directory as `remote_bin` ensures `mv` stays on one filesystem
+/// and can rename over a still-running executable without ETXTBSY.
+fn remote_upload_tmp_path(remote_bin: &str, unique: &str) -> String {
+    format!("{remote_bin}.tmp.{unique}")
+}
+
+/// Uploads the locally cached binary to the remote host by streaming into a
+/// sibling temp path, then atomically `mv` over the final path. In-place
+/// `cat > remote_bin` fails with ETXTBSY ("text file busy") when a previous
+/// agent is still executing that binary; rename replaces the directory entry
+/// while the old inode stays mapped until that process exits. Creates the
+/// remote parent directory and marks the temp binary executable so the moved
+/// file is ready to run even when `cat` did not preserve local mode bits.
 async fn upload_binary(
     host: &SshHost,
     local_path: &Path,
@@ -512,12 +522,22 @@ async fn upload_binary(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = parent_dir_of(remote_bin);
     let options = SshRunOptions::default().compressed();
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let remote_tmp = remote_upload_tmp_path(remote_bin, &unique);
 
     log!(
         Level::Info,
-        "Uploading binary to remote host: local_path={}, remote_bin={}",
+        "Uploading binary to remote host: local_path={}, remote_bin={}, remote_tmp={}",
         local_path.display(),
-        remote_bin
+        remote_bin,
+        remote_tmp
     );
 
     // The remote parent directory may not exist yet (e.g. first run against
@@ -533,18 +553,47 @@ async fn upload_binary(
         .into());
     }
 
-    host.upload_via_cat(local_path, remote_bin).await?;
+    if let Err(error) = host.upload_via_cat(local_path, &remote_tmp).await {
+        // Drop a partial temp so failed prepares do not litter the install dir.
+        let _ = host
+            .run(&format!("rm -f {}", remote_tmp), &[], &options)
+            .await;
+        return Err(format!(
+            "failed to upload binary to temporary remote path '{}': {}",
+            remote_tmp, error
+        )
+        .into());
+    }
 
     // `cat` does not always copy the source mode bits across ssh, so be
-    // explicit: a non-executable cached file would otherwise produce a
-    // remote binary that fails with "permission denied" on the next step.
-    let chmod_cmd = format!("chmod +x {}", remote_bin);
+    // explicit on the temp path before rename: a non-executable file would
+    // otherwise produce a remote binary that fails with "permission denied".
+    let chmod_cmd = format!("chmod +x {}", remote_tmp);
     let chmod_status = host.run(&chmod_cmd, &[], &options).await?;
     if !chmod_status.success() {
+        let _ = host
+            .run(&format!("rm -f {}", remote_tmp), &[], &options)
+            .await;
         return Err(format!(
             "remote chmod +x '{}' failed with status {}",
-            remote_bin,
+            remote_tmp,
             chmod_status.code().unwrap_or(-1)
+        )
+        .into());
+    }
+
+    // rename replaces the path even if remote_bin is currently executing.
+    let mv_cmd = format!("mv -f {} {}", remote_tmp, remote_bin);
+    let mv_status = host.run(&mv_cmd, &[], &options).await?;
+    if !mv_status.success() {
+        let _ = host
+            .run(&format!("rm -f {}", remote_tmp), &[], &options)
+            .await;
+        return Err(format!(
+            "remote mv -f '{}' -> '{}' failed with status {}",
+            remote_tmp,
+            remote_bin,
+            mv_status.code().unwrap_or(-1)
         )
         .into());
     }
@@ -747,6 +796,12 @@ impl SshHost {
     /// reading the entire binary into memory, which matters when the binary
     /// is large or memory is constrained. The remote path is interpreted by
     /// the remote shell so `~` and other shell expansions work as expected.
+    ///
+    /// Stderr is captured so remote failures (permission denied, disk full,
+    /// ETXTBSY on an in-place overwrite of a running binary) become part of
+    /// the returned error instead of a bare local Broken pipe. Callers that
+    /// replace a live agent binary should write a sibling temp path and
+    /// rename over the final path.
     pub(crate) async fn upload_via_cat(
         &self,
         local_path: &Path,
@@ -766,12 +821,15 @@ impl SshHost {
 
         ssh.stdin(Stdio::piped());
         ssh.stdout(Stdio::inherit());
-        ssh.stderr(Stdio::inherit());
+        // Capture stderr so prepare/watchdog logs include the remote reason
+        // instead of only the local Broken pipe that follows early cat exit.
+        ssh.stderr(Stdio::piped());
 
         log!(Level::Debug, "Running ssh command: {:?}", ssh);
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
+        let mut stderr = child.stderr.take().expect("stderr was piped");
         let mut file = tokio::fs::File::open(local_path).await?;
 
         // Run the copy on a separate task so we can concurrently wait for
@@ -784,18 +842,50 @@ impl SshHost {
             drop(stdin);
             Ok::<_, std::io::Error>(())
         });
+        // Drain stderr while the child runs so a full pipe cannot block exit.
+        let stderr_handle = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf).await;
+            buf
+        });
 
         let status = child.wait().await?;
-        copy_handle
+        let stderr_bytes = stderr_handle
             .await
-            .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))??;
+            .map_err(|e| std::io::Error::other(format!("stderr task panicked: {e}")))?;
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        let stderr_trim = stderr.trim();
+
+        // Prefer remote failure details over the copy-task Broken pipe that
+        // appears whenever remote cat exits before the local stream finishes.
+        let copy_result = copy_handle
+            .await
+            .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))?;
 
         if !status.success() {
-            return Err(std::io::Error::other(format!(
-                "ssh upload exited with status {}",
+            let mut msg = format!(
+                "ssh upload to '{}' failed with status {}",
+                remote_path,
                 status.code().unwrap_or(-1)
-            )));
+            );
+            if !stderr_trim.is_empty() {
+                msg.push_str(": ");
+                msg.push_str(stderr_trim);
+            }
+            if stderr_trim.contains("text file busy") || stderr_trim.contains("ETXTBSY") {
+                msg.push_str(
+                    " (remote binary is currently executing; upload must replace via temp file + mv)",
+                );
+            }
+            return Err(std::io::Error::other(msg));
         }
+
+        copy_result.map_err(|e| {
+            std::io::Error::other(format!(
+                "failed while streaming local file to remote '{}': {}",
+                remote_path, e
+            ))
+        })?;
         Ok(())
     }
 }
@@ -1091,7 +1181,7 @@ pub(crate) async fn start_ssh_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::{debug_binary_candidate, debug_remote_bin, file_sha1sum};
+    use super::{debug_binary_candidate, debug_remote_bin, file_sha1sum, remote_upload_tmp_path};
     use std::path::{Path, PathBuf};
 
     /// Verifies local SHA-1 matches the well-known digest for a fixed payload so
@@ -1108,6 +1198,16 @@ mod tests {
         assert_eq!(digest, "5cd57297d6ccaa26976cb250ba018adbc98d5907");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Ensures the upload temp path stays beside the final binary so remote
+    /// `mv` is atomic and does not cross filesystems.
+    #[test]
+    fn remote_upload_tmp_path_stays_in_same_directory() {
+        assert_eq!(
+            remote_upload_tmp_path("~/.local/redoor/debug/redoor", "1-2"),
+            "~/.local/redoor/debug/redoor.tmp.1-2"
+        );
     }
 
     /// Verifies remote shell quoting keeps apostrophes inside the single-quoted

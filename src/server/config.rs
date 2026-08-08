@@ -821,8 +821,14 @@ pub(crate) async fn spawn_local_agent(
             .create(true)
             .append(true)
             .open(log)
-            .await?;
-        let file_for_stderr = file.try_clone().await?;
+            .await
+            .map_err(|e| format!("failed to open local agent log file '{}': {}", log, e))?;
+        let file_for_stderr = file.try_clone().await.map_err(|e| {
+            format!(
+                "failed to clone local agent log file handle '{}': {}",
+                log, e
+            )
+        })?;
         command.stdout(Stdio::from(file.into_std().await));
         command.stderr(Stdio::from(file_for_stderr.into_std().await));
     } else {
@@ -843,7 +849,13 @@ pub(crate) async fn spawn_local_agent(
     // dropped (e.g. on server shutdown), preventing the `redoor agent`
     // child from being orphaned. `kill_on_drop` sends SIGKILL.
     command.kill_on_drop(true);
-    let child = command.spawn()?;
+    let child = command.spawn().map_err(|e| {
+        format!(
+            "failed to spawn local agent binary '{}': {}",
+            bin.display(),
+            e
+        )
+    })?;
     Ok(child)
 }
 
