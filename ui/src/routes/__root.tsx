@@ -351,6 +351,7 @@ function RouteLoadingIndicator() {
     );
 }
 
+/** Keeps persistent activity visible without letting its controls dominate the page. */
 function CollapsibleBottomPanel(props: {
     title: string;
     description: string;
@@ -364,52 +365,55 @@ function CollapsibleBottomPanel(props: {
         props.defaultCollapsed ?? false,
     );
 
+    const toggleLabel = `${isCollapsed ? "Expand" : "Minimize"} ${props.title}`;
+
     return (
-        <section className="sticky bottom-0 z-10 border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-[backdrop-filter]:bg-[#11141b]/80">
-            <div>
-                <div className="max-w-full bg-[#11141b]/90 p-4">
-                    <div className="flex items-center justify-between gap-3 pb-3">
-                        <div className="flex items-start gap-3">
-                            {props.icon ? (
-                                <div className="bg-blue-500/10 p-2 text-blue-300">
-                                    {props.icon}
-                                </div>
-                            ) : null}
-                            <div>
+        <section className="sticky bottom-0 z-10 border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80">
+            <div className="max-w-full px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                        {props.icon ? (
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
+                                {props.icon}
+                            </div>
+                        ) : null}
+                        <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <h2 className="text-sm font-semibold text-slate-100">
                                     {props.title}
                                 </h2>
-                                <p className="text-xs text-slate-400">
-                                    {props.description}
-                                </p>
+                                {props.badge}
                             </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            {props.badge}
-                            {props.actions}
-                            <button
-                                type="button"
-                                aria-label={`${isCollapsed ? "Expand" : "Minimize"} ${props.title}`}
-                                aria-expanded={!isCollapsed}
-                                onClick={() =>
-                                    setIsCollapsed((value) => !value)
-                                }
-                                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
-                            >
-                                {isCollapsed ? (
-                                    <ChevronUp className="h-3.5 w-3.5" />
-                                ) : (
-                                    <ChevronDown className="h-3.5 w-3.5" />
-                                )}
-                                {isCollapsed ? "Expand" : "Minimize"}
-                            </button>
+                            <p className="truncate text-xs text-slate-500">
+                                {props.description}
+                            </p>
                         </div>
                     </div>
-
-                    {isCollapsed ? null : (
-                        <div className="mt-4">{props.children}</div>
-                    )}
+                    <div className="flex items-center gap-1">
+                        {props.actions}
+                        <div className="mx-1 h-5 w-px bg-slate-800" />
+                        <button
+                            type="button"
+                            aria-label={toggleLabel}
+                            title={toggleLabel}
+                            aria-expanded={!isCollapsed}
+                            onClick={() => setIsCollapsed((value) => !value)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        >
+                            {isCollapsed ? (
+                                <ChevronUp className="h-4 w-4" />
+                            ) : (
+                                <ChevronDown className="h-4 w-4" />
+                            )}
+                        </button>
+                    </div>
                 </div>
+
+                {isCollapsed ? null : (
+                    <div className="mt-3 border-t border-slate-800 pt-3">
+                        {props.children}
+                    </div>
+                )}
             </div>
         </section>
     );
@@ -541,7 +545,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
             description="Files and directories selected for copy operations"
             icon={<Files className="h-4 w-4" />}
             badge={
-                <span className="rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-1 text-xs font-medium text-blue-300">
+                <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">
                     {selectedFiles.length}{" "}
                     {selectedFiles.length === 1 ? "item" : "items"}
                 </span>
@@ -550,7 +554,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                 <div className="flex items-center gap-2">
                     {deleteState.type === "deleting" ? (
                         <span
-                            className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500/10 text-red-400"
                             aria-label="Deleting selected items"
                             role="status"
                         >
@@ -564,7 +568,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                                     onClick={handleDeleteSelectedFiles}
                                     disabled={selectedFiles.length === 0}
                                     aria-label="Delete selected items"
-                                    className="inline-flex h-10 w-10 items-center justify-center rounded bg-red-600 text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     <Trash2 className="h-4 w-4" />
                                 </button>
@@ -575,7 +579,7 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                     <button
                         type="button"
                         onClick={() => clearSelectedFiles()}
-                        className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
+                        className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
                         Clear all
                     </button>
@@ -684,7 +688,7 @@ function TransferProgressPanel(props: {
             title="Active transfers"
             description="Currently running file transfers"
             badge={
-                <span className="rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-1 text-xs font-medium text-blue-300">
+                <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">
                     {activeTransfers.length}{" "}
                     {activeTransfers.length === 1 ? "transfer" : "transfers"}
                 </span>
@@ -692,7 +696,7 @@ function TransferProgressPanel(props: {
             actions={
                 <Link
                     to="/transfers"
-                    className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 shadow-sm hover:bg-slate-700/60"
+                    className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
                     View all
                 </Link>
