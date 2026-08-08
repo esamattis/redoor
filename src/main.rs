@@ -56,11 +56,15 @@ async fn run_server(args: server::CoordinatorArgs) {
                 });
             let path = home.join(".config/redoor/config.toml");
             match server::create_default_config_if_missing(&path).await {
-                Ok(true) => eprintln!(
-                    "Created default config '{}'. Change the default password before exposing the server.",
-                    path.display()
-                ),
-                Ok(false) => {}
+                Ok(Some(created)) => {
+                    eprintln!(
+                        "Created default config '{}'.\n  username password: {}\n  agent_token: {}\nStore these secrets securely; they will not be shown again.",
+                        path.display(),
+                        created.password,
+                        created.agent_token
+                    );
+                }
+                Ok(None) => {}
                 Err(error) => {
                     eprintln!(
                         "Failed to create default config '{}': {error}",
@@ -111,7 +115,7 @@ async fn run_server(args: server::CoordinatorArgs) {
         .bind
         .clone()
         .or_else(|| config.server.bind.clone())
-        .unwrap_or_else(|| "0.0.0.0".to_string());
+        .unwrap_or_else(|| "127.0.0.1".to_string());
 
     let log = args.log.clone().or_else(|| config.server.log.clone());
 
@@ -125,6 +129,8 @@ async fn run_server(args: server::CoordinatorArgs) {
     let auth = server::AuthState::new(
         config.server.username.clone(),
         config.server.password.clone(),
+        config.server.agent_token.clone(),
+        config.server.cookie_secure,
     )
     .await
     .unwrap_or_else(|error| {
@@ -162,10 +168,20 @@ async fn run_server(args: server::CoordinatorArgs) {
     // lifetime. A duplicate agent name (e.g. two [[agents]] entries
     // resolving to the same default key) is fatal at startup so the
     // operator notices the misconfiguration immediately.
-    if let Err(error) = server::spawn_agents(&config.agents, port, &watchdog_registry) {
+    if let Err(error) = server::spawn_agents(
+        &config.agents,
+        port,
+        &config.server.agent_token,
+        &watchdog_registry,
+    ) {
         eprintln!("Failed to start agent supervisors: {error}");
         std::process::exit(1);
     }
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

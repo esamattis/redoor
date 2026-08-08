@@ -1,28 +1,123 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+};
 use axum::{
     Json,
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use redoor::commands::{ErrorResponse, LoginRequest, LoginResponse, LogoutResponse};
+use redoor::{
+    Level,
+    commands::{ErrorResponse, LoginRequest, LoginResponse, LogoutResponse},
+    log,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use super::state::ServerState;
 
 const SESSION_COOKIE_NAME: &str = "redoor_session";
-const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
+/// Caps online brute force against a single source address.
+const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
+/// Caps coordinated multi-source brute force against the whole process.
+const LOGIN_MAX_FAILURES_GLOBAL: u32 = 60;
+const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 
-/// Holds configured credentials and the durable directory used to validate opaque cookies.
+/// Holds hashed credentials and the durable directory used to validate opaque cookies.
 #[derive(Clone)]
 pub(crate) struct AuthState {
     username: String,
-    password: String,
+    /// Argon2id PHC hash only — plaintext never stays in process memory after startup.
+    password_hash: String,
+    /// Stable digest of the configured password so password rotation invalidates old sessions.
+    credentials_fingerprint: String,
     sessions_directory: PathBuf,
+    /// When true, Set-Cookie includes `Secure` so browsers only send the session over HTTPS.
+    cookie_secure: bool,
+    /// Shared secret agents must present at registration to prevent unauthenticated hijacks.
+    agent_token: String,
+    login_limiter: std::sync::Arc<LoginRateLimiter>,
+}
+
+/// Tracks recent failed logins so online guessing cannot run unbounded.
+struct LoginRateLimiter {
+    by_ip: Mutex<HashMap<IpAddr, FailureWindow>>,
+    global: Mutex<FailureWindow>,
+}
+
+/// Sliding failure window used by both per-IP and global login throttles.
+#[derive(Clone, Copy)]
+struct FailureWindow {
+    started_at: Instant,
+    failures: u32,
+}
+
+impl FailureWindow {
+    /// Starts an empty window at the current time.
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            failures: 0,
+        }
+    }
+
+    /// Resets the window when it has expired so legitimate users recover after a burst.
+    fn refresh(&mut self) {
+        if self.started_at.elapsed() >= LOGIN_RATE_WINDOW {
+            *self = Self::new();
+        }
+    }
+}
+
+impl LoginRateLimiter {
+    /// Creates empty throttle state shared across all login attempts.
+    fn new() -> Self {
+        Self {
+            by_ip: Mutex::new(HashMap::new()),
+            global: Mutex::new(FailureWindow::new()),
+        }
+    }
+
+    /// Returns whether this client is currently locked out of login attempts.
+    fn is_limited(&self, ip: IpAddr) -> bool {
+        let mut by_ip = self.by_ip.lock().expect("login rate limiter poisoned");
+        let entry = by_ip.entry(ip).or_insert_with(FailureWindow::new);
+        entry.refresh();
+        if entry.failures >= LOGIN_MAX_FAILURES_PER_IP {
+            return true;
+        }
+
+        let mut global = self.global.lock().expect("login rate limiter poisoned");
+        global.refresh();
+        global.failures >= LOGIN_MAX_FAILURES_GLOBAL
+    }
+
+    /// Records one failed login so subsequent attempts can be rejected quickly.
+    fn record_failure(&self, ip: IpAddr) {
+        let mut by_ip = self.by_ip.lock().expect("login rate limiter poisoned");
+        let entry = by_ip.entry(ip).or_insert_with(FailureWindow::new);
+        entry.refresh();
+        entry.failures = entry.failures.saturating_add(1);
+
+        let mut global = self.global.lock().expect("login rate limiter poisoned");
+        global.refresh();
+        global.failures = global.failures.saturating_add(1);
+    }
 }
 
 /// Persists the minimum bounded metadata needed to recognize one authenticated browser.
@@ -30,30 +125,57 @@ pub(crate) struct AuthState {
 struct SessionFile {
     session_id: String,
     username: String,
+    /// Binds the cookie to the password that was current when the session was issued.
+    credentials_fingerprint: String,
     expires_at: i64,
 }
 
 impl AuthState {
     /// Creates the private session directory before requests arrive so login failures are actionable.
-    pub(crate) async fn new(username: String, password: String) -> anyhow::Result<Self> {
+    pub(crate) async fn new(
+        username: String,
+        password: String,
+        agent_token: String,
+        cookie_secure: bool,
+    ) -> anyhow::Result<Self> {
+        let password_hash = hash_password(&password)?;
+        // Fingerprint is independent of the per-process argon2 salt so sessions survive restarts
+        // until the operator actually changes the configured password.
+        let credentials_fingerprint = credentials_fingerprint(&password);
+        // Drop the only plaintext copy once derived secrets exist.
+        drop(password);
+
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             anyhow::anyhow!("HOME is not set; cannot locate the session directory")
         })?;
-        let sessions_directory = home.join(".local/share/sessions");
+        // Namespace under redoor so other local tools cannot collide on a generic sessions path.
+        let sessions_directory = home.join(".local/share/redoor/sessions");
         tokio::fs::create_dir_all(&sessions_directory).await?;
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&sessions_directory, std::fs::Permissions::from_mode(0o700))
-                .await?;
+            ensure_private_directory(&sessions_directory).await?;
         }
 
-        Ok(Self {
+        let auth = Self {
             username,
-            password,
-            sessions_directory,
-        })
+            password_hash,
+            credentials_fingerprint: credentials_fingerprint.clone(),
+            sessions_directory: sessions_directory.clone(),
+            cookie_secure,
+            agent_token,
+            login_limiter: std::sync::Arc::new(LoginRateLimiter::new()),
+        };
+
+        // Drop sessions issued under a previous password so rotation takes effect immediately.
+        auth.purge_stale_sessions().await?;
+
+        Ok(auth)
+    }
+
+    /// Shared secret that agents must present when registering over `/ws`.
+    pub(crate) fn agent_token(&self) -> &str {
+        &self.agent_token
     }
 
     /// Maps a validated UUID to its one-file-per-session storage path.
@@ -82,11 +204,11 @@ impl AuthState {
         let now = chrono::Utc::now().timestamp();
         if session.session_id != session_id
             || session.username != self.username
+            || session.credentials_fingerprint != self.credentials_fingerprint
             || session.expires_at <= now
         {
-            if session.expires_at <= now {
-                let _ = tokio::fs::remove_file(path).await;
-            }
+            // Remove expired or credential-mismatched files so disk does not retain stealable IDs.
+            let _ = tokio::fs::remove_file(path).await;
             return false;
         }
 
@@ -105,11 +227,17 @@ impl AuthState {
         let session = SessionFile {
             session_id: session_id.clone(),
             username: self.username.clone(),
+            credentials_fingerprint: self.credentials_fingerprint.clone(),
             expires_at: chrono::Utc::now().timestamp() + SESSION_LIFETIME.as_secs() as i64,
         };
         let contents = serde_json::to_vec(&session)?;
-        tokio::fs::write(&temporary_path, contents).await?;
-        tokio::fs::rename(temporary_path, path).await?;
+        write_private_file(&temporary_path, &contents).await?;
+        tokio::fs::rename(&temporary_path, &path).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
+        }
         Ok(session_id)
     }
 
@@ -127,6 +255,117 @@ impl AuthState {
             Err(error) => Err(error.into()),
         }
     }
+
+    /// Removes sessions that no longer match the configured credentials (e.g. after password rotation).
+    async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("session_") || !name.ends_with(".json") {
+                continue;
+            }
+            let Ok(contents) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            let Ok(session) = serde_json::from_slice::<SessionFile>(&contents) else {
+                let _ = tokio::fs::remove_file(&path).await;
+                continue;
+            };
+            if session.username != self.username
+                || session.credentials_fingerprint != self.credentials_fingerprint
+            {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Verifies a candidate password against the argon2 hash without ever comparing plaintext.
+    fn verify_password(&self, candidate: &str) -> bool {
+        verify_password_hash(candidate, &self.password_hash)
+    }
+}
+
+/// Hashes a password with argon2id so AuthState never retains recoverable plaintext.
+fn hash_password(password: &str) -> anyhow::Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| anyhow::anyhow!("failed to hash password: {error}"))
+}
+
+/// Constant-time password verification against a stored PHC string.
+fn verify_password_hash(candidate: &str, password_hash: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(password_hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(candidate.as_bytes(), &parsed)
+        .is_ok()
+}
+
+/// Builds a stable fingerprint so rotating the config password invalidates existing cookies.
+fn credentials_fingerprint(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"redoor-session-v1:");
+    hasher.update(password.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Constant-time string equality via fixed-length digests so length and content do not leak via timing.
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left_digest = Sha256::digest(left.as_bytes());
+    let right_digest = Sha256::digest(right.as_bytes());
+    bool::from(left_digest.ct_eq(&right_digest))
+}
+
+/// Writes bytes with mode 0600 so local users cannot steal bearer session IDs from disk.
+async fn write_private_file(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).await?;
+    file.write_all(contents).await?;
+    file.sync_all().await?;
+    Ok(())
+}
+
+/// Ensures the sessions directory is owned by this process user and mode 0700.
+#[cfg(unix)]
+async fn ensure_private_directory(path: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await?;
+    let metadata = tokio::fs::metadata(path).await?;
+    let mode = metadata.mode() & 0o777;
+    if mode != 0o700 {
+        anyhow::bail!(
+            "session directory '{}' must be mode 0700, found {:o}",
+            path.display(),
+            mode
+        );
+    }
+    let uid = nix::unistd::Uid::current().as_raw();
+    if metadata.uid() != uid {
+        anyhow::bail!(
+            "session directory '{}' must be owned by uid {}, found {}",
+            path.display(),
+            uid,
+            metadata.uid()
+        );
+    }
+    Ok(())
 }
 
 /// Extracts the opaque session identifier without accepting similarly named cookie prefixes.
@@ -173,9 +412,27 @@ pub(crate) async fn require_authentication(
 /// Verifies configured credentials and persists a new server-side login session.
 pub(crate) async fn login_handler(
     State(state): State<ServerState>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(request): Json<LoginRequest>,
 ) -> Response {
-    if request.username != state.auth.username || request.password != state.auth.password {
+    let client_ip = addr.ip();
+    if state.auth.login_limiter.is_limited(client_ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "Too many login attempts. Try again later.".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Always argon2-verify the password (even on username mismatch) so timing does not
+    // reveal which half of the credential pair was wrong.
+    let username_ok = constant_time_eq(&request.username, &state.auth.username);
+    let password_ok = state.auth.verify_password(&request.password);
+
+    if !(username_ok && password_ok) {
+        state.auth.login_limiter.record_failure(client_ip);
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -188,10 +445,12 @@ pub(crate) async fn login_handler(
     let session_id = match state.auth.create_session().await {
         Ok(session_id) => session_id,
         Err(error) => {
+            // Keep IO/path details off the wire; operators still see them in server logs.
+            log!(Level::Error, "Failed to create session: {error}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to create session: {error}"),
+                    error: "Failed to create session".to_string(),
                 }),
             )
                 .into_response();
@@ -202,8 +461,13 @@ pub(crate) async fn login_handler(
         username: request.username,
     })
     .into_response();
+    let secure_flag = if state.auth.cookie_secure {
+        "; Secure"
+    } else {
+        ""
+    };
     let cookie = format!(
-        "{SESSION_COOKIE_NAME}={session_id}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        "{SESSION_COOKIE_NAME}={session_id}; HttpOnly; SameSite=Lax; Path=/{secure_flag}; Max-Age={}",
         SESSION_LIFETIME.as_secs()
     );
     response.headers_mut().insert(
@@ -219,19 +483,27 @@ pub(crate) async fn logout_handler(
     headers: HeaderMap,
 ) -> Response {
     if let Err(error) = state.auth.delete_session(&headers).await {
+        log!(Level::Error, "Failed to delete session: {error}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to delete session: {error}"),
+                error: "Failed to delete session".to_string(),
             }),
         )
             .into_response();
     }
 
+    let secure_flag = if state.auth.cookie_secure {
+        "; Secure"
+    } else {
+        ""
+    };
     let mut response = Json(LogoutResponse { logged_out: true }).into_response();
+    let cookie =
+        format!("{SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/{secure_flag}; Max-Age=0");
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_static("redoor_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
+        HeaderValue::from_str(&cookie).expect("generated cookie contains only safe ASCII"),
     );
     response
 }

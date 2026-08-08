@@ -117,6 +117,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let server_url = args.ws_address;
     let agent_name = args.name;
+    let token = args.token;
     let log_file = args.log;
 
     let agent_id = AgentId::from(agent_name.clone());
@@ -126,7 +127,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
     let handle = AgentHandle { sender };
-    let runtime = AgentRuntime::new(agent_id, agent_name, server_url, default_directory);
+    let runtime = AgentRuntime::new(agent_id, agent_name, server_url, default_directory, token);
 
     runtime.run(receiver, handle).await;
 

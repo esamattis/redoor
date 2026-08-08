@@ -89,6 +89,8 @@ impl AgentConnection {
 /// name and the old session is cleaned up. The stale session's later
 /// `UnregisterAgent` is ignored because its `socket_id` will not match.
 pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequest) {
+    // Token validation happens in the session layer before this message is
+    // enqueued, so name takeover here is only reachable with a valid agent_token.
     let existing_agent_id = state
         .agents
         .by_id

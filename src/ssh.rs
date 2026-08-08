@@ -39,6 +39,9 @@ pub(crate) struct SshArgs {
     /// distinguishable without requiring an explicit name.
     #[arg(long)]
     pub(crate) name: Option<String>,
+    /// Shared secret from `server.agent_token` so the remote agent can register.
+    #[arg(long, env = "REDOOR_AGENT_TOKEN")]
+    pub(crate) token: String,
     /// Path to the redoor binary on the remote host. Defaults to the
     /// versioned install layout (`~/.local/redoor/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN", default_value_t = default_remote_bin())]
@@ -743,7 +746,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         target: args.target,
         log: None,
     };
-    start_ssh_agent(config, args.redoor_port).await
+    start_ssh_agent(config, args.redoor_port, &args.token).await
 }
 
 /// Resolved values for one ssh-backed agent: the prepared host and the
@@ -780,6 +783,7 @@ impl PreparedSshAgent {
 pub(crate) async fn prepare_ssh_agent(
     config: &SshAgentConfig,
     redoor_port: u16,
+    agent_token: &str,
 ) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
     let remote_bin = config.remote_bin.clone().unwrap_or_else(default_remote_bin);
     let agent_name = config
@@ -821,6 +825,8 @@ pub(crate) async fn prepare_ssh_agent(
         ws_url.clone(),
         "--name".to_string(),
         agent_name.clone(),
+        "--token".to_string(),
+        agent_token.to_string(),
     ];
     if let Some(dir) = &config.dir {
         remote_argv.push("-d".to_string());
@@ -857,8 +863,9 @@ pub(crate) async fn prepare_ssh_agent(
 pub(crate) async fn start_ssh_agent(
     config: SshAgentConfig,
     redoor_port: u16,
+    agent_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare_ssh_agent(&config, redoor_port).await?;
+    let prepared = prepare_ssh_agent(&config, redoor_port, agent_token).await?;
     let argv_refs: Vec<&str> = prepared.remote_argv.iter().map(String::as_str).collect();
     let status = prepared
         .host

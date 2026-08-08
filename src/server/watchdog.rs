@@ -26,6 +26,7 @@ use super::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spa
 pub(crate) fn spawn_agents(
     configs: &[AgentConfig],
     redoor_port: u16,
+    agent_token: &str,
     registry: &WatchdogRegistry,
 ) -> Result<()> {
     log!(
@@ -35,7 +36,7 @@ pub(crate) fn spawn_agents(
     );
     for config in configs.iter().cloned() {
         let key = supervisor_key(&config);
-        let spawn = make_spawn_fn(config, redoor_port);
+        let spawn = make_spawn_fn(config, redoor_port, agent_token.to_string());
         spawn_supervisor(key, spawn, registry)?;
     }
     Ok(())
@@ -62,21 +63,22 @@ fn supervisor_key(config: &AgentConfig) -> String {
 /// shared state so re-invocations just spawn a fresh ssh child
 /// without re-sniffing the host; a failed prepare is retried on
 /// the next cycle.
-fn make_spawn_fn(config: AgentConfig, redoor_port: u16) -> SpawnFn {
+fn make_spawn_fn(config: AgentConfig, redoor_port: u16, agent_token: String) -> SpawnFn {
     match config {
-        AgentConfig::Local(c) => local_spawn_fn(c, redoor_port),
-        AgentConfig::Ssh(c) => ssh_spawn_fn(c, redoor_port),
+        AgentConfig::Local(c) => local_spawn_fn(c, redoor_port, agent_token),
+        AgentConfig::Ssh(c) => ssh_spawn_fn(c, redoor_port, agent_token),
     }
 }
 
 /// Build a spawn closure for a local agent. Re-invoking just spawns
 /// a fresh `redoor agent` child each time; the supervisor's restart
 /// loop handles the rest.
-fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16) -> SpawnFn {
+fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16, agent_token: String) -> SpawnFn {
     SpawnFn::new(move || {
         let config = config.clone();
+        let agent_token = agent_token.clone();
         async move {
-            spawn_local_agent(&config, redoor_port)
+            spawn_local_agent(&config, redoor_port, &agent_token)
                 .await
                 .map_err(|e| e.to_string())
         }
@@ -92,7 +94,11 @@ fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16) -> SpawnFn {
 /// then switches the closure to the cached fast path. A spawn failure
 /// after a successful prepare goes through the supervisor's normal
 /// backoff loop without re-running the prepare.
-fn ssh_spawn_fn(config: crate::ssh::SshAgentConfig, redoor_port: u16) -> SpawnFn {
+fn ssh_spawn_fn(
+    config: crate::ssh::SshAgentConfig,
+    redoor_port: u16,
+    agent_token: String,
+) -> SpawnFn {
     use tokio::sync::Mutex;
 
     // Cached `PreparedSshAgent`. `None` means "not yet prepared or the
@@ -103,7 +109,14 @@ fn ssh_spawn_fn(config: crate::ssh::SshAgentConfig, redoor_port: u16) -> SpawnFn
     let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> =
         std::sync::Arc::new(Mutex::new(None));
     let config = std::sync::Arc::new(config);
-    SpawnFn::new(move || ssh_spawn_once(cached.clone(), config.clone(), redoor_port))
+    SpawnFn::new(move || {
+        ssh_spawn_once(
+            cached.clone(),
+            config.clone(),
+            redoor_port,
+            agent_token.clone(),
+        )
+    })
 }
 
 /// One spawn cycle for an ssh agent. Reuses a cached
@@ -115,13 +128,14 @@ async fn ssh_spawn_once(
     cached: std::sync::Arc<tokio::sync::Mutex<Option<crate::ssh::PreparedSshAgent>>>,
     config: std::sync::Arc<crate::ssh::SshAgentConfig>,
     redoor_port: u16,
+    agent_token: String,
 ) -> Result<Child, String> {
     let prepared = {
         let mut guard = cached.lock().await;
         if let Some(p) = guard.as_ref() {
             p.clone()
         } else {
-            match crate::ssh::prepare_ssh_agent(&config, redoor_port).await {
+            match crate::ssh::prepare_ssh_agent(&config, redoor_port, &agent_token).await {
                 Ok(p) => {
                     *guard = Some(p.clone());
                     p

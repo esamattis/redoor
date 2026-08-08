@@ -74,7 +74,7 @@ describe("HTTP authentication", () => {
         const sessionId = sessionIdFromCookie(cookie);
         const sessionPath = join(
             TEST_SERVER_HOME,
-            ".local/share/sessions",
+            ".local/share/redoor/sessions",
             `session_${sessionId}.json`,
         );
         // A successful login must have one durable server-side file as its source of truth.

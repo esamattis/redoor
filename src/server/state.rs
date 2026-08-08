@@ -50,9 +50,9 @@ pub(crate) struct CoordinatorArgs {
     /// REDOOR_PORT env var. Defaults to 3000 when not set anywhere.
     #[arg(long)]
     pub(crate) port: Option<u16>,
-    /// Address to bind the HTTP listener on (e.g. "127.0.0.1" for
-    /// localhost-only). Overrides [server] bind in the config file. Defaults
-    /// to 0.0.0.0 when not set anywhere.
+    /// Address to bind the HTTP listener on (e.g. "0.0.0.0" to expose
+    /// beyond localhost). Overrides [server] bind in the config file. Defaults
+    /// to 127.0.0.1 when not set anywhere.
     #[arg(long)]
     pub(crate) bind: Option<String>,
     /// Server log file path. Overrides [server] log in the config file.
