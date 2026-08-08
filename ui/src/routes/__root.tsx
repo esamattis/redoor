@@ -20,6 +20,7 @@ import {
     ArrowLeftRight,
     LogOut,
     Home,
+    Menu,
 } from "lucide-react";
 import {
     ApiClient,
@@ -37,6 +38,7 @@ import {
     clearSelectedFilesAtom,
 } from "../selected-files";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
+import { Dialog } from "../components/dialog";
 import { Tooltip } from "../components/tooltip";
 import { TransferList } from "../components/transfer-list";
 import { CollapsibleBottomPanel } from "../components/collapsible-bottom-panel";
@@ -365,6 +367,8 @@ function TopTabStrip(props: {
     const { api } = Route.useRouteContext();
     const transfersActive = props.pathname.startsWith("/transfers");
     const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+    const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+    const menuButtonRef = React.useRef<HTMLButtonElement>(null);
 
     /** Removes the durable session before leaving authenticated application state. */
     const logout = async () => {
@@ -448,32 +452,73 @@ function TopTabStrip(props: {
                     <span className="font-medium">Transfers</span>
                 </Link>
             </div>
-            <Link
-                to="/"
-                aria-label="Server home"
-                aria-current={props.pathname === "/" ? "page" : undefined}
-                className={`mb-1 flex shrink-0 items-center gap-2 rounded px-3 py-2 text-sm transition-colors ${
-                    props.pathname === "/"
-                        ? "bg-white/5 text-slate-100"
-                        : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                }`}
-            >
-                <Home className="h-4 w-4" />
-                Home
-            </Link>
             <button
+                ref={menuButtonRef}
                 type="button"
-                onClick={logout}
-                disabled={isLoggingOut}
-                className="mb-1 flex shrink-0 items-center gap-2 rounded px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:cursor-wait disabled:opacity-60"
+                aria-label="Open menu"
+                aria-haspopup="dialog"
+                aria-expanded={isMenuOpen}
+                onClick={() => setIsMenuOpen(true)}
+                className="mb-1 flex shrink-0 items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
             >
-                {isLoggingOut ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                    <LogOut className="h-4 w-4" />
-                )}
-                {isLoggingOut ? "Logging out…" : "Log out"}
+                <Menu className="h-5 w-5" />
             </button>
+            <Dialog
+                isOpen={isMenuOpen}
+                title="Menu"
+                closeAriaLabel="Close menu"
+                isBusy={isLoggingOut}
+                anchorRef={menuButtonRef}
+                onClose={() => {
+                    if (!isLoggingOut) {
+                        setIsMenuOpen(false);
+                    }
+                }}
+            >
+                <nav
+                    aria-label="Account"
+                    className="mt-3 flex flex-col gap-1"
+                >
+                    <Link
+                        to="/"
+                        aria-label="Server home"
+                        aria-current={
+                            props.pathname === "/" ? "page" : undefined
+                        }
+                        onClick={() => setIsMenuOpen(false)}
+                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
+                            props.pathname === "/"
+                                ? "bg-white/5 text-slate-100"
+                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                        }`}
+                    >
+                        <Home
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                        Home
+                    </Link>
+                    <button
+                        type="button"
+                        onClick={logout}
+                        disabled={isLoggingOut}
+                        className="flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+                    >
+                        {isLoggingOut ? (
+                            <LoaderCircle
+                                className="h-4 w-4 shrink-0 animate-spin text-slate-400"
+                                aria-hidden="true"
+                            />
+                        ) : (
+                            <LogOut
+                                className="h-4 w-4 shrink-0 text-slate-400"
+                                aria-hidden="true"
+                            />
+                        )}
+                        {isLoggingOut ? "Logging out…" : "Log out"}
+                    </button>
+                </nav>
+            </Dialog>
         </header>
     );
 }

@@ -55,7 +55,9 @@ test.describe("Authentication", () => {
             page.getByRole("heading", { name: "Build mode" }),
         ).toBeVisible();
         await expect(page.getByText("debug", { exact: true })).toBeVisible();
-        // Top bar exposes a home link next to logout for returning from agent tabs.
+        // Account actions live behind the burger menu so the tab strip stays uncluttered.
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await expect(page.getByRole("dialog", { name: "Menu" })).toBeVisible();
         await expect(page.getByRole("link", { name: "Server home" })).toBeVisible();
 
         await page.getByRole("button", { name: "Log out" }).click();
