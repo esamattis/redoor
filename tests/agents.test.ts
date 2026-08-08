@@ -7,7 +7,12 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent, isLsDirectoryResponse } from "@/api-client";
+import {
+    ApiClient,
+    Agent,
+    isLsDirectoryResponse,
+    isLsFileResponse,
+} from "@/api-client";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -187,6 +192,18 @@ describe("Agents API", () => {
             expect(
                 firstFile.group === null || typeof firstFile.group === "string",
             );
+        }
+
+        const fileResult = await testAgent!.ls(listedFilePath);
+        // A direct file lookup must expose permission bits so clients can explain who may access it.
+        expect(isLsFileResponse(fileResult)).toBe(true);
+        if (isLsFileResponse(fileResult)) {
+            // The mode is numeric so clients can derive both symbolic and octal permission displays.
+            expect(typeof fileResult.permissions).toBe("number");
+            // A newly created test file should expose at least one standard Unix permission bit.
+            expect(fileResult.permissions).toBeGreaterThan(0);
+            // Masking special and file-type bits keeps the API value limited to rwx permissions.
+            expect(fileResult.permissions).toBeLessThanOrEqual(0o777);
         }
     });
 
