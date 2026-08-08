@@ -142,7 +142,8 @@ test.describe.serial("File Browser Navigation", () => {
         const breadcrumbs = page.getByRole("navigation", {
             name: "Breadcrumbs",
         });
-        await expect(breadcrumbs).toContainText(ctx.agentName);
+        // Breadcrumbs describe the filesystem path without repeating the agent tab label.
+        await expect(breadcrumbs).not.toContainText(ctx.agentName);
         await expect(breadcrumbs).toContainText(ctx.testDirName);
         await expect(breadcrumbs).toContainText("subdir2");
         await expect(breadcrumbs).toContainText("deep");
@@ -171,6 +172,55 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
         await expect(
             page.getByRole("link", { name: "nested2.txt", exact: true }),
+        ).toBeVisible();
+    });
+
+    test("should navigate by editing the breadcrumb path", async ({ page }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        const nestedPath = `${ctx.testDirPath}/subdir2`;
+        const nestedUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}`;
+        await page.goto(directoryUrl);
+
+        const breadcrumbs = page.getByRole("navigation", {
+            name: "Breadcrumbs",
+        });
+        const breadcrumbWidth = await breadcrumbs.evaluate(
+            (element) => element.getBoundingClientRect().width,
+        );
+        await page.getByRole("button", { name: "Edit file path" }).click();
+
+        const pathInput = page.getByRole("textbox", { name: "File path" });
+        // The existing path lets users edit only the portion that needs changing.
+        await expect(pathInput).toHaveValue(ctx.testDirPath);
+        const pathInputWidth = await pathInput.evaluate(
+            (element) => element.getBoundingClientRect().width,
+        );
+        // Keeping the control width stable prevents nearby header actions from shifting.
+        expect(Math.abs(pathInputWidth - breadcrumbWidth)).toBeLessThanOrEqual(
+            1,
+        );
+
+        await pathInput.fill(nestedPath);
+        await pathInput.press("Enter");
+
+        // Enter submits the edited path to the browser route.
+        await expect(page).toHaveURL(nestedUrl);
+        // The nested directory contents prove navigation loaded the requested location.
+        await expect(
+            page.getByRole("link", { name: "deep", exact: true }),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        await page
+            .getByRole("textbox", { name: "File path" })
+            .fill(ctx.testDirPath);
+        await page.getByRole("button", { name: "Navigate to path" }).click();
+
+        // The icon submit button uses the same direct-path navigation behavior.
+        await expect(page).toHaveURL(directoryUrl);
+        // Returning directory contents confirm the icon action completed navigation.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
     });
 
