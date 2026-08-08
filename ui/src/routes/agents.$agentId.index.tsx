@@ -13,7 +13,6 @@ import {
     Server,
     User,
     Activity,
-    AlertCircle,
     FolderOpen,
     LoaderCircle,
     ScrollText,
@@ -28,6 +27,7 @@ import {
     agentTabLocationsAtom,
     getAgentTabLocation,
 } from "../agent-tab-locations";
+import { RouteError } from "../components/route-error";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 
 export const Route = createFileRoute("/agents/$agentId/")({
@@ -46,30 +46,8 @@ export const Route = createFileRoute("/agents/$agentId/")({
         };
     },
     component: AgentBoundary,
-    errorComponent: ErrorDisplay,
+    errorComponent: RouteError,
 });
-
-/** Separates unknown-route failures from live-agent detail request failures. */
-function ErrorDisplay(props: { error: Error }) {
-    const missing = props.error.message.includes("not found");
-    return (
-        <div className="flex h-full items-center justify-center">
-            <div className="flex flex-col items-center gap-2 text-center">
-                <AlertCircle className="h-12 w-12 text-red-400" />
-                <p className="text-slate-400">
-                    {missing
-                        ? "Agent not found"
-                        : "Error loading agent details"}
-                </p>
-                {!missing ? (
-                    <p className="text-sm text-slate-500">
-                        {props.error.message}
-                    </p>
-                ) : null}
-            </div>
-        </div>
-    );
-}
 
 /** Renders retained lifecycle state without issuing connected-only commands prematurely. */
 function AgentBoundary() {

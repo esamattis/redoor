@@ -13,7 +13,6 @@ import {
     FolderPlus,
     File,
     ArrowUp,
-    AlertCircle,
     Download,
     ArrowLeft,
     Copy,
@@ -32,6 +31,7 @@ import {
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
 import { requestClipboardPaste } from "../components/global-file-import-handler";
+import { RouteError } from "../components/route-error";
 import { atomWithLocalStorage } from "../utils/local-storage-atom";
 import { formatSize } from "../utils/path";
 import {
@@ -175,7 +175,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         }
     },
     component: FileBrowser,
-    errorComponent: FileBrowserError,
+    errorComponent: RouteError,
 });
 
 function FileBrowser() {
@@ -276,7 +276,7 @@ function FileBrowser() {
         const downloadUrl = data.downloadUrl;
         if (!downloadUrl) {
             return (
-                <FileBrowserError
+                <RouteError
                     error={new Error("Download URL unavailable")}
                 />
             );
@@ -287,7 +287,7 @@ function FileBrowser() {
         if (search.view === "edit") {
             if (!editable) {
                 return (
-                    <FileBrowserError
+                    <RouteError
                         error={new Error("File is not editable")}
                     />
                 );
@@ -2148,80 +2148,4 @@ function FileEditView(props: {
     );
 }
 
-function FileBrowserError({ error }: { error: Error }) {
-    const errorMessage = error.message.toLowerCase();
 
-    if (
-        errorMessage.includes("not found") ||
-        errorMessage.includes("agent not found")
-    ) {
-        return (
-            <div className="flex h-full items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-center">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                    <p className="text-slate-400">Agent not found</p>
-                    <Link to="/" className="text-blue-400 hover:underline">
-                        Back to agents
-                    </Link>
-                </div>
-            </div>
-        );
-    }
-
-    if (
-        errorMessage.includes("no such file or directory") ||
-        errorMessage.includes("directory not found")
-    ) {
-        return (
-            <div className="flex h-full items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-center">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                    <p className="text-slate-400">Directory not found</p>
-                </div>
-            </div>
-        );
-    }
-
-    if (errorMessage.includes("not a directory")) {
-        return (
-            <div className="flex h-full items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-center">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                    <p className="text-slate-400">Not a directory</p>
-                </div>
-            </div>
-        );
-    }
-
-    if (errorMessage.includes("permission denied")) {
-        return (
-            <div className="flex h-full items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-center">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                    <p className="text-slate-400">Permission denied</p>
-                </div>
-            </div>
-        );
-    }
-
-    if (errorMessage.includes("not editable")) {
-        return (
-            <div className="flex h-full items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-center">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                    <p className="text-slate-400">File is not editable</p>
-                </div>
-            </div>
-        );
-    }
-
-    return (
-        <div className="flex h-full items-center justify-center">
-            <div className="flex flex-col items-center gap-2 text-center">
-                <AlertCircle className="h-12 w-12 text-red-400" />
-                <p className="text-slate-400">Error loading files</p>
-                <p className="text-sm text-slate-500">{error.message}</p>
-            </div>
-        </div>
-    );
-}

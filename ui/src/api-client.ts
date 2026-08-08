@@ -96,11 +96,14 @@ type RequestContext = {
 /** Preserves HTTP status so authentication failures stay distinct from agent errors. */
 export class ApiError extends Error {
     status: number;
+    /** Raw response body when the server did not return a structured ErrorResponse. */
+    body: string | null;
 
-    constructor(status: number, message: string) {
+    constructor(status: number, message: string, body: string | null = null) {
         super(message);
         this.name = "ApiError";
         this.status = status;
+        this.body = body;
     }
 }
 
@@ -137,12 +140,24 @@ async function requireSuccessfulResponse(
     if (text) {
         try {
             const error = JSON.parse(text) as ErrorResponse;
-            throw new ApiError(response.status, error.error);
+            if (typeof error.error === "string" && error.error.length > 0) {
+                throw new ApiError(response.status, error.error, text);
+            }
         } catch (error) {
             if (error instanceof ApiError) {
                 throw error;
             }
         }
+        // Non-JSON bodies (proxy HTML, plain text) still help diagnose gateway failures.
+        const trimmed = text.trim();
+        const summary =
+            trimmed.length > 280 ? `${trimmed.slice(0, 277)}...` : trimmed;
+        throw new ApiError(
+            response.status,
+            summary ||
+                `Request failed: ${response.status} ${response.statusText}`,
+            text,
+        );
     }
     throw new ApiError(
         response.status,

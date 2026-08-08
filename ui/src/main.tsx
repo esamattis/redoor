@@ -8,6 +8,7 @@ import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
 import { ApiClient } from "@/api-client";
+import { RouteError } from "@/components/route-error";
 
 // The API lives on the same origin as the page: the redoor binary
 // embeds the UI alongside the API on a single port, and during local
@@ -26,6 +27,8 @@ const router = createRouter({
     scrollRestoration: true,
     defaultStructuralSharing: true,
     defaultPreloadStaleTime: 0,
+    // Replaces TanStack's bare "Something went wrong!" panel with themed details.
+    defaultErrorComponent: RouteError,
 });
 
 api.setUnauthorizedHandler(() => {
