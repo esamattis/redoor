@@ -1,5 +1,4 @@
-import * as React from "react";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import {
     FileCode2,
     GitCommitHorizontal,
@@ -9,12 +8,7 @@ import {
     Tag,
 } from "lucide-react";
 
-import {
-    ApiError,
-    type ServerAuthMode,
-    type ServerBuildMode,
-} from "../api-client";
-import { ConfirmationDialog } from "../components/confirmation-dialog";
+import type { ServerAuthMode, ServerBuildMode } from "../api-client";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -51,97 +45,20 @@ function gitCommitUrl(gitRev: string): string | null {
     return `https://github.com/esamattis/redoor/commit/${gitRev}`;
 }
 
-type ReloadState =
-    | { type: "idle" }
-    | { type: "reloading" }
-    | { type: "error"; message: string };
-
-function getErrorMessage(error: unknown) {
-    if (error instanceof Error) {
-        return error.message;
-    }
-
-    return "Reload failed";
-}
-
+/** Shows server identity and runtime details without operational controls. */
 function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
-    const { api } = RootRoute.useRouteContext();
-    const router = useRouter();
     const commitUrl = gitCommitUrl(serverInfo.git_rev);
     const shortRev = serverInfo.git_rev.slice(0, 7);
-    const [isReloadDialogOpen, setIsReloadDialogOpen] = React.useState(false);
-    const [reloadState, setReloadState] = React.useState<ReloadState>({
-        type: "idle",
-    });
-
-    /** Keeps the dialog open while the server restarts so the operator sees progress. */
-    const closeReloadDialog = () => {
-        if (reloadState.type === "reloading") {
-            return;
-        }
-
-        setIsReloadDialogOpen(false);
-        setReloadState({ type: "idle" });
-    };
-
-    const handleReloadConfig = async () => {
-        setReloadState({ type: "reloading" });
-
-        try {
-            await api.reloadConfig();
-
-            // TCP dies shortly after the 200; poll until the restarted process answers.
-            const startedAt = Date.now();
-            const timeoutMs = 30_000;
-            while (Date.now() - startedAt < timeoutMs) {
-                try {
-                    await api.listAgents();
-                    await router.invalidate();
-                    await router.load();
-                    setIsReloadDialogOpen(false);
-                    setReloadState({ type: "idle" });
-                    return;
-                } catch {
-                    await new Promise((resolve) => setTimeout(resolve, 200));
-                }
-            }
-
-            setReloadState({
-                type: "error",
-                message: "Server did not come back after reload",
-            });
-        } catch (error) {
-            setReloadState({
-                type: "error",
-                message:
-                    error instanceof ApiError
-                        ? error.message
-                        : getErrorMessage(error),
-            });
-        }
-    };
 
     return (
         <div className="p-8">
             <div className="mx-auto max-w-3xl">
-                <div className="mb-6 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                        <Server className="h-6 w-6 text-blue-400" />
-                        <h1 className="text-2xl font-bold text-slate-100">
-                            Server
-                        </h1>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setReloadState({ type: "idle" });
-                            setIsReloadDialogOpen(true);
-                        }}
-                        className="rounded border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-white/5"
-                    >
-                        Reload config
-                    </button>
+                <div className="mb-6 flex items-center gap-3">
+                    <Server className="h-6 w-6 text-blue-400" />
+                    <h1 className="text-2xl font-bold text-slate-100">
+                        Server
+                    </h1>
                 </div>
                 <div className="space-y-4 rounded-lg border border-slate-800 bg-[#11141b] p-6">
                     <div className="flex items-start gap-3">
@@ -217,20 +134,6 @@ function Index() {
                     </div>
                 </div>
             </div>
-
-            <ConfirmationDialog
-                isOpen={isReloadDialogOpen}
-                title="Reload config?"
-                description="The server will restart and re-read config.toml. Connected agents reconnect automatically. In-flight transfers and terminals are interrupted. If you changed the listen port, open the new URL after reload."
-                confirmLabel="Reload config"
-                busyLabel="Reloading..."
-                isBusy={reloadState.type === "reloading"}
-                errorMessage={
-                    reloadState.type === "error" ? reloadState.message : null
-                }
-                onClose={closeReloadDialog}
-                onConfirm={handleReloadConfig}
-            />
         </div>
     );
 }

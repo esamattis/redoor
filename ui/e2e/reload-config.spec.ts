@@ -40,6 +40,16 @@ test.describe("Reload config", () => {
             page.getByRole("tab", { name: /agent2_custom/ }),
         ).toBeVisible();
 
+        // Configuration reload is isolated behind its burger-menu destination.
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await page
+            .getByRole("dialog", { name: "Menu" })
+            .getByRole("link", { name: "Reload config" })
+            .click();
+        // The dedicated page must expose the restart action before opening confirmation.
+        await expect(
+            page.getByRole("heading", { name: "Reload config" }),
+        ).toBeVisible();
         await page.getByRole("button", { name: "Reload config" }).click();
         const dialog = page.getByRole("dialog", { name: "Reload config?" });
         await expect(dialog).toBeVisible();
@@ -56,7 +66,12 @@ test.describe("Reload config", () => {
             })
             .toBeGreaterThan(loadedBefore);
 
-        // Server is still up: home route and agents reconnect after restart.
+        // Returning home through the menu proves normal navigation survives restart.
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await page
+            .getByRole("dialog", { name: "Menu" })
+            .getByRole("link", { name: "Server home" })
+            .click();
         await expect(
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();

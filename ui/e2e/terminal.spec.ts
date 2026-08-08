@@ -233,7 +233,12 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveText("No terminals");
         expect(terminalSockets).toHaveLength(5);
 
-        await page.getByRole("tab", { name: "Transfers" }).click();
+        // Transfers live in the burger menu so agent tabs remain dedicated to agents.
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await page
+            .getByRole("dialog", { name: "Menu" })
+            .getByRole("link", { name: "Transfers" })
+            .click();
         // Non-agent routes must not retain the terminal panel.
         await expect(
             page.getByRole("heading", { name: "Terminal" }),

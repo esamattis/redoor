@@ -21,6 +21,7 @@ import {
     LogOut,
     Home,
     Menu,
+    RefreshCw,
 } from "lucide-react";
 import {
     ApiClient,
@@ -359,9 +360,9 @@ function RootLayout() {
 /**
  * Browser-style tab strip that replaced the old vertical sidebar.
  *
- * Each connected agent gets its own tab plus a trailing Transfers tab. The
- * active tab connects to the content area with a lifted look so it reads as
- * the current page, mirroring how Chrome / Edge present open tabs.
+ * Each connected agent gets its own tab. The active tab connects to the
+ * content area with a lifted look so it reads as the current page, mirroring
+ * how Chrome / Edge present open tabs.
  */
 function TopTabStrip(props: {
     agents: RootLoaderData["agents"];
@@ -369,7 +370,6 @@ function TopTabStrip(props: {
 }) {
     const agentTabLocations = useAtomValue(agentTabLocationsAtom);
     const { api } = Route.useRouteContext();
-    const transfersActive = props.pathname.startsWith("/transfers");
     const [isLoggingOut, setIsLoggingOut] = React.useState(false);
     const [isMenuOpen, setIsMenuOpen] = React.useState(false);
     const menuButtonRef = React.useRef<HTMLButtonElement>(null);
@@ -393,7 +393,7 @@ function TopTabStrip(props: {
             <BrandMark />
             <div
                 role="tablist"
-                aria-label="Agents and transfers"
+                aria-label="Agents"
                 className="flex min-h-0 flex-1 items-end gap-1 overflow-x-auto pb-0"
             >
                 {props.agents.length === 0 ? (
@@ -403,9 +403,7 @@ function TopTabStrip(props: {
                 ) : (
                     props.agents.map((agent) => {
                         const agentPrefix = `/agents/${encodeURIComponent(agent.id)}`;
-                        const isActive =
-                            props.pathname.startsWith(agentPrefix) &&
-                            !transfersActive;
+                        const isActive = props.pathname.startsWith(agentPrefix);
                         return (
                             <Link
                                 key={agent.id}
@@ -436,25 +434,6 @@ function TopTabStrip(props: {
                         );
                     })
                 )}
-                <Link
-                    to="/transfers"
-                    role="tab"
-                    aria-selected={transfersActive}
-                    className={`group flex items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
-                        transfersActive
-                            ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]"
-                            : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                    }`}
-                >
-                    <ArrowLeftRight
-                        className={`h-4 w-4 shrink-0 ${
-                            transfersActive
-                                ? "text-blue-400"
-                                : "text-slate-500 group-hover:text-slate-300"
-                        }`}
-                    />
-                    <span className="font-medium">Transfers</span>
-                </Link>
             </div>
             <button
                 ref={menuButtonRef}
@@ -479,7 +458,10 @@ function TopTabStrip(props: {
                     }
                 }}
             >
-                <nav aria-label="Account" className="mt-3 flex flex-col gap-1">
+                <nav
+                    aria-label="Application"
+                    className="mt-3 flex flex-col gap-1"
+                >
                     <Link
                         to="/"
                         aria-label="Server home"
@@ -498,6 +480,46 @@ function TopTabStrip(props: {
                             aria-hidden="true"
                         />
                         Home
+                    </Link>
+                    <Link
+                        to="/transfers"
+                        aria-current={
+                            props.pathname.startsWith("/transfers")
+                                ? "page"
+                                : undefined
+                        }
+                        onClick={() => setIsMenuOpen(false)}
+                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
+                            props.pathname.startsWith("/transfers")
+                                ? "bg-white/5 text-slate-100"
+                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                        }`}
+                    >
+                        <ArrowLeftRight
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                        Transfers
+                    </Link>
+                    <Link
+                        to="/config/reload"
+                        aria-current={
+                            props.pathname === "/config/reload"
+                                ? "page"
+                                : undefined
+                        }
+                        onClick={() => setIsMenuOpen(false)}
+                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
+                            props.pathname === "/config/reload"
+                                ? "bg-white/5 text-slate-100"
+                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                        }`}
+                    >
+                        <RefreshCw
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                        Reload config
                     </Link>
                     <button
                         type="button"

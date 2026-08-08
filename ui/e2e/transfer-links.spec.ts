@@ -56,8 +56,12 @@ test.describe.serial("Transfer Path Links", () => {
                 page.getByText(`Uploaded ${uploadFileName}`),
             ).toBeVisible();
 
-            // Navigate to the transfers history page via the top tab strip.
-            await page.getByRole("tab", { name: "Transfers" }).click();
+            // Transfers live in the burger menu so agent tabs remain dedicated to agents.
+            await page.getByRole("button", { name: "Open menu" }).click();
+            await page
+                .getByRole("dialog", { name: "Menu" })
+                .getByRole("link", { name: "Transfers" })
+                .click();
             await expect(page).toHaveURL(new RegExp("/transfers$"));
 
             // Find the completed upload transfer row.
