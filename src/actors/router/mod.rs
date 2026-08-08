@@ -9,9 +9,10 @@ mod ui;
 
 pub use error::RouterError;
 pub use messages::{
-    ExecuteCommandRequest, ExecuteStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
-    RegisterUiSubscriberRequest, RouteResponse, RouteStreamChunkRequest, RouterMsg,
-    SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
+    ApplyManagedLifecycleRequest, ExecuteCommandRequest, ExecuteStreamRequest, OpenTerminalRequest,
+    RegisterAgentRequest, RegisterManagedAgentRequest, RegisterUiSubscriberRequest, RouteResponse,
+    RouteStreamChunkRequest, RouterMsg, SendStreamChunkRequest, StartCopyRequest,
+    StartUploadRequest, TransferProgressUpdateRequest,
 };
 pub use state::CopyContentKind;
 
@@ -180,6 +181,12 @@ async fn run_router(
             RouterMsg::RegisterAgent(request) => {
                 agents::register(&mut state, request).await;
             }
+            RouterMsg::RegisterManagedAgent(request) => {
+                agents::register_managed(&mut state, request);
+            }
+            RouterMsg::ApplyManagedLifecycle(request) => {
+                agents::apply_managed_lifecycle(&mut state, request).await;
+            }
             RouterMsg::UnregisterAgent {
                 agent_id,
                 socket_id,
@@ -198,6 +205,18 @@ async fn run_router(
                 if is_current {
                     log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
                     state.agents.by_id.remove(&agent_id);
+                    if let Some(known) = state.agents.known_by_id.get_mut(&agent_id) {
+                        known.connected_at = None;
+                        known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+                            chrono::Utc::now().timestamp(),
+                        ));
+                        known.socket_id = None;
+                        known.status = if known.managed {
+                            crate::commands::AgentConnectionStatus::Starting
+                        } else {
+                            crate::commands::AgentConnectionStatus::Disconnected
+                        };
+                    }
                     ui::notify_refresh(&mut state);
                     cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
                     state.terminal_registry.remove_agent_pending(&agent_id);
@@ -316,7 +335,8 @@ mod tests {
                 arch: "arm64".to_string(),
                 hostname: "host".to_string(),
                 username: "user".to_string(),
-                default_directory: "/tmp/default".to_string(),
+                default_directory: "/tmp".to_string(),
+                watchdog: None,
             }))
             .expect("agent registered");
 
@@ -404,7 +424,12 @@ mod tests {
             vec![AgentListEntry {
                 id: AgentId::from("agent-1"),
                 name: "agent-1".to_string(),
-                default_directory: "/tmp/default".to_string(),
+                default_directory: Some("/tmp".to_string()),
+                managed: false,
+                status: crate::commands::AgentConnectionStatus::Connected,
+                connected_at: list_agents[0].connected_at,
+                last_seen_at: None,
+                connection_issue: None,
             }]
         );
 

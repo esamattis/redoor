@@ -38,14 +38,14 @@ agent_token = "replace-me"   # required; agents must present this secret
 # cookie_secure = false     # set true behind HTTPS
 # log = "log/server.log"
 
-# Local agent: server spawns `redoor agent` as a child process
+# Local agent: server lazily spawns `redoor agent` as a child process
 [[agents]]
 local = true
 name = "local"              # optional; defaults to hostname
 dir = "/home/me/projects"   # optional; UI default directory
 log = "log/local.log"       # optional; agent stdout/stderr file
 
-# SSH agent: server sshes in, reverse-tunnels, runs remote agent
+# SSH agent: server lazily sshes in, reverse-tunnels, and runs the remote agent
 [[agents]]
 target = "user@example.com" # required for ssh agents
 # username = "deploy"       # optional; or use user@host / ssh config
@@ -57,6 +57,8 @@ target = "user@example.com" # required for ssh agents
 ```
 
 Reload after editing: UI **Reload config**, or the reload API (restarts the process and re-reads the file).
+
+Configured agents start lazily when their tab or status page is opened, or when **Start** is used from the **Agents** management view. The view retains stopped and previously disconnected agents, reports connection and startup issues, and provides lifecycle controls for TOML-managed agents. Externally launched agents are observation-only.
 
 ## Agent
 

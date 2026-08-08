@@ -53,6 +53,17 @@ afterAll(() => {
     processManager.killAll();
 });
 
+/** Narrows retained inventory to the live test socket before issuing commands. */
+async function getConnectedTestAgent(): Promise<Agent> {
+    const agent = (await apiClient.listAgents()).find(
+        (entry) => entry.name === AGENT_NAME && entry.status === "connected",
+    );
+    if (!agent) {
+        throw new Error(`Connected agent ${AGENT_NAME} not found`);
+    }
+    return agent;
+}
+
 describe("Agents API", () => {
     it("publishes a relative --dir without changing the launch cwd", async () => {
         const launchDirectory = tempFiles.tempDirectory({
@@ -92,23 +103,17 @@ describe("Agents API", () => {
     });
 
     it("should get agent details", async () => {
-        const agents = await apiClient.listAgents();
-        // Verify at least one agent is connected
-        expect(agents.length).toBeGreaterThan(0);
+        const testAgent = await getConnectedTestAgent();
 
-        const testAgent = agents.find((a) => a.name === AGENT_NAME);
-        // Verify the test agent is present
-        expect(testAgent).toBeDefined();
-
-        const result = await testAgent!.getDetails();
+        const result = await testAgent.getDetails();
         // Verify agent ID matches
-        expect(result.id).toBe(testAgent!.id);
+        expect(result.id).toBe(testAgent.id);
         // Verify agent name matches
         expect(result.name).toBe(AGENT_NAME);
         // Verify PID is positive
         expect(result.pid).toBeGreaterThan(0);
         // List and details must publish the same immutable startup default directory.
-        expect(testAgent!.cwd).toBe(agentCwd);
+        expect(testAgent.cwd).toBe(agentCwd);
         expect(result.cwd).toBe(agentCwd);
         // Verify OS, arch, hostname are non-empty strings
         expect(result.os).toBeDefined();
@@ -135,15 +140,9 @@ describe("Agents API", () => {
     });
 
     it("should list directory contents on connected agent", async () => {
-        const agents = await apiClient.listAgents();
-        // Verify at least one agent is connected
-        expect(agents.length).toBeGreaterThan(0);
+        const testAgent = await getConnectedTestAgent();
 
-        const testAgent = agents.find((a) => a.name === AGENT_NAME);
-        // Verify test agent is present
-        expect(testAgent).toBeDefined();
-
-        const agentDetails = await testAgent!.getDetails();
+        const agentDetails = await testAgent.getDetails();
         const listedFileName = "directory-listing-test-file.txt";
         const listedFilePath = path.join(agentDetails.cwd, listedFileName);
 
@@ -153,7 +152,7 @@ describe("Agents API", () => {
             "utf-8",
         );
 
-        const result = await testAgent!.ls(agentDetails.cwd);
+        const result = await testAgent.ls(agentDetails.cwd);
         // Verify result is a directory response
         expect(isLsDirectoryResponse(result)).toBe(true);
         // Verify result contains an array of files
@@ -205,7 +204,7 @@ describe("Agents API", () => {
             );
         }
 
-        const fileResult = await testAgent!.ls(listedFilePath);
+        const fileResult = await testAgent.ls(listedFilePath);
         // A direct file lookup must expose permission bits so clients can explain who may access it.
         expect(isLsFileResponse(fileResult)).toBe(true);
         if (isLsFileResponse(fileResult)) {
@@ -286,8 +285,8 @@ describe("Agents API", () => {
             description: "replacement agent to be listed",
         });
         // Verify the replacement agent is registered with the expected name
-        expect(replacementAgent).toBeDefined();
-        expect(replacementAgent!.name).toBe(DUPLICATE_AGENT_NAME);
+        // The polling helper returns only after the replacement inventory entry exists.
+        expect(replacementAgent.name).toBe(DUPLICATE_AGENT_NAME);
 
         // Verify original test agent is still connected
         const agentsAfterReplacement = await apiClient.listAgents();
@@ -297,28 +296,16 @@ describe("Agents API", () => {
     });
 
     it("should echo message back from connected agent", async () => {
-        const agents = await apiClient.listAgents();
-        // Verify at least one agent is connected
-        expect(agents.length).toBeGreaterThan(0);
-
-        const testAgent = agents.find((a) => a.name === AGENT_NAME);
-        // Verify the test agent is present
-        expect(testAgent).toBeDefined();
+        const testAgent = await getConnectedTestAgent();
 
         const testMessage = "Hello, World!";
-        const result = await testAgent!.echo(testMessage);
+        const result = await testAgent.echo(testMessage);
         // Verify message is echoed back correctly
         expect(result.message).toBe(testMessage);
     });
 
     it("should handle concurrent echo requests with random sleep", async () => {
-        const agents = await apiClient.listAgents();
-        // Verify at least one agent is connected
-        expect(agents.length).toBeGreaterThan(0);
-
-        const testAgent = agents.find((a) => a.name === AGENT_NAME);
-        // Verify the test agent is present
-        expect(testAgent).toBeDefined();
+        const testAgent = await getConnectedTestAgent();
 
         const CONCURRENT_REQUESTS = 20;
         const uniqueMessages = Array.from(
@@ -327,15 +314,16 @@ describe("Agents API", () => {
         );
 
         const promises = uniqueMessages.map((message) =>
-            testAgent!.echo(message, true),
+            testAgent.echo(message, true),
         );
 
         const results = await Promise.all(promises);
 
         expect(results.length).toBe(CONCURRENT_REQUESTS);
 
-        for (let i = 0; i < results.length; i++) {
-            expect(results[i]!.message).toBe(uniqueMessages[i]!);
+        for (const [index, result] of results.entries()) {
+            // Each response must retain its matching request payload despite completion reordering.
+            expect(result.message).toBe(uniqueMessages[index]);
         }
     });
 
@@ -347,6 +335,11 @@ describe("Agents API", () => {
                 id: nonExistentAgentId,
                 name: "non-existent",
                 cwd: "/tmp",
+                managed: false,
+                status: "disconnected",
+                connected_at: null,
+                last_seen_at: null,
+                connection_issue: null,
             },
             {
                 getSessionCookie: () =>

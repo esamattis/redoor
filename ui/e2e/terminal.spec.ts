@@ -221,7 +221,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const fourthSocketClosed = fourthSocket.waitForEvent("close");
         const fifthSocketClosed = fifthSocket.waitForEvent("close");
         await page
-            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .getByRole("tab", { name: "agent2_custom, connected" })
             .click();
         await Promise.all([fourthSocketClosed, fifthSocketClosed]);
         // Agent changes destroy every old tab and mount an empty panel.

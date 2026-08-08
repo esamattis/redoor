@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as TestRouteImport } from './routes/test'
+import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as ConfigReloadRouteImport } from './routes/config.reload'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
@@ -36,6 +37,11 @@ const LogsRoute = LogsRouteImport.update({
 const TestRoute = TestRouteImport.update({
   id: '/test',
   path: '/test',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsIndexRoute = AgentsIndexRouteImport.update({
+  id: '/agents/',
+  path: '/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConfigReloadRoute = ConfigReloadRouteImport.update({
@@ -66,6 +72,7 @@ export interface FileRoutesByFullPath {
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
+  '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -76,6 +83,7 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
+  '/agents': typeof AgentsIndexRoute
   '/transfers': typeof TransfersIndexRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -87,6 +95,7 @@ export interface FileRoutesById {
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
   '/config/reload': typeof ConfigReloadRoute
+  '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -99,6 +108,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/test'
     | '/config/reload'
+    | '/agents/'
     | '/transfers/'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
@@ -109,6 +119,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/test'
     | '/config/reload'
+    | '/agents'
     | '/transfers'
     | '/agents/$agentId'
     | '/agents/$agentId/browser/$'
@@ -119,6 +130,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/test'
     | '/config/reload'
+    | '/agents/'
     | '/transfers/'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
@@ -130,6 +142,7 @@ export interface RootRouteChildren {
   LogsRoute: typeof LogsRoute
   TestRoute: typeof TestRoute
   ConfigReloadRoute: typeof ConfigReloadRoute
+  AgentsIndexRoute: typeof AgentsIndexRoute
   TransfersIndexRoute: typeof TransfersIndexRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   AgentsAgentIdBrowserSplatRoute: typeof AgentsAgentIdBrowserSplatRoute
@@ -163,6 +176,13 @@ declare module '@tanstack/react-router' {
       path: '/test'
       fullPath: '/test'
       preLoaderRoute: typeof TestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/': {
+      id: '/agents/'
+      path: '/agents'
+      fullPath: '/agents/'
+      preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/config/reload': {
@@ -202,6 +222,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogsRoute: LogsRoute,
   TestRoute: TestRoute,
   ConfigReloadRoute: ConfigReloadRoute,
+  AgentsIndexRoute: AgentsIndexRoute,
   TransfersIndexRoute: TransfersIndexRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   AgentsAgentIdBrowserSplatRoute: AgentsAgentIdBrowserSplatRoute,

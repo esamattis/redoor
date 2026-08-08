@@ -23,6 +23,7 @@ import {
     Menu,
     RefreshCw,
     ScrollText,
+    Users,
 } from "lucide-react";
 import {
     ApiClient,
@@ -52,6 +53,10 @@ import {
     getAgentTabLocation,
     rememberAgentTabLocationAtom,
 } from "../agent-tab-locations";
+import {
+    agentStartStatesAtom,
+    getStartErrorMessage,
+} from "../agent-start-state";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -266,7 +271,9 @@ function RootLayout() {
         ? agents.find((agent) => agent.id === importLocation.agentId)
         : undefined;
     const importDestination =
-        importLocation && importAgent
+        importLocation &&
+        importAgent?.status === "connected" &&
+        importAgent.cwd !== null
             ? { agent: importAgent, path: importLocation.path }
             : null;
     const terminalCwd = useMatches({
@@ -288,7 +295,9 @@ function RootLayout() {
             const detailsMatch = matches.find(
                 (match) => match.routeId === "/agents/$agentId/",
             );
-            return detailsMatch?.loaderData?.cwd ?? null;
+            return detailsMatch?.loaderData?.kind === "connected"
+                ? detailsMatch.loaderData.agent.cwd
+                : null;
         },
     });
     const sortedAgents = React.useMemo(() => {
@@ -311,7 +320,11 @@ function RootLayout() {
     }, [api, router]);
 
     React.useEffect(() => {
-        if (!activeAgent) {
+        if (
+            !activeAgent ||
+            activeAgent.status !== "connected" ||
+            !location.pathname.includes("/browser/")
+        ) {
             return;
         }
 
@@ -320,6 +333,25 @@ function RootLayout() {
             pathname: location.pathname,
         });
     }, [activeAgent, location.pathname, rememberAgentTabLocation]);
+
+    React.useEffect(() => {
+        if (
+            !agents.some(
+                (agent) => agent.managed && agent.status === "starting",
+            )
+        ) {
+            return;
+        }
+        let invalidating = false;
+        const timer = window.setInterval(() => {
+            if (invalidating) return;
+            invalidating = true;
+            void router.invalidate().finally(() => {
+                invalidating = false;
+            });
+        }, 1000);
+        return () => window.clearInterval(timer);
+    }, [agents, router]);
 
     return (
         <div className="flex h-screen flex-col bg-[#0b0d12]">
@@ -330,7 +362,7 @@ function RootLayout() {
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
-                {activeAgent && terminalCwd ? (
+                {activeAgent?.status === "connected" && terminalCwd ? (
                     <TerminalPanel
                         key={activeAgent.id}
                         agent={activeAgent}
@@ -361,19 +393,46 @@ function RootLayout() {
 /**
  * Browser-style tab strip that replaced the old vertical sidebar.
  *
- * Each connected agent gets its own tab. The active tab connects to the
- * content area with a lifted look so it reads as the current page, mirroring
- * how Chrome / Edge present open tabs.
+ * Every retained agent gets a tab. The active tab connects to the content
+ * area with a lifted look so it reads as the current page, mirroring how
+ * Chrome / Edge present open tabs.
  */
 function TopTabStrip(props: {
     agents: RootLoaderData["agents"];
     pathname: string;
 }) {
     const agentTabLocations = useAtomValue(agentTabLocationsAtom);
+    const setStartStates = useSetAtom(agentStartStatesAtom);
+    const router = useRouter();
     const { api } = Route.useRouteContext();
     const [isLoggingOut, setIsLoggingOut] = React.useState(false);
     const [isMenuOpen, setIsMenuOpen] = React.useState(false);
     const menuButtonRef = React.useRef<HTMLButtonElement>(null);
+
+    /** Opens status immediately, then starts the managed process without blocking navigation. */
+    const openManagedAgent = (agent: RootLoaderData["agents"][number]) => {
+        setStartStates((states) => ({
+            ...states,
+            [agent.id]: { starting: true, error: null, autoRedirect: true },
+        }));
+        void router.navigate({
+            to: "/agents/$agentId",
+            params: { agentId: agent.id },
+        });
+        void agent
+            .start()
+            .then(() => router.invalidate())
+            .catch((error: unknown) => {
+                setStartStates((states) => ({
+                    ...states,
+                    [agent.id]: {
+                        starting: false,
+                        error: getStartErrorMessage(error),
+                        autoRedirect: true,
+                    },
+                }));
+            });
+    };
 
     /** Removes the durable session before leaving authenticated application state. */
     const logout = async () => {
@@ -399,21 +458,37 @@ function TopTabStrip(props: {
             >
                 {props.agents.length === 0 ? (
                     <span className="px-3 pb-2 text-sm text-slate-500">
-                        No agents connected
+                        No agents configured or connected
                     </span>
                 ) : (
                     props.agents.map((agent) => {
                         const agentPrefix = `/agents/${encodeURIComponent(agent.id)}`;
                         const isActive = props.pathname.startsWith(agentPrefix);
+                        const canBrowse =
+                            agent.status === "connected" && agent.cwd !== null;
+                        const target = canBrowse
+                            ? getAgentTabLocation(
+                                  agentTabLocations,
+                                  agent.id,
+                                  agent.getBrowserUrl(agent.cwd),
+                              )
+                            : `/agents/${encodeURIComponent(agent.id)}`;
+                        const shouldStart =
+                            agent.managed &&
+                            (agent.status === "stopped" ||
+                                agent.status === "disconnected");
                         return (
                             <Link
                                 key={agent.id}
-                                to={getAgentTabLocation(
-                                    agentTabLocations,
-                                    agent.id,
-                                    agent.getBrowserUrl(agent.cwd),
-                                )}
+                                to={target}
+                                onClick={(event) => {
+                                    if (shouldStart) {
+                                        event.preventDefault();
+                                        openManagedAgent(agent);
+                                    }
+                                }}
                                 role="tab"
+                                aria-label={`${agent.name}, ${agent.status}`}
                                 aria-selected={isActive}
                                 className={`group flex max-w-56 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
                                     isActive
@@ -481,6 +556,25 @@ function TopTabStrip(props: {
                             aria-hidden="true"
                         />
                         Home
+                    </Link>
+                    <Link
+                        to="/agents"
+                        aria-label="Manage agents"
+                        aria-current={
+                            props.pathname === "/agents" ? "page" : undefined
+                        }
+                        onClick={() => setIsMenuOpen(false)}
+                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
+                            props.pathname === "/agents"
+                                ? "bg-white/5 text-slate-100"
+                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                        }`}
+                    >
+                        <Users
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                        Agents
                     </Link>
                     <Link
                         to="/logs"

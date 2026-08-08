@@ -152,8 +152,10 @@ describe("POST /api/v1/config/reload", () => {
 
         const agents = await apiClient.listAgents();
         const names = agents.map((agent) => agent.name).sort();
-        // Both agents prove the mutated config was applied via full startup.
+        // Both dormant inventory records prove the mutated config was applied via full startup.
         expect(names).toEqual([AGENT_NAME, SECOND_AGENT_NAME].sort());
+        // Reload intentionally resets configured supervisors instead of eagerly launching them.
+        expect(agents.every((agent) => agent.status === "stopped")).toBe(true);
 
         // exec keeps the same PID so ProcessManager.kill still works at teardown.
         expect(() => process.kill(serverPid, 0)).not.toThrow();

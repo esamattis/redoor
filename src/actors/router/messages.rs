@@ -1,8 +1,11 @@
 use super::RouterError;
 use super::state::CopyContentKind;
-use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
+use crate::commands::{
+    AgentConnectionStatus, Command, CommandResult, TransferProgressListResponse, UiEvent,
+};
 use crate::terminal_protocol::{TerminalId, TerminalSize};
-use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId};
+use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
+use crate::watchdog::WatchdogSnapshot;
 use axum::extract::ws::Message as WsMessage;
 
 /// One-shot reply port used by router request/reply messages.
@@ -30,17 +33,49 @@ pub struct RegisterAgentRequest {
     pub username: String,
     /// Immutable absolute directory the UI opens for this agent.
     pub default_directory: String,
+    /// Lets the router reject a managed registration whose shutdown won after socket parsing.
+    pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
 
-/// Lightweight connected-agent metadata used to build complete UI tab targets.
+/// Retained inventory projection used by REST, tabs, and management controls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentListEntry {
     /// Stable agent identifier used in routes.
     pub id: AgentId,
     /// Human-readable agent name shown in tabs.
     pub name: String,
-    /// Immutable absolute directory targeted by an agent tab.
-    pub default_directory: String,
+    /// Latest known or configured default directory.
+    pub default_directory: Option<String>,
+    /// Indicates whether the server owns a TOML supervisor for this id.
+    pub managed: bool,
+    /// Current public lifecycle state.
+    pub status: AgentConnectionStatus,
+    /// Start of the current authoritative connection.
+    pub connected_at: Option<UnixTimestampSeconds>,
+    /// End of the most recent authoritative connection.
+    pub last_seen_at: Option<UnixTimestampSeconds>,
+    /// Latest managed lifecycle diagnostic.
+    pub connection_issue: Option<String>,
+}
+
+/// Registers a configured entry before any process can be started.
+pub struct RegisterManagedAgentRequest {
+    /// Effective name is also the stable id for pre-connection routes.
+    pub agent_id: AgentId,
+    /// Configured directory may be absent for an SSH target.
+    pub default_directory: Option<String>,
+    /// Acknowledges inventory visibility before HTTP serving begins.
+    pub reply: RouterReply<()>,
+}
+
+/// Applies asynchronous supervisor state without waiting in the router task.
+pub struct ApplyManagedLifecycleRequest {
+    /// Selects the configured inventory record to update.
+    pub agent_id: AgentId,
+    /// Contains only small control-plane state, never process output.
+    pub snapshot: WatchdogSnapshot,
+    /// Allows control endpoints to wait until inventory and socket cleanup are consistent.
+    pub reply: Option<RouterReply<()>>,
 }
 
 /// Final command response routed back from an agent to the original caller.
@@ -219,8 +254,11 @@ pub struct OpenTerminalRequest {
     pub reply: RouterReply<Result<(), RouterError>>,
 }
 
+/// Enumerates router work so live streams and lifecycle controls share explicit lanes.
 pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
+    RegisterManagedAgent(RegisterManagedAgentRequest),
+    ApplyManagedLifecycle(ApplyManagedLifecycleRequest),
     UnregisterAgent {
         agent_id: AgentId,
         /// Identifies which websocket session is unregistering so a stale

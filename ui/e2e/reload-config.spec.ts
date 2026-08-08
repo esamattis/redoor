@@ -81,5 +81,9 @@ test.describe("Reload config", () => {
         await expect(
             page.getByRole("tab", { name: /agent2_custom/ }),
         ).toBeVisible({ timeout: 30_000 });
+        // Self-exec recreates TOML inventory as dormant rather than eagerly restarting children.
+        await expect(
+            page.getByRole("tab", { name: "lazy_managed, stopped" }),
+        ).toBeVisible({ timeout: 30_000 });
     });
 });

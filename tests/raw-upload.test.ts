@@ -332,6 +332,11 @@ describe("Raw Upload API", () => {
                 id: "non-existent-agent-id",
                 name: "fake",
                 cwd: "/tmp",
+                managed: false,
+                status: "disconnected",
+                connected_at: null,
+                last_seen_at: null,
+                connection_issue: null,
             },
             {
                 getSessionCookie: () =>

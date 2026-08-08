@@ -265,18 +265,50 @@ pub enum CommandResult {
     },
 }
 
+/// Returns the complete in-process inventory rather than only live sockets.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentListResponse {
     pub agents: Vec<AgentInfoResponse>,
 }
 
+/// Identifies the user-visible connection lifecycle independently from ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConnectionStatus {
+    Stopped,
+    Starting,
+    Connected,
+    Disconnected,
+}
+
+/// Summarizes one known agent without requiring a current WebSocket connection.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentInfoResponse {
     pub id: AgentId,
     pub name: String,
-    pub cwd: String,
+    pub cwd: Option<String>,
+    pub managed: bool,
+    pub status: AgentConnectionStatus,
+    pub connected_at: Option<UnixTimestampSeconds>,
+    pub last_seen_at: Option<UnixTimestampSeconds>,
+    pub connection_issue: Option<String>,
+}
+
+/// Confirms that a managed supervisor accepted an idempotent start request.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StartAgentResponse {
+    pub agent: AgentInfoResponse,
+}
+
+/// Confirms that intentional shutdown completed child cleanup.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShutdownAgentResponse {
+    pub agent: AgentInfoResponse,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

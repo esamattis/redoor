@@ -120,7 +120,25 @@ impl SessionRuntime {
                 // the watchdog (e.g. an external agent spawned outside
                 // the server) and the stale check will be a no-op.
                 self.watchdog = watchdog_registry.lookup(&agent_name);
-                if self.watchdog.is_some() {
+                if let Some(watchdog) = self.watchdog.as_ref() {
+                    if !watchdog.mark_connected(self.socket_id.clone()) {
+                        log!(
+                            Level::Warning,
+                            "Rejecting managed agent registration while stopped: agent_name={}",
+                            agent_name
+                        );
+                        let _ = self.outgoing_text.send(WsMessage::Text(
+                            serde_json::to_string(&Message::Error {
+                                message: "Managed agent is intentionally stopped".to_string(),
+                            })
+                            .unwrap_or_else(|_| {
+                                r#"{"type":"error","message":"Managed agent is intentionally stopped"}"#.to_string()
+                            })
+                            .into(),
+                        ));
+                        self.watchdog = None;
+                        return;
+                    }
                     log!(
                         Level::Debug,
                         "Session linked to watchdog supervisor: agent_name={}",
@@ -141,10 +159,14 @@ impl SessionRuntime {
                         hostname,
                         username,
                         default_directory: cwd,
+                        watchdog: self.watchdog.clone(),
                     }));
                 self.agent_id = Some(agent_id);
             }
             Message::AgentUnregister { agent_id } => {
+                if let Some(watchdog) = self.watchdog.as_ref() {
+                    watchdog.mark_disconnected(self.socket_id.clone());
+                }
                 let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
                     agent_id,
                     socket_id: self.socket_id.clone(),
@@ -211,6 +233,9 @@ impl SessionRuntime {
 
     /// Unregisters the session's agent after the websocket goes away.
     fn shutdown(self) {
+        if let Some(watchdog) = self.watchdog.as_ref() {
+            watchdog.mark_disconnected(self.socket_id.clone());
+        }
         if let Some(agent_id) = self.agent_id {
             let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
                 agent_id,

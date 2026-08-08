@@ -6,6 +6,9 @@ import type { AgentDetailsResponse } from "../../bindings/AgentDetailsResponse";
 import type { EchoRequest } from "../../bindings/EchoRequest";
 import type { EchoResponse } from "../../bindings/EchoResponse";
 import type { AgentInfoResponse } from "../../bindings/AgentInfoResponse";
+import type { AgentConnectionStatus } from "../../bindings/AgentConnectionStatus";
+import type { StartAgentResponse } from "../../bindings/StartAgentResponse";
+import type { ShutdownAgentResponse } from "../../bindings/ShutdownAgentResponse";
 import type { TransferDirection } from "../../bindings/TransferDirection";
 import type { TransferProgressEntry } from "../../bindings/TransferProgressEntry";
 import type { TransferProgressListResponse } from "../../bindings/TransferProgressListResponse";
@@ -49,6 +52,9 @@ export type {
     ServerBuildMode,
     ReloadConfigResponse,
     ServerLogEvent,
+    AgentConnectionStatus,
+    StartAgentResponse,
+    ShutdownAgentResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -198,8 +204,53 @@ export class Agent {
         return this.info.name;
     }
 
-    get cwd(): string {
+    get cwd(): string | null {
         return this.info.cwd;
+    }
+
+    /** Indicates whether lifecycle controls are backed by a TOML supervisor. */
+    get managed(): boolean {
+        return this.info.managed;
+    }
+
+    /** Returns the retained public lifecycle state. */
+    get status(): AgentConnectionStatus {
+        return this.info.status;
+    }
+
+    /** Returns the start of the current connection only. */
+    get connectedAt(): number | null {
+        return this.info.connected_at;
+    }
+
+    /** Returns the server-observed end of the most recent connection. */
+    get lastSeenAt(): number | null {
+        return this.info.last_seen_at;
+    }
+
+    /** Returns the latest managed startup or connection diagnostic. */
+    get connectionIssue(): string | null {
+        return this.info.connection_issue;
+    }
+
+    /** Requests desired-running without waiting for process preparation or registration. */
+    async start(): Promise<StartAgentResponse> {
+        return apiRequest(
+            this.baseUrl,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
+            { method: "POST" },
+            this.requestContext,
+        );
+    }
+
+    /** Waits for the managed supervisor to cancel work and reap its child. */
+    async shutdown(): Promise<ShutdownAgentResponse> {
+        return apiRequest(
+            this.baseUrl,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/shutdown`,
+            { method: "POST" },
+            this.requestContext,
+        );
     }
 
     async getDetails(): Promise<AgentDetailsResponse> {
@@ -552,12 +603,32 @@ export class ApiClient {
         const startTime = Date.now();
         while (Date.now() - startTime < timeoutMs) {
             const agents = await this.listAgents();
-            const currentNames = agents.map((a) => a.name);
+            const currentNames = agents.map((agent) => agent.name);
             if (names.every((name) => currentNames.includes(name))) {
                 return;
             }
             await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        throw new Error(`Timeout waiting for agents: ${names.join(", ")}`);
+        throw new Error(`Timed out waiting for agents: ${names.join(", ")}`);
+    }
+
+    /** Polls for live sockets now that listAgents also returns dormant inventory. */
+    async waitForConnectedAgentNames(
+        names: string[],
+        timeoutMs: number = 5000,
+    ): Promise<void> {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeoutMs) {
+            const connectedNames = (await this.listAgents())
+                .filter((agent) => agent.status === "connected")
+                .map((agent) => agent.name);
+            if (names.every((name) => connectedNames.includes(name))) {
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        throw new Error(
+            `Timed out waiting for connected agents: ${names.join(", ")}`,
+        );
     }
 }

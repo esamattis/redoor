@@ -1,5 +1,5 @@
 use super::RouterError;
-use crate::commands::{Command, CommandResult, TransferProgressEntry};
+use crate::commands::{AgentConnectionStatus, Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::terminal_registry::TerminalRegistry;
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
@@ -32,11 +32,36 @@ pub struct AgentConnection {
     pub default_directory: String,
 }
 
+/// Retained UI inventory record for an agent seen during this server process.
+#[derive(Clone, Debug)]
+pub struct KnownAgent {
+    /// Stable route and management identifier.
+    pub id: AgentId,
+    /// Human-readable effective agent name.
+    pub name: String,
+    /// Latest authoritative or configured default directory.
+    pub default_directory: Option<String>,
+    /// Distinguishes TOML-owned supervisors from observation-only external agents.
+    pub managed: bool,
+    /// Current public lifecycle state.
+    pub status: AgentConnectionStatus,
+    /// Timestamp for the current authoritative connection only.
+    pub connected_at: Option<UnixTimestampSeconds>,
+    /// Server-observed teardown time retained after disconnect.
+    pub last_seen_at: Option<UnixTimestampSeconds>,
+    /// Latest managed spawn, exit, or registration issue.
+    pub connection_issue: Option<String>,
+    /// Guards the inventory against stale socket teardown.
+    pub socket_id: Option<SocketId>,
+}
+
 #[derive(Default)]
-/// Registry of currently connected agents keyed by agent id.
+/// Keeps live routing separate from the retained all-agent inventory.
 pub struct AgentRegistry {
     /// Connected agents addressable by their stable agent id.
     pub(crate) by_id: HashMap<AgentId, AgentConnection>,
+    /// All agents known during this server process lifetime.
+    pub(crate) known_by_id: HashMap<AgentId, KnownAgent>,
 }
 
 #[derive(Default)]

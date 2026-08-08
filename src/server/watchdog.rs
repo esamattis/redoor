@@ -7,39 +7,90 @@
 //! is re-invoked on every restart cycle, so it must be safe to call
 //! repeatedly.
 
-use anyhow::Result;
-use redoor::watchdog::{SpawnFn, WatchdogRegistry, spawn_supervisor};
+use anyhow::{Result, bail};
+use redoor::actors::router::{
+    ApplyManagedLifecycleRequest, RegisterManagedAgentRequest, RouterHandle, RouterMsg,
+};
+use redoor::types::AgentId;
+use redoor::watchdog::{SnapshotCallback, SpawnFn, WatchdogRegistry, spawn_supervisor};
 use redoor::{Level, log};
 use tokio::process::Child;
 
 use super::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spawn_local_agent};
 
-/// Spawns one watchdog supervisor per agent config and returns
-/// immediately. The supervisor lives for the lifetime of the server
-/// and keeps restarting its subprocess forever.
+/// Registers configured inventory and dormant supervisors without starting subprocesses.
 ///
-/// Returns an error if any agent key is already registered (typically
-/// two `[[agents]]` entries sharing the same effective name, e.g.
-/// when a local default collides with an explicit `name` on another
-/// entry). The first duplicate stops the spawn loop and the caller
-/// should surface the error to the operator.
-pub(crate) fn spawn_agents(
+/// Effective names are validated as a complete set first so a duplicate cannot leave a
+/// partially initialized fleet visible to clients.
+pub(crate) async fn register_agents(
     configs: &[AgentConfig],
     redoor_port: u16,
     agent_token: &str,
     registry: &WatchdogRegistry,
+    router: &RouterHandle,
 ) -> Result<()> {
+    let mut keys = std::collections::HashSet::new();
+    for config in configs {
+        let key = supervisor_key(config);
+        if !keys.insert(key.clone()) {
+            bail!("Watchdog key already registered: key={key}");
+        }
+    }
+
     log!(
         Level::Info,
-        "Starting {} agent supervisor(s) from config",
+        "Registering {} managed agent(s) from config",
         configs.len()
     );
     for config in configs.iter().cloned() {
         let key = supervisor_key(&config);
+        let agent_id = AgentId::from(key.clone());
+        let default_directory = configured_directory(&config);
+        let callback_router = router.clone();
+        let callback_agent_id = agent_id.clone();
+        let (snapshot_sender, mut snapshot_receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(snapshot) = snapshot_receiver.recv().await {
+                if callback_router
+                    .send_async(RouterMsg::ApplyManagedLifecycle(
+                        ApplyManagedLifecycleRequest {
+                            agent_id: callback_agent_id.clone(),
+                            snapshot,
+                            reply: None,
+                        },
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let callback: SnapshotCallback = std::sync::Arc::new(move |snapshot| {
+            let _ = snapshot_sender.send(snapshot);
+        });
         let spawn = make_spawn_fn(config, redoor_port, agent_token.to_string());
-        spawn_supervisor(key, spawn, registry)?;
+        spawn_supervisor(key, spawn, registry, callback)?;
+        router
+            .request(5000, |reply| {
+                RouterMsg::RegisterManagedAgent(RegisterManagedAgentRequest {
+                    agent_id,
+                    default_directory,
+                    reply,
+                })
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to register managed inventory: {error:?}"))?;
     }
     Ok(())
+}
+
+/// Extracts only the configured browser directory, leaving unknown SSH defaults nullable.
+fn configured_directory(config: &AgentConfig) -> Option<String> {
+    match config {
+        AgentConfig::Local(config) => config.dir.clone(),
+        AgentConfig::Ssh(config) => config.dir.clone(),
+    }
 }
 
 /// Computes the key used to look up the supervisor from the session.
