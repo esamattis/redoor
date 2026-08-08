@@ -1,6 +1,7 @@
 use clap::Args;
 use redoor::{
     streaming,
+    terminal_protocol::TerminalId,
     types::{AgentId, RequestId},
 };
 use std::{
@@ -142,6 +143,58 @@ impl ActiveDownloads {
     }
 }
 
+#[derive(Clone)]
+/// Holds only the cancellation signal needed to stop one ephemeral terminal.
+pub(crate) struct TerminalSessionHandle {
+    pub(crate) cancel_sender: watch::Sender<bool>,
+}
+
+#[derive(Clone, Default)]
+/// Tracks terminal cancellation atomically without retaining PTYs or replay state.
+pub(crate) struct ActiveTerminals {
+    inner: Arc<Mutex<HashMap<TerminalId, TerminalSessionHandle>>>,
+}
+
+impl ActiveTerminals {
+    const MAX_ACTIVE: usize = 8;
+
+    /// Creates the shared terminal registry used by control and terminal tasks.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a terminal only when its identifier is not already active.
+    pub(crate) fn insert_if_absent(
+        &self,
+        terminal_id: TerminalId,
+        handle: TerminalSessionHandle,
+    ) -> bool {
+        let mut terminals = self.inner.lock().expect("active terminals mutex poisoned");
+        if terminals.contains_key(&terminal_id) || terminals.len() >= Self::MAX_ACTIVE {
+            return false;
+        }
+        terminals.insert(terminal_id, handle);
+        true
+    }
+
+    /// Removes a completed terminal so a later fresh bootstrap can reuse its identifier.
+    pub(crate) fn remove(&self, terminal_id: &TerminalId) {
+        self.inner
+            .lock()
+            .expect("active terminals mutex poisoned")
+            .remove(terminal_id);
+    }
+
+    /// Cancels all dedicated terminal tasks before forgetting their handles.
+    pub(crate) fn clear(&self) {
+        let mut terminals = self.inner.lock().expect("active terminals mutex poisoned");
+        for terminal in terminals.values() {
+            let _ = terminal.cancel_sender.send(true);
+        }
+        terminals.clear();
+    }
+}
+
 pub(crate) struct AgentState {
     pub(crate) agent_id: AgentId,
     pub(crate) agent_name: String,
@@ -150,6 +203,7 @@ pub(crate) struct AgentState {
     pub(crate) ws_binary_tx: Option<mpsc::Sender<WsMessage>>,
     pub(crate) active_uploads: ActiveUploads,
     pub(crate) active_downloads: ActiveDownloads,
+    pub(crate) active_terminals: ActiveTerminals,
 }
 
 impl AgentState {
@@ -162,6 +216,7 @@ impl AgentState {
             ws_binary_tx: None,
             active_uploads: ActiveUploads::new(),
             active_downloads: ActiveDownloads::new(),
+            active_terminals: ActiveTerminals::new(),
         }
     }
 }

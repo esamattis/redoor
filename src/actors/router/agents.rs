@@ -1,5 +1,6 @@
+use super::RouterError;
 use super::cleanup;
-use super::messages::{ExecuteCommandRequest, RegisterAgentRequest};
+use super::messages::{ExecuteCommandRequest, OpenTerminalRequest, RegisterAgentRequest};
 use super::state::{AgentConnection, RouterState};
 use super::ui;
 use crate::commands::CommandResult;
@@ -26,7 +27,7 @@ impl AgentConnection {
     }
 
     /// Serializes and queues one control-plane message onto this agent's text lane.
-    pub(crate) fn send_message(&self, message: Message) {
+    pub(crate) fn send_message(&self, message: Message) -> bool {
         match serde_json::to_string(&message) {
             Ok(json) => {
                 if self
@@ -39,6 +40,9 @@ impl AgentConnection {
                         "Failed to queue text message for agent: socket_id={}",
                         self.socket_id
                     );
+                    false
+                } else {
+                    true
                 }
             }
             Err(error) => {
@@ -48,6 +52,7 @@ impl AgentConnection {
                     self.socket_id,
                     error
                 );
+                false
             }
         }
     }
@@ -101,7 +106,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
         if let Some(old_connection) = state.agents.by_id.remove(&old_agent_id) {
             // Notify the old session so its agent process exits promptly
             // instead of lingering as a zombie.
-            old_connection.send_message(Message::Error {
+            let _ = old_connection.send_message(Message::Error {
                 message: "Connection replaced by a new agent with the same name".to_string(),
             });
         }
@@ -109,6 +114,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
         // Clean up any in-flight transfers or pending REST requests that
         // belonged to the old connection before the new one takes over.
         cleanup::cleanup_agent_requests(state, &old_agent_id).await;
+        state.terminal_registry.remove_agent_pending(&old_agent_id);
     }
 
     log!(
@@ -152,7 +158,7 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
             .pending_rest
             .by_request_id
             .insert(request_id, (request.reply, request.agent_id.clone()));
-        agent_connection.send_message(Message::Command {
+        let _ = agent_connection.send_message(Message::Command {
             agent_id: request.agent_id,
             request_id,
             command: request.command,
@@ -163,4 +169,24 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
             format!("Agent not found: {}", request.agent_id),
         ));
     }
+}
+
+/// Queues only the terminal bootstrap secret on the existing control connection.
+pub(crate) fn open_terminal(state: &RouterState, request: OpenTerminalRequest) {
+    let result = state
+        .agents
+        .by_id
+        .get(&request.agent_id)
+        .filter(|connection| {
+            connection.send_message(Message::TerminalOpen {
+                terminal_id: request.terminal_id.clone(),
+                token: request.token.clone(),
+                size: request.size,
+            })
+        })
+        .map(|_| ())
+        .ok_or_else(|| RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        });
+    let _ = request.reply.send(result);
 }

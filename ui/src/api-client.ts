@@ -16,6 +16,9 @@ import type { CreateDirectoryResponse } from "../../bindings/CreateDirectoryResp
 import type { CopyFileRequest } from "../../bindings/CopyFileRequest";
 import type { CopyFileResponse } from "../../bindings/CopyFileResponse";
 import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
+import type { TerminalSize } from "../../bindings/TerminalSize";
+import type { TerminalClientMessage } from "../../bindings/TerminalClientMessage";
+import type { TerminalServerMessage } from "../../bindings/TerminalServerMessage";
 
 export type { LsDirectoryResponse, LsFileResponse };
 export type {
@@ -29,6 +32,9 @@ export type {
     CopyFileRequest,
     CopyFileResponse,
     CopyEndpoint,
+    TerminalSize,
+    TerminalClientMessage,
+    TerminalServerMessage,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -148,6 +154,18 @@ export class Agent {
     getBrowserUrl(path: string): string {
         const encodedPath = encodeURIComponent(path);
         return `/agents/${encodeURIComponent(this.info.id)}/browser/${encodedPath}`;
+    }
+
+    /** Builds the dedicated same-origin data-plane socket for one terminal. */
+    getTerminalWebSocketUrl(size: TerminalSize): string {
+        const url = new URL(
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/terminal/ws`,
+            this.baseUrl,
+        );
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("rows", String(size.rows));
+        url.searchParams.set("cols", String(size.cols));
+        return url.toString();
     }
 
     async upload(path: string, file: File): Promise<Response> {

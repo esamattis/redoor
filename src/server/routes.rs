@@ -12,6 +12,7 @@ use super::{
     files::{create_directory_handler, raw_agent_delete_handler},
     raw::{raw_agent_handler, raw_agent_put_handler},
     state::ServerState,
+    terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
     ui::ui_service,
     ws::{ui_websocket_handler, websocket_handler},
@@ -21,6 +22,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
     Router::new()
         .route("/ws", get(websocket_handler))
         .route("/api/v1/ui/ws", get(ui_websocket_handler))
+        .route(
+            "/api/v1/agents/{agent}/terminal/ws",
+            get(browser_terminal_websocket_handler),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/agent/ws",
+            get(agent_terminal_websocket_handler),
+        )
         .route("/api/v1/agents", get(list_agents_handler))
         .route(
             "/api/v1/transfers/progress",

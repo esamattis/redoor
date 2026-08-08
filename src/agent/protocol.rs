@@ -1,6 +1,6 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
-    AgentState, DownloadSessionHandle, raw::RawDownloadContext,
+    AgentState, DownloadSessionHandle, TerminalSessionHandle, raw::RawDownloadContext, terminal,
 };
 use redoor::{
     Level,
@@ -192,6 +192,56 @@ impl AgentActor {
                             request_id
                         );
                     }
+                }
+                Message::TerminalOpen {
+                    terminal_id,
+                    token,
+                    size,
+                } => {
+                    if size.validate().is_err() {
+                        log!(
+                            Level::Warning,
+                            "Rejected terminal with invalid dimensions: terminal_id={}",
+                            terminal_id.0
+                        );
+                        return;
+                    }
+
+                    let (cancel_sender, cancel_receiver) = watch::channel(false);
+                    if !state.active_terminals.insert_if_absent(
+                        terminal_id.clone(),
+                        TerminalSessionHandle { cancel_sender },
+                    ) {
+                        log!(
+                            Level::Warning,
+                            "Rejected duplicate terminal bootstrap: terminal_id={}",
+                            terminal_id.0
+                        );
+                        return;
+                    }
+
+                    let server_url = state.server_url.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = terminal::connect_and_run(
+                            &server_url,
+                            terminal_id.clone(),
+                            token,
+                            size,
+                            cancel_receiver,
+                        )
+                        .await
+                        {
+                            log!(
+                                Level::Warning,
+                                "Terminal session ended with an error: terminal_id={}, error={}",
+                                terminal_id.0,
+                                error
+                            );
+                        }
+                        let _ = agent_ref
+                            .send(AgentMsg::TerminalFinished { terminal_id })
+                            .await;
+                    });
                 }
                 Message::Error { message } => {
                     log!(Level::Error, "Server error: {}", message);

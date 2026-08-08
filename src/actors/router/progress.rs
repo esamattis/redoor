@@ -260,7 +260,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_progress_updates_bypass_ui_refresh_throttle() {
         let refresh_check_task = tokio::spawn(async {});
-        let mut state = RouterState::new(refresh_check_task);
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+        );
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
         state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
 

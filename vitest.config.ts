@@ -4,8 +4,8 @@ import path from "node:path";
 export default defineConfig({
     resolve: {
         alias: {
-            "@bindings": path.resolve(__dirname, "./ui/bindings"),
-            "@": path.resolve(__dirname, "./ui/src"),
+            "@bindings": path.resolve(import.meta.dirname, "./ui/bindings"),
+            "@": path.resolve(import.meta.dirname, "./ui/src"),
         },
     },
     test: {

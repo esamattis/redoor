@@ -8,6 +8,11 @@ import { fileURLToPath, URL } from "node:url";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+    build: {
+        // Ghostty is a user-triggered lazy chunk; its terminal runtime is
+        // intentionally larger than Vite's generic application-chunk limit.
+        chunkSizeWarningLimit: 700,
+    },
     plugins: [
         devtools(),
         tanstackRouter({
@@ -33,7 +38,10 @@ export default defineConfig({
         proxy: {
             "/api": {
                 target: "http://127.0.0.1:3000",
-                changeOrigin: true,
+                // Preserve the browser-facing Host so terminal Origin validation
+                // sees the same authority on both sides of the dev proxy.
+                changeOrigin: false,
+                ws: true,
             },
             "/ws": {
                 target: "ws://127.0.0.1:3000",

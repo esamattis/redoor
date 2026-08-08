@@ -84,7 +84,8 @@ async fn run_server(args: server::CoordinatorArgs) {
 
     logging::init(log.clone());
 
-    let (router_ref, _router_task) = actors::router::spawn_router();
+    let terminal_registry = redoor::terminal_registry::TerminalRegistry::new();
+    let (router_ref, _router_task) = actors::router::spawn_router(terminal_registry.clone());
 
     // Build the watchdog registry up front so the axum state and the
     // supervisor spawn loop share the same map of agent name →
@@ -95,6 +96,7 @@ async fn run_server(args: server::CoordinatorArgs) {
     let app = server::build_app(server::ServerState::new(
         router_ref.clone(),
         watchdog_registry.clone(),
+        terminal_registry,
     ));
 
     let addr = format!("{bind}:{port}");

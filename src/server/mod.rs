@@ -6,6 +6,7 @@ mod raw;
 mod responses;
 mod routes;
 pub(crate) mod state;
+mod terminals;
 mod transfers;
 mod ui;
 mod watchdog;

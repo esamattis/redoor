@@ -1,6 +1,7 @@
 use super::RouterError;
 use crate::commands::{Command, CommandResult, TransferProgressEntry};
 use crate::streaming::{StreamChunk, StreamPayloadKind};
+use crate::terminal_registry::TerminalRegistry;
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
 use std::collections::HashMap;
@@ -181,6 +182,8 @@ pub struct UiState {
 
 /// Aggregate router state split into domain-specific registries and stores.
 pub struct RouterState {
+    /// Pending dedicated terminal setups cleaned when authoritative agents leave.
+    pub(crate) terminal_registry: TerminalRegistry,
     /// Connected-agent registry used for all routing decisions.
     pub(crate) agents: AgentRegistry,
     /// Pending one-shot REST replies awaiting final agent responses.
@@ -199,8 +202,12 @@ pub struct RouterState {
 
 impl RouterState {
     /// Constructs a fresh router state with the background UI refresh task attached.
-    pub(crate) fn new(ui_refresh_check_task: tokio::task::JoinHandle<()>) -> Self {
+    pub(crate) fn new(
+        ui_refresh_check_task: tokio::task::JoinHandle<()>,
+        terminal_registry: TerminalRegistry,
+    ) -> Self {
         Self {
+            terminal_registry,
             agents: AgentRegistry::default(),
             pending_rest: PendingRestReplies::default(),
             streams: StreamTransferRegistry::default(),

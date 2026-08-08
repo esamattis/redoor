@@ -1349,6 +1349,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pty-process"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71cec9e2670207c5ebb9e477763c74436af3b9091dd550b9fb3c1bec7f3ea266"
+dependencies = [
+ "rustix",
+ "tokio",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1498,6 +1508,7 @@ dependencies = [
  "headers",
  "mime_guess",
  "nix",
+ "pty-process",
  "reqwest",
  "rust-embed",
  "serde",
@@ -2152,7 +2163,11 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.30.0",
 ]
 
@@ -2344,6 +2359,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.2",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror",
 ]

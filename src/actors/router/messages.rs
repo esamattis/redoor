@@ -1,6 +1,7 @@
 use super::RouterError;
 use super::state::CopyContentKind;
 use crate::commands::{Command, CommandResult, TransferProgressListResponse, UiEvent};
+use crate::terminal_protocol::{TerminalId, TerminalSize};
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId};
 use axum::extract::ws::Message as WsMessage;
 
@@ -195,6 +196,15 @@ pub struct TransferProgressUpdateRequest {
     pub total_bytes: Option<u64>,
 }
 
+/// Requests a connected agent to establish one dedicated terminal socket.
+pub struct OpenTerminalRequest {
+    pub agent_id: AgentId,
+    pub terminal_id: TerminalId,
+    pub token: String,
+    pub size: TerminalSize,
+    pub reply: RouterReply<Result<(), RouterError>>,
+}
+
 pub enum RouterMsg {
     RegisterAgent(RegisterAgentRequest),
     UnregisterAgent {
@@ -229,6 +239,7 @@ pub enum RouterMsg {
     },
     StartCopyRest(StartCopyRequest),
     TransferProgressUpdate(TransferProgressUpdateRequest),
+    OpenTerminal(OpenTerminalRequest),
     CheckPendingUiRefresh,
     Shutdown,
 }

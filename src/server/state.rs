@@ -1,5 +1,6 @@
 use clap::Args;
 use redoor::actors;
+use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
 
 #[derive(Clone)]
@@ -9,16 +10,20 @@ pub(crate) struct ServerState {
     /// this to look up the supervisor for the agent it just registered
     /// and signal it when the connection goes stale.
     pub(crate) watchdog_registry: WatchdogRegistry,
+    /// Pairs short-lived browser and dedicated agent terminal connections.
+    pub(crate) terminal_registry: TerminalRegistry,
 }
 
 impl ServerState {
     pub(crate) fn new(
         router_ref: actors::router::RouterHandle,
         watchdog_registry: WatchdogRegistry,
+        terminal_registry: TerminalRegistry,
     ) -> Self {
         Self {
             router_ref,
             watchdog_registry,
+            terminal_registry,
         }
     }
 }

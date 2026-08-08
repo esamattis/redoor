@@ -262,6 +262,14 @@ pub enum Message {
     #[serde(rename = "cancel_transfer")]
     CancelTransfer { request_id: RequestId },
 
+    /// Requests one ephemeral dedicated terminal connection from this agent.
+    #[serde(rename = "terminal_open")]
+    TerminalOpen {
+        terminal_id: crate::terminal_protocol::TerminalId,
+        token: String,
+        size: crate::terminal_protocol::TerminalSize,
+    },
+
     /// Protocol-level error outside any request-specific response flow.
     ///
     /// The router currently uses this to reject invalid agent registration such

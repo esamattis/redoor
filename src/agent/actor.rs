@@ -53,6 +53,7 @@ impl AgentRuntime {
         self.state.ws_binary_tx = None;
         self.state.active_uploads.clear();
         self.state.active_downloads.clear();
+        self.state.active_terminals.clear();
 
         log!(
             Level::Info,
@@ -100,6 +101,14 @@ impl AgentRuntime {
                 agent.handle_upload_chunk(&mut self.state, bytes).await;
             }
             AgentMsg::ConnectionLost { reason } => {
+                if self.state.ws_text_tx.is_none() && self.state.ws_binary_tx.is_none() {
+                    log!(
+                        Level::Debug,
+                        "Ignoring duplicate connection loss: {}",
+                        reason
+                    );
+                    return true;
+                }
                 log!(
                     Level::Warning,
                     "Connection lost: {}, scheduling reconnect in 5s",
@@ -109,6 +118,7 @@ impl AgentRuntime {
                 self.state.ws_binary_tx = None;
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
+                self.state.active_terminals.clear();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     let _ = handle.try_send(AgentMsg::Connect);
@@ -123,6 +133,9 @@ impl AgentRuntime {
                         "Failed to send message, connection may be lost"
                     );
                 }
+            }
+            AgentMsg::TerminalFinished { terminal_id } => {
+                self.state.active_terminals.remove(&terminal_id);
             }
             AgentMsg::ExitWithError => {
                 log!(Level::Error, "Exiting agent due to error");
@@ -162,6 +175,7 @@ impl AgentRuntime {
 
                 spawn_read_task(read, handle.clone()).await;
 
+                let writer_handle = handle.clone();
                 tokio::spawn(async move {
                     let mut write = write;
                     let mut text_closed = false;
@@ -181,6 +195,11 @@ impl AgentRuntime {
 
                         if write.send(message).await.is_err() {
                             log!(Level::Warning, "Failed to send WebSocket message");
+                            let _ = writer_handle
+                                .send(AgentMsg::ConnectionLost {
+                                    reason: "Failed to write to server connection".to_string(),
+                                })
+                                .await;
                             break;
                         }
                     }

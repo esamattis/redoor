@@ -12,6 +12,7 @@ pub(super) async fn spawn_read_task(
     agent_ref: AgentHandle,
 ) {
     tokio::spawn(async move {
+        let mut connection_loss_reported = false;
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(WsMessage::Text(text)) => {
@@ -37,6 +38,7 @@ pub(super) async fn spawn_read_task(
                     }
                 }
                 Ok(WsMessage::Close(_)) => {
+                    connection_loss_reported = true;
                     let _ = agent_ref
                         .send(AgentMsg::ConnectionLost {
                             reason: "Server closed connection".to_string(),
@@ -45,6 +47,7 @@ pub(super) async fn spawn_read_task(
                     break;
                 }
                 Err(error) => {
+                    connection_loss_reported = true;
                     let _ = agent_ref
                         .send(AgentMsg::ConnectionLost {
                             reason: format!("Error receiving message: {}", error),
@@ -54,6 +57,13 @@ pub(super) async fn spawn_read_task(
                 }
                 _ => {}
             }
+        }
+        if !connection_loss_reported {
+            let _ = agent_ref
+                .send(AgentMsg::ConnectionLost {
+                    reason: "Server connection ended".to_string(),
+                })
+                .await;
         }
     });
 }

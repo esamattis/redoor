@@ -2,6 +2,8 @@ pub mod actors;
 pub mod commands;
 pub mod logging;
 pub mod streaming;
+pub mod terminal_protocol;
+pub mod terminal_registry;
 pub mod types;
 pub mod watchdog;
 

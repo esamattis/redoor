@@ -33,6 +33,7 @@
         "@tanstack/react-router-devtools": "^1.167.1",
         "@tanstack/router-plugin": "^1.168.26",
         "@types/semver": "^7.8.0",
+        "ghostty-web": "^0.4.0",
         "jotai": "^2.20.2",
         "lucide-react": "^1.29.0",
         "oxlint": "^1.77.0",

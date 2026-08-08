@@ -3,6 +3,7 @@ mod messages;
 mod protocol;
 mod raw;
 pub(crate) mod state;
+mod terminal;
 mod transfers;
 mod ws;
 
@@ -13,7 +14,7 @@ use tokio::sync::mpsc;
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
     ActiveDownloads, ActiveUploads, AgentArgs, AgentState, DownloadSessionHandle,
-    UploadSessionHandle,
+    TerminalSessionHandle, UploadSessionHandle,
 };
 
 /// Wraps subsystem-specific agent command failures behind one protocol boundary type.
