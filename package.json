@@ -42,6 +42,7 @@
         "semver": "^7.8.5",
         "tailwindcss": "^4.3.3",
         "toxiproxy-node-client": "^4.1.0",
+        "zod": "^4.4.3",
         "zx": "^8.8.5"
     },
     "devDependencies": {
