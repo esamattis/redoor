@@ -122,13 +122,10 @@ test.describe.serial("File Operations", () => {
             .getByRole("button", { name: "Create directory", exact: true })
             .click();
 
-        // Seeing the new entry in the listing confirms the route refreshed with the created directory.
-        await expect(
-            page.getByRole("link", {
-                name: createdDirectoryName,
-                exact: true,
-            }),
-        ).toBeVisible();
+        // The created directory becomes the active location so users can work in it immediately.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(createdDirectoryPath)}`,
+        );
 
         const createdDirectoryStats = await fs.stat(createdDirectoryPath);
 

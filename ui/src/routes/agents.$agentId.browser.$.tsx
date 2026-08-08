@@ -524,7 +524,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
 
 /** Opens a focused dialog so directory creation does not crowd the toolbar. */
 function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
-    const router = useRouter();
+    const navigate = useNavigate();
     const inputId = React.useId();
     const [isDialogOpen, setIsDialogOpen] = React.useState(false);
     const [directoryName, setDirectoryName] = React.useState("");
@@ -574,7 +574,9 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
 
         try {
             await props.agent.createDirectory(createDirectoryPath);
-            await router.invalidate();
+            await navigate({
+                to: props.agent.getBrowserUrl(createDirectoryPath),
+            });
             resetDialog();
         } catch (error) {
             setCreateDirectoryState({
