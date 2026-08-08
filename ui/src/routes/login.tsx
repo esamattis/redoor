@@ -2,6 +2,7 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
+import { Password } from "../components/password";
 
 const loginSearchSchema = z.object({
     redirect: z.string().optional(),
@@ -80,19 +81,13 @@ function LoginPage() {
                             className="mt-2 w-full rounded-md border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
                         />
                     </label>
-                    <label className="block text-sm font-medium text-slate-300">
-                        Password
-                        <input
-                            type="password"
-                            autoComplete="current-password"
-                            value={password}
-                            disabled={isSubmitting}
-                            onChange={(event) =>
-                                setPassword(event.target.value)
-                            }
-                            className="mt-2 w-full rounded-md border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
-                        />
-                    </label>
+                    <Password
+                        label="Password"
+                        autoComplete="current-password"
+                        value={password}
+                        disabled={isSubmitting}
+                        onChange={setPassword}
+                    />
                     {error ? (
                         <p
                             role="alert"
