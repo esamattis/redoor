@@ -10,9 +10,9 @@ import {
     type Agent,
     type TerminalClientMessage,
     type TerminalServerMessage,
-} from "../api-client";
-import { initializeGhostty } from "../terminal/ghostty";
-import { CollapsibleBottomPanel } from "./collapsible-bottom-panel";
+} from "@/api-client";
+import { initializeGhostty } from "@/terminal/ghostty";
+import { CollapsibleBottomPanel } from "@/components/collapsible-bottom-panel";
 
 type TerminalState =
     | { type: "not_started" }
@@ -396,8 +396,9 @@ export function TerminalPanel(props: { agent: Agent }) {
             isCollapsed={isCollapsed}
             onCollapsedChange={handleCollapsedChange}
             keepChildrenMounted
+            defaultExpandedHeight={400}
         >
-            <div className="relative h-80 min-h-48 max-h-[45vh] overflow-hidden rounded-md bg-[#0b0d12] p-2">
+            <div className="relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
                 <div
                     ref={hostRef}
                     aria-label={`Terminal for ${props.agent.name}`}
