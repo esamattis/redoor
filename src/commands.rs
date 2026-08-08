@@ -55,6 +55,7 @@ pub struct LsDirectoryResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Carries file metadata from an agent without requiring the server to inspect the remote filesystem.
 pub struct LsFileResult {
     pub size: u64,
     pub path: String,
@@ -62,6 +63,7 @@ pub struct LsFileResult {
     pub group: Option<String>,
     pub uid: u32,
     pub gid: u32,
+    pub permissions: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +188,7 @@ pub struct LsDirectoryResponse {
     pub files: Vec<LsEntry>,
 }
 
+/// Exposes remote file metadata needed by clients to present a useful detail view.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LsFileResponse {
@@ -196,6 +199,7 @@ pub struct LsFileResponse {
     pub group: Option<String>,
     pub uid: u32,
     pub gid: u32,
+    pub permissions: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -462,6 +466,7 @@ impl CommandHandler {
                     let size = metadata.size();
                     let uid = metadata.uid();
                     let gid = metadata.gid();
+                    let permissions = metadata.mode() & 0o777;
 
                     let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
                         .ok()
@@ -480,6 +485,7 @@ impl CommandHandler {
                         group,
                         uid,
                         gid,
+                        permissions,
                     })
                 }
             }
