@@ -5,6 +5,7 @@ use clap::Args;
 use redoor::actors;
 use redoor::commands::ServerAuthMode;
 use redoor::log_registry::LogRegistry;
+use redoor::one_time_token_registry::OneTimeTokenRegistry;
 use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
 
@@ -21,6 +22,8 @@ pub(crate) struct ServerState {
     pub(crate) terminal_registry: TerminalRegistry,
     /// Pairs short-lived browser and dedicated agent log connections.
     pub(crate) log_registry: LogRegistry,
+    /// Keeps download credentials process-local and atomically single-use.
+    pub(crate) one_time_token_registry: OneTimeTokenRegistry,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
     /// Absolute path of the TOML config loaded at process start (for the server
@@ -39,6 +42,7 @@ impl ServerState {
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
         log_registry: LogRegistry,
+        one_time_token_registry: OneTimeTokenRegistry,
         auth: AuthState,
         config_path: PathBuf,
         auth_mode: ServerAuthMode,
@@ -49,6 +53,7 @@ impl ServerState {
             watchdog_registry,
             terminal_registry,
             log_registry,
+            one_time_token_registry,
             auth,
             config_path,
             auth_mode,

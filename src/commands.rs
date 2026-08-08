@@ -166,6 +166,16 @@ pub struct MetadataResponse {
     pub is_dir: bool,
     /// True only when the agent verified the whole file is UTF-8 and small enough to edit safely.
     pub editable: bool,
+    /// Outstanding process-local download tokens for this exact agent and path.
+    pub one_time_tokens: Vec<String>,
+}
+
+/// Returns the opaque single-use credential without exposing registry internals.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateOneTimeTokenResponse {
+    /// UUID accepted once by the matching agent raw-download path.
+    pub one_time_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,6 +861,8 @@ impl CommandHandler {
                     is_file,
                     is_dir,
                     editable,
+                    // Agents cannot observe server-local credentials; the HTTP handler fills these.
+                    one_time_tokens: Vec::new(),
                 })
             }
             Err(error) => CommandResult::io_error("Failed to get file metadata", error),

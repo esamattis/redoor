@@ -59,6 +59,11 @@ type CreateDirectoryState =
     | { type: "creating" }
     | { type: "error"; message: string };
 
+type ShareableLinkState =
+    | { type: "idle" }
+    | { type: "creating" }
+    | { type: "error"; message: string };
+
 /** Keeps the hidden-file visibility preference consistent across reloads. */
 const showHiddenFilesAtom = atomWithLocalStorage(
     "redoor.browser.show-hidden-files",
@@ -315,6 +320,9 @@ function FileBrowser() {
                         lsResult={lsResult}
                         downloadUrl={downloadUrl}
                         editable={editable}
+                        initialOneTimeTokens={
+                            data.metadata?.one_time_tokens ?? []
+                        }
                     />
                 </div>
             </div>
@@ -1463,6 +1471,7 @@ function FilesystemMetadataSections(props: {
 function CommandDownloadRow(props: {
     label: string;
     command: string;
+    copyAriaLabel: string;
     isCopied: boolean;
     onCopy: () => void;
 }) {
@@ -1476,7 +1485,7 @@ function CommandDownloadRow(props: {
                     type="button"
                     onClick={props.onCopy}
                     className="inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-                    aria-label={`Copy ${props.label} command`}
+                    aria-label={props.copyAriaLabel}
                 >
                     {props.isCopied ? (
                         <Check className="h-3.5 w-3.5 text-emerald-400" />
@@ -1548,6 +1557,7 @@ function FileDetailView(props: {
     lsResult: LsFileResponse;
     downloadUrl: string;
     editable: boolean;
+    initialOneTimeTokens: Array<string>;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -1559,6 +1569,16 @@ function FileDetailView(props: {
     const [deleteState, setDeleteState] = React.useState<DeleteState>({
         type: "idle",
     });
+    const [oneTimeTokens, setOneTimeTokens] = React.useState(
+        props.initialOneTimeTokens,
+    );
+    const [shareableLinkState, setShareableLinkState] =
+        React.useState<ShareableLinkState>({ type: "idle" });
+
+    React.useEffect(() => {
+        setOneTimeTokens(props.initialOneTimeTokens);
+        setShareableLinkState({ type: "idle" });
+    }, [props.path, props.initialOneTimeTokens]);
 
     const copyToClipboard = async (text: string, commandType: string) => {
         try {
@@ -1595,8 +1615,25 @@ function FileDetailView(props: {
         }
     };
 
-    const wgetCommand = `wget "${props.downloadUrl}"`;
-    const curlCommand = `curl -O "${props.downloadUrl}"`;
+    const handleCreateShareableLink = async () => {
+        setShareableLinkState({ type: "creating" });
+
+        try {
+            const response = await props.agent.createOneTimeToken(
+                props.lsResult.path,
+            );
+            setOneTimeTokens((tokens) => [...tokens, response.one_time_token]);
+            setShareableLinkState({ type: "idle" });
+        } catch (error) {
+            setShareableLinkState({
+                type: "error",
+                message: getErrorMessage(
+                    error,
+                    "Could not create a shareable link",
+                ),
+            });
+        }
+    };
 
     return (
         <div>
@@ -1714,34 +1751,129 @@ function FileDetailView(props: {
                 />
 
                 <section
-                    aria-labelledby="command-downloads-heading"
+                    aria-labelledby="shareable-links-heading"
                     className="border-t border-slate-800 bg-slate-950/15 p-6 md:p-8"
                 >
-                    <div className="mb-4">
-                        <h2
-                            id="command-downloads-heading"
-                            className="text-base font-semibold text-slate-100"
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                            <h2
+                                id="shareable-links-heading"
+                                className="text-base font-semibold text-slate-100"
+                            >
+                                Shareable links
+                            </h2>
+                            <p className="mt-1 text-sm text-slate-500">
+                                Create an anonymous link for a single download.
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleCreateShareableLink}
+                            disabled={shareableLinkState.type === "creating"}
+                            className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                            Command Line Downloads
-                        </h2>
-                        <p className="mt-1 text-sm text-slate-500">
-                            Download this file directly from a shell.
+                            <Download className="h-4 w-4" />
+                            {shareableLinkState.type === "creating"
+                                ? "Creating link..."
+                                : "Create shareable link"}
+                        </button>
+                    </div>
+
+                    {shareableLinkState.type === "error" ? (
+                        <p
+                            role="alert"
+                            className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+                        >
+                            {shareableLinkState.message}
                         </p>
-                    </div>
-                    <div className="grid min-w-0 gap-3 lg:grid-cols-2">
-                        <CommandDownloadRow
-                            label="wget"
-                            command={wgetCommand}
-                            isCopied={copiedCommand === "wget"}
-                            onCopy={() => copyToClipboard(wgetCommand, "wget")}
-                        />
-                        <CommandDownloadRow
-                            label="curl"
-                            command={curlCommand}
-                            isCopied={copiedCommand === "curl"}
-                            onCopy={() => copyToClipboard(curlCommand, "curl")}
-                        />
-                    </div>
+                    ) : null}
+
+                    {oneTimeTokens.length > 0 ? (
+                        <div className="mt-5 grid gap-4">
+                            {oneTimeTokens.map((token, index) => {
+                                const linkNumber = index + 1;
+                                const shareableUrl = `${props.downloadUrl}?one_time_token=${encodeURIComponent(token)}`;
+                                const wgetCommand = `wget --content-disposition "${shareableUrl}"`;
+                                const curlCommand = `curl -JO "${shareableUrl}"`;
+                                const copyKeyPrefix = `one-time-${token}`;
+
+                                return (
+                                    <article
+                                        key={token}
+                                        aria-label={`One-time shareable link ${linkNumber}`}
+                                        className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/30 p-4"
+                                    >
+                                        <p className="text-sm font-semibold text-slate-200">
+                                            One-time shareable link {linkNumber}
+                                        </p>
+                                        <p className="mt-1 text-sm text-amber-300/90">
+                                            This link works only once. The first
+                                            download consumes it, and later
+                                            requests will be rejected.
+                                        </p>
+                                        <div className="mt-3 flex min-w-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                                            <a
+                                                href={shareableUrl}
+                                                className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-blue-300 underline decoration-blue-400/40 underline-offset-4 hover:text-blue-200"
+                                            >
+                                                {shareableUrl}
+                                            </a>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    copyToClipboard(
+                                                        shareableUrl,
+                                                        `${copyKeyPrefix}-link`,
+                                                    )
+                                                }
+                                                aria-label={`Copy shareable link ${linkNumber}`}
+                                                className="shrink-0 rounded-md p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
+                                            >
+                                                {copiedCommand ===
+                                                `${copyKeyPrefix}-link` ? (
+                                                    <Check className="h-4 w-4 text-emerald-400" />
+                                                ) : (
+                                                    <Copy className="h-4 w-4" />
+                                                )}
+                                            </button>
+                                        </div>
+                                        <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">
+                                            <CommandDownloadRow
+                                                label="wget"
+                                                command={wgetCommand}
+                                                copyAriaLabel={`Copy wget command for shareable link ${linkNumber}`}
+                                                isCopied={
+                                                    copiedCommand ===
+                                                    `${copyKeyPrefix}-wget`
+                                                }
+                                                onCopy={() =>
+                                                    copyToClipboard(
+                                                        wgetCommand,
+                                                        `${copyKeyPrefix}-wget`,
+                                                    )
+                                                }
+                                            />
+                                            <CommandDownloadRow
+                                                label="curl"
+                                                command={curlCommand}
+                                                copyAriaLabel={`Copy curl command for shareable link ${linkNumber}`}
+                                                isCopied={
+                                                    copiedCommand ===
+                                                    `${copyKeyPrefix}-curl`
+                                                }
+                                                onCopy={() =>
+                                                    copyToClipboard(
+                                                        curlCommand,
+                                                        `${copyKeyPrefix}-curl`,
+                                                    )
+                                                }
+                                            />
+                                        </div>
+                                    </article>
+                                );
+                            })}
+                        </div>
+                    ) : null}
                 </section>
             </article>
 

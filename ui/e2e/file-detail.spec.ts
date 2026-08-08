@@ -1,10 +1,5 @@
 import { test, expect } from "@playwright/test";
-import {
-    setupTestDir,
-    teardownTestDir,
-    WEB_BASE_URL,
-    type TestContext,
-} from "./helpers";
+import { setupTestDir, teardownTestDir, type TestContext } from "./helpers";
 
 test.describe.serial("File Detail View", () => {
     let ctx: TestContext;
@@ -152,5 +147,123 @@ test.describe.serial("File Detail View", () => {
         await expect(
             page.getByRole("link", { name: "nested2.txt", exact: true }),
         ).toBeVisible();
+    });
+
+    test("should create and consume one-time shareable links", async ({
+        page,
+        playwright,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .locator(
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
+            )
+            .click();
+        await page
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+
+        const shareableLinks = page.getByRole("region", {
+            name: "Shareable links",
+        });
+        const createLinkButton = shareableLinks.getByRole("button", {
+            name: "Create shareable link",
+        });
+
+        // Metadata loading must only return existing tokens and must not create one as a side effect.
+        await expect(
+            shareableLinks.getByRole("link", {
+                name: /\?one_time_token=/,
+            }),
+        ).toHaveCount(0);
+
+        await createLinkButton.click();
+        await expect(createLinkButton).toBeEnabled();
+        await createLinkButton.click();
+
+        const oneTimeLinks = shareableLinks.getByRole("link", {
+            name: /\?one_time_token=/,
+        });
+        // Two independently created links prove creation remains available after the first request succeeds.
+        await expect(oneTimeLinks).toHaveCount(2);
+
+        const firstUrl = await oneTimeLinks.nth(0).getAttribute("href");
+        const secondUrl = await oneTimeLinks.nth(1).getAttribute("href");
+        if (firstUrl === null || secondUrl === null) {
+            throw new Error("Shareable links did not expose their URLs");
+        }
+
+        // The raw URL must carry only the one-time credential query parameter.
+        expect(new URL(firstUrl).search).toMatch(/^\?one_time_token=[^&?]+$/);
+        // The displayed wget command must preserve the server-provided filename.
+        await expect(
+            shareableLinks.getByText(
+                `wget --content-disposition "${firstUrl}"`,
+                { exact: true },
+            ),
+        ).toBeVisible();
+        // The displayed curl command must request remote headers and filename handling.
+        await expect(
+            shareableLinks.getByText(`curl -JO "${firstUrl}"`, {
+                exact: true,
+            }),
+        ).toBeVisible();
+        // A named copy control keeps the raw link usable without relying on visual icons.
+        await expect(
+            shareableLinks.getByRole("button", {
+                name: "Copy shareable link 1",
+            }),
+        ).toBeVisible();
+        // Users must be warned before sharing that the credential is single-use.
+        await expect(
+            shareableLinks.getByText("This link works only once.", {
+                exact: false,
+            }),
+        ).toHaveCount(2);
+
+        const anonymous = await playwright.request.newContext();
+        const firstUse = await anonymous.get(firstUrl);
+
+        // Anonymous clients can retrieve the exact file contents on the token's first use.
+        expect(await firstUse.text()).toBe("content1");
+        // Content-Disposition allows browsers and command-line clients to retain the source filename.
+        expect(firstUse.headers()["content-disposition"]).toContain(
+            "file1.txt",
+        );
+
+        const secondUse = await anonymous.get(firstUrl);
+        // Reusing the consumed credential must be rejected rather than downloading the file again.
+        expect(secondUse.status()).toBe(401);
+        await anonymous.dispose();
+
+        await page.reload();
+
+        const reloadedShareableLinks = page.getByRole("region", {
+            name: "Shareable links",
+        });
+        // Reloaded metadata must omit the consumed token so its stale link disappears.
+        await expect(
+            reloadedShareableLinks.getByRole("link", {
+                name: firstUrl,
+                exact: true,
+            }),
+        ).toHaveCount(0);
+        // Metadata must retain the other outstanding token across the reload.
+        await expect(
+            reloadedShareableLinks.getByRole("link", {
+                name: secondUrl,
+                exact: true,
+            }),
+        ).toBeVisible();
+
+        await reloadedShareableLinks
+            .getByRole("button", { name: "Create shareable link" })
+            .click();
+        // Creation remains repeatable even after another token has been consumed and metadata refreshed.
+        await expect(
+            reloadedShareableLinks.getByRole("link", {
+                name: /\?one_time_token=/,
+            }),
+        ).toHaveCount(2);
     });
 });

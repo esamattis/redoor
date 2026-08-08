@@ -4,4 +4,8 @@ export type MetadataResponse = { path: string, mime_type: string, file_size: num
 /**
  * True only when the agent verified the whole file is UTF-8 and small enough to edit safely.
  */
-editable: boolean, };
+editable: boolean, 
+/**
+ * Outstanding process-local download tokens for this exact agent and path.
+ */
+one_time_tokens: Array<string>, };

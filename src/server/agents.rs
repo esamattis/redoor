@@ -398,14 +398,17 @@ pub(crate) async fn metadata_agent_handler(
         .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
-                command: Command::Metadata { path },
+                command: Command::Metadata { path: path.clone() },
                 reply,
             })
         })
         .await
     {
         Ok(result) => match result {
-            CommandResult::Metadata(metadata) => (StatusCode::OK, Json(metadata)).into_response(),
+            CommandResult::Metadata(mut metadata) => {
+                metadata.one_time_tokens = state.one_time_token_registry.list(&agent_id, &path);
+                (StatusCode::OK, Json(metadata)).into_response()
+            }
             CommandResult::Error { kind, message } => {
                 let status = command_error_status(&kind);
                 (status, Json(ErrorResponse { error: message })).into_response()

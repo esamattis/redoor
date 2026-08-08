@@ -14,7 +14,7 @@ use super::{
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
     logs::server_logs_websocket_handler,
-    raw::{raw_agent_handler, raw_agent_put_handler},
+    raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
     reload::reload_config_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
@@ -72,6 +72,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/metadata/{*path}",
             get(metadata_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/one-time-token",
+            post(create_one_time_token_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/one-time-token/{*path}",
+            post(create_one_time_token_handler),
         )
         .route(
             "/api/v1/agents/{agent}/raw",

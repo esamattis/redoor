@@ -178,6 +178,7 @@ async fn run_server(args: server::CoordinatorArgs) {
 
     let terminal_registry = redoor::terminal_registry::TerminalRegistry::new();
     let log_registry = redoor::log_registry::LogRegistry::new();
+    let one_time_token_registry = redoor::one_time_token_registry::OneTimeTokenRegistry::new();
     let (router_ref, _router_task) =
         actors::router::spawn_router(terminal_registry.clone(), log_registry.clone());
 
@@ -195,6 +196,7 @@ async fn run_server(args: server::CoordinatorArgs) {
         watchdog_registry.clone(),
         terminal_registry,
         log_registry,
+        one_time_token_registry,
         auth,
         config_path,
         auth_mode,

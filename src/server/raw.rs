@@ -9,11 +9,14 @@ use futures_util::StreamExt;
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 use redoor::{
     actors,
-    commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
+    commands::{
+        Command, CommandResult, CreateOneTimeTokenResponse, ErrorResponse, RawUploadResponse,
+    },
     streaming::StreamChunkFrameRequest,
     types::{AgentId, ChunkIndex, RequestId},
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url},
@@ -21,9 +24,13 @@ use super::{
     state::ServerState,
 };
 
+/// Controls download presentation and optional cookie-free one-time authorization.
 #[derive(Deserialize)]
 pub(crate) struct RawQueryParams {
+    /// Preserves the authenticated API's explicit attachment option.
     download: Option<String>,
+    /// Authorizes exactly one download for the token's bound agent and absolute path.
+    one_time_token: Option<Uuid>,
 }
 
 /// Triggers router-side upload cancellation if the HTTP handler exits before the
@@ -168,6 +175,23 @@ pub(crate) async fn raw_agent_handler(
 ) -> impl IntoResponse {
     let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
+    let token_download = if let Some(one_time_token) = params.one_time_token.as_ref() {
+        if !state
+            .one_time_token_registry
+            .consume(&agent_id, &path, one_time_token)
+        {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Invalid or expired one-time token".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        true
+    } else {
+        false
+    };
     let metadata = match state
         .router_ref
         .request(5000, |reply| {
@@ -354,7 +378,7 @@ pub(crate) async fn raw_agent_handler(
         response_builder = response_builder.header("Content-Range", content_range);
     }
 
-    if params.download.as_deref() == Some("1") {
+    if token_download || params.download.as_deref() == Some("1") {
         let filename = path.split('/').next_back().unwrap_or("file");
         response_builder = response_builder.header(
             "Content-Disposition",
@@ -365,6 +389,71 @@ pub(crate) async fn raw_agent_handler(
     response_builder
         .body(Body::from_stream(stream))
         .unwrap()
+        .into_response()
+}
+
+/// Route: `POST /api/v1/agents/{agent}/one-time-token/{*path}`
+pub(crate) async fn create_one_time_token_handler(
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let path = absolute_path_from_url(path.unwrap_or_default());
+    let agent_id = AgentId::from(agent);
+    let metadata = match state
+        .router_ref
+        .request(5000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: Command::Metadata { path: path.clone() },
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(CommandResult::Metadata(metadata)) if metadata.is_file => metadata,
+        Ok(CommandResult::Metadata(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "One-time download links can only be created for files".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(CommandResult::Error { kind, message }) => {
+            return (
+                command_error_status(&kind),
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response();
+        }
+        Ok(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected response type from metadata command".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get file metadata: {:?}", error),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let one_time_token = state
+        .one_time_token_registry
+        .create(agent_id, metadata.path)
+        .to_string();
+    (
+        StatusCode::OK,
+        Json(CreateOneTimeTokenResponse { one_time_token }),
+    )
         .into_response()
 }
 

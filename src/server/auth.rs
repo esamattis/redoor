@@ -14,7 +14,7 @@ use axum::{
     Json,
     body::Body,
     extract::{ConnectInfo, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -507,13 +507,42 @@ fn is_public_path(path: &str) -> bool {
         || !path.starts_with("/api/")
 }
 
+/// Identifies narrowly scoped raw GET requests whose handler will validate one-time authorization.
+fn is_one_time_token_raw_request(method: &Method, uri: &Uri) -> bool {
+    if method != Method::GET {
+        return false;
+    }
+    let Some(remainder) = uri.path().strip_prefix("/api/v1/agents/") else {
+        return false;
+    };
+    let Some((agent, raw_path)) = remainder.split_once("/raw") else {
+        return false;
+    };
+    if agent.is_empty()
+        || agent.contains('/')
+        || !(raw_path.is_empty() || raw_path.starts_with('/'))
+    {
+        return false;
+    }
+    uri.query().is_some_and(|query| {
+        query.split('&').any(|parameter| {
+            parameter
+                .split_once('=')
+                .is_some_and(|(name, value)| name == "one_time_token" && !value.is_empty())
+        })
+    })
+}
+
 /// Rejects unauthenticated HTTP and browser WebSocket requests before handlers start streaming work.
 pub(crate) async fn require_authentication(
     State(auth): State<AuthState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    if is_public_path(request.uri().path()) || auth.is_authenticated(request.headers()).await {
+    if is_public_path(request.uri().path())
+        || is_one_time_token_raw_request(request.method(), request.uri())
+        || auth.is_authenticated(request.headers()).await
+    {
         return next.run(request).await;
     }
 
@@ -640,7 +669,8 @@ pub(crate) async fn logout_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::is_public_path;
+    use super::{is_one_time_token_raw_request, is_public_path};
+    use axum::http::{Method, Uri};
 
     /// Protects the dedicated agent exception without exposing browser or neighboring API routes.
     #[test]
@@ -655,5 +685,33 @@ mod tests {
         assert!(!is_public_path("/api/v1/log-streams/not/a-stream/agent/ws"));
         // Unrelated resources under the log-stream namespace remain private.
         assert!(!is_public_path("/api/v1/log-streams/example/status"));
+    }
+
+    /// Keeps the cookie bypass limited to raw GETs that present a non-empty token parameter.
+    #[test]
+    fn only_token_bearing_raw_gets_reach_handler_without_cookie_authentication() {
+        let token_uri: Uri = "/api/v1/agents/agent-1/raw/tmp/file?one_time_token=token"
+            .parse()
+            .expect("test URI must parse");
+        // The handler must receive a token-bearing raw GET so it can validate the credential.
+        assert!(is_one_time_token_raw_request(&Method::GET, &token_uri));
+        // Token creation remains protected even if a caller adds a similarly named query parameter.
+        assert!(!is_one_time_token_raw_request(&Method::POST, &token_uri));
+        let missing_token_uri: Uri = "/api/v1/agents/agent-1/raw/tmp/file"
+            .parse()
+            .expect("test URI must parse");
+        // Ordinary raw downloads still require the authenticated browser session.
+        assert!(!is_one_time_token_raw_request(
+            &Method::GET,
+            &missing_token_uri
+        ));
+        let neighboring_uri: Uri = "/api/v1/agents/agent-1/rawness?one_time_token=token"
+            .parse()
+            .expect("test URI must parse");
+        // Neighboring route names cannot use the raw-download exception.
+        assert!(!is_one_time_token_raw_request(
+            &Method::GET,
+            &neighboring_uri
+        ));
     }
 }

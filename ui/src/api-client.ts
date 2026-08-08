@@ -26,13 +26,19 @@ import type { LoginRequest } from "../../bindings/LoginRequest";
 import type { LoginResponse } from "../../bindings/LoginResponse";
 import type { LogoutResponse } from "../../bindings/LogoutResponse";
 import type { MetadataResponse } from "../../bindings/MetadataResponse";
+import type { CreateOneTimeTokenResponse } from "../../bindings/CreateOneTimeTokenResponse";
 import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
 import type { LogEvent } from "../../bindings/LogEvent";
 
-export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
+export type {
+    LsDirectoryResponse,
+    LsFileResponse,
+    MetadataResponse,
+    CreateOneTimeTokenResponse,
+};
 export type {
     RawDeleteResponse,
     CreateDirectoryResponse,
@@ -307,6 +313,21 @@ export class Agent {
                 path,
             ),
             undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Creates an anonymous download credential only after an explicit sharing action. */
+    async createOneTimeToken(
+        path: string,
+    ): Promise<CreateOneTimeTokenResponse> {
+        return apiRequest<CreateOneTimeTokenResponse>(
+            this.baseUrl,
+            appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/one-time-token`,
+                path,
+            ),
+            { method: "POST" },
             this.requestContext,
         );
     }
