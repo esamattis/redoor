@@ -218,21 +218,68 @@ Generated bindings include: `AgentListResponse`, `AgentDetailsResponse`, `AgentI
 
 ### Configuration
 
-The server can be configured via CLI flags, a TOML config file, environment
-variables, or built-in defaults. Precedence (highest wins):
+Pass a TOML configuration file to the server with `--config`:
 
-1. CLI flag (`--port`, `--bind`, `--log`)
-2. Config file `[server]` table (passed via `--config <path>`)
-3. Environment variable (`REDOOR_PORT`)
-4. Built-in default (`port=3000`, `bind=0.0.0.0`, `log`=stderr)
+```sh
+redoor server --config config.toml
+```
 
-| Setting | CLI flag | Config key | Env var | Default |
-| ------- | -------- | ---------- | ------- | ------- |
-| Port    | `--port` | `server.port` | `REDOOR_PORT` | `3000` |
-| Bind    | `--bind` | `server.bind` | — | `0.0.0.0` |
-| Log     | `--log`  | `server.log`  | — | stderr |
+A config file contains an optional `[server]` table and a required, non-empty
+`[[agents]]` array. Each agent entry starts either an SSH-backed agent on a
+remote host or an agent process on the server's local machine. SSH and local
+entries can be mixed in the same file.
 
-Config file example:
+#### Server settings
+
+Server settings can come from CLI flags, the config file, environment variables,
+or built-in defaults. Precedence is CLI flag, config file, environment variable,
+then default. Only the port has an environment-variable fallback.
+
+| Config key | Type | CLI flag | Env var | Default | Description |
+| ---------- | ---- | -------- | ------- | ------- | ----------- |
+| `server.port` | integer | `--port` | `REDOOR_PORT` | `3000` | HTTP and WebSocket listener port. Must fit in an unsigned 16-bit integer. |
+| `server.bind` | string | `--bind` | — | `0.0.0.0` | Address on which the server listens. Use `127.0.0.1` for local-only access. |
+| `server.log` | string | `--log` | — | stderr | Server log file path. |
+
+The `[server]` table may be omitted. Unknown keys in this table are rejected so
+that misspelled settings do not silently fall back to defaults.
+
+#### SSH-backed agents
+
+An agent entry is SSH-backed unless it contains `local = true`. The server
+connects to the target through SSH, ensures the configured Redoor binary is
+available on the remote host, starts the remote agent, and creates a reverse
+port forward back to the server.
+
+| Key | Type | Required | Default | Description |
+| --- | ---- | -------- | ------- | ----------- |
+| `target` | string | Yes | — | SSH host or `user@host` target. |
+| `local` | boolean | No | `false` | Leave unset or set to `false` for an SSH-backed agent. |
+| `username` | string | No | SSH configuration or the user in `target` | SSH login username, equivalent to `ssh -l`. |
+| `ssh_port` | integer | No | `22` | SSH server port, equivalent to `ssh -p`. Must fit in an unsigned 16-bit integer. |
+| `name` | string | No | Host portion of `target` | Name under which the agent registers with the server. |
+| `remote_bin` | string | No | `~/.local/redoor/<version>/redoor` | Redoor binary path on the remote host. |
+| `dir` | string | No | Remote shell's current directory | Working directory used by the remote agent. |
+| `log` | string | No | Inherit server stdio | Local file to which the SSH process's stdout and stderr are appended. |
+
+#### Local agents
+
+Set `local = true` to launch an agent on the same machine and from the same
+Redoor executable as the server. Local entries must not contain `target`,
+`username`, `ssh_port`, or `remote_bin`.
+
+| Key | Type | Required | Default | Description |
+| --- | ---- | -------- | ------- | ----------- |
+| `local` | boolean | Yes | — | Must be `true` to select a local agent. |
+| `name` | string | No | System hostname, or `local` if unavailable | Name under which the agent registers with the server. |
+| `dir` | string | No | Server process's current directory | Working directory used by the agent. |
+| `log` | string | No | Inherit server stdio | File to which the agent process's stdout and stderr are appended. |
+
+Agent names must be unique. The server rejects duplicate names during startup.
+Agent log paths are opened on the server machine for both SSH-backed and local
+agents; they are not paths on the remote SSH host.
+
+#### Example
 
 ```toml
 [server]
@@ -240,12 +287,27 @@ port = 3000
 bind = "0.0.0.0"
 log = "log/server.log"
 
+# Minimal SSH-backed agent. Its name defaults to "example.com" and SSH uses
+# the username from the target, port 22, and the versioned remote binary path.
 [[agents]]
 target = "user@example.com"
 
+# SSH-backed agent with every optional setting overridden.
+[[agents]]
+target = "prod.example.com"
+username = "deploy"
+ssh_port = 2222
+name = "production"
+remote_bin = "/usr/local/bin/redoor"
+dir = "/srv/application"
+log = "log/production.log"
+
+# Agent running on the server machine.
 [[agents]]
 local = true
 name = "local"
+dir = "/srv/local-application"
+log = "log/local.log"
 ```
 
 ### Running the Server
