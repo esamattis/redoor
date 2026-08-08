@@ -23,6 +23,9 @@ import type { LoginRequest } from "../../bindings/LoginRequest";
 import type { LoginResponse } from "../../bindings/LoginResponse";
 import type { LogoutResponse } from "../../bindings/LogoutResponse";
 import type { MetadataResponse } from "../../bindings/MetadataResponse";
+import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
+import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
+import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 
 export type { LsDirectoryResponse, LsFileResponse, MetadataResponse };
 export type {
@@ -39,6 +42,9 @@ export type {
     TerminalSize,
     TerminalClientMessage,
     TerminalServerMessage,
+    ServerInfoResponse,
+    ServerAuthMode,
+    ServerBuildMode,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -506,6 +512,16 @@ export class ApiClient {
                 ...transfer,
             })),
         };
+    }
+
+    /** Returns non-secret server identity for the UI home page. */
+    async getServerInfo(): Promise<ServerInfoResponse> {
+        return apiRequest<ServerInfoResponse>(
+            this.baseUrl,
+            "/api/v1/server",
+            undefined,
+            this.requestContext(),
+        );
     }
 
     async waitForAgentNames(

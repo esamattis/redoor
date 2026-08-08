@@ -101,8 +101,7 @@ async fn run_server(args: server::CoordinatorArgs) {
             );
             std::process::exit(1);
         });
-    let config_path_string = config_path.to_string_lossy();
-    let config = match server::parse_config_file(&config_path_string).await {
+    let config = match server::parse_config_file(&config_path.to_string_lossy()).await {
         Ok(config) => config,
         Err(error) => {
             eprintln!(
@@ -142,18 +141,22 @@ async fn run_server(args: server::CoordinatorArgs) {
         config_path.display()
     );
 
-    let credentials = match (
+    let (credentials, auth_mode) = match (
         config.server.username.clone(),
         config.server.password.clone(),
     ) {
-        (Some(username), Some(password)) => {
-            server::LoginCredentials::Configured { username, password }
-        }
+        (Some(username), Some(password)) => (
+            server::LoginCredentials::Configured { username, password },
+            redoor::commands::ServerAuthMode::Toml,
+        ),
         (None, None) => {
             // Config parser already rejects this pair on non-Linux platforms.
             #[cfg(target_os = "linux")]
             {
-                server::LoginCredentials::SystemUser
+                (
+                    server::LoginCredentials::SystemUser,
+                    redoor::commands::ServerAuthMode::Pam,
+                )
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -187,6 +190,8 @@ async fn run_server(args: server::CoordinatorArgs) {
         watchdog_registry.clone(),
         terminal_registry,
         auth,
+        config_path,
+        auth_mode,
     ));
 
     let addr = format!("{bind}:{port}");

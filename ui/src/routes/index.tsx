@@ -1,50 +1,137 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { HardDrive } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
+import {
+    FileCode2,
+    GitCommitHorizontal,
+    Hammer,
+    KeyRound,
+    Server,
+    Tag,
+} from "lucide-react";
 
+import type { ServerAuthMode, ServerBuildMode } from "../api-client";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
     component: Index,
 });
 
+/** Human-readable label for the configured browser login backend. */
+function authModeLabel(authMode: ServerAuthMode): string {
+    switch (authMode) {
+        case "toml":
+            return "TOML (username/password in config file)";
+        case "pam":
+            return "PAM (system account)";
+    }
+}
+
+/** Human-readable cargo profile name. */
+function buildModeLabel(buildMode: ServerBuildMode): string {
+    switch (buildMode) {
+        case "debug":
+            return "debug";
+        case "release":
+            return "release";
+        case "unknown":
+            return "unknown";
+    }
+}
+
+/** GitHub commit URL when the baked revision looks like a real SHA. */
+function gitCommitUrl(gitRev: string): string | null {
+    if (!/^[0-9a-f]{7,40}$/i.test(gitRev)) {
+        return null;
+    }
+    return `https://github.com/esamattis/redoor/commit/${gitRev}`;
+}
+
 function Index() {
-    const { agents } = RootRoute.useLoaderData();
-    const sortedAgents = [...agents].sort((left, right) =>
-        left.name.localeCompare(right.name),
-    );
+    const { serverInfo } = RootRoute.useLoaderData();
+    const commitUrl = gitCommitUrl(serverInfo.git_rev);
+    const shortRev = serverInfo.git_rev.slice(0, 7);
 
     return (
         <div className="p-8">
-            <div className="mx-auto max-w-6xl">
-                <h1 className="mb-6 text-2xl font-bold text-slate-100">
-                    Agents
-                </h1>
-                {agents.length === 0 ? (
-                    <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-slate-800">
-                        <p className="text-slate-500">No agents connected</p>
+            <div className="mx-auto max-w-3xl">
+                <div className="mb-6 flex items-center gap-3">
+                    <Server className="h-6 w-6 text-blue-400" />
+                    <h1 className="text-2xl font-bold text-slate-100">
+                        Server
+                    </h1>
+                </div>
+                <div className="space-y-4 rounded-lg border border-slate-800 bg-[#11141b] p-6">
+                    <div className="flex items-start gap-3">
+                        <FileCode2 className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                Config file
+                            </h2>
+                            <p className="mt-1 break-all font-mono text-sm text-slate-100">
+                                {serverInfo.config_path}
+                            </p>
+                        </div>
                     </div>
-                ) : (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-                        {sortedAgents.map((agent) => (
-                            <Link
-                                key={agent.id}
-                                to="/agents/$agentId"
-                                params={{ agentId: agent.id }}
-                                className="flex cursor-pointer items-center gap-4 rounded-lg border border-slate-800 bg-[#11141b] p-6 transition-all hover:border-blue-500/60 hover:bg-[#161a23] hover:shadow-[0_0_0_1px_rgba(59,130,246,0.35)]"
-                            >
-                                <HardDrive className="h-8 w-8 flex-shrink-0 text-blue-400" />
-                                <div className="min-w-0">
-                                    <h2 className="truncate font-semibold text-slate-100">
-                                        {agent.name}
-                                    </h2>
-                                    <p className="mt-1 truncate text-sm text-slate-500">
-                                        {agent.id}
-                                    </p>
-                                </div>
-                            </Link>
-                        ))}
+                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
+                        <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                Authentication
+                            </h2>
+                            <p className="mt-1 text-sm text-slate-100">
+                                {authModeLabel(serverInfo.auth_mode)}
+                            </p>
+                        </div>
                     </div>
-                )}
+                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
+                        <Tag className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                Version
+                            </h2>
+                            <p className="mt-1 font-mono text-sm text-slate-100">
+                                {serverInfo.version}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
+                        <GitCommitHorizontal className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                Git revision
+                            </h2>
+                            <p className="mt-1 flex flex-wrap items-center gap-2 font-mono text-sm text-slate-100">
+                                {commitUrl ? (
+                                    <a
+                                        href={commitUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-blue-400 hover:underline"
+                                    >
+                                        {shortRev}
+                                    </a>
+                                ) : (
+                                    <span>{shortRev}</span>
+                                )}
+                                {serverInfo.git_dirty ? (
+                                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-sans font-medium text-amber-300">
+                                        dirty
+                                    </span>
+                                ) : null}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
+                        <Hammer className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                Build mode
+                            </h2>
+                            <p className="mt-1 font-mono text-sm text-slate-100">
+                                {buildModeLabel(serverInfo.build_mode)}
+                            </p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );

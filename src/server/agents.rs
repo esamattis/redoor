@@ -8,7 +8,7 @@ use redoor::{
     actors,
     commands::{
         AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-        EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse,
+        EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, ServerInfoResponse,
     },
     types::AgentId,
 };
@@ -18,6 +18,28 @@ use super::{
     responses::command_error_status,
     state::ServerState,
 };
+
+/// Route: `GET /api/v1/server` — non-secret identity for the UI home page.
+pub(crate) async fn server_info_handler(
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(ServerInfoResponse {
+            config_path: state.config_path.display().to_string(),
+            auth_mode: state.auth_mode.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            git_rev: env!("REDOOR_GIT_REV").to_string(),
+            git_dirty: env!("REDOOR_GIT_DIRTY") == "1",
+            build_mode: match env!("REDOOR_BUILD_PROFILE") {
+                "release" => redoor::commands::ServerBuildMode::Release,
+                "debug" => redoor::commands::ServerBuildMode::Debug,
+                _ => redoor::commands::ServerBuildMode::Unknown,
+            },
+        }),
+    )
+        .into_response()
+}
 
 /// Route: `GET /api/v1/agents`
 pub(crate) async fn list_agents_handler(

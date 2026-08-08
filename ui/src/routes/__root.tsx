@@ -19,6 +19,7 @@ import {
     LoaderCircle,
     ArrowLeftRight,
     LogOut,
+    Home,
 } from "lucide-react";
 import {
     ApiClient,
@@ -26,6 +27,7 @@ import {
     isLsFileResponse,
     type TransferProgressEntry,
     type UiEvent,
+    type ServerInfoResponse,
 } from "../api-client";
 import type { AnyRouter } from "@tanstack/react-router";
 
@@ -56,6 +58,7 @@ export const ding = () => {};
 export type RootLoaderData = {
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transferProgress: Awaited<ReturnType<ApiClient["getTransferProgress"]>>;
+    serverInfo: ServerInfoResponse;
 };
 
 export function getAgentFromRootLoaderData(
@@ -192,23 +195,35 @@ export class RefreshListener {
     }
 }
 
+const emptyServerInfo: ServerInfoResponse = {
+    config_path: "",
+    auth_mode: "toml",
+    version: "",
+    git_rev: "",
+    git_dirty: false,
+    build_mode: "debug",
+};
+
 export const Route = createRootRouteWithContext<AppRouterContext>()({
     loader: async ({ context, location }) => {
         if (location.pathname === "/login") {
             return {
                 agents: [],
                 transferProgress: { transfers: [] },
+                serverInfo: emptyServerInfo,
             } satisfies RootLoaderData;
         }
 
-        const [agents, transferProgress] = await Promise.all([
+        const [agents, transferProgress, serverInfo] = await Promise.all([
             context.api.listAgents(),
             context.api.getTransferProgress(),
+            context.api.getServerInfo(),
         ]);
 
         return {
             agents,
             transferProgress,
+            serverInfo,
         } satisfies RootLoaderData;
     },
     component: RootRouteLayout,
@@ -433,6 +448,19 @@ function TopTabStrip(props: {
                     <span className="font-medium">Transfers</span>
                 </Link>
             </div>
+            <Link
+                to="/"
+                aria-label="Server home"
+                aria-current={props.pathname === "/" ? "page" : undefined}
+                className={`mb-1 flex shrink-0 items-center gap-2 rounded px-3 py-2 text-sm transition-colors ${
+                    props.pathname === "/"
+                        ? "bg-white/5 text-slate-100"
+                        : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                }`}
+            >
+                <Home className="h-4 w-4" />
+                Home
+            </Link>
             <button
                 type="button"
                 onClick={logout}

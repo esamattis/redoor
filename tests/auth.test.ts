@@ -84,6 +84,20 @@ describe("HTTP authentication", () => {
         // The persisted cookie must authorize protected APIs even when no agents are connected.
         expect(agents).toEqual([]);
 
+        const serverInfo = await api.getServerInfo();
+        // Home UI needs an absolute config path so operators can find the file they edited.
+        expect(serverInfo.config_path.startsWith("/")).toBe(true);
+        expect(serverInfo.config_path.endsWith(".toml")).toBe(true);
+        // Test servers always pin username/password in TOML rather than PAM.
+        expect(serverInfo.auth_mode).toBe("toml");
+        // Package version is baked at compile time for the home page identity card.
+        expect(serverInfo.version).toMatch(/^\d+\.\d+\.\d+/);
+        // Git revision comes from build.rs so operators can map a binary to source.
+        expect(serverInfo.git_rev.length).toBeGreaterThan(0);
+        expect(typeof serverInfo.git_dirty).toBe("boolean");
+        // Integration tests run against a debug cargo profile binary.
+        expect(serverInfo.build_mode).toBe("debug");
+
         const tamperedResponse = await fetch(`${baseUrl}/api/v1/agents`, {
             headers: {
                 Cookie: "redoor_session=00000000-0000-4000-8000-000000000000",

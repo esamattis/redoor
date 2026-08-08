@@ -24,6 +24,50 @@ pub struct LogoutResponse {
     pub logged_out: bool,
 }
 
+/// How browser login credentials are sourced for this server process.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum ServerAuthMode {
+    /// Username and password come from the server TOML config.
+    Toml,
+    /// Username/password are verified against the process owner's Linux PAM account.
+    Pam,
+}
+
+/// Cargo profile the binary was compiled with (`debug` vs `release`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum ServerBuildMode {
+    /// Unoptimized developer build (`cargo build` / `cargo test`).
+    Debug,
+    /// Optimized production build (`cargo build --release`).
+    Release,
+    /// Profile string from Cargo was not `debug` or `release`.
+    Unknown,
+}
+
+/// Non-secret server identity shown on the UI home page.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServerInfoResponse {
+    /// Absolute path of the TOML config file this process loaded.
+    pub config_path: String,
+    /// Whether login uses TOML credentials or system PAM.
+    pub auth_mode: ServerAuthMode,
+    /// `CARGO_PKG_VERSION` baked into this binary.
+    pub version: String,
+    /// Full git commit SHA (or `unknown` when git metadata was unavailable at build).
+    pub git_rev: String,
+    /// True when the working tree had uncommitted changes at build time.
+    pub git_dirty: bool,
+    /// Whether this binary was compiled as debug or release.
+    pub build_mode: ServerBuildMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {

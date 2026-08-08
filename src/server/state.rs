@@ -1,5 +1,8 @@
+use std::path::PathBuf;
+
 use clap::Args;
 use redoor::actors;
+use redoor::commands::ServerAuthMode;
 use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
 
@@ -16,6 +19,10 @@ pub(crate) struct ServerState {
     pub(crate) terminal_registry: TerminalRegistry,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
+    /// Absolute path of the TOML config loaded at process start (for the server home UI).
+    pub(crate) config_path: PathBuf,
+    /// Login backend resolved from the TOML credentials (or their absence).
+    pub(crate) auth_mode: ServerAuthMode,
 }
 
 impl ServerState {
@@ -24,12 +31,16 @@ impl ServerState {
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
         auth: AuthState,
+        config_path: PathBuf,
+        auth_mode: ServerAuthMode,
     ) -> Self {
         Self {
             router_ref,
             watchdog_registry,
             terminal_registry,
             auth,
+            config_path,
+            auth_mode,
         }
     }
 }
