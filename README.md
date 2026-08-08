@@ -85,3 +85,20 @@ The agent config file is the same shape as the server's: only `[server].agent_to
 [server]
 agent_token = "same-as-server"
 ```
+
+## systemd (Linux user services)
+
+Install and start a lingering user service so the process keeps running after logout:
+
+```bash
+redoor setup-systemd --user --mode server
+redoor setup-systemd --user --mode agent
+```
+
+| Flag | Description |
+|------|-------------|
+| `--user` | Required. Install into the current non-root user's systemd manager |
+| `--mode server` | Writes and enables `~/.config/systemd/user/redoor-server.service` |
+| `--mode agent` | Writes and enables `~/.config/systemd/user/redoor-agent.service` |
+
+Creates `~/.config/redoor/config.toml` when missing (server prints generated secrets once; agent prompts for the token). Enables linger via `loginctl`, then `systemctl --user enable --now` for the unit.

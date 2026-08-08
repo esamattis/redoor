@@ -96,10 +96,19 @@ pub(crate) async fn run(args: SetupSystemdArgs) -> Result<()> {
             )
         })?;
 
+        let service = args.mode.service_name();
         println!(
-            "Configured and started {} at {}",
-            args.mode.service_name(),
+            "Configured and started {service} at {}",
             unit_path.display()
+        );
+        println!(
+            "
+Manage the service:
+  systemctl --user start {service}
+  systemctl --user stop {service}
+  systemctl --user enable {service}   # start at login/boot (linger already enabled)
+  systemctl --user disable {service}
+  journalctl --user -u {service} -f   # follow logs"
         );
         Ok(())
     }
