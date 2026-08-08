@@ -197,6 +197,7 @@ impl AgentActor {
                     terminal_id,
                     token,
                     size,
+                    cwd,
                 } => {
                     if size.validate().is_err() {
                         log!(
@@ -227,6 +228,7 @@ impl AgentActor {
                             terminal_id.clone(),
                             token,
                             size,
+                            cwd,
                             cancel_receiver,
                         )
                         .await

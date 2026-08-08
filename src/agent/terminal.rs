@@ -5,8 +5,12 @@ use nix::{
     sys::signal::{Signal, kill, killpg},
     unistd::Pid,
 };
-use redoor::terminal_protocol::{
-    TerminalAgentHandshake, TerminalClientMessage, TerminalId, TerminalServerMessage, TerminalSize,
+use redoor::{
+    Level, log,
+    terminal_protocol::{
+        TerminalAgentHandshake, TerminalClientMessage, TerminalId, TerminalServerMessage,
+        TerminalSize,
+    },
 };
 use std::{ffi::OsString, os::unix::process::ExitStatusExt, time::Duration};
 use tokio::{
@@ -60,6 +64,7 @@ pub(crate) async fn connect_and_run(
     terminal_id: TerminalId,
     token: String,
     size: TerminalSize,
+    cwd: String,
     mut cancel_receiver: watch::Receiver<bool>,
 ) -> Result<()> {
     size.validate()
@@ -83,9 +88,15 @@ pub(crate) async fn connect_and_run(
     };
     authenticated.context("failed to authenticate dedicated terminal websocket")?;
 
-    match start_pty(size) {
+    match start_pty(size, &cwd) {
         Ok((reader, writer, child, process_group_id)) => {
-            run_pty_session(
+            log!(
+                Level::Info,
+                "Terminal created: terminal_id={}, cwd={}",
+                terminal_id.0,
+                cwd
+            );
+            let result = run_pty_session(
                 socket,
                 reader,
                 writer,
@@ -93,7 +104,13 @@ pub(crate) async fn connect_and_run(
                 process_group_id,
                 cancel_receiver,
             )
-            .await
+            .await;
+            log!(
+                Level::Info,
+                "Terminal destroyed: terminal_id={}",
+                terminal_id.0
+            );
+            result
         }
         Err(error) => {
             let _ = timeout(
@@ -109,6 +126,7 @@ pub(crate) async fn connect_and_run(
 /// Allocates and starts the shell only after the dedicated socket handshake is sent.
 fn start_pty(
     size: TerminalSize,
+    cwd: &str,
 ) -> Result<(
     pty_process::OwnedReadPty,
     pty_process::OwnedWritePty,
@@ -123,6 +141,7 @@ fn start_pty(
     let command = pty_process::Command::new(shell)
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
+        .current_dir(cwd)
         .kill_on_drop(true);
     let child = command
         .spawn(pts)

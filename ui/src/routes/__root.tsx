@@ -3,6 +3,7 @@ import {
     Outlet,
     Link,
     useLocation,
+    useMatches,
     useRouter,
     useRouterState,
     createRootRouteWithContext,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import {
     ApiClient,
+    isLsFileResponse,
     type TransferProgressEntry,
     type UiEvent,
 } from "../api-client";
@@ -35,6 +37,7 @@ import { Tooltip } from "../components/tooltip";
 import { TransferList } from "../components/transfer-list";
 import { CollapsibleBottomPanel } from "../components/collapsible-bottom-panel";
 import { TerminalPanel } from "../components/terminal-panel";
+import { getParentPath } from "../utils/path";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -199,6 +202,23 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
 function RootLayout() {
     const { agents, transferProgress } = Route.useLoaderData();
     const location = useLocation();
+    const terminalCwd = useMatches({
+        select: (matches) => {
+            const browserMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId/browser/$",
+            );
+            if (browserMatch?.loaderData) {
+                return isLsFileResponse(browserMatch.loaderData.lsResult)
+                    ? getParentPath(browserMatch.loaderData.fullPath)
+                    : browserMatch.loaderData.fullPath;
+            }
+
+            const detailsMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId/",
+            );
+            return detailsMatch?.loaderData?.cwd ?? null;
+        },
+    });
     const sortedAgents = React.useMemo(() => {
         return [...agents].sort((left, right) =>
             left.name.localeCompare(right.name),
@@ -220,8 +240,12 @@ function RootLayout() {
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
-                {activeAgent ? (
-                    <TerminalPanel key={activeAgent.id} agent={activeAgent} />
+                {activeAgent && terminalCwd ? (
+                    <TerminalPanel
+                        key={activeAgent.id}
+                        agent={activeAgent}
+                        cwd={terminalCwd}
+                    />
                 ) : null}
                 <SelectedFilesPanel agents={agents} />
                 <TransferProgressPanel

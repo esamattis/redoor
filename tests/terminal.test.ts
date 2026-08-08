@@ -6,6 +6,8 @@ import {
     it,
     onTestFinished,
 } from "vitest";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
     ProcessManager,
     TempFileManager,
@@ -17,6 +19,8 @@ import type { Agent, TerminalServerMessage } from "@/api-client";
 const processManager = new ProcessManager();
 const tempFiles = new TempFileManager();
 const agentCwd = tempFiles.tempDirectory({ suffix: "-terminal-agent" });
+const alternateCwd = join(agentCwd, "alternate");
+mkdirSync(alternateCwd);
 let testAgent: Agent;
 
 beforeAll(async () => {
@@ -34,9 +38,13 @@ afterAll(() => {
 });
 
 /** Opens a dedicated terminal and waits for its typed ready notification. */
-async function openTerminal(rows = 24, cols = 80): Promise<WebSocket> {
+async function openTerminal(
+    cwd = agentCwd,
+    rows = 24,
+    cols = 80,
+): Promise<WebSocket> {
     const socket = new WebSocket(
-        testAgent.getTerminalWebSocketUrl({ rows, cols }),
+        testAgent.getTerminalWebSocketUrl({ rows, cols }, cwd),
     );
     socket.binaryType = "arraybuffer";
     onTestFinished(() => socket.close());
@@ -133,6 +141,35 @@ function waitForMarker(socket: WebSocket, marker: string): Promise<string> {
 }
 
 describe("dedicated terminal tunnel", () => {
+    it("starts concurrent shells in their requested working directories", async () => {
+        const firstSocket = await openTerminal(agentCwd);
+        const secondSocket = await openTerminal(alternateCwd);
+        const firstMarker = `__REDOOR_CWD__${agentCwd}__`;
+        const secondMarker = `__REDOOR_CWD__${alternateCwd}__`;
+        const firstOutputPromise = waitForMarker(firstSocket, firstMarker);
+        const secondOutputPromise = waitForMarker(secondSocket, secondMarker);
+
+        firstSocket.send(
+            new TextEncoder().encode(
+                "printf '__REDOOR_CWD__%s__\\n' \"$PWD\"\n",
+            ),
+        );
+        secondSocket.send(
+            new TextEncoder().encode(
+                "printf '__REDOOR_CWD__%s__\\n' \"$PWD\"\n",
+            ),
+        );
+
+        const [firstOutput, secondOutput] = await Promise.all([
+            firstOutputPromise,
+            secondOutputPromise,
+        ]);
+        // The first marker proves its bootstrap cwd reached shell process creation.
+        expect(firstOutput).toContain(firstMarker);
+        // The distinct second marker proves concurrent terminals do not share mutable cwd state.
+        expect(secondOutput).toContain(secondMarker);
+    });
+
     it("streams PTY bytes, resizes, and destroys the shell on disconnect", async () => {
         const socket = await openTerminal();
         const marker = "__REDOOR_TERMINAL_MARKER__";
@@ -191,7 +228,7 @@ describe("dedicated terminal tunnel", () => {
 
     it("preserves bounded terminal input sent before the agent is ready", async () => {
         const socket = new WebSocket(
-            testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }),
+            testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }, agentCwd),
         );
         socket.binaryType = "arraybuffer";
         onTestFinished(() => socket.close());

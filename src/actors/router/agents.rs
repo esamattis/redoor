@@ -182,6 +182,7 @@ pub(crate) fn open_terminal(state: &RouterState, request: OpenTerminalRequest) {
                 terminal_id: request.terminal_id.clone(),
                 token: request.token.clone(),
                 size: request.size,
+                cwd: request.cwd.clone(),
             })
         })
         .map(|_| ())

@@ -21,8 +21,41 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("starts lazily and distinguishes minimize from close", async ({
+    test("initializes a shell and executes a command", async ({ page }) => {
+        let terminalOutput = "";
+        page.on("websocket", (socket) => {
+            if (!socket.url().includes("/terminal/ws")) {
+                return;
+            }
+            socket.on("framereceived", (event) => {
+                terminalOutput +=
+                    typeof event.payload === "string"
+                        ? event.payload
+                        : event.payload.toString("utf8");
+            });
+        });
+
+        await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(page.getByRole("status")).toHaveText("Connected");
+
+        const terminalInput = page
+            .getByLabel(`Terminal 1 for ${ctx.agentName}`)
+            .locator("textarea");
+        await terminalInput.focus();
+        // Octal escapes print "terminal-ok" without putting that marker in the echoed command.
+        await terminalInput.pressSequentially(
+            "printf '\\164\\145\\162\\155\\151\\156\\141\\154\\055\\157\\153\\n'",
+        );
+        await terminalInput.press("Enter");
+
+        // Only an executed printf produces the decoded marker in PTY output.
+        await expect.poll(() => terminalOutput).toContain("terminal-ok");
+    });
+
+    test("keeps independent terminal tabs in their captured directories", async ({
         page,
+        request,
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         page.on("websocket", (socket) => {
@@ -30,33 +63,38 @@ test.describe.serial("Terminal panel lifecycle", () => {
                 terminalSockets.push(socket);
             }
         });
+        const detailsResponse = await request.get(
+            `${WEB_BASE_URL}/api/v1/agents/${ctx.agentId}`,
+        );
+        const agentDetails = (await detailsResponse.json()) as { cwd: string };
 
         await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/browser`);
         await expect(
-            page.getByText("Not started", { exact: true }),
+            page.getByRole("tablist", { name: "Terminal tabs" }),
         ).toBeVisible();
-        // No dedicated data-plane socket is created by page load or the minimized launcher.
+        await expect(
+            page.getByRole("button", { name: "New terminal" }),
+        ).toBeVisible();
+        // An agent route must begin without allocating a Ghostty socket or PTY.
+        await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
+            0,
+        );
+        await expect(page.getByRole("status")).toHaveText("No terminals");
+        // Rendering the empty tab strip must not eagerly open a terminal socket.
         expect(terminalSockets).toHaveLength(0);
-        // A minimized panel must not expose or paint its resize edge.
-        await expect(
-            page.getByRole("separator", { name: "Resize Terminal" }),
-        ).toHaveCount(0);
 
-        await page
-            .getByRole("button", { name: "Expand Terminal" })
-            .press("Enter");
+        await page.getByRole("button", { name: "New terminal" }).click();
         await expect(
-            page.getByText("Connected", { exact: true }),
-        ).toBeVisible();
-        // First expansion initializes exactly one ephemeral terminal session.
+            page.getByRole("tab", { name: "Terminal 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        // The first tab snapshots the canonical cwd from the browser root.
         expect(terminalSockets).toHaveLength(1);
-        // Resizing is available only while the panel has expanded content.
+        expect(
+            new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
+        ).toBe(agentDetails.cwd);
         await expect(
-            page.getByRole("separator", { name: "Resize Terminal" }),
-        ).toBeVisible();
-        // Ghostty's contenteditable host must not paint a second browser caret.
-        await expect(
-            page.getByLabel(`Terminal for ${ctx.agentName}`),
+            page.getByLabel(`Terminal 1 for ${ctx.agentName}`),
         ).toHaveCSS("caret-color", "rgba(0, 0, 0, 0)");
 
         await page
@@ -65,48 +103,118 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await page
             .getByRole("button", { name: "Expand Terminal" })
             .press("Enter");
-        await expect(
-            page.getByText("Connected", { exact: true }),
-        ).toBeVisible();
-        // Re-expansion reuses the live PTY rather than opening another socket.
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        // Minimize and re-expand retain the existing terminal session.
         expect(terminalSockets).toHaveLength(1);
 
-        const firstSocket = terminalSockets[0];
-        if (!firstSocket) {
-            throw new Error("first terminal socket was not created");
-        }
-        const firstSocketClosed = firstSocket.waitForEvent("close");
         await page
-            .getByRole("button", { name: "Close terminal" })
-            .press("Enter");
-        await firstSocketClosed;
+            .getByRole("link", { name: ctx.testDirName, exact: true })
+            .click();
+        // The file listing proves the directory loader has committed before cwd is captured.
         await expect(
-            page.getByText("Not started", { exact: true }),
+            page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        // A terminal created in a directory uses the committed canonical path.
+        expect(terminalSockets).toHaveLength(2);
+        expect(
+            new URL(terminalSockets[1]?.url() ?? "").searchParams.get("cwd"),
+        ).toBe(ctx.testDirPath);
+
+        await page.getByRole("tab", { name: "Terminal 1" }).click();
+        await expect(
+            page.getByRole("tab", { name: "Terminal 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(
+            page.getByLabel(`Terminal 1 for ${ctx.agentName}`),
+        ).toBeVisible();
+        await page.getByRole("tab", { name: "Terminal 1" }).press("ArrowRight");
+        await expect(
+            page.getByRole("tab", { name: "Terminal 2" }),
+        ).toHaveAttribute("aria-selected", "true");
+        // Mouse and keyboard tab switching preserve both live sockets.
+        expect(terminalSockets).toHaveLength(2);
 
         await page
-            .getByRole("button", { name: "Expand Terminal" })
-            .press("Enter");
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+        // The detail heading proves the file loader has committed before cwd is captured.
         await expect(
-            page.getByText("Connected", { exact: true }),
-        ).toBeVisible();
-        // Expansion after Close creates a fresh non-sticky shell session.
-        expect(terminalSockets).toHaveLength(2);
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("file1.txt");
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        // An open file contributes its parent directory, not the file path.
+        expect(terminalSockets).toHaveLength(3);
+        expect(
+            new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
+        ).toBe(ctx.testDirPath);
 
         const secondSocket = terminalSockets[1];
         if (!secondSocket) {
             throw new Error("second terminal socket was not created");
         }
         const secondSocketClosed = secondSocket.waitForEvent("close");
-        await page.getByRole("tab", { name: "agent2_custom" }).click();
+        await page.getByRole("button", { name: "Close Terminal 2" }).click();
         await secondSocketClosed;
+        // Closing an inactive tab leaves the active tab and sibling sockets alive.
         await expect(
-            page.getByText("Not started", { exact: true }),
-        ).toBeVisible();
-        // Switching agents mounts a fresh minimized controller without eager setup.
-        expect(terminalSockets).toHaveLength(2);
+            page.getByRole("tab", { name: "Terminal 3" }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(page.getByRole("tab", { name: "Terminal 2" })).toHaveCount(
+            0,
+        );
+
+        const thirdSocket = terminalSockets[2];
+        if (!thirdSocket) {
+            throw new Error("third terminal socket was not created");
+        }
+        const thirdSocketClosed = thirdSocket.waitForEvent("close");
+        await page.getByRole("button", { name: "Close Terminal 3" }).click();
+        await thirdSocketClosed;
+        // Closing the active rightmost tab selects its left neighbor.
+        await expect(
+            page.getByRole("tab", { name: "Terminal 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+
+        const firstSocket = terminalSockets[0];
+        if (!firstSocket) {
+            throw new Error("first terminal socket was not created");
+        }
+        const firstSocketClosed = firstSocket.waitForEvent("close");
+        await page.getByRole("button", { name: "Close Terminal 1" }).click();
+        await firstSocketClosed;
+        // Closing the final tab restores the initial zero-terminal state.
+        await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
+            0,
+        );
+        await expect(page.getByRole("status")).toHaveText("No terminals");
+
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        await page.getByRole("button", { name: "New terminal" }).click();
+        await expect(page.getByRole("status")).toHaveText("Connected");
+        const fourthSocket = terminalSockets[3];
+        const fifthSocket = terminalSockets[4];
+        if (!fourthSocket || !fifthSocket) {
+            throw new Error("replacement terminal sockets were not created");
+        }
+        const fourthSocketClosed = fourthSocket.waitForEvent("close");
+        const fifthSocketClosed = fifthSocket.waitForEvent("close");
+        await page
+            .getByRole("tab", { name: "agent2_custom", exact: true })
+            .click();
+        await Promise.all([fourthSocketClosed, fifthSocketClosed]);
+        // Agent changes destroy every old tab and mount an empty panel.
+        await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
+            0,
+        );
+        await expect(page.getByRole("status")).toHaveText("No terminals");
+        expect(terminalSockets).toHaveLength(5);
 
         await page.getByRole("tab", { name: "Transfers" }).click();
+        // Non-agent routes must not retain the terminal panel.
         await expect(
             page.getByRole("heading", { name: "Terminal" }),
         ).toHaveCount(0);

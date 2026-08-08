@@ -43,6 +43,7 @@ struct PairedTerminal {
 pub(crate) struct TerminalQuery {
     rows: u16,
     cols: u16,
+    cwd: String,
 }
 
 /// Upgrades a same-origin browser request and starts one ephemeral rendezvous.
@@ -67,7 +68,9 @@ pub(crate) async fn browser_terminal_websocket_handler(
     websocket
         .max_message_size(MAX_TERMINAL_MESSAGE_SIZE)
         .max_frame_size(MAX_TERMINAL_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_browser_setup(socket, AgentId::from(agent), size, state))
+        .on_upgrade(move |socket| {
+            run_browser_setup(socket, AgentId::from(agent), size, query.cwd, state)
+        })
         .into_response()
 }
 
@@ -121,6 +124,7 @@ async fn run_browser_setup(
     mut browser: WebSocket,
     agent_id: AgentId,
     size: TerminalSize,
+    cwd: String,
     state: ServerState,
 ) {
     let terminal_id = TerminalId::new();
@@ -148,6 +152,7 @@ async fn run_browser_setup(
                 terminal_id: terminal_id.clone(),
                 token,
                 size,
+                cwd,
                 reply,
             })
         })

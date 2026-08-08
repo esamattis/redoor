@@ -1,5 +1,5 @@
 import * as React from "react";
-import { RotateCcw, SquareTerminal, X } from "lucide-react";
+import { Plus, RotateCcw, SquareTerminal, X } from "lucide-react";
 import type {
     FitAddon as GhosttyFitAddon,
     IDisposable,
@@ -20,6 +20,15 @@ type TerminalState =
     | { type: "connecting" }
     | { type: "connected" }
     | { type: "disconnected"; message: string };
+
+/** Keeps each tab's creation directory and lifecycle independent. */
+type TerminalTab = {
+    id: number;
+    title: string;
+    cwd: string;
+    state: TerminalState;
+    restartGeneration: number;
+};
 
 /** Validates untrusted socket text before it enters the typed lifecycle. */
 function parseServerMessage(value: unknown): TerminalServerMessage | null {
@@ -67,13 +76,223 @@ function getServerDisconnectMessage(
     return null;
 }
 
-/** Owns one ephemeral terminal and tears it down when its agent route unmounts. */
-export function TerminalPanel(props: { agent: Agent }) {
+/** Owns all ephemeral terminal tabs for the currently routed agent. */
+export function TerminalPanel(props: { agent: Agent; cwd: string }) {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
-    const [terminalState, setTerminalState] = React.useState<TerminalState>({
-        type: "not_started",
-    });
-    const stateRef = React.useRef<TerminalState>({ type: "not_started" });
+    const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
+    const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
+    const nextTabIdRef = React.useRef(1);
+
+    /** Captures the visible browser directory without changing older tabs. */
+    const createTerminal = () => {
+        const id = nextTabIdRef.current;
+        nextTabIdRef.current += 1;
+        setTabs((currentTabs) => [
+            ...currentTabs,
+            {
+                id,
+                title: `Terminal ${id}`,
+                cwd: props.cwd,
+                state: { type: "not_started" },
+                restartGeneration: 0,
+            },
+        ]);
+        setActiveTabId(id);
+        setIsCollapsed(false);
+    };
+
+    /** Updates only the session that emitted a lifecycle transition. */
+    const updateTabState = (tabId: number, state: TerminalState) => {
+        setTabs((currentTabs) =>
+            currentTabs.map((tab) =>
+                tab.id === tabId ? { ...tab, state } : tab,
+            ),
+        );
+    };
+
+    /** Removes one session and chooses its nearest surviving neighbor. */
+    const closeTerminal = (tabId: number) => {
+        const tabIndex = tabs.findIndex((tab) => tab.id === tabId);
+        if (tabIndex === -1) {
+            return;
+        }
+
+        const remainingTabs = tabs.filter((tab) => tab.id !== tabId);
+        setTabs(remainingTabs);
+        if (activeTabId === tabId) {
+            const replacement =
+                remainingTabs[tabIndex] ?? remainingTabs[tabIndex - 1] ?? null;
+            setActiveTabId(replacement?.id ?? null);
+        }
+        if (remainingTabs.length === 0) {
+            setIsCollapsed(true);
+        }
+    };
+
+    /** Requests a fresh shell while preserving the tab's identity and cwd. */
+    const restartTerminal = (tabId: number) => {
+        setTabs((currentTabs) =>
+            currentTabs.map((tab) =>
+                tab.id === tabId
+                    ? {
+                          ...tab,
+                          state: { type: "not_started" },
+                          restartGeneration: tab.restartGeneration + 1,
+                      }
+                    : tab,
+            ),
+        );
+        setIsCollapsed(false);
+    };
+
+    /** Gives arrow keys browser-style selection across terminal tabs. */
+    const handleTabKeyDown = (
+        event: React.KeyboardEvent<HTMLButtonElement>,
+        tabIndex: number,
+    ) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+            return;
+        }
+        const offset = event.key === "ArrowRight" ? 1 : -1;
+        const nextIndex = (tabIndex + offset + tabs.length) % tabs.length;
+        const nextTab = tabs[nextIndex];
+        if (!nextTab) {
+            return;
+        }
+        setActiveTabId(nextTab.id);
+        document.getElementById(`terminal-tab-${nextTab.id}`)?.focus();
+        event.preventDefault();
+    };
+
+    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+    const statusLabel =
+        activeTab === null
+            ? "No terminals"
+            : activeTab.state.type === "connected"
+              ? "Connected"
+              : activeTab.state.type === "disconnected"
+                ? "Disconnected"
+                : "Connecting";
+    const statusColor =
+        activeTab?.state.type === "connected"
+            ? "bg-emerald-500/10 text-emerald-400"
+            : activeTab?.state.type === "disconnected"
+              ? "bg-red-500/10 text-red-400"
+              : "bg-slate-800 text-slate-400";
+
+    return (
+        <CollapsibleBottomPanel
+            title="Terminal"
+            description={`Shells on ${props.agent.name}`}
+            icon={<SquareTerminal className="h-4 w-4" />}
+            badge={
+                <span
+                    role="status"
+                    className={`rounded-md px-2 py-0.5 text-xs font-medium ${statusColor}`}
+                >
+                    {statusLabel}
+                </span>
+            }
+            actions={
+                <div className="flex min-w-0 items-center gap-1">
+                    <div className="flex min-w-0 max-w-[60vw] items-center overflow-x-auto">
+                        <div
+                            role="tablist"
+                            aria-label="Terminal tabs"
+                            className="flex min-h-8 min-w-px items-center gap-1"
+                        >
+                            {tabs.map((tab, tabIndex) => (
+                                <div
+                                    key={tab.id}
+                                    className="flex shrink-0 items-center rounded-md border border-slate-700 bg-slate-900"
+                                    title={`${tab.title}: ${tab.cwd}`}
+                                >
+                                    <button
+                                        type="button"
+                                        id={`terminal-tab-${tab.id}`}
+                                        role="tab"
+                                        aria-selected={tab.id === activeTabId}
+                                        aria-controls={`terminal-panel-${tab.id}`}
+                                        tabIndex={
+                                            tab.id === activeTabId ? 0 : -1
+                                        }
+                                        onClick={() => setActiveTabId(tab.id)}
+                                        onKeyDown={(event) =>
+                                            handleTabKeyDown(event, tabIndex)
+                                        }
+                                        className={`h-8 px-2.5 text-xs font-medium transition-colors ${
+                                            tab.id === activeTabId
+                                                ? "bg-slate-700 text-slate-100"
+                                                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                                        }`}
+                                    >
+                                        {tab.title}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        aria-label={`Close ${tab.title}`}
+                                        title={`Close ${tab.title}`}
+                                        onClick={() => closeTerminal(tab.id)}
+                                        className="inline-flex h-8 w-7 items-center justify-center text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                    >
+                                        <X className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                        <button
+                            type="button"
+                            aria-label="New terminal"
+                            title="New terminal"
+                            onClick={createTerminal}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        >
+                            <Plus className="h-4 w-4" />
+                        </button>
+                    </div>
+                    {activeTab?.state.type === "disconnected" ? (
+                        <button
+                            type="button"
+                            onClick={() => restartTerminal(activeTab.id)}
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            Restart
+                        </button>
+                    ) : null}
+                </div>
+            }
+            actionsAlignment="start"
+            isCollapsed={isCollapsed}
+            onCollapsedChange={setIsCollapsed}
+            keepChildrenMounted
+            defaultExpandedHeight={400}
+        >
+            <div className="relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
+                {tabs.map((tab) => (
+                    <TerminalSession
+                        key={tab.id}
+                        agent={props.agent}
+                        tab={tab}
+                        isActive={tab.id === activeTabId}
+                        isPanelCollapsed={isCollapsed}
+                        onStateChange={updateTabState}
+                    />
+                ))}
+            </div>
+        </CollapsibleBottomPanel>
+    );
+}
+
+/** Owns one tab's browser resources so sibling sessions cannot affect it. */
+function TerminalSession(props: {
+    agent: Agent;
+    tab: TerminalTab;
+    isActive: boolean;
+    isPanelCollapsed: boolean;
+    onStateChange: (tabId: number, state: TerminalState) => void;
+}) {
+    const stateRef = React.useRef<TerminalState>(props.tab.state);
     const hostRef = React.useRef<HTMLDivElement | null>(null);
     const terminalRef = React.useRef<GhosttyTerminal | null>(null);
     const fitAddonRef = React.useRef<GhosttyFitAddon | null>(null);
@@ -81,14 +300,19 @@ export function TerminalPanel(props: { agent: Agent }) {
     const terminalDisposablesRef = React.useRef<IDisposable[]>([]);
     const removeSocketListenersRef = React.useRef<(() => void) | null>(null);
     const generationRef = React.useRef(0);
+    const restartGenerationRef = React.useRef(props.tab.restartGeneration);
+    const isActiveRef = React.useRef(props.isActive);
+    const isPanelCollapsedRef = React.useRef(props.isPanelCollapsed);
+    isActiveRef.current = props.isActive;
+    isPanelCollapsedRef.current = props.isPanelCollapsed;
 
-    /** Keeps event handlers synchronized with the rendered state. */
+    /** Keeps socket handlers and the parent tab badge on the same lifecycle. */
     const updateTerminalState = (nextState: TerminalState) => {
         stateRef.current = nextState;
-        setTerminalState(nextState);
+        props.onStateChange(props.tab.id, nextState);
     };
 
-    /** Releases every per-session browser resource; callers invalidate it first. */
+    /** Releases every resource associated with only this terminal tab. */
     const disposeResources = () => {
         const socket = socketRef.current;
         socketRef.current = null;
@@ -114,27 +338,25 @@ export function TerminalPanel(props: { agent: Agent }) {
         hostRef.current?.replaceChildren();
     };
 
-    /** Returns setup failures to the exact minimized, uninitialized launcher. */
-    const resetAfterSetupFailure = (generation: number) => {
+    /** Leaves setup failures visible so this tab can be explicitly restarted. */
+    const failSetup = (generation: number, message: string) => {
         if (generationRef.current !== generation) {
             return;
         }
         generationRef.current += 1;
         disposeResources();
-        updateTerminalState({ type: "not_started" });
-        setIsCollapsed(true);
+        updateTerminalState({ type: "disconnected", message });
     };
 
-    /** Preserves the canvas while exposing an explicit recovery action. */
+    /** Preserves terminal output while exposing an explicit recovery action. */
     const showDisconnected = (generation: number, message: string) => {
         if (generationRef.current !== generation) {
             return;
         }
         updateTerminalState({ type: "disconnected", message });
-        setIsCollapsed(false);
     };
 
-    /** Creates Ghostty and the dedicated socket only after a user expands. */
+    /** Creates Ghostty and a shell only for a selected, expanded tab. */
     const startTerminal = async () => {
         if (stateRef.current.type !== "not_started") {
             return;
@@ -156,7 +378,7 @@ export function TerminalPanel(props: { agent: Agent }) {
 
             const host = hostRef.current;
             if (!host) {
-                resetAfterSetupFailure(generation);
+                failSetup(generation, "Terminal host is unavailable");
                 return;
             }
 
@@ -178,7 +400,10 @@ export function TerminalPanel(props: { agent: Agent }) {
             fitAddonRef.current = fitAddon;
             terminal.loadAddon(fitAddon);
             terminal.open(host);
-            host.setAttribute("aria-label", `Terminal for ${props.agent.name}`);
+            host.setAttribute(
+                "aria-label",
+                `${props.tab.title} for ${props.agent.name}`,
+            );
             fitAddon.fit();
             fitAddon.observeResize();
 
@@ -188,10 +413,10 @@ export function TerminalPanel(props: { agent: Agent }) {
 
             updateTerminalState({ type: "connecting" });
             const socket = new WebSocket(
-                props.agent.getTerminalWebSocketUrl({
-                    rows: terminal.rows,
-                    cols: terminal.cols,
-                }),
+                props.agent.getTerminalWebSocketUrl(
+                    { rows: terminal.rows, cols: terminal.cols },
+                    props.tab.cwd,
+                ),
             );
             socket.binaryType = "arraybuffer";
             socketRef.current = socket;
@@ -246,8 +471,10 @@ export function TerminalPanel(props: { agent: Agent }) {
                 if (message.type === "ready") {
                     isReady = true;
                     updateTerminalState({ type: "connected" });
-                    fitAddon.fit();
-                    terminal.focus();
+                    if (isActiveRef.current && !isPanelCollapsedRef.current) {
+                        fitAddon.fit();
+                        terminal.focus();
+                    }
                     return;
                 }
 
@@ -260,22 +487,23 @@ export function TerminalPanel(props: { agent: Agent }) {
                 socket.close();
             };
 
-            /** Distinguishes failed setup from loss of an established shell. */
+            /** Distinguishes setup loss from an established shell disconnect. */
             const handleClose = () => {
-                if (generationRef.current !== generation) {
+                if (
+                    generationRef.current !== generation ||
+                    stateRef.current.type === "disconnected"
+                ) {
                     return;
                 }
-                if (stateRef.current.type === "disconnected") {
-                    return;
-                }
-                if (!isReady) {
-                    resetAfterSetupFailure(generation);
-                    return;
-                }
-                showDisconnected(generation, "Terminal connection closed");
+                showDisconnected(
+                    generation,
+                    isReady
+                        ? "Terminal connection closed"
+                        : "Terminal connection closed during setup",
+                );
             };
 
-            /** Relies on the close event for one deterministic state transition. */
+            /** Relies on close for one deterministic state transition. */
             const handleError = () => {
                 if (generationRef.current === generation) {
                     socket.close();
@@ -291,129 +519,82 @@ export function TerminalPanel(props: { agent: Agent }) {
                 socket.removeEventListener("error", handleError);
             };
         } catch {
-            resetAfterSetupFailure(generation);
+            failSetup(generation, "Failed to initialize terminal");
         }
     };
 
-    /** Implements minimize, first expansion, and live-session refitting. */
-    const handleCollapsedChange = (nextCollapsed: boolean) => {
-        setIsCollapsed(nextCollapsed);
-        if (nextCollapsed) {
-            return;
+    React.useEffect(() => {
+        if (restartGenerationRef.current !== props.tab.restartGeneration) {
+            restartGenerationRef.current = props.tab.restartGeneration;
+            generationRef.current += 1;
+            disposeResources();
+            stateRef.current = { type: "not_started" };
         }
-        if (stateRef.current.type === "not_started") {
+
+        if (
+            props.isActive &&
+            !props.isPanelCollapsed &&
+            stateRef.current.type === "not_started"
+        ) {
             void startTerminal();
             return;
         }
-        if (stateRef.current.type === "connected") {
+
+        if (
+            props.isActive &&
+            !props.isPanelCollapsed &&
+            stateRef.current.type === "connected"
+        ) {
             const generation = generationRef.current;
             requestAnimationFrame(() => {
-                if (generationRef.current !== generation) {
-                    return;
+                if (
+                    generationRef.current === generation &&
+                    isActiveRef.current &&
+                    !isPanelCollapsedRef.current
+                ) {
+                    fitAddonRef.current?.fit();
+                    terminalRef.current?.focus();
                 }
-                fitAddonRef.current?.fit();
-                terminalRef.current?.focus();
             });
         }
-    };
-
-    /** Explicit close destroys the session and restores the initial launcher. */
-    const closeTerminal = () => {
-        generationRef.current += 1;
-        disposeResources();
-        updateTerminalState({ type: "not_started" });
-        setIsCollapsed(true);
-    };
-
-    /** Restart always tears down old client resources before creating a shell. */
-    const restartTerminal = () => {
-        generationRef.current += 1;
-        disposeResources();
-        updateTerminalState({ type: "not_started" });
-        setIsCollapsed(false);
-        void startTerminal();
-    };
+    }, [
+        props.isActive,
+        props.isPanelCollapsed,
+        props.tab.restartGeneration,
+        props.tab.state.type,
+    ]);
 
     React.useEffect(() => {
         return () => {
             generationRef.current += 1;
             disposeResources();
+            // Strict Mode probes cleanup before mounting effects again.
+            stateRef.current = { type: "not_started" };
         };
     }, []);
 
-    const statusLabel =
-        terminalState.type === "not_started"
-            ? "Not started"
-            : terminalState.type === "connected"
-              ? "Connected"
-              : terminalState.type === "disconnected"
-                ? "Disconnected"
-                : "Connecting";
-    const statusColor =
-        terminalState.type === "connected"
-            ? "bg-emerald-500/10 text-emerald-400"
-            : terminalState.type === "disconnected"
-              ? "bg-red-500/10 text-red-400"
-              : "bg-slate-800 text-slate-400";
-
     return (
-        <CollapsibleBottomPanel
-            title="Terminal"
-            description={`Shell on ${props.agent.name}`}
-            icon={<SquareTerminal className="h-4 w-4" />}
-            badge={
-                <span
-                    role="status"
-                    className={`rounded-md px-2 py-0.5 text-xs font-medium ${statusColor}`}
-                >
-                    {statusLabel}
-                </span>
-            }
-            actions={
-                <div className="flex items-center gap-1">
-                    {terminalState.type === "disconnected" ? (
-                        <button
-                            type="button"
-                            onClick={restartTerminal}
-                            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                            Restart
-                        </button>
-                    ) : null}
-                    {terminalState.type !== "not_started" ? (
-                        <button
-                            type="button"
-                            aria-label="Close terminal"
-                            title="Close terminal"
-                            onClick={closeTerminal}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                    ) : null}
-                </div>
-            }
-            isCollapsed={isCollapsed}
-            onCollapsedChange={handleCollapsedChange}
-            keepChildrenMounted
-            defaultExpandedHeight={400}
+        <div
+            id={`terminal-panel-${props.tab.id}`}
+            role="tabpanel"
+            aria-labelledby={`terminal-tab-${props.tab.id}`}
+            aria-hidden={!props.isActive}
+            hidden={!props.isActive}
+            className="relative h-full"
         >
-            <div className="relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
+            <div
+                ref={hostRef}
+                aria-label={`${props.tab.title} for ${props.agent.name}`}
+                className="h-full w-full overflow-hidden caret-transparent"
+            />
+            {props.tab.state.type === "disconnected" ? (
                 <div
-                    ref={hostRef}
-                    aria-label={`Terminal for ${props.agent.name}`}
-                    className="h-full w-full overflow-hidden caret-transparent"
-                />
-                {terminalState.type === "disconnected" ? (
-                    <div
-                        role="alert"
-                        className="absolute inset-x-2 bottom-2 rounded-md border border-red-500/20 bg-[#161018]/95 px-3 py-2 text-sm text-red-300 shadow-lg"
-                    >
-                        {terminalState.message}
-                    </div>
-                ) : null}
-            </div>
-        </CollapsibleBottomPanel>
+                    role="alert"
+                    className="absolute inset-x-0 bottom-0 rounded-md border border-red-500/20 bg-[#161018]/95 px-3 py-2 text-sm text-red-300 shadow-lg"
+                >
+                    {props.tab.state.message}
+                </div>
+            ) : null}
+        </div>
     );
 }

@@ -7,6 +7,7 @@ export function CollapsibleBottomPanel(props: {
     description: string;
     badge: React.ReactNode;
     actions?: React.ReactNode;
+    actionsAlignment?: "start" | "end";
     icon?: React.ReactNode;
     children: React.ReactNode;
     defaultCollapsed?: boolean;
@@ -168,7 +169,7 @@ export function CollapsibleBottomPanel(props: {
             <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
                 <div
                     ref={headerRef}
-                    className="flex shrink-0 flex-wrap items-center justify-between gap-3"
+                    className="flex shrink-0 flex-wrap items-center gap-3"
                 >
                     <div className="flex min-w-0 items-center gap-3">
                         {props.icon ? (
@@ -188,8 +189,15 @@ export function CollapsibleBottomPanel(props: {
                             </p>
                         </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                        {props.actions}
+                    {props.actionsAlignment === "start" ? (
+                        <div className="flex min-w-0 items-center">
+                            {props.actions}
+                        </div>
+                    ) : null}
+                    <div className="ml-auto flex min-w-0 items-center gap-1">
+                        {props.actionsAlignment === "start"
+                            ? null
+                            : props.actions}
                         <div className="mx-1 h-5 w-px bg-slate-800" />
                         <button
                             type="button"

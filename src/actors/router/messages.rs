@@ -202,6 +202,7 @@ pub struct OpenTerminalRequest {
     pub terminal_id: TerminalId,
     pub token: String,
     pub size: TerminalSize,
+    pub cwd: String,
     pub reply: RouterReply<Result<(), RouterError>>,
 }
 

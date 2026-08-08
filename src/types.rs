@@ -268,6 +268,7 @@ pub enum Message {
         terminal_id: crate::terminal_protocol::TerminalId,
         token: String,
         size: crate::terminal_protocol::TerminalSize,
+        cwd: String,
     },
 
     /// Protocol-level error outside any request-specific response flow.

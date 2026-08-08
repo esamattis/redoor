@@ -4,8 +4,9 @@ export function getParentPath(path: string): string | null {
 
     const lastSlashIndex = normalizedPath.lastIndexOf("/");
     if (lastSlashIndex === -1) return null;
+    if (lastSlashIndex === 0) return "/";
 
-    return normalizedPath.slice(0, lastSlashIndex) || null;
+    return normalizedPath.slice(0, lastSlashIndex);
 }
 
 export function formatSize(bytes: number): string {

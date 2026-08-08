@@ -156,8 +156,8 @@ export class Agent {
         return `/agents/${encodeURIComponent(this.info.id)}/browser/${encodedPath}`;
     }
 
-    /** Builds the dedicated same-origin data-plane socket for one terminal. */
-    getTerminalWebSocketUrl(size: TerminalSize): string {
+    /** Builds one terminal socket with the directory captured by its UI tab. */
+    getTerminalWebSocketUrl(size: TerminalSize, cwd: string): string {
         const url = new URL(
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/terminal/ws`,
             this.baseUrl,
@@ -165,6 +165,7 @@ export class Agent {
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         url.searchParams.set("rows", String(size.rows));
         url.searchParams.set("cols", String(size.cols));
+        url.searchParams.set("cwd", cwd);
         return url.toString();
     }
 
