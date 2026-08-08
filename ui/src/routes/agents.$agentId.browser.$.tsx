@@ -23,9 +23,13 @@ import {
     CheckSquare,
     Eye,
     EyeOff,
+    Info,
+    List,
+    ClipboardPaste,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
+import { requestClipboardPaste } from "../components/global-file-import-handler";
 import { atomWithLocalStorage } from "../utils/local-storage-atom";
 import { formatSize } from "../utils/path";
 import {
@@ -33,6 +37,7 @@ import {
     type LsResponse,
     isLsDirectoryResponse,
     isLsFileResponse,
+    type LsDirectoryResponse,
     type LsFileResponse,
 } from "../api-client";
 import {
@@ -86,6 +91,9 @@ function sortFileEntries<T extends { name: string }>(entries: T[]): T[] {
 }
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
+    validateSearch: (search): { view?: "details" } => ({
+        view: search.view === "details" ? "details" : undefined,
+    }),
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
         const rootLoaderData = rootMatch.loaderData;
@@ -121,6 +129,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { agent, agentId, agentName, path, lsResult } = data;
+    const search = Route.useSearch();
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
 
     const parentPath = getImmediateParentPath(path);
@@ -140,9 +149,11 @@ function FileBrowser() {
 
         const sortedFiles = [...directories, ...regularFiles];
 
+        const isDetailsView = search.view === "details";
+
         return (
             <div className="p-6">
-                <div className="max-w-4xl mx-auto">
+                <div className="mx-auto max-w-6xl">
                     <BrowserHeader
                         agent={agent}
                         agentId={agentId}
@@ -151,23 +162,36 @@ function FileBrowser() {
                         parentPath={parentPath}
                         directoryPath={path}
                         showHiddenFiles={showHiddenFiles}
+                        isDetailsView={isDetailsView}
                         onToggleHiddenFiles={() =>
                             setShowHiddenFiles((prev) => !prev)
                         }
                     />
 
-                    <CopySelectedFilesAction
-                        agents={data.agents}
-                        destinationAgent={agent}
-                        directoryPath={path}
-                    />
+                    {isDetailsView ? (
+                        <DirectoryDetailView
+                            path={path}
+                            directoryName={
+                                path.split("/").filter(Boolean).pop() ?? "/"
+                            }
+                            lsResult={lsResult}
+                        />
+                    ) : (
+                        <>
+                            <CopySelectedFilesAction
+                                agents={data.agents}
+                                destinationAgent={agent}
+                                directoryPath={path}
+                            />
 
-                    <FileList
-                        agentId={agentId}
-                        agentName={agentName}
-                        directoryPath={path}
-                        files={sortedFiles}
-                    />
+                            <FileList
+                                agentId={agentId}
+                                agentName={agentName}
+                                directoryPath={path}
+                                files={sortedFiles}
+                            />
+                        </>
+                    )}
                 </div>
             </div>
         );
@@ -502,7 +526,7 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
 
 /** Opens a focused dialog so directory creation does not crowd the toolbar. */
 function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
-    const router = useRouter();
+    const navigate = useNavigate();
     const inputId = React.useId();
     const [isDialogOpen, setIsDialogOpen] = React.useState(false);
     const [directoryName, setDirectoryName] = React.useState("");
@@ -552,7 +576,9 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
 
         try {
             await props.agent.createDirectory(createDirectoryPath);
-            await router.invalidate();
+            await navigate({
+                to: props.agent.getBrowserUrl(createDirectoryPath),
+            });
             resetDialog();
         } catch (error) {
             setCreateDirectoryState({
@@ -654,6 +680,7 @@ function BrowserHeader(props: {
     parentPath: string | null;
     directoryPath: string;
     showHiddenFiles: boolean;
+    isDetailsView: boolean;
     onToggleHiddenFiles: () => void;
 }) {
     return (
@@ -696,27 +723,67 @@ function BrowserHeader(props: {
                         Up
                     </Link>
                     <div className="mx-1 h-5 w-px bg-slate-700" />
-                    <button
-                        type="button"
-                        onClick={props.onToggleHiddenFiles}
-                        aria-pressed={props.showHiddenFiles}
-                        aria-label={
-                            props.showHiddenFiles
-                                ? "Hide hidden files"
-                                : "Show hidden files"
-                        }
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
-                    >
-                        {props.showHiddenFiles ? (
-                            <EyeOff className="h-4 w-4" />
-                        ) : (
-                            <Eye className="h-4 w-4" />
-                        )}
-                        {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
-                    </button>
+                    {props.isDetailsView ? (
+                        <Link
+                            to={getBrowserPathHref(
+                                props.agent,
+                                props.directoryPath,
+                            )}
+                            search={{}}
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
+                        >
+                            <List className="h-4 w-4" />
+                            View files
+                        </Link>
+                    ) : (
+                        <>
+                            <Link
+                                to={getBrowserPathHref(
+                                    props.agent,
+                                    props.directoryPath,
+                                )}
+                                search={{ view: "details" }}
+                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                            >
+                                <Info className="h-4 w-4" />
+                                View details
+                            </Link>
+                            <button
+                                type="button"
+                                onClick={props.onToggleHiddenFiles}
+                                aria-pressed={props.showHiddenFiles}
+                                aria-label={
+                                    props.showHiddenFiles
+                                        ? "Hide hidden files"
+                                        : "Show hidden files"
+                                }
+                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
+                            >
+                                {props.showHiddenFiles ? (
+                                    <EyeOff className="h-4 w-4" />
+                                ) : (
+                                    <Eye className="h-4 w-4" />
+                                )}
+                                {props.showHiddenFiles
+                                    ? "Hide hidden"
+                                    : "Show hidden"}
+                            </button>
+                        </>
+                    )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1">
+                    {!props.isDetailsView ? (
+                        <button
+                            type="button"
+                            onClick={requestClipboardPaste}
+                            aria-label="Paste files or text"
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                        >
+                            <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                            Paste
+                        </button>
+                    ) : null}
                     <CreateDirectoryAction
                         agent={props.agent}
                         directoryPath={props.directoryPath}
@@ -957,7 +1024,7 @@ function formatSymbolicPermissions(permissions: number): string {
 }
 
 /** Keeps repeated metadata cells visually and semantically consistent. */
-function FileMetadataItem(props: {
+function MetadataItem(props: {
     label: string;
     value: React.ReactNode;
     valueLabel?: string;
@@ -979,7 +1046,7 @@ function FileMetadataItem(props: {
 }
 
 /** Makes raw permission bits understandable without requiring users to decode octal values. */
-function FilePermissionsGrid(props: { permissions: number }) {
+function PermissionsGrid(props: { permissions: number }) {
     const rows = [
         { label: "Owner", bits: [0o400, 0o200, 0o100] },
         { label: "Group", bits: [0o040, 0o020, 0o010] },
@@ -1046,6 +1113,105 @@ function FilePermissionsGrid(props: { permissions: number }) {
     );
 }
 
+/** Describes the ownership and access fields shared by files and directories. */
+type FilesystemMetadata = {
+    owner: string | null;
+    group: string | null;
+    uid: number;
+    gid: number;
+    permissions: number;
+};
+
+/** Presents shared filesystem identity and Unix access metadata consistently. */
+function FilesystemMetadataSections(props: {
+    metadata: FilesystemMetadata;
+    size?: number;
+    entryCount?: number;
+    headingPrefix: string;
+}) {
+    const symbolicPermissions = formatSymbolicPermissions(
+        props.metadata.permissions,
+    );
+    const octalPermissions = `0${props.metadata.permissions
+        .toString(8)
+        .padStart(3, "0")}`;
+    const headingIdPrefix = props.headingPrefix.toLowerCase();
+
+    return (
+        <div className="grid gap-8 p-6 md:p-8 lg:grid-cols-[minmax(0,1fr)_minmax(21rem,0.72fr)]">
+            <section aria-labelledby={`${headingIdPrefix}-metadata-heading`}>
+                <div className="mb-4">
+                    <h2
+                        id={`${headingIdPrefix}-metadata-heading`}
+                        className="text-base font-semibold text-slate-100"
+                    >
+                        Metadata
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                        Filesystem identity and storage information.
+                    </p>
+                </div>
+                <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {props.size === undefined ? null : (
+                        <MetadataItem
+                            label="Size"
+                            value={formatSize(props.size)}
+                            valueLabel="File size value"
+                        />
+                    )}
+                    {props.entryCount === undefined ? null : (
+                        <MetadataItem
+                            label="Entries"
+                            value={props.entryCount}
+                            valueLabel="Directory entry count"
+                        />
+                    )}
+                    <MetadataItem
+                        label="Owner"
+                        value={props.metadata.owner || "Unknown"}
+                    />
+                    <MetadataItem
+                        label="Group"
+                        value={props.metadata.group || "Unknown"}
+                    />
+                    <MetadataItem label="UID" value={props.metadata.uid} mono />
+                    <MetadataItem label="GID" value={props.metadata.gid} mono />
+                    <MetadataItem
+                        label="Permissions"
+                        value={`${symbolicPermissions} · ${octalPermissions}`}
+                        mono
+                    />
+                </dl>
+            </section>
+
+            <section aria-labelledby={`${headingIdPrefix}-permissions-heading`}>
+                <div className="mb-4 flex items-end justify-between gap-4">
+                    <div>
+                        <h2
+                            id={`${headingIdPrefix}-permissions-heading`}
+                            className="text-base font-semibold text-slate-100"
+                        >
+                            Permissions
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-500">
+                            Access granted by the Unix mode.
+                        </p>
+                    </div>
+                    <div className="text-right font-mono">
+                        <p className="text-sm font-semibold text-slate-200">
+                            {symbolicPermissions}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                            {octalPermissions}
+                        </p>
+                    </div>
+                </div>
+                <PermissionsGrid permissions={props.metadata.permissions} />
+            </section>
+        </div>
+    );
+}
+
 /** Keeps shell commands readable on narrow screens while leaving copy controls accessible. */
 function CommandDownloadRow(props: {
     label: string;
@@ -1077,6 +1243,52 @@ function CommandDownloadRow(props: {
                 {props.command}
             </code>
         </div>
+    );
+}
+
+/** Presents directory metadata while the query-selected details view replaces the file list. */
+function DirectoryDetailView(props: {
+    path: string;
+    directoryName: string;
+    lsResult: LsDirectoryResponse;
+}) {
+    return (
+        <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
+                <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
+                <div className="relative flex min-w-0 items-start gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                        <Folder className="h-7 w-7 text-blue-400" />
+                    </div>
+                    <div className="min-w-0 pt-0.5">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                            Directory details
+                        </p>
+                        <h1
+                            aria-label="Directory name"
+                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                        >
+                            {props.directoryName}
+                        </h1>
+                    </div>
+                </div>
+
+                <div className="relative mt-6">
+                    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
+                        Full Path
+                    </p>
+                    <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
+                        {props.path}
+                    </code>
+                </div>
+            </header>
+
+            <FilesystemMetadataSections
+                metadata={props.lsResult}
+                entryCount={props.lsResult.files.length}
+                headingPrefix="directory"
+            />
+        </article>
     );
 }
 
@@ -1138,36 +1350,36 @@ function FileDetailView(props: {
 
     const wgetCommand = `wget "${props.downloadUrl}"`;
     const curlCommand = `curl -O "${props.downloadUrl}"`;
-    const symbolicPermissions = formatSymbolicPermissions(
-        props.lsResult.permissions,
-    );
-    const octalPermissions = `0${props.lsResult.permissions
-        .toString(8)
-        .padStart(3, "0")}`;
 
     return (
         <div>
-            <div className="mb-5 space-y-4">
-                <Breadcrumbs
-                    agentId={props.agentId}
-                    agentName={props.agentName}
-                    agent={props.agent}
-                    path={props.path}
-                />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <Link
-                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
-                        className="inline-flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-900/60 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:bg-slate-800 hover:text-white"
-                    >
-                        <ArrowLeft className="h-4 w-4" />
-                        Back
-                    </Link>
+            <div className="mb-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <Breadcrumbs
+                        agentId={props.agentId}
+                        agentName={props.agentName}
+                        agent={props.agent}
+                        path={props.path}
+                    />
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: props.agentId }}
-                        className="text-sm font-medium text-slate-400 transition hover:text-blue-400"
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
+                        <ArrowLeft className="h-3.5 w-3.5" />
                         Back to Agent
+                    </Link>
+                </div>
+                <div
+                    aria-label="File actions"
+                    className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+                >
+                    <Link
+                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                        <ArrowLeft className="h-4 w-4" />
+                        Back
                     </Link>
                 </div>
             </div>
@@ -1243,78 +1455,11 @@ function FileDetailView(props: {
                     </div>
                 </header>
 
-                <div className="grid gap-8 p-6 md:p-8 lg:grid-cols-[minmax(0,1fr)_minmax(21rem,0.72fr)]">
-                    <section aria-labelledby="file-metadata-heading">
-                        <div className="mb-4">
-                            <h2
-                                id="file-metadata-heading"
-                                className="text-base font-semibold text-slate-100"
-                            >
-                                Metadata
-                            </h2>
-                            <p className="mt-1 text-sm text-slate-500">
-                                Filesystem identity and storage information.
-                            </p>
-                        </div>
-                        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                            <FileMetadataItem
-                                label="Size"
-                                value={formatSize(props.lsResult.size)}
-                                valueLabel="File size value"
-                            />
-                            <FileMetadataItem
-                                label="Owner"
-                                value={props.lsResult.owner || "Unknown"}
-                            />
-                            <FileMetadataItem
-                                label="Group"
-                                value={props.lsResult.group || "Unknown"}
-                            />
-                            <FileMetadataItem
-                                label="UID"
-                                value={props.lsResult.uid}
-                                mono
-                            />
-                            <FileMetadataItem
-                                label="GID"
-                                value={props.lsResult.gid}
-                                mono
-                            />
-                            <FileMetadataItem
-                                label="Permissions"
-                                value={`${symbolicPermissions} · ${octalPermissions}`}
-                                mono
-                            />
-                        </dl>
-                    </section>
-
-                    <section aria-labelledby="file-permissions-heading">
-                        <div className="mb-4 flex items-end justify-between gap-4">
-                            <div>
-                                <h2
-                                    id="file-permissions-heading"
-                                    className="text-base font-semibold text-slate-100"
-                                >
-                                    Permissions
-                                </h2>
-                                <p className="mt-1 text-sm text-slate-500">
-                                    Access granted by the Unix mode.
-                                </p>
-                            </div>
-                            <div className="text-right font-mono">
-                                <p className="text-sm font-semibold text-slate-200">
-                                    {symbolicPermissions}
-                                </p>
-                                <p className="text-xs text-slate-500">
-                                    {octalPermissions}
-                                </p>
-                            </div>
-                        </div>
-                        <FilePermissionsGrid
-                            permissions={props.lsResult.permissions}
-                        />
-                    </section>
-                </div>
+                <FilesystemMetadataSections
+                    metadata={props.lsResult}
+                    size={props.lsResult.size}
+                    headingPrefix="file"
+                />
 
                 <section
                     aria-labelledby="command-downloads-heading"

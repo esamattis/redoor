@@ -116,12 +116,19 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("dialog", { name: "Create directory" })
             .getByRole("button", { name: "Create directory", exact: true })
             .click();
-        // The destination link proves creation targeted the current directory and refreshed its listing.
-        await expect(
-            page.getByRole("link", { name: copyTargetDirName, exact: true }),
-        ).toBeVisible();
+        // Creation navigates directly into the destination so it is ready for immediate use.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
+        );
 
-        // Select the file to copy while still in the parent directory.
+        await page.goBack();
+
+        // Returning to the parent makes the source file available for selection.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+
+        // Select the source file from the parent directory.
         await page
             .getByRole("button", { name: "Select file file1.txt" })
             .click();

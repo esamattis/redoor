@@ -65,6 +65,47 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(fileEntries).toHaveCount(5);
     });
 
+    test("should show directory details from the view query", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        await page
+            .getByRole("link", { name: "View details", exact: true })
+            .click();
+
+        // The query parameter makes the alternate view directly addressable and reload-safe.
+        await expect(page).toHaveURL(`${directoryUrl}?view=details`);
+        // The directory heading confirms details describe the current directory rather than a child.
+        const directoryHeading = page.getByRole("heading", {
+            name: "Directory name",
+            exact: true,
+        });
+        await expect(directoryHeading).toBeVisible();
+        // The visible heading value identifies the directory represented by the metadata.
+        await expect(directoryHeading).toHaveText(ctx.testDirName);
+        // Shared filesystem details must expose the directory's Unix access mode.
+        await expect(
+            page.getByRole("heading", { name: "Permissions", exact: true }),
+        ).toBeVisible();
+        // Activating details replaces the child list instead of rendering both dense views together.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).not.toBeVisible();
+
+        await page
+            .getByRole("link", { name: "View files", exact: true })
+            .click();
+
+        // Returning to the list removes the details query so the default URL stays canonical.
+        await expect(page).toHaveURL(directoryUrl);
+        // The file list becomes visible again after leaving details.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+    });
+
     test("should navigate to deep nested directory", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page

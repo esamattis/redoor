@@ -158,6 +158,13 @@ describe("Agents API", () => {
         expect(isLsDirectoryResponse(result)).toBe(true);
         // Verify result contains an array of files
         if (isLsDirectoryResponse(result)) {
+            // Directory details need the resolved path to identify the object represented by the listing.
+            expect(result.path).toBe(agentDetails.cwd);
+            // The mode is numeric so the UI can share its Unix permissions view with file details.
+            expect(result.permissions).toBeGreaterThan(0);
+            // Directory permission responses must contain only the standard rwx bits.
+            expect(result.permissions).toBeLessThanOrEqual(0o777);
+            // Verify result contains an array of files.
             expect(result.files).toBeInstanceOf(Array);
             // Creating a file in the isolated agent cwd ensures the listing has a deterministic entry.
             expect(result.files.length).toBeGreaterThan(0);

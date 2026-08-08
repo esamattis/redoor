@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import {
     ApiClient,
+    isLsDirectoryResponse,
     isLsFileResponse,
     type TransferProgressEntry,
     type UiEvent,
@@ -39,6 +40,7 @@ import { TransferList } from "../components/transfer-list";
 import { CollapsibleBottomPanel } from "../components/collapsible-bottom-panel";
 import { TerminalPanel } from "../components/terminal-panel";
 import { getParentPath } from "../utils/path";
+import { GlobalFileImportHandler } from "../components/global-file-import-handler";
 import {
     agentTabLocationsAtom,
     getAgentTabLocation,
@@ -224,6 +226,31 @@ function RootLayout() {
     const router = useRouter();
     const { api } = Route.useRouteContext();
     const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
+    const importLocation = useMatches({
+        select: (matches) => {
+            const browserMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId/browser/$",
+            );
+            if (
+                browserMatch?.loaderData &&
+                isLsDirectoryResponse(browserMatch.loaderData.lsResult)
+            ) {
+                return {
+                    agentId: browserMatch.loaderData.agentId,
+                    path: browserMatch.loaderData.path,
+                };
+            }
+
+            return null;
+        },
+    });
+    const importAgent = importLocation
+        ? agents.find((agent) => agent.id === importLocation.agentId)
+        : undefined;
+    const importDestination =
+        importLocation && importAgent
+            ? { agent: importAgent, path: importLocation.path }
+            : null;
     const terminalCwd = useMatches({
         select: (matches) => {
             const browserMatch = matches.find(
@@ -274,6 +301,7 @@ function RootLayout() {
     return (
         <div className="flex h-screen flex-col bg-[#0b0d12]">
             <RouteLoadingIndicator />
+            <GlobalFileImportHandler destination={importDestination} />
             <TopTabStrip agents={sortedAgents} pathname={location.pathname} />
             <div className="flex min-h-0 flex-1 flex-col">
                 <main className="flex-1 overflow-auto">
