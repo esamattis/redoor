@@ -12,6 +12,27 @@ use sysinfo::System;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
+/// Number of quick reconnect attempts allowed before switching to the slower window.
+const QUICK_RECONNECT_ATTEMPTS: u32 = 10;
+/// Inclusive jitter window for quick reconnect attempts.
+const QUICK_RECONNECT_DELAY_SECONDS: std::ops::RangeInclusive<u64> = 2..=5;
+/// Inclusive jitter window used after quick reconnect attempts are exhausted.
+const SLOW_RECONNECT_DELAY_SECONDS: std::ops::RangeInclusive<u64> = 30..=60;
+
+/// Returns the retry window for an attempt so outages back off without synchronizing agents.
+fn reconnect_delay_range(attempt: u32) -> std::ops::RangeInclusive<u64> {
+    if attempt <= QUICK_RECONNECT_ATTEMPTS {
+        QUICK_RECONNECT_DELAY_SECONDS
+    } else {
+        SLOW_RECONNECT_DELAY_SECONDS
+    }
+}
+
+/// Selects one jittered reconnect delay from the window assigned to an attempt.
+fn reconnect_delay(attempt: u32) -> tokio::time::Duration {
+    tokio::time::Duration::from_secs(fastrand::u64(reconnect_delay_range(attempt)))
+}
+
 impl AgentRuntime {
     /// Creates the initial agent runtime state before any websocket connection exists.
     pub(crate) fn new(
@@ -28,6 +49,7 @@ impl AgentRuntime {
             startup_notification_delay,
             startup_notification_generation: None,
             startup_notification_sent: false,
+            reconnect_attempts: 0,
         }
     }
 
@@ -74,15 +96,7 @@ impl AgentRuntime {
                 }
             }
             AgentMsg::ScheduleReconnect { error } => {
-                log!(
-                    Level::Error,
-                    "Connection failed: {}, scheduling reconnect in 5s",
-                    error
-                );
-                tokio::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    let _ = handle.try_send(AgentMsg::Connect);
-                });
+                self.schedule_reconnect(handle, &format!("Connection failed: {error}"));
             }
             AgentMsg::WebSocketMessage {
                 connection_generation,
@@ -199,21 +213,13 @@ impl AgentRuntime {
                     );
                     return true;
                 }
-                log!(
-                    Level::Warning,
-                    "Connection lost: {}, scheduling reconnect in 5s",
-                    reason
-                );
                 self.state.ws_control_tx = None;
                 self.state.clear_transfer_connection();
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
                 self.state.active_terminals.clear();
                 self.state.active_log_streams.clear();
-                tokio::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    let _ = handle.try_send(AgentMsg::Connect);
-                });
+                self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
             }
             AgentMsg::SendWebSocketMessage { msg } => {
                 if let Some(tx) = &self.state.ws_control_tx
@@ -238,6 +244,24 @@ impl AgentRuntime {
         }
 
         true
+    }
+
+    /// Schedules the next connection attempt with jitter and escalates after repeated failures.
+    fn schedule_reconnect(&mut self, handle: AgentHandle, reason: &str) {
+        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
+        let attempt = self.reconnect_attempts;
+        let delay = reconnect_delay(attempt);
+        log!(
+            Level::Warning,
+            "{}, scheduling reconnect attempt {} in {}s",
+            reason,
+            attempt,
+            delay.as_secs()
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = handle.try_send(AgentMsg::Connect);
+        });
     }
 
     /// Starts a replaceable timer only after both authenticated websocket lanes are ready.
@@ -311,6 +335,7 @@ impl AgentRuntime {
 
         match connect_async(&self.state.server_url).await {
             Ok((ws_stream, _response)) => {
+                self.reconnect_attempts = 0;
                 log!(Level::Info, "Connected to {}", self.state.server_url);
                 log!(
                     Level::Info,
@@ -411,7 +436,6 @@ impl AgentRuntime {
                 }
             }
             Err(error) => {
-                log!(Level::Error, "Connection failed: {}", error);
                 let _ = handle.try_send(AgentMsg::ScheduleReconnect {
                     error: error.to_string(),
                 });
@@ -424,6 +448,37 @@ impl AgentRuntime {
 mod tests {
     use super::*;
     use redoor::types::AgentId;
+
+    /// Verifies the first ten reconnect attempts retain the quick jitter window.
+    #[test]
+    fn first_ten_reconnect_attempts_use_quick_window() {
+        // The first retry must not be delayed by the prolonged-outage policy.
+        assert_eq!(reconnect_delay_range(1), 2..=5);
+        // The tenth retry is the final attempt in the quick window.
+        assert_eq!(reconnect_delay_range(10), 2..=5);
+    }
+
+    /// Verifies reconnect attempts after the first ten use the slower jitter window.
+    #[test]
+    fn later_reconnect_attempts_use_slow_window() {
+        // The eleventh retry must back off to avoid aggressive reconnect traffic.
+        assert_eq!(reconnect_delay_range(11), 30..=60);
+        // Saturated counters must remain in the prolonged-outage retry window.
+        assert_eq!(reconnect_delay_range(u32::MAX), 30..=60);
+    }
+
+    /// Verifies generated delays always remain inside their assigned inclusive windows.
+    #[test]
+    fn reconnect_delay_is_jittered_within_policy_windows() {
+        for attempt in [1, 10, 11, u32::MAX] {
+            let expected_range = reconnect_delay_range(attempt);
+            for _ in 0..100 {
+                let delay = reconnect_delay(attempt).as_secs();
+                // Jitter must never reconnect earlier or later than the policy permits.
+                assert!(expected_range.contains(&delay));
+            }
+        }
+    }
 
     /// Verifies a delayed writer failure cannot clear a newer live connection.
     #[tokio::test]

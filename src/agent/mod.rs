@@ -107,6 +107,8 @@ pub(crate) struct AgentRuntime {
     startup_notification_generation: Option<(u64, u64)>,
     /// Prevents reconnects from repeating the process-start notification.
     startup_notification_sent: bool,
+    /// Counts consecutive reconnect attempts so prolonged outages use a slower retry window.
+    reconnect_attempts: u32,
 }
 
 /// Runs an agent after resolving settings with CLI > env > config file > default.
