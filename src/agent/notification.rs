@@ -6,11 +6,11 @@ use tokio::process::Command;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DesktopEnvironment {
     #[cfg(target_os = "linux")]
-    LinuxGnome,
+    Gnome,
     #[cfg(target_os = "linux")]
-    LinuxKde,
+    Kde,
     #[cfg(target_os = "linux")]
-    LinuxOther,
+    Other,
     #[cfg(target_os = "macos")]
     MacOs,
 }
@@ -23,12 +23,12 @@ pub(super) fn detect_desktop_environment() -> Option<DesktopEnvironment> {
         let wayland_display = std::env::var_os("WAYLAND_DISPLAY");
         let desktop = std::env::var_os("XDG_CURRENT_DESKTOP");
         let session = std::env::var_os("DESKTOP_SESSION");
-        return detect_linux_desktop(
+        detect_linux_desktop(
             display.as_deref(),
             wayland_display.as_deref(),
             desktop.as_deref(),
             session.as_deref(),
-        );
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -62,11 +62,11 @@ fn detect_linux_desktop(
         .join(":")
         .to_ascii_lowercase();
     if desktop_name.contains("gnome") {
-        Some(DesktopEnvironment::LinuxGnome)
+        Some(DesktopEnvironment::Gnome)
     } else if desktop_name.contains("kde") || desktop_name.contains("plasma") {
-        Some(DesktopEnvironment::LinuxKde)
+        Some(DesktopEnvironment::Kde)
     } else {
-        Some(DesktopEnvironment::LinuxOther)
+        Some(DesktopEnvironment::Other)
     }
 }
 
@@ -88,19 +88,19 @@ pub(super) async fn show_agent_started(
         #[cfg(target_os = "macos")]
         DesktopEnvironment::MacOs => show_macos_notification(&message).await,
         #[cfg(target_os = "linux")]
-        DesktopEnvironment::LinuxGnome => {
+        DesktopEnvironment::Gnome => {
             show_notify_send(&message).await
                 || show_gnome_notification(&message).await
                 || show_kde_notification(&message).await
         }
         #[cfg(target_os = "linux")]
-        DesktopEnvironment::LinuxKde => {
+        DesktopEnvironment::Kde => {
             show_notify_send(&message).await
                 || show_kde_notification(&message).await
                 || show_gnome_notification(&message).await
         }
         #[cfg(target_os = "linux")]
-        DesktopEnvironment::LinuxOther => {
+        DesktopEnvironment::Other => {
             show_notify_send(&message).await
                 || show_gnome_notification(&message).await
                 || show_kde_notification(&message).await
@@ -185,9 +185,9 @@ pub(super) async fn open_path(path: &str) -> Result<(), String> {
     };
     let program = match desktop_environment {
         #[cfg(target_os = "linux")]
-        DesktopEnvironment::LinuxGnome
-        | DesktopEnvironment::LinuxKde
-        | DesktopEnvironment::LinuxOther => "xdg-open",
+        DesktopEnvironment::Gnome | DesktopEnvironment::Kde | DesktopEnvironment::Other => {
+            "xdg-open"
+        }
         #[cfg(target_os = "macos")]
         DesktopEnvironment::MacOs => "open",
     };
@@ -244,7 +244,7 @@ mod tests {
                 Some(OsStr::new("ubuntu:GNOME")),
                 None,
             ),
-            Some(DesktopEnvironment::LinuxGnome)
+            Some(DesktopEnvironment::Gnome)
         );
     }
 
@@ -259,7 +259,7 @@ mod tests {
                 None,
                 Some(OsStr::new("plasmawayland")),
             ),
-            Some(DesktopEnvironment::LinuxKde)
+            Some(DesktopEnvironment::Kde)
         );
     }
 }
