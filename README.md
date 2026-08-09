@@ -49,12 +49,12 @@ Server and agent can share the same TOML file. Put it in `~/.config/redoor/confi
 `redoor server` example 
 
 ```toml
-# Top-level: shared by server and agent (required)
-agent_token = "replace-me"
+# Shared secret between the server and the agent
+agent_token = "secret"
 
 ## Server configuration
 [server]
-# Web UI ogin. On Linux, omit both to use PAM (system user).
+# Web UI login. On Linux, omit both to use PAM (system user).
 # username = "admin"
 # password = "long-private-password"
 
@@ -83,7 +83,8 @@ log = "~/.local/share/redoor/log/local.log"
 `redoor agent` example 
 
 ```toml
-agent_token = "replace-me"
+# Shared secret between the server and the agent
+agent_token = "secret"
 
 [agent]
 ws_address = "ws://127.0.0.1:3000/ws"
