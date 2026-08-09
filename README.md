@@ -1,6 +1,6 @@
 # redoor
 
-Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent. The file browser features direct search, file editing, download, upload and streaming file and directory copying between agents.
+Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
 
 Supports Linux, macOS, and Termux on Android.
 
