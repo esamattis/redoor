@@ -299,7 +299,7 @@ impl CommandHandler {
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
         let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
 
-        CommandResult::GetAgentDetails(AgentDetailsResponse {
+        CommandResult::GetAgentDetails(Box::new(AgentDetailsResponse {
             id: AgentId::from(""),
             name: String::new(),
             pid,
@@ -318,7 +318,7 @@ impl CommandHandler {
             connected_at: UnixTimestampSeconds::new(0),
             // Agent process reports its own baked identity; router may also rewrite from registration.
             binary: current_binary_identity(),
-        })
+        }))
     }
 }
 

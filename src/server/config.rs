@@ -12,9 +12,11 @@ mod local_agent;
 use anyhow::{Context, Result, bail};
 use toml_edit::Document;
 
+#[cfg(target_os = "linux")]
+pub(crate) use bootstrap::default_log_directory;
 pub(crate) use bootstrap::{
     create_default_config_if_missing, default_agent_log_path, default_config_path,
-    default_local_agent_name, default_log_directory, default_server_log_path,
+    default_local_agent_name, default_server_log_path,
 };
 // Preserve test/setup-facing config paths even though the production binary does not call them.
 #[allow(unused_imports)]

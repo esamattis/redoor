@@ -64,6 +64,6 @@ silent_unless_error pn types
 silent_unless_error pn lint
 silent_unless_error pn format:check
 silent_unless_error cargo fmt -- --check
-silent_unless_error cargo clippy
+silent_unless_error cargo clippy -- -D warnings
 silent_unless_error pn integration-test
 playwright_unless_error pn playwright

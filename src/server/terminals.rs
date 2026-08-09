@@ -58,7 +58,7 @@ pub(crate) async fn browser_terminal_websocket_handler(
 ) -> Response {
     let cwd = match require_absolute_path(query.cwd) {
         Ok(cwd) => cwd,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let size = match TerminalSize::new(query.rows, query.cols) {
         Ok(size) => size,

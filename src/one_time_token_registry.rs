@@ -5,10 +5,13 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Keeps the registry field readable while preserving exact agent-and-path token grouping.
+type TokenEntries = HashMap<(AgentId, String), HashSet<Uuid>>;
+
 /// Process-local one-time download tokens grouped by their exact agent and absolute path.
 #[derive(Clone, Default)]
 pub struct OneTimeTokenRegistry {
-    inner: Arc<Mutex<HashMap<(AgentId, String), HashSet<Uuid>>>>,
+    inner: Arc<Mutex<TokenEntries>>,
 }
 
 impl OneTimeTokenRegistry {

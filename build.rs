@@ -17,10 +17,10 @@ fn emit_build_identity() {
     // Rebuild when HEAD moves or the index changes so dirty/clean flips stay accurate.
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
-    if let Ok(head) = std::fs::read_to_string(".git/HEAD") {
-        if let Some(reference) = head.strip_prefix("ref: ").map(str::trim) {
-            println!("cargo:rerun-if-changed=.git/{reference}");
-        }
+    if let Ok(head) = std::fs::read_to_string(".git/HEAD")
+        && let Some(reference) = head.strip_prefix("ref: ").map(str::trim)
+    {
+        println!("cargo:rerun-if-changed=.git/{reference}");
     }
 
     let git_rev = git_stdout(["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());

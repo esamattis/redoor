@@ -38,34 +38,6 @@ pub(crate) struct ServerState {
     pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
-impl ServerState {
-    pub(crate) fn new(
-        app_name: String,
-        router_ref: actors::router::RouterHandle,
-        watchdog_registry: WatchdogRegistry,
-        terminal_registry: TerminalRegistry,
-        log_registry: LogRegistry,
-        one_time_token_registry: OneTimeTokenRegistry,
-        auth: AuthState,
-        config_path: PathBuf,
-        auth_mode: ServerAuthMode,
-        shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    ) -> Self {
-        Self {
-            app_name,
-            router_ref,
-            watchdog_registry,
-            terminal_registry,
-            log_registry,
-            one_time_token_registry,
-            auth,
-            config_path,
-            auth_mode,
-            shutdown_tx,
-        }
-    }
-}
-
 /// Arguments for `redoor server`.
 ///
 /// All server-level fields are `Option` so `run_server` can apply

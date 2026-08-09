@@ -486,20 +486,20 @@ pub(crate) async fn apply_managed_lifecycle(
         }
     }
 
-    if known.status == AgentConnectionStatus::Stopped {
-        if let Some(connection) = state.agents.by_id.remove(&agent_id) {
-            connection.shutdown_transfer();
-            known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
-                chrono::Utc::now().timestamp(),
-            ));
-            known.socket_id = None;
-            let _ = connection.send_message(crate::types::Message::Error {
-                message: "Managed agent was shut down".to_string(),
-            });
-            cleanup::cleanup_agent_requests(state, &agent_id).await;
-            state.terminal_registry.remove_agent_pending(&agent_id);
-            state.log_registry.remove_agent(&agent_id);
-        }
+    if known.status == AgentConnectionStatus::Stopped
+        && let Some(connection) = state.agents.by_id.remove(&agent_id)
+    {
+        connection.shutdown_transfer();
+        known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+            chrono::Utc::now().timestamp(),
+        ));
+        known.socket_id = None;
+        let _ = connection.send_message(crate::types::Message::Error {
+            message: "Managed agent was shut down".to_string(),
+        });
+        cleanup::cleanup_agent_requests(state, &agent_id).await;
+        state.terminal_registry.remove_agent_pending(&agent_id);
+        state.log_registry.remove_agent(&agent_id);
     }
     ui::notify_refresh(state);
     if let Some(reply) = reply {

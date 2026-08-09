@@ -125,11 +125,11 @@ pub(crate) async fn rename_path_handler(
 ) -> impl IntoResponse {
     let source_path = match require_absolute_path(request.source_path) {
         Ok(path) => path,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let dest_path = match require_absolute_path(request.dest_path) {
         Ok(path) => path,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let agent_id = AgentId::from(agent);
 

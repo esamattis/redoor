@@ -357,7 +357,7 @@ pub enum CommandResult {
     OpenPath,
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
-    GetAgentDetails(AgentDetailsResponse),
+    GetAgentDetails(Box<AgentDetailsResponse>),
     Restart,
     SelfExec {
         path: String,

@@ -30,7 +30,7 @@ const ROUTER_REQUEST_TIMEOUT_MS: u64 = 5_000;
 
 /// Distinguishes a paired socket from setup timeout and browser-owned cancellation.
 enum SetupResult {
-    Paired(WebSocket),
+    Paired(Box<WebSocket>),
     TimedOut,
     BrowserDisconnected,
 }
@@ -119,7 +119,7 @@ async fn run_browser_setup(mut browser: WebSocket, agent_id: AgentId, state: Ser
                 agent_id,
                 log_stream_id.0
             );
-            relay_logs(browser, agent, agent_disconnect).await;
+            relay_logs(browser, *agent, agent_disconnect).await;
             state.log_registry.remove(&log_stream_id);
             log!(
                 Level::Info,
@@ -148,7 +148,9 @@ async fn wait_for_agent(
     loop {
         tokio::select! {
             result = &mut agent_receiver => {
-                return result.map(SetupResult::Paired).unwrap_or(SetupResult::TimedOut);
+                return result
+                    .map(|agent| SetupResult::Paired(Box::new(agent)))
+                    .unwrap_or(SetupResult::TimedOut);
             }
             _ = &mut setup_timeout => return SetupResult::TimedOut,
             frame = browser.recv() => {

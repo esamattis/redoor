@@ -352,18 +352,18 @@ async fn run_server(args: server::CoordinatorArgs) {
     // Oneshot so restart can drop the axum listener before self-exec; keeping
     // the listen FD open would race the restarted process on the same port.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let app = server::build_app(server::ServerState::new(
+    let app = server::build_app(server::ServerState {
         app_name,
-        router_ref.clone(),
-        watchdog_registry.clone(),
+        router_ref: router_ref.clone(),
+        watchdog_registry: watchdog_registry.clone(),
         terminal_registry,
         log_registry,
         one_time_token_registry,
         auth,
         config_path,
         auth_mode,
-        Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
-    ));
+        shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
+    });
 
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)

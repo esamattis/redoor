@@ -29,7 +29,7 @@ pub(crate) async fn get_agent_details(
         })
         .await
     {
-        Ok(CommandResult::GetAgentDetails(details)) => Ok(details),
+        Ok(CommandResult::GetAgentDetails(details)) => Ok(*details),
         Ok(CommandResult::Error { kind, message }) => {
             let status = command_error_status(&kind);
             Err((status, Json(ErrorResponse { error: message })).into_response())
@@ -64,17 +64,19 @@ pub(crate) fn absolute_path_from_url(path: String) -> String {
 }
 
 /// Rejects cwd-dependent filesystem addressing without canonicalizing valid destinations.
-pub(crate) fn require_absolute_path(path: String) -> Result<String, Response> {
+pub(crate) fn require_absolute_path(path: String) -> Result<String, Box<Response>> {
     if std::path::Path::new(&path).is_absolute() {
         Ok(path)
     } else {
-        Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Filesystem path must be absolute".to_string(),
-            }),
-        )
-            .into_response())
+        Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Filesystem path must be absolute".to_string(),
+                }),
+            )
+                .into_response(),
+        ))
     }
 }
 

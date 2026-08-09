@@ -40,12 +40,12 @@ pub(crate) async fn copy_file_handler(
 ) -> impl IntoResponse {
     let source_path = match require_absolute_path(payload.source.path.clone()) {
         Ok(path) => path,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let dest_path = match require_absolute_path(payload.dest.path.clone()) {
         Ok(path) => path,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     if payload.source.agent == payload.dest.agent && source_path == dest_path {
