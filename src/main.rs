@@ -1,5 +1,6 @@
 mod agent;
 mod app_name;
+mod binaries;
 mod process_logs;
 mod server;
 mod ssh;

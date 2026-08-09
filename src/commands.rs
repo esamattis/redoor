@@ -153,6 +153,10 @@ pub struct ServerInfoResponse {
     pub auth_mode: ServerAuthMode,
     /// Primary non-loopback IP selected from the server's local routing table.
     pub external_ip: Option<String>,
+    /// Operating system of the running server executable.
+    pub os: String,
+    /// CPU architecture of the running server executable.
+    pub arch: String,
     /// `CARGO_PKG_VERSION` baked into this binary.
     pub version: String,
     /// Full git commit SHA (or `unknown` when git metadata was unavailable at build).
@@ -172,6 +176,14 @@ pub struct ServerInfoResponse {
 #[ts(export)]
 pub struct RestartResponse {
     pub restarting: bool,
+}
+
+/// Confirms the agent acknowledged execution of the newly installed server version.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpgradeAgentResponse {
+    pub upgrading: bool,
+    pub target_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +232,9 @@ pub enum Command {
     AgentInfo,
     GetAgentDetails,
     Restart,
+    SelfExec {
+        path: String,
+    },
 }
 
 impl Command {
@@ -262,6 +277,7 @@ impl Command {
             Self::AgentInfo => "AgentInfo".to_string(),
             Self::GetAgentDetails => "GetAgentDetails".to_string(),
             Self::Restart => "Restart".to_string(),
+            Self::SelfExec { path } => format!("SelfExec path={path}"),
         }
     }
 }
@@ -388,6 +404,9 @@ pub enum CommandResult {
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
     Restart,
+    SelfExec {
+        path: String,
+    },
     Error {
         kind: CommandErrorKind,
         message: String,
@@ -664,6 +683,7 @@ impl CommandResult {
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),
             Self::GetAgentDetails(_) => "ok GetAgentDetails".to_string(),
             Self::Restart => "ok Restart".to_string(),
+            Self::SelfExec { path } => format!("ok SelfExec path={path}"),
             Self::Error { kind, message } => {
                 format!("error kind={kind:?} message={message}")
             }
@@ -728,6 +748,16 @@ impl CommandHandler {
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
             Command::Restart => CommandResult::Restart,
+            Command::SelfExec { path } => {
+                if std::path::Path::new(&path).is_absolute() {
+                    CommandResult::SelfExec { path }
+                } else {
+                    CommandResult::error(
+                        CommandErrorKind::InvalidInput,
+                        "Self-exec path must be absolute",
+                    )
+                }
+            }
         }
     }
 

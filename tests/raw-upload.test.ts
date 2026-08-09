@@ -108,6 +108,24 @@ describe("Raw Upload API", () => {
         expect(downloadedContent).toBe(replacementContent);
     });
 
+    it("should preserve existing permissions when replacing a file", async () => {
+        const uploadedFilePath = tempFiles.create("old executable", {
+            suffix: ".bin",
+        });
+        fs.chmodSync(uploadedFilePath, 0o751);
+        onTestFinished(() => fs.chmodSync(uploadedFilePath, 0o600));
+
+        await testAgent.upload(
+            uploadedFilePath,
+            new File(["new executable"], "replacement.bin"),
+        );
+
+        // Replacement must update bytes while preserving the destination inode's prior role.
+        expect(fs.readFileSync(uploadedFilePath, "utf8")).toBe("new executable");
+        // Atomic replacement must retain the executable bit and every prior mode bit.
+        expect(fs.statSync(uploadedFilePath).mode & 0o777).toBe(0o751);
+    });
+
     it("should upload empty file via raw endpoint", async () => {
         const uploadedFilePath = tempFiles.tempFile({ suffix: ".txt" });
 

@@ -339,18 +339,22 @@ impl AgentRuntime {
                 tokio::spawn(async move {
                     let mut write = write;
                     while let Some(message) = control_rx.recv().await {
-                        let should_restart = matches!(
-                            &message,
-                            WsMessage::Text(text)
-                                if serde_json::from_str::<Message>(text)
-                                    .is_ok_and(|message| matches!(
-                                        message,
-                                        Message::CommandResponse {
-                                            result: redoor::commands::CommandResult::Restart,
-                                            ..
-                                        }
-                                    ))
-                        );
+                        let reexec_path = match &message {
+                            WsMessage::Text(text) => serde_json::from_str::<Message>(text)
+                                .ok()
+                                .and_then(|message| match message {
+                                    Message::CommandResponse {
+                                        result: redoor::commands::CommandResult::Restart,
+                                        ..
+                                    } => Some(None),
+                                    Message::CommandResponse {
+                                        result: redoor::commands::CommandResult::SelfExec { path },
+                                        ..
+                                    } => Some(Some(path)),
+                                    _ => None,
+                                }),
+                            _ => None,
+                        };
                         if write.send(message).await.is_err() {
                             log!(Level::Warning, "Failed to send WebSocket message");
                             let _ = writer_handle
@@ -361,9 +365,14 @@ impl AgentRuntime {
                                 .await;
                             break;
                         }
-                        if should_restart {
+                        if let Some(path) = reexec_path {
                             // The response is on the socket before exec interrupts this connection.
-                            redoor::process::reexec_current_process();
+                            match path {
+                                Some(path) => {
+                                    redoor::process::reexec_process(std::path::Path::new(&path))
+                                }
+                                None => redoor::process::reexec_current_process(),
+                            }
                         }
                     }
                 });

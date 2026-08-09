@@ -42,6 +42,198 @@ struct UploadCancelGuard {
     active: bool,
 }
 
+/// Distinguishes setup failures from an agent response that completed before readiness.
+pub(crate) enum AgentUploadStartError {
+    /// Router or readiness transport failures already mapped to the standard JSON response.
+    Response(Response),
+    /// Agent-side setup can finish before the transfer websocket reports ready.
+    Finished(Box<Result<CommandResult, actors::router::RouterError>>),
+}
+
+/// Owns one initialized server-to-agent upload and cancels it if its producer exits early.
+pub(crate) struct AgentUpload {
+    state: ServerState,
+    agent_id: AgentId,
+    path: String,
+    total_bytes: u64,
+    bytes_written: u64,
+    request_id: RequestId,
+    chunk_index: ChunkIndex,
+    completion_receiver:
+        tokio::sync::oneshot::Receiver<Result<CommandResult, actors::router::RouterError>>,
+    cancel_guard: UploadCancelGuard,
+}
+
+impl AgentUpload {
+    /// Starts a transfer and waits until its dedicated websocket is ready for bounded chunks.
+    pub(crate) async fn start(
+        state: &ServerState,
+        agent_id: AgentId,
+        command: Command,
+        path: String,
+        total_bytes: u64,
+    ) -> Result<Self, AgentUploadStartError> {
+        let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let request_id = match state
+            .router_ref
+            .request(30000, |reply| {
+                actors::router::RouterMsg::StartUploadStreamRest(
+                    actors::router::StartUploadRequest {
+                        agent_id: agent_id.clone(),
+                        command,
+                        path: path.clone(),
+                        total_bytes,
+                        completion_sender,
+                        ready_sender,
+                        reply,
+                    },
+                )
+            })
+            .await
+        {
+            Ok(Ok(request_id)) => request_id,
+            Ok(Err(error)) => {
+                return Err(AgentUploadStartError::Response(router_error_response(
+                    error,
+                )));
+            }
+            Err(error) => {
+                return Err(AgentUploadStartError::Response(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Failed to start upload: {error:?}"),
+                        }),
+                    )
+                        .into_response(),
+                ));
+            }
+        };
+        let mut cancel_guard =
+            UploadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
+        match tokio::time::timeout(std::time::Duration::from_millis(30000), ready_receiver).await {
+            Ok(Ok(Ok(actors::router::UploadStartOutcome::Ready))) => {}
+            Ok(Ok(Ok(actors::router::UploadStartOutcome::Finished(completion)))) => {
+                cancel_guard.disarm();
+                return Err(AgentUploadStartError::Finished(completion));
+            }
+            Ok(Ok(Err(error))) => {
+                cancel_guard.disarm();
+                return Err(AgentUploadStartError::Response(router_error_response(
+                    error,
+                )));
+            }
+            Ok(Err(_)) => {
+                return Err(AgentUploadStartError::Response(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Upload readiness channel closed".to_string(),
+                        }),
+                    )
+                        .into_response(),
+                ));
+            }
+            Err(_) => {
+                return Err(AgentUploadStartError::Response(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Timed out waiting for upload readiness".to_string(),
+                        }),
+                    )
+                        .into_response(),
+                ));
+            }
+        }
+
+        Ok(Self {
+            state: state.clone(),
+            agent_id,
+            path,
+            total_bytes,
+            bytes_written: 0,
+            request_id,
+            chunk_index: ChunkIndex::new(0),
+            completion_receiver,
+            cancel_guard,
+        })
+    }
+
+    /// Forwards one producer chunk while enforcing the declared total byte count.
+    pub(crate) async fn send(&mut self, data: &[u8]) -> Result<(), Response> {
+        self.bytes_written += data.len() as u64;
+        if self.bytes_written > self.total_bytes {
+            let message = format!(
+                "Upload exceeded Content-Length header: expected {} bytes, received {}",
+                self.total_bytes, self.bytes_written
+            );
+            let result = forward_split_stream_chunk(
+                &self.state,
+                &self.agent_id,
+                &mut self.chunk_index,
+                StreamChunkFrameRequest::new(self.request_id, message.as_bytes()).is_error(true),
+            )
+            .await;
+            self.cancel_guard.disarm();
+            result?;
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response());
+        }
+        forward_split_stream_chunk(
+            &self.state,
+            &self.agent_id,
+            &mut self.chunk_index,
+            StreamChunkFrameRequest::new(self.request_id, data).is_last(false),
+        )
+        .await
+    }
+
+    /// Sends the terminal marker and waits for permission restoration and atomic rename.
+    pub(crate) async fn finish(mut self) -> Result<(CommandResult, u64), Response> {
+        if self.bytes_written != self.total_bytes {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Upload stream ended before completion: expected {} bytes, received {}",
+                        self.total_bytes, self.bytes_written
+                    ),
+                }),
+            )
+                .into_response());
+        }
+        forward_split_stream_chunk(
+            &self.state,
+            &self.agent_id,
+            &mut self.chunk_index,
+            StreamChunkFrameRequest::new(self.request_id, &[]),
+        )
+        .await?;
+        self.cancel_guard.disarm();
+        match self.completion_receiver.await {
+            Ok(Ok(completion)) => Ok((completion, self.bytes_written)),
+            Ok(Err(error)) => Err(router_error_response(error)),
+            Err(error) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed waiting for upload completion: {error}"),
+                }),
+            )
+                .into_response()),
+        }
+    }
+
+    /// Returns the destination for response mapping without exposing transfer internals.
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+}
+
 impl UploadCancelGuard {
     /// Arms a new guard for one active upload request.
     fn new(
@@ -502,92 +694,25 @@ pub(crate) async fn raw_agent_put_handler(
     };
 
     let resolved_path = path;
-
-    let (upload_completion_sender, upload_completion_receiver) =
-        tokio::sync::oneshot::channel::<Result<CommandResult, actors::router::RouterError>>();
-    // Readiness is a separate barrier so the request id can arm cancel first.
-    let (upload_ready_sender, upload_ready_receiver) = tokio::sync::oneshot::channel::<
-        Result<actors::router::UploadStartOutcome, actors::router::RouterError>,
-    >();
-
-    let request_id = match state
-        .router_ref
-        .request(30000, |reply| {
-            actors::router::RouterMsg::StartUploadStreamRest(actors::router::StartUploadRequest {
-                agent_id: agent_id.clone(),
-                command: Command::RawUpload {
-                    path: resolved_path.clone(),
-                },
-                path: resolved_path.clone(),
-                total_bytes,
-                completion_sender: upload_completion_sender,
-                ready_sender: upload_ready_sender,
-                reply,
-            })
-        })
-        .await
-    {
-        Ok(Ok(request_id)) => request_id,
-        Ok(Err(error)) => {
-            return router_error_response(error);
-        }
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to start upload: {:?}", error),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    // Arm cancel as soon as the id exists so timeouts/drops while waiting for
-    // TransferReady still tear down the router record and agent temp worker.
-    let mut cancel_guard =
-        UploadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
-
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(30000),
-        upload_ready_receiver,
+    let mut upload = match AgentUpload::start(
+        &state,
+        agent_id,
+        Command::RawUpload {
+            path: resolved_path.clone(),
+        },
+        resolved_path.clone(),
+        total_bytes,
     )
     .await
     {
-        Ok(Ok(Ok(actors::router::UploadStartOutcome::Ready))) => {}
-        // Setup failed before TransferReady; reuse the completion status mapping.
-        Ok(Ok(Ok(actors::router::UploadStartOutcome::Finished(completion)))) => {
-            cancel_guard.disarm();
+        Ok(upload) => upload,
+        Err(AgentUploadStartError::Response(response)) => return response,
+        Err(AgentUploadStartError::Finished(completion)) => {
             return raw_upload_completion_response(*completion, &resolved_path, 0);
         }
-        Ok(Ok(Err(error))) => {
-            // Router already cleaned up the transfer for this error path.
-            cancel_guard.disarm();
-            return router_error_response(error);
-        }
-        Ok(Err(_)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Upload readiness channel closed".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Timed out waiting for upload readiness".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    }
+    };
 
     let mut body_stream = body.into_data_stream();
-    let mut chunk_index = ChunkIndex::new(0);
-    let mut bytes_written = 0u64;
-
     while let Some(next_chunk) = body_stream.next().await {
         let data = match next_chunk {
             Ok(data) => data,
@@ -602,87 +727,16 @@ pub(crate) async fn raw_agent_put_handler(
             }
         };
 
-        bytes_written += data.len() as u64;
-
-        if bytes_written > total_bytes {
-            let abort_message = format!(
-                "Upload exceeded Content-Length header: expected {} bytes, received {}",
-                total_bytes, bytes_written
-            );
-            let abort_result = forward_split_stream_chunk(
-                &state,
-                &agent_id,
-                &mut chunk_index,
-                StreamChunkFrameRequest::new(request_id, abort_message.as_bytes()).is_error(true),
-            )
-            .await;
-            cancel_guard.disarm();
-
-            if let Err(response) = abort_result {
-                return response;
-            }
-
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: abort_message,
-                }),
-            )
-                .into_response();
-        }
-
-        // Upload chunks are forwarded as non-terminal frames until the handler
-        // has seen exactly the declared Content-Length.
-        if let Err(response) = forward_split_stream_chunk(
-            &state,
-            &agent_id,
-            &mut chunk_index,
-            StreamChunkFrameRequest::new(request_id, &data).is_last(false),
-        )
-        .await
-        {
+        if let Err(response) = upload.send(&data).await {
             return response;
         }
     }
-
-    if bytes_written != total_bytes {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "Upload stream ended before completion: expected {} bytes, received {}",
-                    total_bytes, bytes_written
-                ),
-            }),
-        )
-            .into_response();
-    }
-
-    // The final empty frame is the protocol-level completion marker for uploads.
-    if let Err(response) = forward_split_stream_chunk(
-        &state,
-        &agent_id,
-        &mut chunk_index,
-        StreamChunkFrameRequest::new(request_id, &[]),
-    )
-    .await
-    {
-        return response;
-    }
-
-    // Past this point the router or agent owns completion, so drop should no
-    // longer emit a redundant cancel request.
-    cancel_guard.disarm();
-
-    match upload_completion_receiver.await {
-        Ok(completion) => raw_upload_completion_response(completion, &resolved_path, bytes_written),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed waiting for upload completion: {}", error),
-            }),
-        )
-            .into_response(),
+    let response_path = upload.path().to_string();
+    match upload.finish().await {
+        Ok((completion, bytes_written)) => {
+            raw_upload_completion_response(Ok(completion), &response_path, bytes_written)
+        }
+        Err(response) => response,
     }
 }
 

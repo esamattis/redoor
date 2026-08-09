@@ -189,6 +189,7 @@ export const TEST_SERVER_HOME = join(
 
 export type SpawnAgentArgs = {
     wsAddress: string;
+    executablePath?: string;
     name?: string;
     cwd: string;
     dir?: string;
@@ -269,7 +270,7 @@ export class ProcessManager {
             cliArgs.push("--log", logPath);
         }
 
-        return this.spawn(AGENT_PATH, cliArgs, args.cwd);
+        return this.spawn(args.executablePath ?? AGENT_PATH, cliArgs, args.cwd);
     }
 
     spawnServer(args: SpawnServerArgs): number {
@@ -354,6 +355,7 @@ export async function startServerAndAgent(options: {
     processManager: ProcessManager;
     agentName: string;
     agentCwd: string;
+    agentExecutablePath?: string;
 }): Promise<{
     serverPort: number;
     serverPid: number;
@@ -392,6 +394,7 @@ export async function startServerAndAgent(options: {
         name: options.agentName,
         cwd: options.agentCwd,
         dir: options.agentCwd,
+        executablePath: options.agentExecutablePath,
     });
 
     await Promise.all([waitForAgentPromise, waitForTransferPromise]);

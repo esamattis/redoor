@@ -32,6 +32,7 @@ import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 import type { BinaryIdentity } from "../../bindings/BinaryIdentity";
 import type { RestartResponse } from "../../bindings/RestartResponse";
+import type { UpgradeAgentResponse } from "../../bindings/UpgradeAgentResponse";
 import type { LogEvent } from "../../bindings/LogEvent";
 
 export type {
@@ -59,6 +60,7 @@ export type {
     ServerBuildMode,
     BinaryIdentity,
     RestartResponse,
+    UpgradeAgentResponse,
     LogEvent,
     AgentConnectionStatus,
     StartAgentResponse,
@@ -291,6 +293,16 @@ export class Agent {
         return apiRequest(
             this.baseUrl,
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/restart`,
+            { method: "POST" },
+            this.requestContext,
+        );
+    }
+
+    /** Atomically installs the server-selected binary and asks the agent to execute it in place. */
+    async upgrade(): Promise<UpgradeAgentResponse> {
+        return apiRequest(
+            this.baseUrl,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
             { method: "POST" },
             this.requestContext,
         );

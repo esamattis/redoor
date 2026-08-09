@@ -71,6 +71,7 @@ struct RawUploadSession {
     path: String,
     temp_path: PathBuf,
     file: File,
+    existing_permissions: Option<std::fs::Permissions>,
     bytes_written: u64,
 }
 
@@ -181,10 +182,40 @@ impl RawUploadWorker {
             path: final_path,
             temp_path,
             file,
+            existing_permissions,
             bytes_written,
         } = session;
 
         drop(file);
+
+        if let Some(permissions) = existing_permissions
+            && let Err(error) = tokio::fs::set_permissions(&temp_path, permissions).await
+        {
+            let error_message = format!("Failed to preserve uploaded file permissions: {error}");
+            log!(
+                Level::Error,
+                "Upload permission restore failed: request_id={}, path={}, temp_path={}, error={}",
+                request_id,
+                final_path,
+                temp_path.display(),
+                error_message
+            );
+            remove_upload_temp_file(&temp_path).await;
+            AgentActor
+                .send_command_response(
+                    &tx,
+                    &agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(
+                        CommandErrorKind::from_io_error(&error),
+                        error_message,
+                    )
+                    .into(),
+                )
+                .await;
+            active_uploads.remove(request_id);
+            return;
+        }
 
         if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
             let error_message = format!("Failed to finalize uploaded file: {}", error);
@@ -550,6 +581,24 @@ impl AgentActor {
         }
 
         let temp_path = temp_upload_path(&path);
+        let existing_permissions = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => Some(metadata.permissions()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                self.send_command_response(
+                    write,
+                    agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(
+                        CommandErrorKind::from_io_error(&error),
+                        format!("Failed to inspect upload destination: {error}"),
+                    )
+                    .into(),
+                )
+                .await;
+                return;
+            }
+        };
         match File::create(&temp_path).await {
             Ok(file) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
@@ -578,6 +627,7 @@ impl AgentActor {
                             path,
                             temp_path,
                             file,
+                            existing_permissions,
                             bytes_written: 0,
                         },
                         tx: write.clone(),

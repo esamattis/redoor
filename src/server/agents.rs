@@ -9,13 +9,14 @@ use redoor::{
     commands::{
         AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
         EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RestartResponse,
-        ServerInfoResponse, ShutdownAgentResponse, StartAgentResponse,
+        ServerInfoResponse, ShutdownAgentResponse, StartAgentResponse, UpgradeAgentResponse,
     },
     types::AgentId,
 };
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, get_agent_details},
+    raw::{AgentUpload, AgentUploadStartError},
     responses::command_error_status,
     state::ServerState,
 };
@@ -39,6 +40,8 @@ pub(crate) async fn server_info_handler(
             exe_path,
             auth_mode: state.auth_mode.clone(),
             external_ip,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
             version: binary.version,
             git_rev: binary.git_rev,
             git_dirty: binary.git_dirty,
@@ -314,6 +317,239 @@ pub(crate) async fn restart_agent_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Failed to restart agent: {error:?}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Maps upload setup completion into the normal command/router error JSON contract.
+fn upgrade_upload_start_error(error: AgentUploadStartError) -> axum::response::Response {
+    match error {
+        AgentUploadStartError::Response(response) => response,
+        AgentUploadStartError::Finished(completion) => match *completion {
+            Ok(CommandResult::Error { kind, message }) => (
+                command_error_status(&kind),
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response(),
+            Ok(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Unexpected early upgrade upload completion".to_string(),
+                }),
+            )
+                .into_response(),
+            Err(error) => super::responses::router_error_response(error),
+        },
+    }
+}
+
+/// Streams one local executable through the same bounded transfer producer as HTTP PUT.
+async fn upload_upgrade_binary(
+    state: &ServerState,
+    agent_id: AgentId,
+    source_path: &std::path::Path,
+    destination_path: &str,
+) -> Result<(), axum::response::Response> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(source_path).await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("Failed to open upgrade binary: {error}"),
+            }),
+        )
+            .into_response()
+    })?;
+    let total_bytes = file
+        .metadata()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("Failed to inspect upgrade binary: {error}"),
+                }),
+            )
+                .into_response()
+        })?
+        .len();
+    let mut upload = AgentUpload::start(
+        state,
+        agent_id,
+        Command::RawUpload {
+            path: destination_path.to_string(),
+        },
+        destination_path.to_string(),
+        total_bytes,
+    )
+    .await
+    .map_err(upgrade_upload_start_error)?;
+    let mut buffer = vec![0; redoor::streaming::CHUNK_SIZE];
+    loop {
+        let bytes_read = file.read(&mut buffer).await.map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("Failed to read upgrade binary: {error}"),
+                }),
+            )
+                .into_response()
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        upload.send(&buffer[..bytes_read]).await?;
+    }
+    match upload.finish().await? {
+        (CommandResult::RawUpload, _) => Ok(()),
+        (CommandResult::Error { kind, message }, _) => Err((
+            command_error_status(&kind),
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response()),
+        _ => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected upgrade upload completion".to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// Route: `POST /api/v1/agents/{agent}/upgrade` installs and execs the server's build.
+pub(crate) async fn upgrade_agent_handler(
+    Path(agent): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent.clone());
+    let snapshot = match list_agent_snapshots(&state).await {
+        Ok(agents) => agents.into_iter().find(|entry| entry.id == agent_id),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error }),
+            )
+                .into_response();
+        }
+    };
+    let Some(snapshot) = snapshot else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent not found: {agent}"),
+            }),
+        )
+            .into_response();
+    };
+    if snapshot.status != redoor::commands::AgentConnectionStatus::Connected {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!("Agent is not connected: {agent}"),
+            }),
+        )
+            .into_response();
+    }
+    let details = match get_agent_details(&state, &agent_id).await {
+        Ok(details) => details,
+        Err(response) => return response,
+    };
+    if details.exe_path == "unknown" || !std::path::Path::new(&details.exe_path).is_absolute() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Agent executable path is unusable: {}", details.exe_path),
+            }),
+        )
+            .into_response();
+    }
+    let server_binary = redoor::commands::current_binary_identity();
+    let selected = match crate::binaries::binary_for_connected_agent(
+        &server_binary,
+        &details.os,
+        &details.arch,
+    )
+    .await
+    {
+        Ok(selected) => selected,
+        Err(error @ crate::binaries::UpgradeBinaryError::DirtyPlatformMismatch { .. }) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: error.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(error @ crate::binaries::UpgradeBinaryError::UnsupportedPlatform { .. }) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: error.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: error.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let source_path = match selected {
+        crate::binaries::UpgradeBinary::ExactServer { path }
+        | crate::binaries::UpgradeBinary::CachedRelease { path } => path,
+    };
+    if let Err(response) =
+        upload_upgrade_binary(&state, agent_id.clone(), &source_path, &details.exe_path).await
+    {
+        return response;
+    }
+    match state
+        .router_ref
+        .request(30000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id,
+                command: Command::SelfExec {
+                    path: details.exe_path,
+                },
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(CommandResult::SelfExec { .. }) => (
+            StatusCode::OK,
+            Json(UpgradeAgentResponse {
+                upgrading: true,
+                target_version: server_binary.version,
+            }),
+        )
+            .into_response(),
+        Ok(CommandResult::Error { kind, message }) => (
+            command_error_status(&kind),
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected response from agent self-exec".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to self-exec upgraded agent: {error:?}"),
             }),
         )
             .into_response(),

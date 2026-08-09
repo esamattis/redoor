@@ -278,7 +278,8 @@ async fn ensure_remote_binary(
             expected
         );
         let local_path =
-            ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch).await?;
+            crate::binaries::ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch)
+                .await?;
         (local_path, versioned_remote_bin.to_string())
     };
 
@@ -375,153 +376,6 @@ async fn available_debug_binary(
         Some(path) if tokio::fs::try_exists(&path).await? => Ok(Some(path)),
         _ => Ok(None),
     }
-}
-
-/// Platform-specific local cache directory for release binaries downloaded
-/// from GitHub. Mirroring the remote `binaries/<version>` hierarchy makes the
-/// artifact identity visible while OS and architecture keep local targets apart.
-fn local_binaries_dir(version: &str, os: &str, arch: &str) -> anyhow::Result<PathBuf> {
-    Ok(crate::app_name::user_cache_directory()?
-        .join("binaries")
-        .join(version)
-        .join(os)
-        .join(arch))
-}
-
-/// Final on-disk path of the cached binary for a given platform and version.
-fn cached_binary_path(version: &str, os: &str, arch: &str) -> anyhow::Result<PathBuf> {
-    Ok(local_binaries_dir(version, os, arch)?.join("redoor"))
-}
-
-/// Builds the GitHub release download URL for a given (version, os, arch).
-/// The artifact naming follows the release workflow in
-/// `.github/workflows/release.yml` (`redoor-<arch>-<os>.tar.gz`).
-fn release_url(version: &str, os: &str, arch: &str) -> String {
-    format!(
-        "https://github.com/esamattis/redoor/releases/download/v{}/redoor-{}-{}.tar.gz",
-        version, arch, os
-    )
-}
-
-/// Ensures the matching redoor binary is present in the local cache,
-/// downloading and extracting it from GitHub releases on a cache miss.
-/// Returns the absolute path to the cached binary.
-async fn ensure_local_binary(
-    version: &str,
-    os: &str,
-    arch: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let binaries_dir = local_binaries_dir(version, os, arch)?;
-    tokio::fs::create_dir_all(&binaries_dir).await?;
-    let final_path = cached_binary_path(version, os, arch)?;
-    if tokio::fs::try_exists(&final_path).await? {
-        log!(
-            Level::Info,
-            "Local binary already cached: path={}",
-            final_path.display()
-        );
-        return Ok(final_path);
-    }
-    download_binary(version, os, arch, &binaries_dir, &final_path).await?;
-    Ok(final_path)
-}
-
-/// Downloads the release tarball from GitHub and extracts the `redoor`
-/// binary into `final_path`. The tarball is streamed to disk and extracted
-/// with the system `tar` command so we never hold the whole archive (or
-/// the binary) in memory at once.
-async fn download_binary(
-    version: &str,
-    os: &str,
-    arch: &str,
-    binaries_dir: &Path,
-    final_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use futures_util::StreamExt;
-
-    let url = release_url(version, os, arch);
-    let tar_path = binaries_dir.join(format!("redoor-{}-{}.tar.gz", arch, os));
-    let extract_dir = binaries_dir.join(format!("extract-v{}-{}-{}", version, arch, os));
-
-    log!(
-        Level::Info,
-        "Downloading redoor binary: version={}, os={}, arch={}",
-        version,
-        os,
-        arch
-    );
-
-    // Stream the response body to disk chunk by chunk so large tarballs
-    // don't have to fit in RAM, which matters on memory-constrained hosts.
-    let response = reqwest::get(&url).await?;
-    if !response.status().is_success() {
-        return Err(format!("download from {} failed: HTTP {}", url, response.status()).into());
-    }
-    let mut file = tokio::fs::File::create(&tar_path).await?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-    drop(file);
-
-    // Use the system `tar` rather than the `tar` crate so extraction
-    // matches exactly what the release workflow used to create the archive,
-    // including any platform-specific flags.
-    tokio::fs::create_dir_all(&extract_dir).await?;
-    let tar_status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&tar_path)
-        .arg("-C")
-        .arg(&extract_dir)
-        .status()
-        .await?;
-    if !tar_status.success() {
-        return Err(format!(
-            "tar extraction failed with status {}",
-            tar_status.code().unwrap_or(-1)
-        )
-        .into());
-    }
-
-    // The release archive contains a single `redoor` binary; move it to the
-    // versioned cache path so future `redoor ssh` calls hit the cache.
-    let extracted_bin = extract_dir.join("redoor");
-    if !tokio::fs::try_exists(&extracted_bin).await? {
-        return Err(format!(
-            "extracted tarball did not contain a 'redoor' binary at {}",
-            extracted_bin.display()
-        )
-        .into());
-    }
-    // Copy + remove rather than rename so it works even if `extract_dir`
-    // ends up on a different filesystem than `final_path` (e.g. tmpfs).
-    tokio::fs::copy(&extracted_bin, final_path).await?;
-    let _ = make_executable(final_path).await;
-
-    // Best-effort cleanup of the intermediate extraction artifacts; failures
-    // here are harmless and shouldn't abort the upload.
-    let _ = tokio::fs::remove_file(&tar_path).await;
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
-
-    log!(
-        Level::Info,
-        "Binary download complete: path={}",
-        final_path.display()
-    );
-
-    Ok(())
-}
-
-/// Sets the executable bit on `path` so the cached binary can be uploaded
-/// and run on the remote host without an extra `chmod` round-trip.
-async fn make_executable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let metadata = tokio::fs::metadata(path).await?;
-    let mut perms = metadata.permissions();
-    perms.set_mode(0o755);
-    tokio::fs::set_permissions(path, perms).await
 }
 
 /// Returns the parent directory of a posix-style path that may start with
@@ -1255,8 +1109,8 @@ pub(crate) async fn start_ssh_agent(
 #[cfg(test)]
 mod tests {
     use super::{
-        cached_binary_path, debug_binary_candidate, debug_remote_bin, default_remote_bin,
-        file_sha1sum, random_remote_port, remote_upload_tmp_path,
+        debug_binary_candidate, debug_remote_bin, default_remote_bin, file_sha1sum,
+        random_remote_port, remote_upload_tmp_path,
     };
     use std::path::{Path, PathBuf};
 
@@ -1326,18 +1180,6 @@ mod tests {
                 "1-2"
             ),
             "${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/debug/redoor.tmp.1-2"
-        );
-    }
-
-    /// Verifies cached releases use the shared version/platform hierarchy under
-    /// the disposable application cache rather than persistent application data.
-    #[test]
-    fn cached_binary_uses_versioned_platform_hierarchy() {
-        let cache_dir = crate::app_name::user_cache_directory().unwrap();
-        assert_eq!(
-            cached_binary_path("1.2.3", "linux", "x86_64").unwrap(),
-            cache_dir.join("binaries/1.2.3/linux/x86_64/redoor"),
-            "the cache path should identify the release and target platform"
         );
     }
 

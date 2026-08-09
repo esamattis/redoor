@@ -32,7 +32,9 @@ import { BinaryIdentityFields } from "../components/binary-identity";
 import { CopyablePath } from "../components/copyable-code-row";
 import { RouteError } from "../components/route-error";
 import { RestartButton, waitForRestart } from "../components/restart-button";
+import { UpgradeButton } from "../components/upgrade-button";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
+import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/")({
     loader: async ({ params, parentMatchPromise }) => {
@@ -199,6 +201,7 @@ function AgentLifecycle(props: { agent: Agent }) {
 function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     const router = useRouter();
     const { api } = Route.useRouteContext();
+    const { serverInfo } = RootRoute.useLoaderData();
     const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const locations = useAtomValue(agentTabLocationsAtom);
@@ -239,6 +242,56 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             {props.details.name}
                         </h1>
                         <div className="flex items-center gap-2">
+                            <UpgradeButton
+                                target={`agent ${props.details.name}`}
+                                agentOs={props.details.os}
+                                agentArch={props.details.arch}
+                                serverInfo={serverInfo}
+                                upgrade={() => props.agent.upgrade()}
+                                waitUntilReady={() =>
+                                    waitForRestart(async () => {
+                                        const upgradedAgent = (
+                                            await api.listAgents()
+                                        ).find(
+                                            (agent) =>
+                                                agent.id === props.agent.id &&
+                                                agent.status === "connected" &&
+                                                agent.connectionId !==
+                                                    props.agent.connectionId &&
+                                                agent.binary?.version ===
+                                                    serverInfo.version,
+                                        );
+                                        if (!upgradedAgent?.binary) {
+                                            throw new Error(
+                                                "Agent is still upgrading",
+                                            );
+                                        }
+                                        if (
+                                            (serverInfo.git_dirty ||
+                                                serverInfo.version_dirty) &&
+                                            (upgradedAgent.binary.git_rev !==
+                                                serverInfo.git_rev ||
+                                                upgradedAgent.binary
+                                                    .git_dirty !==
+                                                    serverInfo.git_dirty ||
+                                                upgradedAgent.binary
+                                                    .version_dirty !==
+                                                    serverInfo.version_dirty ||
+                                                upgradedAgent.binary
+                                                    .build_mode !==
+                                                    serverInfo.build_mode ||
+                                                upgradedAgent.binary
+                                                    .build_date !==
+                                                    serverInfo.build_date)
+                                        ) {
+                                            throw new Error(
+                                                "Agent has not loaded the exact server build",
+                                            );
+                                        }
+                                        await router.invalidate();
+                                    }, "Agent did not come back after upgrade")
+                                }
+                            />
                             <RestartButton
                                 target={`agent ${props.details.name}`}
                                 description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."

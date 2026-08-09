@@ -31,6 +31,14 @@ auth_mode: ServerAuthMode,
  */
 external_ip: string | null, 
 /**
+ * Operating system of the running server executable.
+ */
+os: string, 
+/**
+ * CPU architecture of the running server executable.
+ */
+arch: string, 
+/**
  * `CARGO_PKG_VERSION` baked into this binary.
  */
 version: string, 

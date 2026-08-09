@@ -10,7 +10,7 @@ use super::{
     agents::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
         ls_agent_handler, metadata_agent_handler, restart_agent_handler, server_info_handler,
-        shutdown_agent_handler, start_agent_handler,
+        shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
@@ -65,6 +65,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/restart",
             post(restart_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/upgrade",
+            post(upgrade_agent_handler),
         )
         .route(
             "/api/v1/agents/{agent}/shutdown",
