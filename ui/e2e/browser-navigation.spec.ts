@@ -67,6 +67,52 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(fileEntries).toHaveCount(5);
     });
 
+    test("should keep navigation available when a path cannot be read", async ({
+        page,
+    }) => {
+        const restrictedPath = `${ctx.testDirPath}/restricted`;
+        const restrictedUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(restrictedPath)}`;
+        const errorMessage = `Failed to read directory "${restrictedPath}": Permission denied (os error 13)`;
+        await page.route(
+            `**/api/v1/agents/${encodeURIComponent(ctx.agentId)}/ls/**`,
+            async (route) => {
+                await route.fulfill({
+                    status: 403,
+                    contentType: "application/json",
+                    body: JSON.stringify({ error: errorMessage }),
+                });
+            },
+        );
+
+        await page.goto(restrictedUrl);
+
+        // A filesystem permission failure should remain inside the browser instead of using the route error UI.
+        await expect(
+            page.getByRole("heading", {
+                name: "Could not read file or directory",
+            }),
+        ).toBeVisible();
+        // The agent-provided reason and path make the failure actionable.
+        await expect(
+            page.getByRole("status", {
+                name: "Could not read file or directory",
+            }),
+        ).toContainText(errorMessage);
+        // Browser history remains available when the parent is not the desired destination.
+        await expect(
+            page.getByRole("button", { name: "Go back" }),
+        ).toBeVisible();
+        // Direct parent navigation lets users recover even from a copied or reloaded URL.
+        await expect(
+            page.getByRole("link", { name: "Open parent directory" }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(ctx.testDirPath)}`,
+        );
+        // Technical route diagnostics must not replace expected filesystem error handling.
+        await expect(page.getByText("Technical details")).not.toBeVisible();
+    });
+
     test("should filter directory entries and navigate to the first match", async ({
         page,
     }) => {

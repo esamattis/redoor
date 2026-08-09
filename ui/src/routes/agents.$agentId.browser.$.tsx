@@ -48,6 +48,7 @@ import {
 import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
 import { formatSize } from "#ui/utils/path";
 import {
+    ApiError,
     type Agent,
     type LsResponse,
     isLsDirectoryResponse,
@@ -113,16 +114,32 @@ function getBrowserPathHref(agent: Agent, path: string) {
     return agent.getBrowserUrl(path);
 }
 
-/** Detects missing filesystem paths so the browser chrome can stay mounted. */
-function isPathMissingError(error: unknown): boolean {
+type PathLoadError = {
+    type: "missing" | "unreadable";
+    message: string;
+};
+
+/** Converts expected filesystem lookup failures into navigable in-page states. */
+function getPathLoadError(error: unknown): PathLoadError | null {
     if (!(error instanceof Error)) {
-        return false;
+        return null;
     }
     const errorMessage = error.message.toLowerCase();
-    return (
+    if (
         errorMessage.includes("no such file or directory") ||
         errorMessage.includes("directory not found")
-    );
+    ) {
+        return { type: "missing", message: error.message };
+    }
+    if (
+        (error instanceof ApiError && error.status === 403) ||
+        errorMessage.startsWith("failed to read directory") ||
+        errorMessage.startsWith("failed to get metadata") ||
+        errorMessage.startsWith("failed to get file metadata")
+    ) {
+        return { type: "unreadable", message: error.message };
+    }
+    return null;
 }
 
 /**
@@ -187,23 +204,24 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 downloadUrl,
                 metadata,
                 agents: rootLoaderData.agents,
-                pathMissing: false as const,
+                pathError: null,
             };
         } catch (error) {
-            if (isPathMissingError(error)) {
-                return {
-                    agent,
-                    agentId: agent.id,
-                    agentName: agent.name,
-                    path,
-                    lsResult: null,
-                    downloadUrl: undefined,
-                    metadata: null,
-                    agents: rootLoaderData.agents,
-                    pathMissing: true as const,
-                };
+            const pathError = getPathLoadError(error);
+            if (!pathError) {
+                throw error;
             }
-            throw error;
+            return {
+                agent,
+                agentId: agent.id,
+                agentName: agent.name,
+                path,
+                lsResult: null,
+                downloadUrl: undefined,
+                metadata: null,
+                agents: rootLoaderData.agents,
+                pathError,
+            };
         }
     },
     component: FileBrowser,
@@ -212,13 +230,13 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const { agent, agentId, agentName, path, lsResult, pathMissing } = data;
+    const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
 
     const parentPath = getImmediateParentPath(path);
 
-    if (pathMissing || lsResult === null) {
+    if (pathError) {
         return (
             <div className="p-6">
                 <div className="mx-auto max-w-6xl">
@@ -230,12 +248,21 @@ function FileBrowser() {
                         directoryPath={path}
                         showHiddenFiles={showHiddenFiles}
                         isDetailsView={false}
-                        pathMissing={true}
+                        pathUnavailable={true}
                         onToggleHiddenFiles={() =>
                             setShowHiddenFiles((prev) => !prev)
                         }
                     />
-                    <MissingPathSkeleton />
+                    {pathError.type === "missing" ? (
+                        <MissingPathSkeleton />
+                    ) : (
+                        <UnavailablePathState
+                            agent={agent}
+                            path={path}
+                            parentPath={parentPath}
+                            error={pathError}
+                        />
+                    )}
                 </div>
             </div>
         );
@@ -964,10 +991,10 @@ function BrowserHeader(props: {
     directoryPath: string;
     showHiddenFiles: boolean;
     isDetailsView: boolean;
-    pathMissing?: boolean;
+    pathUnavailable?: boolean;
     onToggleHiddenFiles: () => void;
 }) {
-    const pathMissing = props.pathMissing === true;
+    const pathUnavailable = props.pathUnavailable === true;
 
     return (
         <header className="mb-4">
@@ -984,7 +1011,7 @@ function BrowserHeader(props: {
                     <Breadcrumbs
                         agent={props.agent}
                         path={props.path}
-                        startEditing={pathMissing}
+                        startEditing={pathUnavailable}
                     />
                 </div>
             </div>
@@ -994,7 +1021,7 @@ function BrowserHeader(props: {
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
             >
                 <div className="flex flex-wrap items-center gap-1">
-                    {props.isDetailsView || pathMissing ? (
+                    {props.isDetailsView || pathUnavailable ? (
                         <Link
                             to={
                                 props.parentPath
@@ -1011,7 +1038,7 @@ function BrowserHeader(props: {
                             Up
                         </Link>
                     ) : null}
-                    {!pathMissing ? (
+                    {!pathUnavailable ? (
                         <>
                             {props.isDetailsView ? (
                                 <>
@@ -1066,7 +1093,7 @@ function BrowserHeader(props: {
                     ) : null}
                 </div>
 
-                {!pathMissing ? (
+                {!pathUnavailable ? (
                     <div className="flex flex-wrap items-center gap-1">
                         {!props.isDetailsView ? (
                             <Tooltip content="Pasted text or images are created as new files in this directory.">
@@ -1146,6 +1173,66 @@ function MissingPathSkeleton() {
                 </tbody>
             </table>
         </div>
+    );
+}
+
+/** Explains a path lookup failure without replacing the surrounding browser navigation. */
+function UnavailablePathState(props: {
+    agent: Agent;
+    path: string;
+    parentPath: string | null;
+    error: PathLoadError;
+}) {
+    const title =
+        props.error.type === "missing"
+            ? "File or directory not found"
+            : "Could not read file or directory";
+    return (
+        <section
+            role="status"
+            aria-labelledby="unavailable-path-title"
+            className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-6"
+        >
+            <div className="flex items-start gap-3">
+                <Info
+                    className="mt-0.5 h-5 w-5 shrink-0 text-amber-400"
+                    aria-hidden="true"
+                />
+                <div className="min-w-0">
+                    <h1
+                        id="unavailable-path-title"
+                        className="font-semibold text-slate-100"
+                    >
+                        {title}
+                    </h1>
+                    <p className="mt-1 wrap-break-word text-sm text-slate-300">
+                        {props.error.message}
+                    </p>
+                    <p className="mt-2 break-all font-mono text-xs text-slate-500">
+                        {props.path}
+                    </p>
+                </div>
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+                <button
+                    type="button"
+                    onClick={() => window.history.back()}
+                    className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                >
+                    <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                    Go back
+                </button>
+                {props.parentPath ? (
+                    <Link
+                        to={getBrowserPathHref(props.agent, props.parentPath)}
+                        className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5"
+                    >
+                        <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                        Open parent directory
+                    </Link>
+                ) : null}
+            </div>
+        </section>
     );
 }
 

@@ -724,6 +724,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ls_error_includes_requested_path() {
+        let handler = CommandHandler::new();
+        let path = "nonexistent-directory-for-ls-context";
+        let result = handler
+            .execute(Command::Ls {
+                path: Some(path.to_string()),
+            })
+            .await;
+
+        match result {
+            CommandResult::Error { kind, message } => {
+                // The stable kind lets the REST layer return a useful status without parsing text.
+                assert_eq!(kind, CommandErrorKind::NotFound);
+                // Naming the attempted path makes remote filesystem failures actionable.
+                assert!(message.contains(path), "ls error should include its path");
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_cat_command() {
         let handler = CommandHandler::new();
         let result = handler

@@ -39,7 +39,10 @@ pub(super) async fn execute(path: String) -> CommandResult {
                 one_time_tokens: Vec::new(),
             })
         }
-        Err(error) => CommandResult::io_error("Failed to get file metadata", error),
+        Err(error) => CommandResult::io_error(
+            &format!("Failed to get file metadata for path {path:?}"),
+            error,
+        ),
     }
 }
 

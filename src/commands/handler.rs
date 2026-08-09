@@ -149,7 +149,10 @@ impl CommandHandler {
                                 permissions: metadata.mode() & 0o777,
                             })
                         }
-                        Err(error) => CommandResult::io_error("Failed to read directory", error),
+                        Err(error) => CommandResult::io_error(
+                            &format!("Failed to read directory {path:?}"),
+                            error,
+                        ),
                     }
                 } else {
                     let size = metadata.size();
@@ -178,7 +181,9 @@ impl CommandHandler {
                     })
                 }
             }
-            Err(error) => CommandResult::io_error("Failed to get metadata", error),
+            Err(error) => {
+                CommandResult::io_error(&format!("Failed to get metadata for path {path:?}"), error)
+            }
         }
     }
 
