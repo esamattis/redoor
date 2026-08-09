@@ -1,16 +1,9 @@
-use crate::types::{AgentId, SocketId, TransferId, UnixTimestampSeconds};
-use nucleo_matcher::{
-    Config, Matcher, Utf32Str,
-    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-};
-use serde::{Deserialize, Serialize};
-use std::{path::Path, time::Duration};
-use ts_rs::TS;
+mod file_search;
+mod metadata;
 
-/// Prevents one broad or slow filesystem search from occupying an agent indefinitely.
-const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(3);
-/// Bounds both response size and memory retained while traversing a large tree.
-const FILE_SEARCH_RESULT_LIMIT: usize = 100;
+use crate::types::{AgentId, SocketId, TransferId, UnixTimestampSeconds};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Carries credentials to the login endpoint without putting secrets in the URL.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -331,13 +324,6 @@ pub struct LsFileResult {
     pub permissions: u32,
 }
 
-/// Retains the matcher score internally so the agent can rank a bounded result set.
-#[derive(Debug)]
-struct RankedFileSearchEntry {
-    entry: FileSearchEntry,
-    score: u32,
-}
-
 /// Describes one matching remote path without requiring additional metadata calls.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -361,9 +347,6 @@ pub struct CatResult {
     pub content: String,
     pub path: String,
 }
-
-/// Keeps in-browser text editing away from multi-megabyte payloads.
-const MAX_EDITABLE_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -800,7 +783,7 @@ impl CommandHandler {
     pub async fn execute(&self, command: Command) -> CommandResult {
         match command {
             Command::Ls { path } => self.ls(path).await,
-            Command::FileSearch { path, query } => self.file_search(path, query).await,
+            Command::FileSearch { path, query } => file_search::execute(path, query).await,
             Command::Cat { path } => self.cat(path).await,
             Command::RawDownload {
                 path,
@@ -824,7 +807,7 @@ impl CommandHandler {
                 source_path,
                 dest_path,
             } => self.rename_path(source_path, dest_path).await,
-            Command::Metadata { path } => self.metadata(path).await,
+            Command::Metadata { path } => metadata::execute(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
@@ -941,43 +924,6 @@ impl CommandHandler {
         }
     }
 
-    /// Traverses incrementally so timeout returns useful partial results without retaining the tree.
-    async fn file_search(&self, path: String, query: String) -> CommandResult {
-        if query.trim().is_empty() {
-            return CommandResult::error(
-                CommandErrorKind::InvalidInput,
-                "File search query must not be empty",
-            );
-        }
-
-        let mut matches = Vec::with_capacity(FILE_SEARCH_RESULT_LIMIT);
-        let result = tokio::time::timeout(
-            FILE_SEARCH_TIMEOUT,
-            collect_file_search_matches(Path::new(&path), &query, &mut matches),
-        )
-        .await;
-
-        let timed_out = match result {
-            Ok(Ok(())) => false,
-            Ok(Err(error)) => {
-                return CommandResult::io_error("Failed to search directory", error);
-            }
-            Err(_) => true,
-        };
-
-        matches.sort_unstable_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
-                .then_with(|| left.entry.path.cmp(&right.entry.path))
-        });
-
-        CommandResult::FileSearch(FileSearchResponse {
-            results: matches.into_iter().map(|entry| entry.entry).collect(),
-            timed_out,
-        })
-    }
-
     async fn cat(&self, path: String) -> CommandResult {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => CommandResult::Cat(CatResult { content, path }),
@@ -1036,176 +982,6 @@ impl CommandHandler {
         match tokio::fs::rename(&source_path, &dest_path).await {
             Ok(()) => CommandResult::RenamePath,
             Err(error) => CommandResult::io_error("Failed to rename path", error),
-        }
-    }
-
-    /// Marks a file editable only after size and full-content UTF-8 checks succeed,
-    /// ignoring extensions so binary data cannot open in the text editor.
-    async fn is_file_editable(path: &str, file_size: u64, is_file: bool) -> bool {
-        if !is_file || file_size > MAX_EDITABLE_FILE_BYTES {
-            return false;
-        }
-
-        match tokio::fs::read(path).await {
-            Ok(bytes) => std::str::from_utf8(&bytes).is_ok(),
-            Err(_) => false,
-        }
-    }
-
-    /// Sniffs a small file prefix so extensionless downloads can set a MIME type
-    /// without buffering the entire file before streaming starts.
-    async fn detect_mime_type_from_content(path: &str) -> Option<String> {
-        use tokio::{fs::File, io::AsyncReadExt};
-
-        const MIME_SNIFF_BYTES: usize = 8 * 1024;
-
-        let mut file = match File::open(path).await {
-            Ok(file) => file,
-            Err(_) => return None,
-        };
-
-        let mut content = [0_u8; MIME_SNIFF_BYTES];
-        let mut bytes_read = 0;
-
-        while bytes_read < content.len() {
-            let read = match file.read(&mut content[bytes_read..]).await {
-                Ok(read) => read,
-                Err(_) => return None,
-            };
-
-            if read == 0 {
-                break;
-            }
-
-            bytes_read += read;
-        }
-
-        let content = &content[..bytes_read];
-
-        // Check for shebang pattern at the start (scripts without extension)
-        if content.starts_with(b"#!") {
-            return Some("text/plain".to_string());
-        }
-
-        // Check for UTF-8 BOM
-        if content.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            return Some("text/plain".to_string());
-        }
-
-        // Check for common binary magic numbers
-        if content.starts_with(b"%PDF") {
-            return Some("application/pdf".to_string());
-        }
-
-        if content.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-            return Some("image/png".to_string());
-        }
-
-        if content.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            return Some("image/jpeg".to_string());
-        }
-
-        if content.starts_with(b"GIF87a") || content.starts_with(b"GIF89a") {
-            return Some("image/gif".to_string());
-        }
-
-        if content.starts_with(b"PK\x03\x04") || content.starts_with(b"PK\x05\x06") {
-            return Some("application/zip".to_string());
-        }
-
-        if content.starts_with(&[0x7F, 0x45, 0x4C, 0x46]) {
-            return Some("application/x-executable".to_string());
-        }
-
-        if content.starts_with(&[0x00, 0x61, 0x73, 0x6D]) {
-            return Some("application/wasm".to_string());
-        }
-
-        if content.starts_with(b"\x1F\x8B") {
-            return Some("application/gzip".to_string());
-        }
-
-        if content.starts_with(b"BZh") {
-            return Some("application/x-bzip2".to_string());
-        }
-
-        if content.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
-            return Some("application/x-xz".to_string());
-        }
-
-        if content.starts_with(b"Rar!") || content.starts_with(b"Rar\x1A\x07") {
-            return Some("application/x-rar-compressed".to_string());
-        }
-
-        if content.starts_with(b"\x37\x7A\xBC\xAF\x27\x1C") {
-            return Some("application/x-7z-compressed".to_string());
-        }
-
-        if content.starts_with(b"fLaC") {
-            return Some("audio/flac".to_string());
-        }
-
-        if content.starts_with(b"ID3")
-            || content.starts_with(&[0xFF, 0xFB])
-            || content.starts_with(&[0xFF, 0xF3])
-            || content.starts_with(&[0xFF, 0xF2])
-        {
-            return Some("audio/mpeg".to_string());
-        }
-
-        if content.starts_with(b"\x00\x00\x00 ftyp")
-            || content.starts_with(b"\x00\x00\x00\x18ftyp")
-            || content.starts_with(b"\x00\x00\x00\x14ftyp")
-        {
-            return Some("video/mp4".to_string());
-        }
-
-        if content.starts_with(b"RIFF") && content.len() >= 12 && &content[8..12] == b"AVI " {
-            return Some("video/x-msvideo".to_string());
-        }
-
-        None
-    }
-
-    async fn metadata(&self, path: String) -> CommandResult {
-        use std::os::unix::fs::MetadataExt;
-        use std::path::Path;
-
-        match tokio::fs::metadata(&path).await {
-            Ok(metadata) => {
-                // Determine MIME type from file extension or content
-                let mime_type = match Path::new(&path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .and_then(|ext| mime_guess::from_ext(ext).first())
-                    .map(|mime| mime.to_string())
-                {
-                    Some(mime) => mime,
-                    None => {
-                        // No extension found, try content-based detection
-                        Self::detect_mime_type_from_content(&path)
-                            .await
-                            .unwrap_or_else(|| "application/octet-stream".to_string())
-                    }
-                };
-
-                let file_size = metadata.size();
-                let is_file = metadata.is_file();
-                let is_dir = metadata.is_dir();
-                let editable = Self::is_file_editable(&path, file_size, is_file).await;
-
-                CommandResult::Metadata(MetadataResponse {
-                    path,
-                    mime_type,
-                    file_size,
-                    is_file,
-                    is_dir,
-                    editable,
-                    // Agents cannot observe server-local credentials; the HTTP handler fills these.
-                    one_time_tokens: Vec::new(),
-                })
-            }
-            Err(error) => CommandResult::io_error("Failed to get file metadata", error),
         }
     }
 
@@ -1289,198 +1065,9 @@ impl CommandHandler {
     }
 }
 
-/// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
-async fn collect_file_search_matches(
-    root: &Path,
-    query: &str,
-    matches: &mut Vec<RankedFileSearchEntry>,
-) -> std::io::Result<()> {
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Smart,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-    let mut utf32_buffer = Vec::new();
-    let mut directories = vec![tokio::fs::read_dir(root).await?];
-
-    while let Some(directory) = directories.last_mut() {
-        let entry = match directory.next_entry().await {
-            Ok(Some(entry)) => entry,
-            Ok(None) | Err(_) => {
-                directories.pop();
-                continue;
-            }
-        };
-        let entry_path = entry.path();
-        let Ok(file_type) = entry.file_type().await else {
-            continue;
-        };
-
-        if let Some(relative_path) = entry_path.strip_prefix(root).ok().and_then(Path::to_str) {
-            let haystack = Utf32Str::new(relative_path, &mut utf32_buffer);
-            if let Some(score) = pattern.score(haystack, &mut matcher) {
-                retain_file_search_match(
-                    matches,
-                    RankedFileSearchEntry {
-                        entry: FileSearchEntry {
-                            name: entry.file_name().to_string_lossy().into_owned(),
-                            path: entry_path.to_string_lossy().into_owned(),
-                            file_type: if file_type.is_dir() {
-                                "directory".to_string()
-                            } else {
-                                "file".to_string()
-                            },
-                        },
-                        score,
-                    },
-                );
-            }
-        }
-
-        // `DirEntry::file_type` does not follow symlinks, avoiding cycles and root escapes.
-        if file_type.is_dir()
-            && let Ok(child_directory) = tokio::fs::read_dir(&entry_path).await
-        {
-            directories.push(child_directory);
-        }
-    }
-
-    Ok(())
-}
-
-/// Keeps only the globally strongest matches while traversal continues through arbitrary trees.
-fn retain_file_search_match(
-    matches: &mut Vec<RankedFileSearchEntry>,
-    candidate: RankedFileSearchEntry,
-) {
-    if matches.len() < FILE_SEARCH_RESULT_LIMIT {
-        matches.push(candidate);
-        return;
-    }
-
-    let weakest_index = matches
-        .iter()
-        .enumerate()
-        .min_by(|(_, left), (_, right)| {
-            left.score
-                .cmp(&right.score)
-                .then_with(|| right.entry.path.cmp(&left.entry.path))
-        })
-        .map(|(index, _)| index);
-    if let Some(weakest_index) = weakest_index {
-        let weakest = &matches[weakest_index];
-        if candidate.score > weakest.score
-            || (candidate.score == weakest.score && candidate.entry.path < weakest.entry.path)
-        {
-            matches[weakest_index] = candidate;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_detect_mime_type_from_content_reads_only_prefix() {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            CommandHandler::detect_mime_type_from_content("/dev/zero"),
-        )
-        .await;
-
-        // This must complete promptly so extensionless metadata requests do not wait for EOF on
-        // special files or buffer unbounded content before the download stream can start.
-        assert!(
-            result.is_ok(),
-            "content sniffing should only read a bounded prefix"
-        );
-        assert_eq!(
-            result.unwrap(),
-            None,
-            "zero-filled content should not match a known MIME"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_metadata_marks_utf8_text_editable() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-metadata-editable-{}.bin",
-            std::process::id()
-        ));
-        tokio::fs::write(&path, "hello plain text")
-            .await
-            .expect("write text");
-
-        let handler = CommandHandler::new();
-        let result = handler
-            .execute(Command::Metadata {
-                path: path.to_string_lossy().into_owned(),
-            })
-            .await;
-        let _ = tokio::fs::remove_file(&path).await;
-
-        match result {
-            CommandResult::Metadata(metadata) => {
-                // Extensionless UTF-8 content must still be editable for the UI editor gate.
-                assert!(metadata.editable);
-                assert!(metadata.is_file);
-            }
-            other => panic!("Expected Metadata, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_metadata_rejects_invalid_utf8_as_not_editable() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-binary-{}.txt", std::process::id()));
-        tokio::fs::write(&path, [0xff, 0xfe, 0xfd])
-            .await
-            .expect("write binary");
-
-        let handler = CommandHandler::new();
-        let result = handler
-            .execute(Command::Metadata {
-                path: path.to_string_lossy().into_owned(),
-            })
-            .await;
-        let _ = tokio::fs::remove_file(&path).await;
-
-        match result {
-            CommandResult::Metadata(metadata) => {
-                // A .txt suffix must not override invalid UTF-8 content.
-                assert!(!metadata.editable);
-            }
-            other => panic!("Expected Metadata, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_metadata_rejects_large_utf8_as_not_editable() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-large-{}.txt", std::process::id()));
-        let large = vec![b'a'; (MAX_EDITABLE_FILE_BYTES as usize) + 1];
-        tokio::fs::write(&path, large).await.expect("write large");
-
-        let handler = CommandHandler::new();
-        let result = handler
-            .execute(Command::Metadata {
-                path: path.to_string_lossy().into_owned(),
-            })
-            .await;
-        let _ = tokio::fs::remove_file(&path).await;
-
-        match result {
-            CommandResult::Metadata(metadata) => {
-                // Size gating avoids loading multi-megabyte bodies into the browser textarea.
-                assert!(!metadata.editable);
-                assert!(metadata.file_size > MAX_EDITABLE_FILE_BYTES);
-            }
-            other => panic!("Expected Metadata, got {other:?}"),
-        }
-    }
 
     #[tokio::test]
     async fn test_ls_command() {
