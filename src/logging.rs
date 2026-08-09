@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, path::PathBuf, sync::OnceLock};
 
+use anyhow::{Context, Result};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{
@@ -97,26 +98,32 @@ pub struct Logger {
 
 impl Logger {
     /// Opens persistent output before startup continues so subscriptions never advertise an unusable file.
-    pub async fn new(log_file_path: Option<PathBuf>) -> Self {
+    ///
+    /// Missing parent directories are created first so conventional paths like
+    /// `~/.local/share/redoor/logs/server.log` work on first boot.
+    pub async fn new(log_file_path: Option<PathBuf>) -> Result<Self> {
         let (log_file_path, log_file, log_file_position) = match log_file_path {
-            Some(path) => match tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .await
-            {
-                Ok(file) => match file.metadata().await {
-                    Ok(metadata) => (Some(path), Some(file), metadata.len()),
-                    Err(error) => {
-                        Self::report_file_error("inspect", &path, &error);
-                        (None, None, 0)
-                    }
-                },
-                Err(error) => {
-                    Self::report_file_error("open", &path, &error);
-                    (None, None, 0)
+            Some(path) => {
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    tokio::fs::create_dir_all(parent).await.with_context(|| {
+                        format!("Failed to create log directory '{}'", parent.display())
+                    })?;
                 }
-            },
+                let file = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .await
+                    .with_context(|| format!("Failed to open log file '{}'", path.display()))?;
+                let metadata = file
+                    .metadata()
+                    .await
+                    .with_context(|| format!("Failed to inspect log file '{}'", path.display()))?;
+                (Some(path), Some(file), metadata.len())
+            }
             None => (None, None, 0),
         };
         let (live_entries, _) = broadcast::channel(LIVE_LOG_CAPACITY);
@@ -129,13 +136,13 @@ impl Logger {
             _ => Level::Info,
         };
 
-        Self {
+        Ok(Self {
             log_file_path,
             log_file,
             log_file_position,
             live_entries,
             level,
-        }
+        })
     }
 
     /// Reports file failures without recursively enqueueing another record into the broken logger.
@@ -224,19 +231,20 @@ pub async fn read_latest_entries(
 }
 
 /// Initializes the process-global logger before any log macro is used.
-pub async fn init(log_file_path: Option<String>) {
+pub async fn init(log_file_path: Option<String>) -> Result<()> {
     if LOGGER.get().is_some() {
-        return;
+        return Ok(());
     }
 
     let (commands, receiver) = mpsc::unbounded_channel();
-    let logger = Logger::new(log_file_path.map(PathBuf::from)).await;
+    let logger = Logger::new(log_file_path.map(PathBuf::from)).await?;
     let handle = LoggerHandle { commands };
     if LOGGER.set(handle).is_err() {
-        return;
+        return Ok(());
     }
 
     tokio::spawn(logger.run(receiver));
+    Ok(())
 }
 
 /// Establishes an ordered history/live boundary without blocking normal log producers.
@@ -298,11 +306,30 @@ mod tests {
     async fn start_logger(
         path: Option<PathBuf>,
     ) -> (UnboundedSender<LoggerCommand>, tokio::task::JoinHandle<()>) {
-        let mut logger = Logger::new(path).await;
+        let mut logger = Logger::new(path).await.expect("test logger should open");
         logger.level = Level::Info;
         let (commands, receiver) = mpsc::unbounded_channel();
         let task = tokio::spawn(logger.run(receiver));
         (commands, task)
+    }
+
+    /// Verifies missing parent directories are created so first-boot log paths work.
+    #[tokio::test]
+    async fn creates_missing_log_directory() {
+        let directory =
+            std::env::temp_dir().join(format!("redoor-logger-mkdir-test-{}", Uuid::new_v4()));
+        let path = directory.join("nested/agent.log");
+        let logger = Logger::new(Some(path.clone()))
+            .await
+            .expect("logger should create nested parents");
+        drop(logger);
+        assert!(
+            tokio::fs::try_exists(&path).await.expect("exists check"),
+            "opening the logger must create the log file after creating parents"
+        );
+        tokio::fs::remove_dir_all(directory)
+            .await
+            .expect("test directory should be removable");
     }
 
     /// Requests a subscription as a deterministic barrier for every command queued before it.

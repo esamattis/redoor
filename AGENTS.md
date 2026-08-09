@@ -3,6 +3,7 @@
 
 - Node.js, mise, pnpm
 - Rust, Tokio, Axum
+- Always execute shell commands with `mise exec -- …` so the correct toolchain (Node, pnpm, etc.) is on PATH
 
 
 # Architecture

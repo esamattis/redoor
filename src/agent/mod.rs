@@ -135,7 +135,9 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let agent_id = AgentId::from(agent_name.clone());
 
-    redoor::logging::init(log_file).await;
+    redoor::logging::init(log_file)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
     match loaded_config_path {
         Some(path) => {
             log!(Level::Info, "Loaded agent config: path={}", path.display());

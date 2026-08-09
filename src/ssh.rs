@@ -931,13 +931,34 @@ async fn build_ssh_command(
     if let Some(log_path) = &options.log_file {
         // Open in append mode via the async tokio API, then convert to a
         // std::fs::File so it can be turned into a Stdio for the child.
+        let path = Path::new(log_path);
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to create agent log directory '{}': {error}",
+                    parent.display()
+                ))
+            })?;
+        }
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(log_path)
-            .await?;
+            .await
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to open agent log file '{log_path}': {error}"
+                ))
+            })?;
         // Clone the handle so stdout and stderr can both write to the same file.
-        let file_for_stderr = file.try_clone().await?;
+        let file_for_stderr = file.try_clone().await.map_err(|error| {
+            std::io::Error::other(format!(
+                "Failed to clone agent log file handle '{log_path}': {error}"
+            ))
+        })?;
         let stdout_file = file.into_std().await;
         let stderr_file = file_for_stderr.into_std().await;
         ssh.stdout(Stdio::from(stdout_file));

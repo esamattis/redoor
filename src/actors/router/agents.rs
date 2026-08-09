@@ -653,7 +653,7 @@ mod tests {
     /// Verifies clients that wait for Connected never see it before the payload socket is usable.
     #[tokio::test]
     async fn connected_status_waits_for_transfer_socket() {
-        crate::logging::init(None).await;
+        crate::logging::init(None).await.unwrap();
         let mut state = test_state();
         let token = insert_control(&mut state, "agent");
         // Control registration alone must not advertise full readiness.
@@ -686,7 +686,7 @@ mod tests {
     /// Verifies only the current session token can attach and replacements shut down old sockets.
     #[tokio::test]
     async fn transfer_registration_authenticates_and_replaces_atomically() {
-        crate::logging::init(None).await;
+        crate::logging::init(None).await.unwrap();
         let mut state = test_state();
         let token = insert_control(&mut state, "agent");
         let first_socket = crate::types::SocketId::new();
@@ -737,7 +737,7 @@ mod tests {
     /// Verifies replacement fails payload-dependent work the delayed unregister would skip.
     #[tokio::test]
     async fn transfer_replacement_cleans_up_payload_requests() {
-        crate::logging::init(None).await;
+        crate::logging::init(None).await.unwrap();
         let mut state = test_state();
         let token = insert_control(&mut state, "agent");
         let first_socket = crate::types::SocketId::new();
@@ -797,7 +797,7 @@ mod tests {
     /// Verifies a timed-out socket handler cannot install dead channels or evict a live socket.
     #[tokio::test]
     async fn transfer_registration_ignores_cancelled_reply() {
-        crate::logging::init(None).await;
+        crate::logging::init(None).await.unwrap();
         let mut state = test_state();
         let token = insert_control(&mut state, "agent");
         let live_socket = crate::types::SocketId::new();
@@ -830,7 +830,7 @@ mod tests {
     /// Verifies unknown agents and stale unregister events cannot affect live payload state.
     #[tokio::test]
     async fn transfer_registration_rejects_unknown_and_ignores_stale_unregister() {
-        crate::logging::init(None).await;
+        crate::logging::init(None).await.unwrap();
         let mut state = test_state();
         let unknown_socket = crate::types::SocketId::new();
         let (unknown_request, unknown_reply, _unknown_shutdown) =

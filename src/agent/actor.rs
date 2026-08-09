@@ -319,7 +319,7 @@ mod tests {
     /// Verifies a delayed writer failure cannot clear a newer live connection.
     #[tokio::test]
     async fn stale_connection_loss_does_not_clear_replacement_connection() {
-        redoor::logging::init(None).await;
+        redoor::logging::init(None).await.unwrap();
         let mut runtime = AgentRuntime::new(
             AgentId::from("agent"),
             "agent".to_string(),
@@ -358,7 +358,7 @@ mod tests {
     /// Verifies delayed transfer teardown cannot detach a newer payload socket.
     #[tokio::test]
     async fn stale_transfer_loss_does_not_clear_replacement_sender() {
-        redoor::logging::init(None).await;
+        redoor::logging::init(None).await.unwrap();
         let mut runtime = AgentRuntime::new(
             AgentId::from("agent"),
             "agent".to_string(),

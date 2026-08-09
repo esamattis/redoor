@@ -119,7 +119,10 @@ sudo redoor setup-systemd --mode agent
 |------|-------------|
 | `--mode server` | Non-root: `~/.config/systemd/user/redoor-server.service`. Root: `/etc/systemd/system/redoor-server.service` running as the `redoor` system user |
 | `--mode agent` | Non-root: `~/.config/systemd/user/redoor-agent.service`. Root: `/etc/systemd/system/redoor-agent.service` running as root |
+| `--unit-name NAME` | Override the unit file name (appends `.service` if missing). Use to install multiple agents/servers on one host |
 
-Creates the conventional config when missing (`~/.config/redoor/config.toml` non-root, `/etc/redoor/config.toml` as root). Server setup prints generated secrets once; agent setup prompts for the token and writes a complete `[agent]` section. Non-root enables linger via `loginctl`, then `systemctl --user enable --now`. Root creates the `redoor` user when installing the server, chowns `/etc/redoor` to that user, then `systemctl enable --now`.
+Creates the conventional shared config when missing (`~/.config/redoor/config.toml` non-root, `/etc/redoor/config.toml` as root). Agent and server modes write the same starter file (generated `agent_token`, `[server]`, `[agent]`, and a managed local `[[agents]]` entry). Log paths default to `~/.local/share/redoor/logs/{server,agent,agent-local}.log` for user installs and `/var/log/redoor/{server,agent,agent-local}.log` as root. Secrets are printed once; nothing is prompted. The unit is always enabled on boot but **never** started by setup — start it yourself after reviewing the config (agent settings usually need changes).
 
-The agent unit runs bare `redoor agent` with **no CLI flags or environment variables** — configure everything in the TOML (`agent_token` + `[agent]`). Setup refuses to install if the existing file is incomplete for standalone agent startup.
+Non-root enables linger via `loginctl`. Root creates the `redoor` user when installing the server, chowns `/etc/redoor` and pre-creates `/var/log/redoor` for that user.
+
+The agent unit runs `redoor agent --config <path>` with no other CLI flags or environment variables — configure everything in the TOML (`agent_token` + `[agent]`). Setup refuses to install if the existing file is incomplete for standalone agent startup.

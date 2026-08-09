@@ -9,10 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::Command,
-};
+use tokio::process::Command;
 
 /// Arguments for `redoor setup-systemd`.
 #[derive(Args)]
@@ -21,6 +18,12 @@ pub(crate) struct SetupSystemdArgs {
     /// Select whether the installed service runs the server or an agent.
     #[arg(long, value_enum)]
     mode: SystemdMode,
+    /// Override the systemd unit file name (default: redoor-agent.service / redoor-server.service).
+    ///
+    /// Lets multiple agent or server installs coexist on one host. A missing
+    /// `.service` suffix is appended automatically.
+    #[arg(long)]
+    unit_name: Option<String>,
 }
 
 /// Redoor process role represented by the generated service.
@@ -33,8 +36,8 @@ enum SystemdMode {
 }
 
 impl SystemdMode {
-    /// Returns the loadable systemd service name for this process role.
-    fn service_name(self) -> &'static str {
+    /// Returns the default loadable systemd service name for this process role.
+    fn default_service_name(self) -> &'static str {
         match self {
             Self::Agent => "redoor-agent.service",
             Self::Server => "redoor-server.service",
@@ -42,7 +45,25 @@ impl SystemdMode {
     }
 }
 
-/// Configures and starts the requested systemd service for the current privileges.
+/// Resolves the unit file name, appending `.service` when the operator omitted it.
+fn resolve_unit_name(mode: SystemdMode, unit_name: Option<String>) -> Result<String> {
+    let name = unit_name.unwrap_or_else(|| mode.default_service_name().to_owned());
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("--unit-name must not be empty");
+    }
+    // Reject path separators so the name cannot escape the unit directory.
+    if name.contains('/') || name.contains('\\') {
+        bail!("--unit-name must be a bare unit name, not a path");
+    }
+    if name.ends_with(".service") {
+        Ok(name.to_owned())
+    } else {
+        Ok(format!("{name}.service"))
+    }
+}
+
+/// Configures and enables the requested systemd service for the current privileges.
 pub(crate) async fn run(args: SetupSystemdArgs) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -52,19 +73,20 @@ pub(crate) async fn run(args: SetupSystemdArgs) -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
+        let unit_name = resolve_unit_name(args.mode, args.unit_name)?;
         if nix::unistd::Uid::effective().is_root() {
-            run_system(args.mode).await
+            run_system(args.mode, &unit_name).await
         } else {
-            run_user(args.mode).await
+            run_user(args.mode, &unit_name).await
         }
     }
 }
 
 /// Installs a lingering systemd user unit owned by the invoking account.
 #[cfg(target_os = "linux")]
-async fn run_user(mode: SystemdMode) -> Result<()> {
+async fn run_user(mode: SystemdMode, unit_name: &str) -> Result<()> {
     let config_path = crate::server::default_config_path()?;
-    prepare_config(mode, &config_path).await?;
+    let config_created = prepare_config(mode, &config_path).await?;
 
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
@@ -80,7 +102,7 @@ async fn run_user(mode: SystemdMode) -> Result<()> {
                 unit_directory.display()
             )
         })?;
-    let unit_path = unit_directory.join(mode.service_name());
+    let unit_path = unit_directory.join(unit_name);
     tokio::fs::write(&unit_path, unit_content)
         .await
         .with_context(|| format!("Failed to write unit '{}'", unit_path.display()))?;
@@ -89,30 +111,25 @@ async fn run_user(mode: SystemdMode) -> Result<()> {
     run_command("loginctl", &["enable-linger", &username])
         .await
         .context("Failed to enable user lingering; the service would stop when you log out")?;
-    run_command("systemctl", &["--user", "daemon-reload"])
-        .await
-        .context("Failed to reload the systemd user manager after writing the service")?;
-    run_command(
-        "systemctl",
-        &["--user", "enable", "--now", mode.service_name()],
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "Failed to enable and start {} in the systemd user manager",
-            mode.service_name()
-        )
-    })?;
+    // Enable on boot only — never start here so the operator can review config first.
+    activate_unit(unit_name, true).await?;
 
-    print_manage_help(mode.service_name(), &unit_path, true);
+    print_manage_help(
+        unit_name,
+        &unit_path,
+        &config_path,
+        true,
+        config_created,
+        mode,
+    );
     Ok(())
 }
 
 /// Installs a system unit: server as the `redoor` user, agent as root.
 #[cfg(target_os = "linux")]
-async fn run_system(mode: SystemdMode) -> Result<()> {
+async fn run_system(mode: SystemdMode, unit_name: &str) -> Result<()> {
     let config_path = crate::server::default_config_path()?;
-    prepare_config(mode, &config_path).await?;
+    let config_created = prepare_config(mode, &config_path).await?;
 
     if mode == SystemdMode::Server {
         // Dedicated account so the listening server is not a long-lived root process.
@@ -122,47 +139,130 @@ async fn run_system(mode: SystemdMode) -> Result<()> {
         chown_path_to_redoor(&config_path).await?;
     }
 
+    // Pre-create the conventional system log directory so the `redoor` service
+    // user can open log files even when the agent unit (root) created the tree.
+    ensure_system_log_directory().await?;
+
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
         .context("Failed to resolve the current redoor executable")?;
     let unit_content = render_unit(mode, &binary, &config_path, true);
     let unit_directory = PathBuf::from("/etc/systemd/system");
-    let unit_path = unit_directory.join(mode.service_name());
+    let unit_path = unit_directory.join(unit_name);
     tokio::fs::write(&unit_path, unit_content)
         .await
         .with_context(|| format!("Failed to write unit '{}'", unit_path.display()))?;
 
-    run_command("systemctl", &["daemon-reload"])
+    // Enable on boot only — never start here so the operator can review config first.
+    activate_unit(unit_name, false).await?;
+
+    print_manage_help(
+        unit_name,
+        &unit_path,
+        &config_path,
+        false,
+        config_created,
+        mode,
+    );
+    Ok(())
+}
+
+/// Reloads systemd, drops any previously running instance, then enables on boot without starting.
+///
+/// `daemon-reload` is required after every unit rewrite so systemd does not keep
+/// the old in-memory definition. Stopping first ensures a prior process cannot
+/// stay active with a stale binary or unit after setup rewrites the file.
+#[cfg(target_os = "linux")]
+async fn activate_unit(service: &str, user: bool) -> Result<()> {
+    let flag: &[&str] = if user { &["--user"] } else { &[] };
+
+    let mut reload = flag.to_vec();
+    reload.push("daemon-reload");
+    run_command("systemctl", &reload).await.with_context(|| {
+        if user {
+            "Failed to reload the systemd user manager after writing the service".to_string()
+        } else {
+            "Failed to reload systemd after writing the service".to_string()
+        }
+    })?;
+
+    // Harmless when the unit is already inactive; required so an older install
+    // cannot keep running after the unit file on disk has changed.
+    let mut stop = flag.to_vec();
+    stop.extend(["stop", service]);
+    run_command("systemctl", &stop)
         .await
-        .context("Failed to reload systemd after writing the service")?;
-    run_command("systemctl", &["enable", "--now", mode.service_name()])
+        .with_context(|| format!("Failed to stop previous {service} after writing the unit"))?;
+
+    let mut enable = flag.to_vec();
+    enable.extend(["enable", service]);
+    run_command("systemctl", &enable)
+        .await
+        .with_context(|| format!("Failed to enable {service} on boot"))?;
+    Ok(())
+}
+
+/// Creates `/var/log/redoor` and hands ownership to `redoor` when that account exists.
+#[cfg(target_os = "linux")]
+async fn ensure_system_log_directory() -> Result<()> {
+    let log_directory = crate::server::default_log_directory()?;
+    tokio::fs::create_dir_all(&log_directory)
         .await
         .with_context(|| {
             format!(
-                "Failed to enable and start {} in the system manager",
-                mode.service_name()
+                "Failed to create system log directory '{}'",
+                log_directory.display()
             )
         })?;
 
-    print_manage_help(mode.service_name(), &unit_path, false);
+    let redoor_exists = tokio::task::spawn_blocking(|| nix::unistd::User::from_name("redoor"))
+        .await
+        .context("Failed to join redoor user lookup task")?
+        .context("Failed to look up the redoor system user")?
+        .is_some();
+    if redoor_exists {
+        // Server units drop to `redoor` and must be able to create/append logs here.
+        chown_path_to_redoor(&log_directory).await?;
+    }
     Ok(())
 }
 
 /// Prints how to control the installed unit after a successful setup.
-fn print_manage_help(service: &str, unit_path: &Path, user: bool) {
+fn print_manage_help(
+    service: &str,
+    unit_path: &Path,
+    config_path: &Path,
+    user: bool,
+    config_created: bool,
+    mode: SystemdMode,
+) {
     let flag = if user { " --user" } else { "" };
     println!(
-        "Configured and started {service} at {}",
+        "Wrote unit {service} at {} and enabled it on boot (not started).",
         unit_path.display()
     );
+    if config_created {
+        println!(
+            "Created config at {}.\nEdit it before starting the service.",
+            config_path.display()
+        );
+        if mode == SystemdMode::Agent {
+            println!("The [agent] section probably needs to be changed (token, ws_address, name).");
+        }
+    } else {
+        println!("Config: {}", config_path.display());
+    }
     println!(
         "
+Start when ready:
+  systemctl{flag} start {service}
+
 Manage the service:
   systemctl{flag} start {service}
   systemctl{flag} stop {service}
   systemctl{flag} enable {service}
   systemctl{flag} disable {service}
-  journalctl{flag} -u {service} -f   # follow logs"
+  journalctl{flag} -u {service} -f   # follow journal; file logs are configured in config.toml"
     );
 }
 
@@ -173,57 +273,42 @@ fn home_directory() -> Result<PathBuf> {
         .context("HOME is not set; cannot locate the systemd user or Redoor config directories")
 }
 
-/// Ensures setup has a shared config, prompting only when a new agent config needs a token.
-async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
+/// Ensures setup has the shared config. Returns whether a new starter file was written.
+///
+/// Agent and server modes create the same TOML so either role can share one file.
+/// Nothing is prompted; secrets are generated and printed once when the file is new.
+async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
         .await
         .with_context(|| format!("Failed to inspect config '{}'", config_path.display()))?
     {
         validate_existing_config(mode, config_path).await?;
-        return Ok(());
+        return Ok(false);
     }
 
-    let supplied_token = match mode {
-        SystemdMode::Agent => Some(prompt_agent_token().await?),
-        SystemdMode::Server => None,
-    };
-    let created = crate::server::create_default_config_if_missing_with_options(
-        config_path,
-        supplied_token.as_deref(),
-        mode == SystemdMode::Agent,
-    )
-    .await?;
+    let created = crate::server::create_default_config_if_missing(config_path).await?;
 
     if let Some(created) = created {
-        match mode {
-            SystemdMode::Agent => {
-                println!(
-                    "Created agent config at {}\n[agent] defaults to ws://localhost:3000/ws and this host's name.\nEdit the file if the server is elsewhere, then restart the service.",
-                    config_path.display()
-                );
-            }
-            SystemdMode::Server => {
-                if let Some(password) = created.password {
-                    println!(
-                        "Created server config at {}\nusername password: {}\nagent_token: {}\nStore these secrets securely; they will not be shown again.",
-                        config_path.display(),
-                        password,
-                        created.agent_token
-                    );
-                } else {
-                    println!(
-                        "Created server config at {}\nagent_token: {}\nStore this secret securely; it will not be shown again.",
-                        config_path.display(),
-                        created.agent_token
-                    );
-                }
-            }
+        if let Some(password) = created.password {
+            println!(
+                "Created config at {}\nusername password: {}\nagent_token: {}\nStore these secrets securely; they will not be shown again.",
+                config_path.display(),
+                password,
+                created.agent_token
+            );
+        } else {
+            println!(
+                "Created config at {}\nagent_token: {}\nStore this secret securely; it will not be shown again.",
+                config_path.display(),
+                created.agent_token
+            );
         }
+        Ok(true)
     } else {
         // Another setup may have won the create-new race after our existence check.
         validate_existing_config(mode, config_path).await?;
+        Ok(false)
     }
-    Ok(())
 }
 
 /// Rejects incomplete configs before writing a unit that assumes the TOML is enough.
@@ -245,24 +330,6 @@ async fn validate_existing_config(mode: SystemdMode, config_path: &Path) -> Resu
         }
     }
     Ok(())
-}
-
-/// Reads the server's shared token interactively without accepting an empty value.
-async fn prompt_agent_token() -> Result<String> {
-    let mut stdout = tokio::io::stdout();
-    stdout.write_all(b"Agent token: ").await?;
-    stdout.flush().await?;
-
-    let mut token = String::new();
-    BufReader::new(tokio::io::stdin())
-        .read_line(&mut token)
-        .await
-        .context("Failed to read the agent token")?;
-    let token = token.trim().to_owned();
-    if token.is_empty() {
-        bail!("agent token must not be empty");
-    }
-    Ok(token)
 }
 
 /// Looks up the effective account name off the async runtime because NSS may block.
@@ -355,8 +422,11 @@ fn render_unit(mode: SystemdMode, binary: &Path, config_path: &Path, system: boo
     let binary = quote_unit_argument(binary.to_string_lossy().as_ref());
     let config_path = quote_unit_argument(config_path.to_string_lossy().as_ref());
     let (description, command) = match mode {
-        // Bare `agent` assumes the conventional config path is fully configured.
-        SystemdMode::Agent => ("Redoor agent", format!("{binary} agent")),
+        // Pin --config so the unit always loads the file prepared during setup.
+        SystemdMode::Agent => (
+            "Redoor agent",
+            format!("{binary} agent --config {config_path}"),
+        ),
         SystemdMode::Server => (
             "Redoor server",
             format!("{binary} server --config {config_path}"),
@@ -403,12 +473,43 @@ fn quote_unit_argument(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SystemdMode, quote_unit_argument, render_unit};
+    use super::{SystemdMode, quote_unit_argument, render_unit, resolve_unit_name};
     use std::path::Path;
 
-    /// Verifies agent units rely entirely on the TOML file with no CLI overrides.
+    /// Verifies default and overridden unit names, including automatic .service suffix.
     #[test]
-    fn agent_unit_has_no_cli_flags_or_env() {
+    fn resolve_unit_name_defaults_and_normalizes() {
+        assert_eq!(
+            resolve_unit_name(SystemdMode::Agent, None).unwrap(),
+            "redoor-agent.service"
+        );
+        assert_eq!(
+            resolve_unit_name(SystemdMode::Server, None).unwrap(),
+            "redoor-server.service"
+        );
+        assert_eq!(
+            resolve_unit_name(SystemdMode::Agent, Some("edge-agent".into())).unwrap(),
+            "edge-agent.service",
+            "missing .service should be appended"
+        );
+        assert_eq!(
+            resolve_unit_name(SystemdMode::Server, Some("redoor-api.service".into())).unwrap(),
+            "redoor-api.service",
+            "explicit .service should be kept"
+        );
+        assert!(
+            resolve_unit_name(SystemdMode::Agent, Some("../escape".into())).is_err(),
+            "path components must be rejected"
+        );
+        assert!(
+            resolve_unit_name(SystemdMode::Agent, Some("  ".into())).is_err(),
+            "blank names must be rejected"
+        );
+    }
+
+    /// Verifies agent units pin the prepared config and take no other CLI overrides.
+    #[test]
+    fn agent_unit_pins_config_without_other_cli_flags() {
         let unit = render_unit(
             SystemdMode::Agent,
             Path::new("/home/test user/bin/redoor"),
@@ -417,15 +518,14 @@ mod tests {
         );
 
         assert!(
-            unit.contains("ExecStart=\"/home/test user/bin/redoor\" agent\n"),
-            "the agent service must start with a bare `agent` subcommand: {unit}"
+            unit.contains(
+                "ExecStart=\"/home/test user/bin/redoor\" agent --config \"/home/test user/.config/redoor/config.toml\""
+            ),
+            "the agent service must pin the prepared config path: {unit}"
         );
         assert!(
-            !unit.contains("--token")
-                && !unit.contains("--name")
-                && !unit.contains("--config")
-                && !unit.contains("Environment="),
-            "agent settings must come from the TOML file, not the unit: {unit}"
+            !unit.contains("--token") && !unit.contains("--name") && !unit.contains("Environment="),
+            "agent runtime settings must come from the TOML file, not the unit: {unit}"
         );
         assert!(
             unit.contains("WantedBy=default.target"),
@@ -481,9 +581,9 @@ mod tests {
         );
     }
 
-    /// Verifies system agent units stay root and still take settings from TOML only.
+    /// Verifies system agent units stay root and pin /etc/redoor config.
     #[test]
-    fn system_agent_unit_runs_as_root_without_cli_flags() {
+    fn system_agent_unit_runs_as_root_with_config_path() {
         let unit = render_unit(
             SystemdMode::Agent,
             Path::new("/usr/local/bin/redoor"),
@@ -496,8 +596,10 @@ mod tests {
             "system agent should inherit root from the system manager: {unit}"
         );
         assert!(
-            unit.contains("ExecStart=\"/usr/local/bin/redoor\" agent\n"),
-            "system agent must start bare so /etc/redoor config is authoritative: {unit}"
+            unit.contains(
+                "ExecStart=\"/usr/local/bin/redoor\" agent --config \"/etc/redoor/config.toml\""
+            ),
+            "system agent should pin /etc/redoor/config.toml: {unit}"
         );
         assert!(
             unit.contains("WantedBy=multi-user.target"),

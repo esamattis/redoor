@@ -30,6 +30,34 @@ pub(crate) fn default_config_path() -> Result<PathBuf> {
     Ok(home.join(".config/redoor/config.toml"))
 }
 
+/// Conventional directory for process log files under the current privileges.
+///
+/// Root uses `/var/log/redoor` so system units share a writable location the
+/// `redoor` service user can own; non-root keeps logs under XDG data home.
+pub(crate) fn default_log_directory() -> Result<PathBuf> {
+    if effective_uid_is_root() {
+        return Ok(PathBuf::from("/var/log/redoor"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set; cannot resolve the default log directory")?;
+    Ok(home.join(".local/share/redoor/logs"))
+}
+
+/// Default UI/workdir for a local agent: home for normal users, filesystem root for root.
+///
+/// Root installs often manage the whole host, so `/` is the useful starting point;
+/// non-root should not escape the operator's home by default.
+fn default_agent_dir() -> Result<String> {
+    if effective_uid_is_root() {
+        return Ok("/".to_string());
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set; cannot resolve the default agent directory")?;
+    Ok(home.display().to_string())
+}
+
 /// Whether the process effective UID is root (system-install / privileged path).
 fn effective_uid_is_root() -> bool {
     #[cfg(unix)]
@@ -68,24 +96,28 @@ fn generate_secret() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Optional standalone `[agent]` values written into a starter config.
-struct DefaultAgentSection<'a> {
-    ws_address: &'a str,
-    name: &'a str,
+/// Paths and identity values baked into a starter config for the current host.
+struct DefaultConfigPaths {
+    server_log: String,
+    agent_log: String,
+    /// Separate file so the server-managed local child does not share the standalone agent log.
+    local_agent_log: String,
+    agent_dir: String,
+    agent_name: String,
 }
 
-/// Renders a complete starter config while keeping optional settings discoverable but disabled.
+/// Renders one shared starter config used by server bootstrap and systemd setup.
 ///
 /// On Linux, username/password are omitted so the server authenticates via the
 /// process owner's system account (PAM). Elsewhere both are required and generated.
-/// When `agent` is set, an active `[agent]` table is written so `redoor agent`
-/// can start from the file alone (systemd agent setup).
+/// The file always includes `[server]`, a runnable `[agent]`, and a managed local
+/// `[[agents]]` entry so the same TOML works for either process role after edits.
 fn default_config_content(
     username: Option<&str>,
     password: Option<&str>,
     agent_token: &str,
     agent_token_was_generated: bool,
-    agent: Option<DefaultAgentSection<'_>>,
+    paths: &DefaultConfigPaths,
 ) -> String {
     let agent_token = toml_edit::Value::from(agent_token).to_string();
     let credentials = match (username, password) {
@@ -105,68 +137,52 @@ fn default_config_content(
             .to_string()
         }
     };
-    let header = match (
-        username.is_some(),
-        agent_token_was_generated,
-        agent.is_some(),
-    ) {
-        (_, _, true) => {
-            "# agent_token was supplied during agent setup.\n# [agent] is fully set so `redoor agent` needs no CLI flags."
-        }
-        (true, true, false) => "# A random password and agent_token were generated on first start.",
-        (true, false, false) => {
+    let header = match (username.is_some(), agent_token_was_generated) {
+        (true, true) => "# A random password and agent_token were generated on first start.",
+        (true, false) => {
             "# A random browser password was generated; agent_token was supplied during setup."
         }
-        (false, true, false) => {
+        (false, true) => {
             "# A random agent_token was generated on first start.\n# Browser login uses the process owner's system username/password (Linux PAM)."
         }
-        (false, false, false) => {
+        (false, false) => {
             "# agent_token was supplied during setup.\n# Browser login uses the process owner's system username/password (Linux PAM)."
         }
     };
-    let for_standalone_agent = agent.is_some();
-    let agent_block = match agent {
-        Some(agent) => {
-            let ws_address = toml_edit::Value::from(agent.ws_address).to_string();
-            let name = toml_edit::Value::from(agent.name).to_string();
-            format!(
-                r#"[agent]
-ws_address = {ws_address}
-name = {name}
-# dir = "/home/local-user"
-# log = "log/agent.log"
-"#
-            )
-        }
-        None => {
-            r#"# Standalone agent settings. Uncomment for `redoor agent` / systemd --mode agent.
-# [agent]
-# ws_address = "ws://127.0.0.1:3000/ws"
-# name = "local"
-# dir = "/home/local-user"
-# log = "log/agent.log"
-"#
-            .to_string()
-        }
-    };
-    let server_block = if for_standalone_agent {
-        // Agent-only hosts do not need a [server] table.
-        String::new()
-    } else {
-        format!(
-            r#"[server]
+    let server_log = toml_edit::Value::from(paths.server_log.as_str()).to_string();
+    let agent_log = toml_edit::Value::from(paths.agent_log.as_str()).to_string();
+    let local_agent_log = toml_edit::Value::from(paths.local_agent_log.as_str()).to_string();
+    let agent_dir = toml_edit::Value::from(paths.agent_dir.as_str()).to_string();
+    let agent_name = toml_edit::Value::from(paths.agent_name.as_str()).to_string();
+    format!(
+        r#"# Redoor configuration (shared by server and agent).
+{header}
+# agent_token is top-level because both processes need the same secret.
+# Bind defaults to loopback; set bind = "0.0.0.0" only when intentionally exposing the server.
+# Review [agent] / [[agents]] before starting: defaults target this host's local server.
+
+agent_token = {agent_token}
+
+[server]
 {credentials}# port = 3000
 # bind = "127.0.0.1"
 # cookie_secure = false
-# log = "log/server.log"
+log = {server_log}
 
-"#
-        )
-    };
-    let managed_agents = if for_standalone_agent {
-        String::new()
-    } else {
-        r#"# SSH-backed agent example. Remove `# ` from this block to enable it.
+[agent]
+ws_address = "ws://localhost:3000/ws"
+name = {agent_name}
+dir = {agent_dir}
+log = {agent_log}
+
+# Server-managed local agent (spawned by `redoor server`).
+[[agents]]
+local = true
+name = {agent_name}
+dir = {agent_dir}
+log = {local_agent_log}
+
+# SSH-backed agent example. Remove `# ` from this block to enable it.
 # [[agents]]
 # target = "user@example.com"
 # local = false
@@ -176,26 +192,7 @@ name = {name}
 # remote_bin = "~/.local/redoor/<version>/redoor"
 # dir = "/home/remote-user"
 # log = "log/remote-agent.log"
-
-# Local agent example. Remove `# ` from this block to enable it.
-# [[agents]]
-# local = true
-# name = "local-agent"
-# dir = "/home/local-user"
-# log = "log/local-agent.log"
 "#
-        .to_string()
-    };
-    format!(
-        r#"# Redoor configuration (shared by server and agent).
-{header}
-# agent_token is top-level because both processes need the same secret.
-# Bind defaults to loopback; set bind = "0.0.0.0" only when intentionally exposing the server.
-
-agent_token = {agent_token}
-
-{server_block}{agent_block}
-{managed_agents}"#
     )
 }
 
@@ -206,32 +203,20 @@ pub(crate) struct CreatedDefaultConfig {
     pub(crate) agent_token: String,
 }
 
-/// Creates the conventional config with a random token without overwriting an existing file.
+/// Creates the conventional shared config with a random token without overwriting an existing file.
 pub(crate) async fn create_default_config_if_missing(
     path: &Path,
 ) -> Result<Option<CreatedDefaultConfig>> {
     create_default_config_if_missing_with_token(path, None).await
 }
 
-/// Creates the conventional config with an optional caller-supplied agent token.
+/// Creates the conventional shared config with an optional caller-supplied agent token.
 ///
-/// Systemd agent setup uses the supplied-token path because an agent must share
-/// the secret from its server, while ordinary server bootstrap generates one.
-/// When `for_standalone_agent` is true, the starter file includes a complete
-/// `[agent]` table and omits `[server]` so agent-only hosts need no server keys.
+/// Server bootstrap and systemd setup both write the same starter file so either
+/// process role can use it after the operator reviews defaults.
 pub(crate) async fn create_default_config_if_missing_with_token(
     path: &Path,
     agent_token: Option<&str>,
-) -> Result<Option<CreatedDefaultConfig>> {
-    create_default_config_if_missing_with_options(path, agent_token, false).await
-}
-
-/// Like [`create_default_config_if_missing_with_token`], optionally writing a
-/// fully configured standalone `[agent]` section for systemd agent install.
-pub(crate) async fn create_default_config_if_missing_with_options(
-    path: &Path,
-    agent_token: Option<&str>,
-    for_standalone_agent: bool,
 ) -> Result<Option<CreatedDefaultConfig>> {
     if tokio::fs::try_exists(path).await? {
         return Ok(None);
@@ -244,11 +229,8 @@ pub(crate) async fn create_default_config_if_missing_with_options(
     let agent_token = agent_token
         .map(str::to_owned)
         .unwrap_or_else(generate_secret);
-    // Agent-only starters skip browser credentials; server starters still need
-    // them on non-Linux where PAM is unavailable.
-    let (username, password): (Option<String>, Option<String>) = if for_standalone_agent {
-        (None, None)
-    } else {
+    // Non-Linux still needs embedded credentials because PAM is unavailable.
+    let (username, password): (Option<String>, Option<String>) = {
         #[cfg(target_os = "linux")]
         {
             (None, None)
@@ -260,15 +242,14 @@ pub(crate) async fn create_default_config_if_missing_with_options(
             (Some(username), Some(password))
         }
     };
-    let agent_name_owned = if for_standalone_agent {
-        Some(default_local_agent_name())
-    } else {
-        None
+    let log_directory = default_log_directory()?;
+    let paths = DefaultConfigPaths {
+        server_log: log_directory.join("server.log").display().to_string(),
+        agent_log: log_directory.join("agent.log").display().to_string(),
+        local_agent_log: log_directory.join("agent-local.log").display().to_string(),
+        agent_dir: default_agent_dir()?,
+        agent_name: default_local_agent_name(),
     };
-    let agent_section = agent_name_owned.as_ref().map(|name| DefaultAgentSection {
-        ws_address: "ws://localhost:3000/ws",
-        name,
-    });
     let parent = path
         .parent()
         .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
@@ -294,7 +275,7 @@ pub(crate) async fn create_default_config_if_missing_with_options(
         password.as_deref(),
         &agent_token,
         agent_token_was_generated,
-        agent_section,
+        &paths,
     );
     file.write_all(content.as_bytes())
         .await
@@ -817,6 +798,19 @@ pub(crate) async fn spawn_local_agent(
         // passing --log to the agent. The agent writes to stdout/stderr
         // and the OS redirect captures it, avoiding double-writes that
         // would happen if both --log and a redirect were used.
+        let log_path = Path::new(log);
+        if let Some(parent) = log_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                format!(
+                    "failed to create local agent log directory '{}': {}",
+                    parent.display(),
+                    e
+                )
+            })?;
+        }
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1591,21 +1585,53 @@ target = "host"
             );
         }
 
+        assert!(
+            standalone_agent_is_fully_configured(&config),
+            "starter config must be enough for bare `redoor agent`"
+        );
+        let agent = config
+            .agent
+            .as_ref()
+            .expect("starter config must include [agent]");
+        assert!(
+            server.log.is_some() && agent.log.is_some(),
+            "starter config must set conventional server and agent log paths"
+        );
+        assert!(
+            agent.dir.is_some(),
+            "starter config must set a default agent working directory"
+        );
+        let local_agent = config.agents.iter().find_map(|entry| match entry {
+            AgentConfig::Local(config) => Some(config),
+            AgentConfig::Ssh(_) => None,
+        });
+        let local_agent =
+            local_agent.expect("starter config must include a managed local [[agents]] entry");
+        assert_eq!(
+            local_agent.log.as_deref(),
+            Some(
+                default_log_directory()
+                    .unwrap()
+                    .join("agent-local.log")
+                    .to_str()
+                    .unwrap()
+            ),
+            "managed local agent must log to agent-local.log, not the standalone agent.log"
+        );
         for option in [
             "agent_token =",
             "# port =",
             "# bind =",
             "# cookie_secure =",
-            "# log =",
-            "# [agent]",
-            "# ws_address =",
+            "log =",
+            "[agent]",
+            "ws_address =",
+            "local = true",
             "# target =",
-            "# local =",
             "# username = \"remote-user\"",
             "# ssh_port =",
-            "# name =",
             "# remote_bin =",
-            "# dir =",
+            "dir =",
         ] {
             assert!(
                 content.contains(option),
@@ -1627,7 +1653,7 @@ target = "host"
         tokio::fs::remove_dir_all(directory).await.ok();
     }
 
-    /// Verifies agent setup can seed a complete standalone config with the server's token.
+    /// Verifies bootstrap can reuse a caller-supplied shared agent token.
     #[tokio::test]
     async fn test_create_default_config_with_supplied_agent_token() {
         let directory = std::env::temp_dir().join(format!(
@@ -1639,11 +1665,10 @@ target = "host"
         ));
         let path = directory.join("config.toml");
 
-        let created =
-            create_default_config_if_missing_with_options(&path, Some("shared-token"), true)
-                .await
-                .unwrap()
-                .expect("a missing agent config should be created");
+        let created = create_default_config_if_missing_with_token(&path, Some("shared-token"))
+            .await
+            .unwrap()
+            .expect("a missing config should be created");
         let config = parse_config_file(path.to_str().unwrap()).await.unwrap();
 
         assert_eq!(
@@ -1655,12 +1680,12 @@ target = "host"
             "the shared parser should recover the supplied token from the common config"
         );
         assert!(
-            config.server.is_none(),
-            "standalone agent bootstrap should omit [server]"
+            config.server.is_some(),
+            "shared bootstrap always writes [server]"
         );
         assert!(
             standalone_agent_is_fully_configured(&config),
-            "standalone agent bootstrap must be runnable without CLI flags"
+            "shared bootstrap must be runnable as a bare agent without CLI flags"
         );
 
         tokio::fs::remove_dir_all(directory).await.ok();
