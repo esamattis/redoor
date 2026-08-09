@@ -92,6 +92,8 @@ jobs:
           key: aarch64-linux-android-debug
 
       - name: Build Android debug binary
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo ndk --target arm64-v8a --platform 24 build --locked
 
       - name: Verify Android binary

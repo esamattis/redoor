@@ -99,6 +99,8 @@ jobs:
 
       - name: Build Android release binary
         if: matrix.target == 'aarch64-linux-android'
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo ndk --target arm64-v8a --platform 24 build --locked --release
 
       - name: Verify static Linux binary

@@ -65,5 +65,10 @@ silent_unless_error pn lint
 silent_unless_error pn format:check
 silent_unless_error cargo fmt -- --check
 silent_unless_error cargo clippy -- -D warnings
+if cargo ndk --version &>/dev/null; then
+    silent_unless_error env RUSTFLAGS=-Dwarnings cargo ndk --target arm64-v8a --platform 24 check --locked
+else
+    echo "> Android warning check skipped (cargo-ndk is not installed)"
+fi
 silent_unless_error pn integration-test
 playwright_unless_error pn playwright

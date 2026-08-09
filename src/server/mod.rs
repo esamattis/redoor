@@ -23,10 +23,11 @@ mod ws;
 pub(crate) use auth::{AuthState, LoginCredentials};
 #[cfg(target_os = "linux")]
 pub(crate) use config::default_log_directory;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use config::standalone_agent_is_fully_configured;
 pub(crate) use config::{
     create_default_config_if_missing, default_agent_log_path, default_config_path,
     default_server_log_path, parse_config_file, require_server_section,
-    standalone_agent_is_fully_configured,
 };
 pub(crate) use redoor::watchdog::WatchdogRegistry;
 pub(crate) use routes::build_app;

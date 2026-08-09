@@ -1,5 +1,7 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Stdio;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::process::Command;
 
 /// Desktop family used to choose notification fallbacks without coupling startup to a toolkit.
@@ -77,6 +79,7 @@ fn has_non_empty_value(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 /// Attempts native notification commands in desktop-appropriate order without surfacing failures.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) async fn show_agent_started(
     desktop_environment: DesktopEnvironment,
     agent_name: &str,
@@ -106,6 +109,15 @@ pub(super) async fn show_agent_started(
                 || show_kde_notification(&message).await
         }
     }
+}
+
+/// Keeps startup notifications disabled on platforms without a supported desktop launcher.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) async fn show_agent_started(
+    _desktop_environment: DesktopEnvironment,
+    _agent_name: &str,
+) -> bool {
+    false
 }
 
 /// Uses the freedesktop client shared by GNOME, KDE, and many smaller Linux desktops.
@@ -179,6 +191,7 @@ async fn show_macos_notification(message: &str) -> bool {
 }
 
 /// Opens an existing filesystem path with the platform launcher for the detected desktop.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) async fn open_path(path: &str) -> Result<(), String> {
     let Some(desktop_environment) = detect_desktop_environment() else {
         return Err("Agent does not have access to a graphical desktop".to_string());
@@ -206,7 +219,14 @@ pub(super) async fn open_path(path: &str) -> Result<(), String> {
     }
 }
 
+/// Reports native path opening as unavailable where no desktop launcher is supported.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) async fn open_path(_path: &str) -> Result<(), String> {
+    Err("Agent does not have access to a graphical desktop".to_string())
+}
+
 /// Runs one finite notification helper with all output suppressed for best-effort startup behavior.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn command_succeeded(program: &str, args: &[&str]) -> bool {
     Command::new(program)
         .args(args)
