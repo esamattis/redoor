@@ -78,6 +78,12 @@ test.describe.serial("Copy Operations", () => {
 
         // File detail pages are not copy destinations, so they do not show the action.
         await expect(copyButton).toHaveCount(0);
+
+        // Drop the selection so later serial tests start from a clean clipboard state.
+        await page.getByRole("button", { name: "Clear all" }).click();
+        await expect(
+            page.getByRole("heading", { name: "Selected items" }),
+        ).toHaveCount(0);
     });
 
     test("should copy a file to a newly created directory within the same agent", async ({
@@ -121,47 +127,76 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
         );
 
-        await page.goBack();
+        // Prefer an explicit parent navigation over history back: bfcache can restore a
+        // listing that still omits the directory that was just created.
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
 
-        // Returning to the parent makes the source file available for selection.
+        // Returning to the parent makes the source file and new directory available.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
+        await expect(
+            page.getByRole("button", { name: "Select file file1.txt" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: copyTargetDirName, exact: true }),
+        ).toBeVisible();
+
+        // Clear any leftover selection from earlier serial tests in this worker.
+        const clearSelection = page.getByRole("button", { name: "Clear all" });
+        if (await clearSelection.isVisible()) {
+            await clearSelection.click();
+        }
 
         // Select the source file from the parent directory.
         await page
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
-        // The selected-items panel appears while the copy action stays in the directory view.
+        // The selected-items panel must show the file we just chose, not another row.
         await expect(
             page.getByRole("heading", { name: "Selected items" }),
+        ).toBeVisible();
+        await expect(
+            page
+                .getByRole("heading", { name: "Selected items" })
+                .locator("xpath=ancestor::section")
+                .getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
 
         // Navigate into the newly created directory to set it as the copy destination.
         await page
             .getByRole("link", { name: copyTargetDirName, exact: true })
             .click();
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
+        );
 
         // The selection persists across navigation, so the destination action is enabled.
         const copyButton = page.getByRole("button", {
             name: "Copy selected files here",
         });
         await expect(copyButton).toBeEnabled();
+        await expect(page.getByText("1 item selected")).toBeVisible();
 
         await copyButton.click();
 
         // Polling the filesystem is more reliable than waiting on UI messages because
         // the selected-items panel disappears immediately after a successful copy.
         await expect
-            .poll(async () => {
-                try {
-                    await fs.stat(copiedFilePath);
-                    return "exists";
-                } catch {
-                    return "missing";
-                }
-            })
+            .poll(
+                async () => {
+                    try {
+                        await fs.stat(copiedFilePath);
+                        return "exists";
+                    } catch {
+                        return "missing";
+                    }
+                },
+                { timeout: 15000 },
+            )
             .toBe("exists");
 
         // Reload the page because the directory listing does not auto-refresh after copy.
