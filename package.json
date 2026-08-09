@@ -2,6 +2,14 @@
     "name": "redoor-ui",
     "private": true,
     "type": "module",
+    "packageManager": "pnpm@11.20.0",
+    "devEngines": {
+        "runtime": {
+            "name": "node",
+            "version": "26.7.0",
+            "onFail": "download"
+        }
+    },
     "imports": {
         "#bindings/*": "./bindings/*.ts",
         "#error-utils": "./error-utils.ts",
