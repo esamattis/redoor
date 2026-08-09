@@ -3,10 +3,11 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { ApiClient, Agent } from "@/api-client";
+import { ApiClient, Agent } from "#ui/api-client";
 import { Toxiproxy } from "toxiproxy-node-client";
 import type Proxy from "toxiproxy-node-client/dist/Proxy";
-import { testPorts } from "../test-ports.ts";
+import { testPorts } from "#test-ports";
+import { isErrorCode } from "#error-utils";
 
 export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -317,9 +318,9 @@ password = "${TEST_PASSWORD}"
             // Spawned processes are detached group leaders, so kill the group
             // to prevent server-managed child agents surviving between runs.
             process.kill(-pid, "SIGKILL");
-        } catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== "ESRCH") {
-                throw e;
+        } catch (error) {
+            if (!isErrorCode(error, "ESRCH")) {
+                throw error;
             }
         }
         this.processes.delete(pid);

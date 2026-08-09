@@ -6,7 +6,7 @@ import {
     afterAll,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
+import { ApiClient, Agent } from "#ui/api-client";
 import { writeFileSync, rmSync } from "node:fs";
 import {
     ProcessManager,

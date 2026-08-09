@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Agent } from "@/api-client";
+import { Agent } from "#ui/api-client";
 import {
     ProcessManager,
     TempFileManager,

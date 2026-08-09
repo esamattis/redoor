@@ -2,7 +2,7 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
-import { Password } from "../components/password";
+import { Password } from "#ui/components/password";
 
 const loginSearchSchema = z.object({
     redirect: z.string().optional(),

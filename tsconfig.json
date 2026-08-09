@@ -16,9 +16,6 @@
         "strict": true,
         "noUncheckedIndexedAccess": true,
         "noFallthroughCasesInSwitch": true,
-        "noUncheckedSideEffectImports": true,
-        "paths": {
-            "@/*": ["./ui/src/*"]
-        }
+        "noUncheckedSideEffectImports": true
     }
 }

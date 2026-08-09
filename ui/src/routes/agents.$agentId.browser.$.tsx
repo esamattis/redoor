@@ -32,14 +32,14 @@ import {
     Search,
     FilePlus,
 } from "lucide-react";
-import { ConfirmationDialog } from "../components/confirmation-dialog";
-import { CopyableCodeRow } from "../components/copyable-code-row";
-import { Dialog } from "../components/dialog";
-import { requestClipboardPaste } from "../components/global-file-import-handler";
-import { RouteError } from "../components/route-error";
-import { Tooltip } from "../components/tooltip";
-import { atomWithLocalStorage } from "../utils/local-storage-atom";
-import { formatSize } from "../utils/path";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { CopyableCodeRow } from "#ui/components/copyable-code-row";
+import { Dialog } from "#ui/components/dialog";
+import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
+import { RouteError } from "#ui/components/route-error";
+import { Tooltip } from "#ui/components/tooltip";
+import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
+import { formatSize } from "#ui/utils/path";
 import {
     type Agent,
     type LsResponse,
@@ -47,13 +47,13 @@ import {
     isLsFileResponse,
     type LsDirectoryResponse,
     type LsFileResponse,
-} from "../api-client";
+} from "#ui/api-client";
 import {
     selectedFileKeysAtom,
     selectedFilesAtom,
     toggleSelectedFileAtom,
     unselectFileAtom,
-} from "../selected-files";
+} from "#ui/selected-files";
 
 type DeleteState =
     | { type: "idle" }

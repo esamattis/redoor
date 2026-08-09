@@ -7,8 +7,8 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
-import type { TransferProgressEntry } from "@/api-client";
+import { ApiClient, Agent } from "#ui/api-client";
+import type { TransferProgressEntry } from "#ui/api-client";
 
 import fs from "node:fs";
 import {
@@ -20,7 +20,12 @@ import {
     startServerAndAgent,
 } from "./test-utils";
 import { Toxiproxy } from "toxiproxy-node-client";
+import { z } from "zod";
+
 const AGENT_NAME = "raw-test-agent";
+const createOneTimeTokenResponseSchema = z.object({
+    one_time_token: z.string(),
+});
 
 describe("Raw Download API", () => {
     const processManager = new ProcessManager();
@@ -78,12 +83,10 @@ describe("Raw Download API", () => {
         // Token creation remains protected by the normal authenticated API boundary.
         expect(createResponse.status).toBe(200);
         const { one_time_token: oneTimeToken } =
-            (await createResponse.json()) as {
-                one_time_token: string;
-            };
-        const metadataBefore = (await testAgent.metadata(
-            testFilePath,
-        )) as unknown as { one_time_tokens: string[] };
+            createOneTimeTokenResponseSchema.parse(
+                await createResponse.json(),
+            );
+        const metadataBefore = await testAgent.metadata(testFilePath);
         // Metadata exposes the still-outstanding token only for its exact path.
         expect(metadataBefore.one_time_tokens).toContain(oneTimeToken);
 
@@ -92,9 +95,8 @@ describe("Raw Download API", () => {
         );
         // A path mismatch fails before file work without consuming the valid token.
         expect(mismatchResponse.status).toBe(401);
-        const metadataAfterMismatch = (await testAgent.metadata(
-            testFilePath,
-        )) as unknown as { one_time_tokens: string[] };
+        const metadataAfterMismatch =
+            await testAgent.metadata(testFilePath);
         // Failed matching leaves the legitimate exact-path token outstanding.
         expect(metadataAfterMismatch.one_time_tokens).toContain(oneTimeToken);
 
@@ -112,9 +114,7 @@ describe("Raw Download API", () => {
         const reusedResponse = await fetch(tokenUrl);
         // Registry removal makes the successfully consumed UUID unusable afterward.
         expect(reusedResponse.status).toBe(401);
-        const metadataAfterUse = (await testAgent.metadata(
-            testFilePath,
-        )) as unknown as { one_time_tokens: string[] };
+        const metadataAfterUse = await testAgent.metadata(testFilePath);
         // Successful consumption removes the token from registry memory and metadata.
         expect(metadataAfterUse.one_time_tokens).not.toContain(oneTimeToken);
     });

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
-import { ApiError } from "../api-client";
+import { ApiError } from "#ui/api-client";
 
 /** True for browser network failures that never received an HTTP response. */
 function isNetworkError(error: unknown): boolean {

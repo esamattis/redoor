@@ -18,22 +18,22 @@ import {
     ScrollText,
     Package,
 } from "lucide-react";
-import { getBrowserUrl, type Agent } from "../api-client";
-import type { AgentDetailsResponse } from "../../../bindings/AgentDetailsResponse";
+import { getBrowserUrl, type Agent } from "#ui/api-client";
+import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import {
     agentStartStatesAtom,
     getStartErrorMessage,
-} from "../agent-start-state";
+} from "#ui/agent-start-state";
 import {
     agentTabLocationsAtom,
     getAgentTabLocation,
-} from "../agent-tab-locations";
-import { BinaryIdentityFields } from "../components/binary-identity";
-import { CopyablePath } from "../components/copyable-code-row";
-import { RouteError } from "../components/route-error";
-import { RestartButton, waitForRestart } from "../components/restart-button";
-import { UpgradeButton } from "../components/upgrade-button";
-import { formatAgentRecency, useNow } from "../utils/agent-time";
+} from "#ui/agent-tab-locations";
+import { BinaryIdentityFields } from "#ui/components/binary-identity";
+import { CopyablePath } from "#ui/components/copyable-code-row";
+import { RouteError } from "#ui/components/route-error";
+import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { UpgradeButton } from "#ui/components/upgrade-button";
+import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/")({

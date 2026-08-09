@@ -1,14 +1,7 @@
 import { defineConfig } from "vitest/config";
-import path from "node:path";
 import { testPorts } from "./test-ports.ts";
 
 export default defineConfig({
-    resolve: {
-        alias: {
-            "@bindings": path.resolve(import.meta.dirname, "./ui/bindings"),
-            "@": path.resolve(import.meta.dirname, "./ui/src"),
-        },
-    },
     test: {
         environment: "node",
         env: {

@@ -7,14 +7,15 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
+import { z } from "zod";
 import {
     ApiClient,
     Agent,
     encodeFilesystemPath,
     isLsDirectoryResponse,
     isLsFileResponse,
-} from "@/api-client";
-import type { FileSearchResponse } from "../bindings/FileSearchResponse";
+} from "#ui/api-client";
+import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import fs from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -26,6 +27,17 @@ import {
     waitForValue,
 } from "./test-utils";
 const AGENT_NAME = "test-agent";
+
+const fileSearchResponseSchema: z.ZodType<FileSearchResponse> = z.object({
+    results: z.array(
+        z.object({
+            name: z.string(),
+            path: z.string(),
+            type: z.string(),
+        }),
+    ),
+    timed_out: z.boolean(),
+});
 
 const processManager = new ProcessManager();
 const tempFiles = new TempFileManager();
@@ -83,7 +95,7 @@ async function searchAgentFiles(
     const response = await fetch(url, { headers: agent.getAuthHeaders() });
     // Successful transport proves the REST route relayed the command to the connected agent.
     expect(response.status).toBe(200);
-    return (await response.json()) as FileSearchResponse;
+    return fileSearchResponseSchema.parse(await response.json());
 }
 
 describe("Agents API", () => {

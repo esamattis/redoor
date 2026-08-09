@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ApiClient, encodeFilesystemPath } from "../src/api-client";
-import { testPorts } from "../../test-ports.ts";
+import { ApiClient, encodeFilesystemPath } from "#ui/api-client";
+import { testPorts } from "#test-ports";
 
 export { encodeFilesystemPath };
 

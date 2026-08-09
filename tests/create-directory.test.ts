@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { Agent } from "@/api-client";
+import { Agent } from "#ui/api-client";
 import path from "node:path";
 import fs from "node:fs/promises";
 import {

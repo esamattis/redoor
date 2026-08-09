@@ -7,8 +7,8 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
-import type { TransferProgressEntry } from "@/api-client";
+import { ApiClient, Agent } from "#ui/api-client";
+import type { TransferProgressEntry } from "#ui/api-client";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -157,7 +157,7 @@ describe("Raw Upload API", () => {
             },
         });
 
-        const uploadPromise = fetch(testAgent.getRawUrl(uploadedFilePath), {
+        const uploadOptions = {
             method: "PUT",
             headers: {
                 "Content-Type": "application/octet-stream",
@@ -166,7 +166,11 @@ describe("Raw Upload API", () => {
             },
             body: uploadBody,
             duplex: "half",
-        } as RequestInit & { duplex: "half" });
+        };
+        const uploadPromise = fetch(
+            testAgent.getRawUrl(uploadedFilePath),
+            uploadOptions,
+        );
 
         const activeTransfer = await waitForValue({
             description: "active upload progress row",
@@ -253,7 +257,7 @@ describe("Raw Upload API", () => {
             },
         });
 
-        const uploadPromise = fetch(testAgent.getRawUrl(uploadedFilePath), {
+        const uploadOptions = {
             method: "PUT",
             headers: {
                 "Content-Type": "application/octet-stream",
@@ -263,7 +267,11 @@ describe("Raw Upload API", () => {
             body: uploadBody,
             duplex: "half",
             signal: controller.signal,
-        } as RequestInit & { duplex: "half" });
+        };
+        const uploadPromise = fetch(
+            testAgent.getRawUrl(uploadedFilePath),
+            uploadOptions,
+        );
 
         const activeTransfer = await waitForValue({
             description: "active upload progress row before client abort",

@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 
-import { LogViewer } from "../components/log-viewer";
+import { LogViewer } from "#ui/components/log-viewer";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/logs")({

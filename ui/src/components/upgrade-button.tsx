@@ -1,7 +1,7 @@
 import * as React from "react";
 import { AlertTriangle, CheckCircle2, PackageOpen } from "lucide-react";
 
-import type { ServerInfoResponse } from "../api-client";
+import type { ServerInfoResponse } from "#ui/api-client";
 import { ConfirmationDialog } from "./confirmation-dialog";
 
 type UpgradeState =

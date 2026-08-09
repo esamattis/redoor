@@ -1,7 +1,7 @@
 import * as React from "react";
 import { ScrollText } from "lucide-react";
 
-import type { LogEvent } from "../api-client";
+import type { LogEvent } from "#ui/api-client";
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 type LogEntry = { id: number; text: string };

@@ -2,10 +2,13 @@ import type { ReactNode } from "react";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { FileCode2, Globe2, HardDrive, KeyRound, Server } from "lucide-react";
 
-import type { ServerAuthMode } from "../api-client";
-import { BinaryIdentityFields } from "../components/binary-identity";
-import { CopyableCodeRow, CopyablePath } from "../components/copyable-code-row";
-import { RestartButton, waitForRestart } from "../components/restart-button";
+import type { ServerAuthMode } from "#ui/api-client";
+import { BinaryIdentityFields } from "#ui/components/binary-identity";
+import {
+    CopyableCodeRow,
+    CopyablePath,
+} from "#ui/components/copyable-code-row";
+import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({

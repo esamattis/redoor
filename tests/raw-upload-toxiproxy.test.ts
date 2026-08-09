@@ -7,8 +7,8 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent } from "@/api-client";
-import type { TransferProgressEntry } from "@/api-client";
+import { ApiClient, Agent } from "#ui/api-client";
+import type { TransferProgressEntry } from "#ui/api-client";
 
 import {
     ProcessManager,

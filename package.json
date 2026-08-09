@@ -2,6 +2,15 @@
     "name": "redoor-ui",
     "private": true,
     "type": "module",
+    "imports": {
+        "#bindings/*": "./bindings/*.ts",
+        "#error-utils": "./error-utils.ts",
+        "#test-ports": "./test-ports.ts",
+        "#ui/*": "./ui/src/*.ts",
+        "#ui/components/*": "./ui/src/components/*.tsx",
+        "#ui/terminal/*": "./ui/src/terminal/*.ts",
+        "#ui/utils/*": "./ui/src/utils/*.ts"
+    },
     "scripts": {
         "vite": "vite ./ui",
         "build": "vite build ./ui && cargo build",

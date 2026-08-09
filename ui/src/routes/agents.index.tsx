@@ -1,16 +1,16 @@
 import * as React from "react";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { MoreHorizontal, Play, Power, FolderOpen } from "lucide-react";
-import type { Agent, BinaryIdentity } from "../api-client";
+import type { Agent, BinaryIdentity } from "#ui/api-client";
 import {
     fieldMatchTone,
     RevValue,
     VersionValue,
-} from "../components/binary-identity";
-import { ConfirmationDialog } from "../components/confirmation-dialog";
-import { Dialog } from "../components/dialog";
-import { RestartButton, waitForRestart } from "../components/restart-button";
-import { formatAgentRecency, useNow } from "../utils/agent-time";
+} from "#ui/components/binary-identity";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { Dialog } from "#ui/components/dialog";
+import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/agents/")({

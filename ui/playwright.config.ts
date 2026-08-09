@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { testPorts } from "../test-ports.ts";
+import { testPorts } from "#test-ports";
 
 /**
  * Read environment variables from file.

@@ -8,13 +8,14 @@ import {
     onTestFinished,
 } from "vitest";
 import WebSocket from "ws";
+import { z } from "zod";
 
 import {
     ApiError,
     type Agent,
     type ApiClient,
     type BinaryIdentity,
-} from "@/api-client";
+} from "#ui/api-client";
 import {
     ProcessManager,
     SERVER_PATH,
@@ -24,6 +25,7 @@ import {
 } from "./test-utils";
 
 const AGENT_NAME = "upgrade-external-agent";
+const jsonControlMessageSchema = z.record(z.string(), z.unknown());
 
 /** Waits for a websocket to become writable without relying on timing delays. */
 async function waitForSocketOpen(socket: WebSocket): Promise<void> {
@@ -40,7 +42,11 @@ async function nextJsonMessage(
     return new Promise((resolve, reject) => {
         socket.once("message", (data) => {
             try {
-                resolve(JSON.parse(data.toString()) as Record<string, unknown>);
+                resolve(
+                    jsonControlMessageSchema.parse(
+                        JSON.parse(data.toString()),
+                    ),
+                );
             } catch (error) {
                 reject(error);
             }
@@ -201,7 +207,7 @@ describe("connected external agent upgrade", () => {
         const receivedCommands: Array<Record<string, unknown>> = [];
         control.on("message", (data) => {
             receivedCommands.push(
-                JSON.parse(data.toString()) as Record<string, unknown>,
+                jsonControlMessageSchema.parse(JSON.parse(data.toString())),
             );
         });
         let error: unknown;

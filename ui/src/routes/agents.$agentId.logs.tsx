@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertCircle, HardDrive } from "lucide-react";
 
-import { LogViewer } from "../components/log-viewer";
+import { LogViewer } from "#ui/components/log-viewer";
 import { getAgentFromRootLoaderData } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/logs")({

@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentConnectionStatus } from "../../../bindings/AgentConnectionStatus";
+import type { AgentConnectionStatus } from "#bindings/AgentConnectionStatus";
 
 /** Formats compact elapsed time while keeping second-level startup feedback useful. */
 function formatElapsed(totalSeconds: number): string {

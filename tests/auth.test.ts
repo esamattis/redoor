@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 
 import { join } from "node:path";
 
-import { ApiClient } from "@/api-client";
+import { ApiClient } from "#ui/api-client";
 import {
     ProcessManager,
     TEST_AGENT_TOKEN,

@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeftRight } from "lucide-react";
 
 import { Route as RootRoute } from "./__root";
-import { TransferList } from "../components/transfer-list";
+import { TransferList } from "#ui/components/transfer-list";
 
 export const Route = createFileRoute("/transfers/")({
     component: TransfersPage,

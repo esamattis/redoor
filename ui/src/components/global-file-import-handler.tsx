@@ -1,7 +1,7 @@
 import React from "react";
 import { useRouter } from "@tanstack/react-router";
 import { ClipboardPaste, Upload } from "lucide-react";
-import type { Agent } from "../api-client";
+import type { Agent } from "#ui/api-client";
 import { Dialog } from "./dialog";
 import { Toast } from "./toast";
 

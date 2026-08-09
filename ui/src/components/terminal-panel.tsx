@@ -18,9 +18,9 @@ import {
     type Agent,
     type TerminalClientMessage,
     type TerminalServerMessage,
-} from "@/api-client";
-import { initializeGhostty } from "@/terminal/ghostty";
-import { CollapsibleBottomPanel } from "@/components/collapsible-bottom-panel";
+} from "#ui/api-client";
+import { initializeGhostty } from "#ui/terminal/ghostty";
+import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
 
 type TerminalState =
     | { type: "not_started" }

@@ -3,6 +3,7 @@ import {
     test,
     type WebSocket as PlaywrightWebSocket,
 } from "@playwright/test";
+import { z } from "zod";
 import {
     setupTestDir,
     teardownTestDir,
@@ -68,7 +69,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const detailsResponse = await request.get(
             `${WEB_BASE_URL}/api/v1/agents/${ctx.agentId}`,
         );
-        const agentDetails = (await detailsResponse.json()) as { cwd: string };
+        const agentDetails = z
+            .object({ cwd: z.string() })
+            .parse(await detailsResponse.json());
 
         await page.goto(ctx.agentBrowserUrl);
         await expect(

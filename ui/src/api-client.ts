@@ -1,41 +1,42 @@
-import type { LsDirectoryResponse } from "../../bindings/LsDirectoryResponse";
-import type { LsFileResponse } from "../../bindings/LsFileResponse";
-import type { ErrorResponse } from "../../bindings/ErrorResponse";
-import type { AgentListResponse } from "../../bindings/AgentListResponse";
-import type { AgentDetailsResponse } from "../../bindings/AgentDetailsResponse";
-import type { EchoRequest } from "../../bindings/EchoRequest";
-import type { EchoResponse } from "../../bindings/EchoResponse";
-import type { AgentInfoResponse } from "../../bindings/AgentInfoResponse";
-import type { AgentConnectionStatus } from "../../bindings/AgentConnectionStatus";
-import type { StartAgentResponse } from "../../bindings/StartAgentResponse";
-import type { ShutdownAgentResponse } from "../../bindings/ShutdownAgentResponse";
-import type { TransferDirection } from "../../bindings/TransferDirection";
-import type { TransferProgressEntry } from "../../bindings/TransferProgressEntry";
-import type { TransferProgressListResponse } from "../../bindings/TransferProgressListResponse";
-import type { TransferProgressState } from "../../bindings/TransferProgressState";
-import type { UiEvent } from "../../bindings/UiEvent";
-import type { RawDeleteResponse } from "../../bindings/RawDeleteResponse";
-import type { CreateDirectoryResponse } from "../../bindings/CreateDirectoryResponse";
-import type { CopyFileRequest } from "../../bindings/CopyFileRequest";
-import type { CopyFileResponse } from "../../bindings/CopyFileResponse";
-import type { CopyEndpoint } from "../../bindings/CopyEndpoint";
-import type { TerminalSize } from "../../bindings/TerminalSize";
-import type { TerminalClientMessage } from "../../bindings/TerminalClientMessage";
-import type { TerminalServerMessage } from "../../bindings/TerminalServerMessage";
-import type { LoginRequest } from "../../bindings/LoginRequest";
-import type { LoginResponse } from "../../bindings/LoginResponse";
-import type { LogoutResponse } from "../../bindings/LogoutResponse";
-import type { MetadataResponse } from "../../bindings/MetadataResponse";
-import type { CreateOneTimeTokenResponse } from "../../bindings/CreateOneTimeTokenResponse";
-import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
-import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
-import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
-import type { BinaryIdentity } from "../../bindings/BinaryIdentity";
-import type { RestartResponse } from "../../bindings/RestartResponse";
-import type { UpgradeAgentResponse } from "../../bindings/UpgradeAgentResponse";
-import type { LogEvent } from "../../bindings/LogEvent";
-import type { RenamePathRequest } from "../../bindings/RenamePathRequest";
-import type { RenamePathResponse } from "../../bindings/RenamePathResponse";
+import type { LsDirectoryResponse } from "#bindings/LsDirectoryResponse";
+import type { LsFileResponse } from "#bindings/LsFileResponse";
+import type { ErrorResponse } from "#bindings/ErrorResponse";
+import type { AgentListResponse } from "#bindings/AgentListResponse";
+import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
+import type { EchoRequest } from "#bindings/EchoRequest";
+import type { EchoResponse } from "#bindings/EchoResponse";
+import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
+import type { AgentConnectionStatus } from "#bindings/AgentConnectionStatus";
+import type { StartAgentResponse } from "#bindings/StartAgentResponse";
+import type { ShutdownAgentResponse } from "#bindings/ShutdownAgentResponse";
+import type { TransferDirection } from "#bindings/TransferDirection";
+import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
+import type { TransferProgressListResponse } from "#bindings/TransferProgressListResponse";
+import type { TransferProgressState } from "#bindings/TransferProgressState";
+import type { UiEvent } from "#bindings/UiEvent";
+import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
+import type { CreateDirectoryResponse } from "#bindings/CreateDirectoryResponse";
+import type { CopyFileRequest } from "#bindings/CopyFileRequest";
+import type { CopyFileResponse } from "#bindings/CopyFileResponse";
+import type { CopyEndpoint } from "#bindings/CopyEndpoint";
+import type { TerminalSize } from "#bindings/TerminalSize";
+import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
+import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
+import type { LoginRequest } from "#bindings/LoginRequest";
+import type { LoginResponse } from "#bindings/LoginResponse";
+import type { LogoutResponse } from "#bindings/LogoutResponse";
+import type { MetadataResponse } from "#bindings/MetadataResponse";
+import type { CreateOneTimeTokenResponse } from "#bindings/CreateOneTimeTokenResponse";
+import type { ServerInfoResponse } from "#bindings/ServerInfoResponse";
+import type { ServerAuthMode } from "#bindings/ServerAuthMode";
+import type { ServerBuildMode } from "#bindings/ServerBuildMode";
+import type { BinaryIdentity } from "#bindings/BinaryIdentity";
+import type { RestartResponse } from "#bindings/RestartResponse";
+import type { UpgradeAgentResponse } from "#bindings/UpgradeAgentResponse";
+import type { LogEvent } from "#bindings/LogEvent";
+import type { RenamePathRequest } from "#bindings/RenamePathRequest";
+import type { RenamePathResponse } from "#bindings/RenamePathResponse";
+import { z } from "zod";
 
 export type {
     LsDirectoryResponse,
@@ -96,6 +97,10 @@ type CopyFileResponseJson = {
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
 
+const errorResponseSchema: z.ZodType<ErrorResponse> = z.object({
+    error: z.string(),
+});
+
 type RequestContext = {
     getSessionCookie?: () => string | null;
     onUnauthorized?: () => void;
@@ -147,8 +152,8 @@ async function requireSuccessfulResponse(
     const text = await response.text();
     if (text) {
         try {
-            const error = JSON.parse(text) as ErrorResponse;
-            if (typeof error.error === "string" && error.error.length > 0) {
+            const error = errorResponseSchema.parse(JSON.parse(text));
+            if (error.error.length > 0) {
                 throw new ApiError(response.status, error.error, text);
             }
         } catch (error) {

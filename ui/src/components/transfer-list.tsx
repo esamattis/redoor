@@ -6,8 +6,8 @@ import {
     Copy,
     AlertCircle,
 } from "lucide-react";
-import { type ApiClient, type TransferProgressEntry } from "../api-client";
-import { formatSize, formatSpeed } from "../utils/path";
+import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
+import { formatSize, formatSpeed } from "#ui/utils/path";
 
 function getTransferSpeedBytesPerSecond(
     transfer: TransferProgressEntry,

@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { access, link, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
+import { isErrorCode } from "#error-utils";
 
 const TEST_PORTS_PATH = fileURLToPath(
     new URL("../../test_ports.json", import.meta.url),
@@ -37,7 +38,7 @@ async function ensureTestPorts(): Promise<void> {
         await access(TEST_PORTS_PATH);
         return;
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        if (!isErrorCode(error, "ENOENT")) {
             throw error;
         }
         // Continue to atomic creation when this worktree has no port file yet.
@@ -55,7 +56,7 @@ async function ensureTestPorts(): Promise<void> {
         );
         await link(temporaryPath, TEST_PORTS_PATH);
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        if (!isErrorCode(error, "EEXIST")) {
             throw error;
         }
     } finally {

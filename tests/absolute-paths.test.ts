@@ -8,7 +8,7 @@ import {
     startServerAndAgent,
     waitForValue,
 } from "./test-utils";
-import type { Agent, ApiClient } from "@/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 
 const processManager = new ProcessManager();
 const tempFiles = new TempFileManager();

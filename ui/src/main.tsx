@@ -7,8 +7,8 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
-import { ApiClient } from "@/api-client";
-import { RouteError } from "@/components/route-error";
+import { ApiClient } from "#ui/api-client";
+import { RouteError } from "#ui/components/route-error";
 
 // The API lives on the same origin as the page: the redoor binary
 // embeds the UI alongside the API on a single port, and during local

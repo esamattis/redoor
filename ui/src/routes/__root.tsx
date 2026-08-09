@@ -9,6 +9,7 @@ import {
     createRootRouteWithContext,
 } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
+import { z } from "zod";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
@@ -31,7 +32,7 @@ import {
     type TransferProgressEntry,
     type UiEvent,
     type ServerInfoResponse,
-} from "../api-client";
+} from "#ui/api-client";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import {
@@ -39,24 +40,28 @@ import {
     unselectFileAtom,
     clearSelectedFilesAtom,
     type SelectedPath,
-} from "../selected-files";
-import { ConfirmationDialog } from "../components/confirmation-dialog";
-import { Dialog } from "../components/dialog";
-import { Tooltip } from "../components/tooltip";
-import { TransferList } from "../components/transfer-list";
-import { CollapsibleBottomPanel } from "../components/collapsible-bottom-panel";
-import { TerminalPanel } from "../components/terminal-panel";
-import { getParentPath } from "../utils/path";
-import { GlobalFileImportHandler } from "../components/global-file-import-handler";
+} from "#ui/selected-files";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { Dialog } from "#ui/components/dialog";
+import { Tooltip } from "#ui/components/tooltip";
+import { TransferList } from "#ui/components/transfer-list";
+import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
+import { TerminalPanel } from "#ui/components/terminal-panel";
+import { getParentPath } from "#ui/utils/path";
+import { GlobalFileImportHandler } from "#ui/components/global-file-import-handler";
 import {
     agentTabLocationsAtom,
     getAgentTabLocation,
     rememberAgentTabLocationAtom,
-} from "../agent-tab-locations";
+} from "#ui/agent-tab-locations";
 import {
     agentStartStatesAtom,
     getStartErrorMessage,
-} from "../agent-start-state";
+} from "#ui/agent-start-state";
+
+const uiEventSchema: z.ZodType<UiEvent> = z.object({
+    type: z.literal("refresh"),
+});
 
 interface AppRouterContext {
     api: ApiClient;
@@ -177,7 +182,7 @@ export class RefreshListener {
             let message: UiEvent;
 
             try {
-                message = JSON.parse(event.data) as UiEvent;
+                message = uiEventSchema.parse(JSON.parse(event.data));
             } catch {
                 return;
             }
