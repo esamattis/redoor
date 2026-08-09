@@ -29,12 +29,14 @@ import {
     Pencil,
     HardDrive,
     Search,
+    FilePlus,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { CopyableCodeRow } from "../components/copyable-code-row";
 import { Dialog } from "../components/dialog";
 import { requestClipboardPaste } from "../components/global-file-import-handler";
 import { RouteError } from "../components/route-error";
+import { Tooltip } from "../components/tooltip";
 import { atomWithLocalStorage } from "../utils/local-storage-atom";
 import { formatSize } from "../utils/path";
 import {
@@ -60,6 +62,16 @@ type DeleteState =
 type CreateDirectoryState =
     | { type: "idle" }
     | { type: "creating" }
+    | { type: "error"; message: string };
+
+type CreateFileState =
+    | { type: "idle" }
+    | { type: "creating" }
+    | { type: "error"; message: string };
+
+type RenameState =
+    | { type: "idle" }
+    | { type: "renaming" }
     | { type: "error"; message: string };
 
 type ShareableLinkState =
@@ -250,6 +262,7 @@ function FileBrowser() {
 
                     {isDetailsView ? (
                         <DirectoryDetailView
+                            agent={agent}
                             path={path}
                             directoryName={
                                 path.split("/").filter(Boolean).pop() ?? "/"
@@ -774,6 +787,160 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
     );
 }
 
+/** Creates an empty text file and opens it immediately in the editor. */
+function CreateFileAction(props: { agent: Agent; directoryPath: string }) {
+    const navigate = useNavigate();
+    const inputId = React.useId();
+    const [isDialogOpen, setIsDialogOpen] = React.useState(false);
+    const [fileName, setFileName] = React.useState("");
+    const [createFileState, setCreateFileState] =
+        React.useState<CreateFileState>({ type: "idle" });
+
+    const trimmedFileName = fileName.trim();
+    const createFilePath = trimmedFileName
+        ? joinBrowserPath(props.directoryPath, trimmedFileName)
+        : null;
+    const isCreating = createFileState.type === "creating";
+
+    const resetDialog = () => {
+        setIsDialogOpen(false);
+        setFileName("");
+        setCreateFileState({ type: "idle" });
+    };
+
+    const closeDialog = () => {
+        if (!isCreating) {
+            resetDialog();
+        }
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (!createFilePath) {
+            setCreateFileState({
+                type: "error",
+                message: "File name is required",
+            });
+            return;
+        }
+        if (trimmedFileName.includes("/")) {
+            setCreateFileState({
+                type: "error",
+                message: "File name cannot contain a slash",
+            });
+            return;
+        }
+
+        setCreateFileState({ type: "creating" });
+
+        try {
+            await props.agent.upload(
+                createFilePath,
+                new globalThis.File([""], trimmedFileName, {
+                    type: "text/plain",
+                }),
+            );
+            await navigate({
+                to: props.agent.getBrowserUrl(createFilePath),
+                search: { view: "edit" },
+            });
+            resetDialog();
+        } catch (error) {
+            setCreateFileState({
+                type: "error",
+                message: getErrorMessage(error, "Create file failed"),
+            });
+        }
+    };
+
+    return (
+        <>
+            <button
+                type="button"
+                onClick={() => {
+                    setFileName("");
+                    setCreateFileState({ type: "idle" });
+                    setIsDialogOpen(true);
+                }}
+                aria-label="Create file"
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+            >
+                <FilePlus className="h-4 w-4 text-slate-400" />
+                New file
+            </button>
+
+            <Dialog
+                isOpen={isDialogOpen}
+                title="Create file"
+                description="Create an empty text file and open it for editing."
+                closeAriaLabel="Close create file dialog"
+                isBusy={isCreating}
+                errorMessage={
+                    createFileState.type === "error"
+                        ? createFileState.message
+                        : null
+                }
+                onClose={closeDialog}
+            >
+                <form onSubmit={handleSubmit} className="mt-4">
+                    <label
+                        htmlFor={inputId}
+                        className="mb-2 block text-sm font-medium text-slate-300"
+                    >
+                        File name
+                    </label>
+                    <input
+                        id={inputId}
+                        type="text"
+                        value={fileName}
+                        onChange={(event) => {
+                            setFileName(event.target.value);
+                            if (createFileState.type === "error") {
+                                setCreateFileState({ type: "idle" });
+                            }
+                        }}
+                        placeholder="notes.txt"
+                        autoFocus
+                        disabled={isCreating}
+                        className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
+                    />
+
+                    {createFilePath ? (
+                        <div className="mt-4">
+                            <p className="mb-2 text-sm text-slate-400">
+                                File path
+                            </p>
+                            <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                                {createFilePath}
+                            </p>
+                        </div>
+                    ) : null}
+
+                    <div className="mt-6 flex justify-end gap-3">
+                        <button
+                            type="button"
+                            onClick={closeDialog}
+                            disabled={isCreating}
+                            className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={isCreating}
+                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <FilePlus className="h-4 w-4" />
+                            {isCreating ? "Creating..." : "Create file"}
+                        </button>
+                    </div>
+                </form>
+            </Dialog>
+        </>
+    );
+}
+
 /** Separates location context, navigation, and directory actions by purpose. */
 function BrowserHeader(props: {
     agent: Agent;
@@ -888,16 +1055,22 @@ function BrowserHeader(props: {
                 {!pathMissing ? (
                     <div className="flex flex-wrap items-center gap-1">
                         {!props.isDetailsView ? (
-                            <button
-                                type="button"
-                                onClick={requestClipboardPaste}
-                                aria-label="Paste files or text"
-                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                            >
-                                <ClipboardPaste className="h-4 w-4 text-slate-400" />
-                                Paste
-                            </button>
+                            <Tooltip content="Pasted text or images are created as new files in this directory.">
+                                <button
+                                    type="button"
+                                    onClick={requestClipboardPaste}
+                                    aria-label="Paste files or text"
+                                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                    <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                                    Paste
+                                </button>
+                            </Tooltip>
                         ) : null}
+                        <CreateFileAction
+                            agent={props.agent}
+                            directoryPath={props.directoryPath}
+                        />
                         <CreateDirectoryAction
                             agent={props.agent}
                             directoryPath={props.directoryPath}
@@ -1541,8 +1714,133 @@ function FilesystemMetadataSections(props: {
     );
 }
 
+/** Renames the current entry in place and follows it without leaving a stale browser URL. */
+function RenamePathForm(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    view?: "details";
+}) {
+    const navigate = useNavigate();
+    const [name, setName] = React.useState(props.currentName);
+    const [renameState, setRenameState] = React.useState<RenameState>({
+        type: "idle",
+    });
+    const parentPath = getImmediateParentPath(props.path);
+    const trimmedName = name.trim();
+    const isRenaming = renameState.type === "renaming";
+    const canRename =
+        parentPath !== null &&
+        trimmedName.length > 0 &&
+        trimmedName !== props.currentName &&
+        !trimmedName.includes("/") &&
+        trimmedName !== "." &&
+        trimmedName !== "..";
+
+    React.useEffect(() => {
+        setName(props.currentName);
+        setRenameState({ type: "idle" });
+    }, [props.currentName, props.path]);
+
+    const handleRename = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (parentPath === null) {
+            setRenameState({
+                type: "error",
+                message: "The filesystem root cannot be renamed",
+            });
+            return;
+        }
+        if (!trimmedName) {
+            setRenameState({
+                type: "error",
+                message: `${props.entryType === "file" ? "File" : "Directory"} name is required`,
+            });
+            return;
+        }
+        if (
+            trimmedName.includes("/") ||
+            trimmedName === "." ||
+            trimmedName === ".."
+        ) {
+            setRenameState({
+                type: "error",
+                message: "Name must be a single path component",
+            });
+            return;
+        }
+        if (trimmedName === props.currentName) {
+            return;
+        }
+
+        const destinationPath = joinBrowserPath(parentPath, trimmedName);
+        setRenameState({ type: "renaming" });
+
+        try {
+            await props.agent.renamePath(props.path, destinationPath);
+            await navigate({
+                to: props.agent.getBrowserUrl(destinationPath),
+                search: props.view === "details" ? { view: "details" } : {},
+            });
+        } catch (error) {
+            setRenameState({
+                type: "error",
+                message: getErrorMessage(error, "Rename failed"),
+            });
+        }
+    };
+
+    const label = `Rename ${props.entryType}`;
+
+    return (
+        <form
+            onSubmit={handleRename}
+            className="mt-4 flex max-w-xl flex-wrap items-start gap-2"
+        >
+            <div className="min-w-56 flex-1">
+                <label
+                    htmlFor={`${props.entryType}-rename-input`}
+                    className="sr-only"
+                >
+                    {label}
+                </label>
+                <input
+                    id={`${props.entryType}-rename-input`}
+                    type="text"
+                    value={name}
+                    onChange={(event) => {
+                        setName(event.target.value);
+                        if (renameState.type === "error") {
+                            setRenameState({ type: "idle" });
+                        }
+                    }}
+                    aria-label={label}
+                    disabled={isRenaming || parentPath === null}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                {renameState.type === "error" ? (
+                    <p role="alert" className="mt-2 text-sm text-red-300">
+                        {renameState.message}
+                    </p>
+                ) : null}
+            </div>
+            <button
+                type="submit"
+                disabled={!canRename || isRenaming}
+                className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                <Pencil className="h-4 w-4" />
+                {isRenaming ? "Renaming..." : "Rename"}
+            </button>
+        </form>
+    );
+}
+
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 function DirectoryDetailView(props: {
+    agent: Agent;
     path: string;
     directoryName: string;
     lsResult: LsDirectoryResponse;
@@ -1565,6 +1863,13 @@ function DirectoryDetailView(props: {
                         >
                             {props.directoryName}
                         </h1>
+                        <RenamePathForm
+                            agent={props.agent}
+                            path={props.path}
+                            currentName={props.directoryName}
+                            entryType="directory"
+                            view="details"
+                        />
                     </div>
                 </div>
 
@@ -1732,6 +2037,12 @@ function FileDetailView(props: {
                                 >
                                     {props.fileName}
                                 </h1>
+                                <RenamePathForm
+                                    agent={props.agent}
+                                    path={props.path}
+                                    currentName={props.fileName}
+                                    entryType="file"
+                                />
                             </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">

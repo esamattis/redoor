@@ -34,6 +34,8 @@ import type { BinaryIdentity } from "../../bindings/BinaryIdentity";
 import type { RestartResponse } from "../../bindings/RestartResponse";
 import type { UpgradeAgentResponse } from "../../bindings/UpgradeAgentResponse";
 import type { LogEvent } from "../../bindings/LogEvent";
+import type { RenamePathRequest } from "../../bindings/RenamePathRequest";
+import type { RenamePathResponse } from "../../bindings/RenamePathResponse";
 
 export type {
     LsDirectoryResponse,
@@ -65,6 +67,8 @@ export type {
     AgentConnectionStatus,
     StartAgentResponse,
     ShutdownAgentResponse,
+    RenamePathRequest,
+    RenamePathResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -470,6 +474,30 @@ export class Agent {
         );
         await requireSuccessfulResponse(response, this.requestContext);
         return response.json();
+    }
+
+    /** Renames one agent-side file or directory with the filesystem rename primitive. */
+    async renamePath(
+        sourcePath: string,
+        destPath: string,
+    ): Promise<RenamePathResponse> {
+        encodeFilesystemPath(sourcePath);
+        encodeFilesystemPath(destPath);
+        const request: RenamePathRequest = {
+            source_path: sourcePath,
+            dest_path: destPath,
+        };
+
+        return apiRequest<RenamePathResponse>(
+            this.baseUrl,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/rename`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
     }
 
     async copyTo(

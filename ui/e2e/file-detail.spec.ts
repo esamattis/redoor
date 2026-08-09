@@ -1,5 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { setupTestDir, teardownTestDir, type TestContext } from "./helpers";
+import fs from "node:fs/promises";
+import path from "node:path";
+import {
+    encodeFilesystemPath,
+    setupTestDir,
+    teardownTestDir,
+    WEB_BASE_URL,
+    type TestContext,
+} from "./helpers";
 
 test.describe.serial("File Detail View", () => {
     let ctx: TestContext;
@@ -67,6 +75,35 @@ test.describe.serial("File Detail View", () => {
 
         expect(sizeText).toBeDefined();
         expect(sizeText).not.toBe("-");
+    });
+
+    test("should rename a file and update the detail URL", async ({ page }) => {
+        const originalName = `rename-file-${Date.now()}.txt`;
+        const renamedName = `renamed-file-${Date.now()}.txt`;
+        const originalPath = path.join(ctx.testDirPath, originalName);
+        const renamedPath = path.join(ctx.testDirPath, renamedName);
+        await fs.writeFile(originalPath, "rename content");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}`,
+        );
+
+        const renameInput = page.getByRole("textbox", { name: "Rename file" });
+        // The current name is editable directly in the file details header.
+        await expect(renameInput).toHaveValue(originalName);
+        await renameInput.fill(renamedName);
+        await page.getByRole("button", { name: "Rename", exact: true }).click();
+
+        // Navigation follows the renamed file so reloads do not target the stale source path.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(renamedPath)}`,
+        );
+        // The details heading and filesystem contents both reflect the atomic rename result.
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toHaveText(renamedName);
+        await expect(fs.readFile(renamedPath, "utf8")).resolves.toBe(
+            "rename content",
+        );
     });
 
     test("should navigate back from file detail view", async ({ page }) => {

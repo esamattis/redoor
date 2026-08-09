@@ -137,6 +137,50 @@ test.describe.serial("File Operations", () => {
         expect(createdDirectoryStats.isDirectory()).toBe(true);
     });
 
+    test("should create a new file and open it in the editor", async ({
+        page,
+    }) => {
+        const fileName = `created-via-ui-${Date.now()}.txt`;
+        const filePath = path.join(ctx.testDirPath, "subdir3", fileName);
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+
+        await page.goto(directoryUrl);
+        await page.getByRole("button", { name: "Create file" }).click();
+
+        const dialog = page.getByRole("dialog", { name: "Create file" });
+        // The dedicated dialog keeps file naming explicit before creating anything remotely.
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("textbox", { name: "File name" }).fill(fileName);
+        // The path preview confirms the empty file will be created in the active directory.
+        await expect(dialog.getByText(filePath)).toBeVisible();
+        await dialog
+            .getByRole("button", { name: "Create file", exact: true })
+            .click();
+
+        // New files open directly in edit mode so content can be entered immediately.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        // The editor being ready proves the empty upload produced an editable text file.
+        await expect(
+            page.getByRole("textbox", { name: "File editor" }),
+        ).toBeVisible();
+        // Disk state verifies the UI action created a zero-byte file through the upload API.
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("");
+    });
+
+    test("should explain clipboard paste behavior", async ({ page }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        await page.goto(directoryUrl);
+
+        await page.getByRole("button", { name: "Paste files or text" }).hover();
+
+        // The tooltip makes it clear that clipboard content becomes a file in this directory.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Pasted text or images are created as new files in this directory.",
+        );
+    });
+
     test("should delete file from detail view after confirmation", async ({
         page,
     }) => {

@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
     setupTestDir,
     teardownTestDir,
@@ -150,6 +152,36 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
+    });
+
+    test("should rename a directory and retain its details URL", async ({
+        page,
+    }) => {
+        const originalName = `rename-directory-${Date.now()}`;
+        const renamedName = `renamed-directory-${Date.now()}`;
+        const originalPath = path.join(ctx.testDirPath, originalName);
+        const renamedPath = path.join(ctx.testDirPath, renamedName);
+        await fs.mkdir(originalPath);
+        const originalUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}?view=details`;
+        await page.goto(originalUrl);
+
+        const renameInput = page.getByRole("textbox", {
+            name: "Rename directory",
+        });
+        // Directory details expose the current leaf name without making the full path editable.
+        await expect(renameInput).toHaveValue(originalName);
+        await renameInput.fill(renamedName);
+        await page.getByRole("button", { name: "Rename", exact: true }).click();
+
+        // The details query and destination path are both retained after the rename.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(renamedPath)}?view=details`,
+        );
+        // A directory at only the new name confirms the agent performed the filesystem move.
+        await expect(fs.stat(renamedPath)).resolves.toMatchObject({});
+        await expect(fs.stat(originalPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
     });
 
     test("should navigate to deep nested directory", async ({ page }) => {

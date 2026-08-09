@@ -223,6 +223,10 @@ pub enum Command {
     CreateDirectory {
         path: String,
     },
+    RenamePath {
+        source_path: String,
+        dest_path: String,
+    },
     Metadata {
         path: String,
     },
@@ -271,6 +275,10 @@ impl Command {
             } => format!("LocalCopyDirectory source={source_path} dest={dest_path}"),
             Self::RawDelete { path } => format!("RawDelete path={path}"),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
+            Self::RenamePath {
+                source_path,
+                dest_path,
+            } => format!("RenamePath source={source_path} dest={dest_path}"),
             Self::Metadata { path } => format!("Metadata path={path}"),
             // Echo bodies can be large or sensitive, so only the command name is logged.
             Self::Echo { .. } => "Echo".to_string(),
@@ -399,6 +407,7 @@ pub enum CommandResult {
     LocalCopyDirectory,
     RawDelete,
     CreateDirectory,
+    RenamePath,
     Metadata(MetadataResponse),
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
@@ -581,6 +590,22 @@ pub struct CreateDirectoryResponse {
     pub path: String,
 }
 
+/// Carries both absolute paths needed for one agent-side filesystem rename.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RenamePathRequest {
+    pub source_path: String,
+    pub dest_path: String,
+}
+
+/// Confirms the source path was atomically moved to the requested destination.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RenamePathResponse {
+    pub source_path: String,
+    pub dest_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CopyEndpoint {
@@ -680,6 +705,7 @@ impl CommandResult {
             Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),
             Self::RawDelete => "ok RawDelete".to_string(),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
+            Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
             Self::Echo(_) => "ok Echo".to_string(),
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),
@@ -745,6 +771,10 @@ impl CommandHandler {
             ),
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::CreateDirectory { path } => self.create_directory(path).await,
+            Command::RenamePath {
+                source_path,
+                dest_path,
+            } => self.rename_path(source_path, dest_path).await,
             Command::Metadata { path } => self.metadata(path).await,
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
@@ -912,6 +942,14 @@ impl CommandHandler {
         match tokio::fs::create_dir_all(&path).await {
             Ok(()) => CommandResult::CreateDirectory,
             Err(error) => CommandResult::io_error("Failed to create directory", error),
+        }
+    }
+
+    /// Uses the platform rename primitive so files and directories move without copy/delete gaps.
+    async fn rename_path(&self, source_path: String, dest_path: String) -> CommandResult {
+        match tokio::fs::rename(&source_path, &dest_path).await {
+            Ok(()) => CommandResult::RenamePath,
+            Err(error) => CommandResult::io_error("Failed to rename path", error),
         }
     }
 
@@ -1520,6 +1558,56 @@ mod tests {
                 );
             }
             _ => panic!("Expected CreateDirectory"),
+        }
+
+        tokio::fs::remove_dir_all(&temp_dir)
+            .await
+            .expect("temporary directory should be removable");
+    }
+
+    #[tokio::test]
+    async fn test_rename_path_command() {
+        let handler = CommandHandler::new();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "redoor-rename-path-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos()
+        ));
+        let source_path = temp_dir.join("before.txt");
+        let dest_path = temp_dir.join("after.txt");
+        tokio::fs::create_dir_all(&temp_dir)
+            .await
+            .expect("temporary directory should be created");
+        tokio::fs::write(&source_path, "rename me")
+            .await
+            .expect("source file should be created");
+
+        let result = handler
+            .execute(Command::RenamePath {
+                source_path: source_path.to_string_lossy().to_string(),
+                dest_path: dest_path.to_string_lossy().to_string(),
+            })
+            .await;
+
+        match result {
+            CommandResult::RenamePath => {
+                assert!(
+                    !tokio::fs::try_exists(&source_path)
+                        .await
+                        .expect("source existence should be queryable"),
+                    "the source path should disappear after rename"
+                );
+                assert_eq!(
+                    tokio::fs::read_to_string(&dest_path)
+                        .await
+                        .expect("renamed file should remain readable"),
+                    "rename me",
+                    "rename should preserve file contents"
+                );
+            }
+            _ => panic!("Expected RenamePath"),
         }
 
         tokio::fs::remove_dir_all(&temp_dir)
