@@ -1,6 +1,16 @@
 use crate::types::{AgentId, SocketId, TransferId, UnixTimestampSeconds};
+use nucleo_matcher::{
+    Config, Matcher, Utf32Str,
+    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+};
 use serde::{Deserialize, Serialize};
+use std::{path::Path, time::Duration};
 use ts_rs::TS;
+
+/// Prevents one broad or slow filesystem search from occupying an agent indefinitely.
+const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bounds both response size and memory retained while traversing a large tree.
+const FILE_SEARCH_RESULT_LIMIT: usize = 100;
 
 /// Carries credentials to the login endpoint without putting secrets in the URL.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -192,6 +202,10 @@ pub enum Command {
     Ls {
         path: Option<String>,
     },
+    FileSearch {
+        path: String,
+        query: String,
+    },
     Cat {
         path: String,
     },
@@ -249,6 +263,9 @@ impl Command {
                 Some(path) => format!("Ls path={path}"),
                 None => "Ls path=.".to_string(),
             },
+            Self::FileSearch { path, query } => {
+                format!("FileSearch path={path} query={query}")
+            }
             Self::Cat { path } => format!("Cat path={path}"),
             Self::RawDownload {
                 path,
@@ -312,6 +329,31 @@ pub struct LsFileResult {
     pub uid: u32,
     pub gid: u32,
     pub permissions: u32,
+}
+
+/// Retains the matcher score internally so the agent can rank a bounded result set.
+#[derive(Debug)]
+struct RankedFileSearchEntry {
+    entry: FileSearchEntry,
+    score: u32,
+}
+
+/// Describes one matching remote path without requiring additional metadata calls.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FileSearchEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub file_type: String,
+}
+
+/// Returns the best paths discovered before traversal completed or reached its deadline.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FileSearchResponse {
+    pub results: Vec<FileSearchEntry>,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,6 +436,7 @@ impl CommandErrorKind {
 pub enum CommandResult {
     LsDirectory(LsDirectoryResult),
     LsFile(LsFileResult),
+    FileSearch(FileSearchResponse),
     Cat(CatResult),
     RawDownload {
         path: String,
@@ -696,6 +739,11 @@ impl CommandResult {
         match self {
             Self::LsDirectory(_) => "ok LsDirectory".to_string(),
             Self::LsFile(_) => "ok LsFile".to_string(),
+            Self::FileSearch(result) => format!(
+                "ok FileSearch results={} timed_out={}",
+                result.results.len(),
+                result.timed_out
+            ),
             Self::Cat(_) => "ok Cat".to_string(),
             Self::RawDownload { path } => format!("ok RawDownload path={path}"),
             Self::TarDownload { path } => format!("ok TarDownload path={path}"),
@@ -752,6 +800,7 @@ impl CommandHandler {
     pub async fn execute(&self, command: Command) -> CommandResult {
         match command {
             Command::Ls { path } => self.ls(path).await,
+            Command::FileSearch { path, query } => self.file_search(path, query).await,
             Command::Cat { path } => self.cat(path).await,
             Command::RawDownload {
                 path,
@@ -890,6 +939,43 @@ impl CommandHandler {
             }
             Err(error) => CommandResult::io_error("Failed to get metadata", error),
         }
+    }
+
+    /// Traverses incrementally so timeout returns useful partial results without retaining the tree.
+    async fn file_search(&self, path: String, query: String) -> CommandResult {
+        if query.trim().is_empty() {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "File search query must not be empty",
+            );
+        }
+
+        let mut matches = Vec::with_capacity(FILE_SEARCH_RESULT_LIMIT);
+        let result = tokio::time::timeout(
+            FILE_SEARCH_TIMEOUT,
+            collect_file_search_matches(Path::new(&path), &query, &mut matches),
+        )
+        .await;
+
+        let timed_out = match result {
+            Ok(Ok(())) => false,
+            Ok(Err(error)) => {
+                return CommandResult::io_error("Failed to search directory", error);
+            }
+            Err(_) => true,
+        };
+
+        matches.sort_unstable_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.entry.path.cmp(&right.entry.path))
+        });
+
+        CommandResult::FileSearch(FileSearchResponse {
+            results: matches.into_iter().map(|entry| entry.entry).collect(),
+            timed_out,
+        })
     }
 
     async fn cat(&self, path: String) -> CommandResult {
@@ -1200,6 +1286,96 @@ impl CommandHandler {
             // Agent process reports its own baked identity; router may also rewrite from registration.
             binary: current_binary_identity(),
         })
+    }
+}
+
+/// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
+async fn collect_file_search_matches(
+    root: &Path,
+    query: &str,
+    matches: &mut Vec<RankedFileSearchEntry>,
+) -> std::io::Result<()> {
+    let pattern = Pattern::new(
+        query,
+        CaseMatching::Smart,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+    );
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut utf32_buffer = Vec::new();
+    let mut directories = vec![tokio::fs::read_dir(root).await?];
+
+    while let Some(directory) = directories.last_mut() {
+        let entry = match directory.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) | Err(_) => {
+                directories.pop();
+                continue;
+            }
+        };
+        let entry_path = entry.path();
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+
+        if let Some(relative_path) = entry_path.strip_prefix(root).ok().and_then(Path::to_str) {
+            let haystack = Utf32Str::new(relative_path, &mut utf32_buffer);
+            if let Some(score) = pattern.score(haystack, &mut matcher) {
+                retain_file_search_match(
+                    matches,
+                    RankedFileSearchEntry {
+                        entry: FileSearchEntry {
+                            name: entry.file_name().to_string_lossy().into_owned(),
+                            path: entry_path.to_string_lossy().into_owned(),
+                            file_type: if file_type.is_dir() {
+                                "directory".to_string()
+                            } else {
+                                "file".to_string()
+                            },
+                        },
+                        score,
+                    },
+                );
+            }
+        }
+
+        // `DirEntry::file_type` does not follow symlinks, avoiding cycles and root escapes.
+        if file_type.is_dir()
+            && let Ok(child_directory) = tokio::fs::read_dir(&entry_path).await
+        {
+            directories.push(child_directory);
+        }
+    }
+
+    Ok(())
+}
+
+/// Keeps only the globally strongest matches while traversal continues through arbitrary trees.
+fn retain_file_search_match(
+    matches: &mut Vec<RankedFileSearchEntry>,
+    candidate: RankedFileSearchEntry,
+) {
+    if matches.len() < FILE_SEARCH_RESULT_LIMIT {
+        matches.push(candidate);
+        return;
+    }
+
+    let weakest_index = matches
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            left.score
+                .cmp(&right.score)
+                .then_with(|| right.entry.path.cmp(&left.entry.path))
+        })
+        .map(|(index, _)| index);
+    if let Some(weakest_index) = weakest_index {
+        let weakest = &matches[weakest_index];
+        if candidate.score > weakest.score
+            || (candidate.score == weakest.score && candidate.entry.path < weakest.entry.path)
+        {
+            matches[weakest_index] = candidate;
+        }
     }
 }
 

@@ -10,9 +10,11 @@ import {
 import {
     ApiClient,
     Agent,
+    encodeFilesystemPath,
     isLsDirectoryResponse,
     isLsFileResponse,
 } from "@/api-client";
+import type { FileSearchResponse } from "../bindings/FileSearchResponse";
 import fs from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -63,6 +65,25 @@ async function getConnectedTestAgent(): Promise<Agent> {
         throw new Error(`Connected agent ${AGENT_NAME} not found`);
     }
     return agent;
+}
+
+/** Calls the search route directly so backend coverage does not require adding the UI client yet. */
+async function searchAgentFiles(
+    agent: Agent,
+    root: string,
+    query: string,
+): Promise<FileSearchResponse> {
+    const encodedRoot = encodeFilesystemPath(root);
+    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
+    const url = new URL(
+        `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
+        apiClient.baseUrl,
+    );
+    url.searchParams.set("query", query);
+    const response = await fetch(url, { headers: agent.getAuthHeaders() });
+    // Successful transport proves the REST route relayed the command to the connected agent.
+    expect(response.status).toBe(200);
+    return (await response.json()) as FileSearchResponse;
 }
 
 describe("Agents API", () => {
@@ -259,6 +280,75 @@ describe("Agents API", () => {
             // Masking special and file-type bits keeps the API value limited to rwx permissions.
             expect(fileResult.permissions).toBeLessThanOrEqual(0o777);
         }
+    });
+
+    it("should recursively fuzzy search paths on connected agent", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({ suffix: "-file-search" });
+        const nestedDirectory = path.join(searchRoot, "nested-source");
+        const exactMatch = path.join(nestedDirectory, "file-search-target.txt");
+        await fs.mkdir(nestedDirectory);
+        await fs.writeFile(exactMatch, "target", "utf-8");
+        await fs.writeFile(
+            path.join(searchRoot, "unrelated-document.txt"),
+            "other",
+            "utf-8",
+        );
+
+        const result = await searchAgentFiles(
+            testAgent,
+            searchRoot,
+            "nestedsourcetarget",
+        );
+        // A small local tree must complete without consuming the three-second allowance.
+        expect(result.timed_out).toBe(false);
+        // Matching a separator-free query proves path components and filenames are fuzzy scored.
+        expect(result.results[0]).toEqual({
+            name: "file-search-target.txt",
+            path: exactMatch,
+            type: "file",
+        });
+        // Nonmatching paths must not leak into a fuzzy result set.
+        expect(
+            result.results.some(
+                (entry) => entry.name === "unrelated-document.txt",
+            ),
+        ).toBe(false);
+    });
+
+    it("should bound file search results", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({
+            suffix: "-bounded-file-search",
+        });
+        await Promise.all(
+            Array.from({ length: 125 }, (_, index) =>
+                fs.writeFile(
+                    path.join(
+                        searchRoot,
+                        `bounded-search-result-${index.toString().padStart(3, "0")}.txt`,
+                    ),
+                    "match",
+                    "utf-8",
+                ),
+            ),
+        );
+
+        const result = await searchAgentFiles(
+            testAgent,
+            searchRoot,
+            "boundedsearchresult",
+        );
+        // The fixed cap keeps one control-socket JSON response memory-safe on broad searches.
+        expect(result.results).toHaveLength(100);
+        // Reaching the result cap alone is not a timeout; traversal still considered every entry.
+        expect(result.timed_out).toBe(false);
+        // Every retained entry must satisfy the query rather than merely filling the cap.
+        expect(
+            result.results.every((entry) =>
+                entry.name.startsWith("bounded-search-result-"),
+            ),
+        ).toBe(true);
     });
 
     it("should replace existing agent when same name reconnects", async () => {

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State as AxumState},
+    extract::{Path, Query, State as AxumState},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -13,6 +13,7 @@ use redoor::{
     },
     types::AgentId,
 };
+use serde::Deserialize;
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, get_agent_details},
@@ -20,6 +21,12 @@ use super::{
     responses::command_error_status,
     state::ServerState,
 };
+
+/// Carries the fuzzy expression separately from the absolute search root in the route path.
+#[derive(Deserialize)]
+pub(crate) struct FileSearchQuery {
+    query: String,
+}
 
 /// Route: `GET /api/v1/server` — identity and agent bootstrap settings for the authenticated UI.
 pub(crate) async fn server_info_handler(
@@ -652,6 +659,51 @@ pub(crate) async fn ls_agent_handler(
             )
                 .into_response()
         }
+    }
+}
+
+/// Route: `GET /api/v1/agents/{agent}/search/{*path}?query=...`
+pub(crate) async fn file_search_agent_handler(
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    Query(search): Query<FileSearchQuery>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let path = absolute_path_from_url(path.unwrap_or_default());
+    let agent_id = AgentId::from(agent);
+    match state
+        .router_ref
+        .request(5000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: Command::FileSearch {
+                    path,
+                    query: search.query,
+                },
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(CommandResult::FileSearch(result)) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(CommandResult::Error { kind, message }) => (
+            command_error_status(&kind),
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected result type".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to execute file search command: {error:?}"),
+            }),
+        )
+            .into_response(),
     }
 }
 
