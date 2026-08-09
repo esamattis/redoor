@@ -403,24 +403,24 @@ mod tests {
         );
     }
 
-    /// A dirty executable cannot run on another CPU architecture.
+    /// A dirty executable cannot run on another supported target platform.
     #[tokio::test]
-    async fn dirty_mismatching_arch_is_rejected() {
-        let other_arch = if std::env::consts::ARCH == "x86_64" {
-            "aarch64"
-        } else {
-            "x86_64"
+    async fn dirty_mismatching_platform_is_rejected() {
+        let (other_os, other_arch) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => ("linux", "aarch64"),
+            _ => ("linux", "x86_64"),
         };
-        let error = binary_for_connected_agent(&identity(true), std::env::consts::OS, other_arch)
+        let error = binary_for_connected_agent(&identity(true), other_os, other_arch)
             .await
             .unwrap_err();
+        // A published target that differs from the running executable must reach the dirty-build guard.
         assert_eq!(
             error.to_string(),
             format!(
                 "This dirty server binary is {}/{}, but the agent is {}/{}. Dirty builds can only upgrade agents on the server's platform.",
                 std::env::consts::OS,
                 std::env::consts::ARCH,
-                std::env::consts::OS,
+                other_os,
                 other_arch
             )
         );
