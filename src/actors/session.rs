@@ -95,6 +95,7 @@ impl SessionRuntime {
                 token,
                 binary,
                 supports_self_exec,
+                supports_native_open,
             } => {
                 // Reject impostors before name takeover: an unauthenticated client
                 // that only knows an agent name must not replace a live connection.
@@ -164,6 +165,7 @@ impl SessionRuntime {
                         default_directory: cwd,
                         binary,
                         supports_self_exec,
+                        supports_native_open,
                         watchdog: self.watchdog.clone(),
                     }));
                 self.agent_id = Some(agent_id);

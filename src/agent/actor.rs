@@ -420,6 +420,8 @@ impl AgentRuntime {
                     binary: redoor::commands::current_binary_identity(),
                     // Upgrade safety depends on the server knowing this command is implemented.
                     supports_self_exec: true,
+                    // Reuse startup GUI detection so headless agents never advertise the action.
+                    supports_native_open: self.desktop_environment.is_some(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {

@@ -1,7 +1,7 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
     AgentState, DownloadSessionHandle, LogStreamSessionHandle, TerminalSessionHandle, logs,
-    raw::RawDownloadContext, terminal,
+    notification, raw::RawDownloadContext, terminal,
 };
 use redoor::{
     Level,
@@ -87,6 +87,22 @@ async fn handle_command_message(
                         request_id,
                     },
                 )
+                .await;
+        }
+        Command::OpenPath { path } => {
+            let result = match notification::open_path(&path).await {
+                Ok(()) => CommandResult::OpenPath,
+                Err(message) => CommandResult::error(CommandErrorKind::Internal, message),
+            };
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
         Command::RawDelete { path } => {

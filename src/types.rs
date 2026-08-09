@@ -219,6 +219,9 @@ pub enum Message {
         /// Whether this agent understands the replacement-path self-exec command.
         #[serde(default)]
         supports_self_exec: bool,
+        /// Whether this agent can launch filesystem paths in a graphical desktop.
+        #[serde(default)]
+        supports_native_open: bool,
     },
 
     /// Instructs the authoritative control session to establish its persistent

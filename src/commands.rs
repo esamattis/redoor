@@ -144,6 +144,9 @@ pub enum Command {
     Metadata {
         path: String,
     },
+    OpenPath {
+        path: String,
+    },
     Echo {
         request: EchoRequest,
     },
@@ -197,6 +200,7 @@ impl Command {
                 dest_path,
             } => format!("RenamePath source={source_path} dest={dest_path}"),
             Self::Metadata { path } => format!("Metadata path={path}"),
+            Self::OpenPath { path } => format!("OpenPath path={path}"),
             // Echo bodies can be large or sensitive, so only the command name is logged.
             Self::Echo { .. } => "Echo".to_string(),
             Self::AgentInfo => "AgentInfo".to_string(),
@@ -278,6 +282,14 @@ pub struct CreateOneTimeTokenResponse {
     pub one_time_token: String,
 }
 
+/// Confirms that the agent's graphical desktop accepted a path-open request.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OpenPathResponse {
+    /// The absolute path passed to the platform's native launcher.
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EchoResult {
     pub message: String,
@@ -342,6 +354,7 @@ pub enum CommandResult {
     CreateDirectory,
     RenamePath,
     Metadata(MetadataResponse),
+    OpenPath,
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
@@ -391,6 +404,8 @@ pub struct AgentInfoResponse {
     pub binary: Option<BinaryIdentity>,
     /// Whether the latest agent session can safely complete an in-place upgrade.
     pub supports_self_exec: bool,
+    /// Whether the latest agent session can launch paths in a graphical desktop.
+    pub supports_native_open: bool,
 }
 
 /// Confirms that a managed supervisor accepted an idempotent start request.
@@ -645,6 +660,7 @@ impl CommandResult {
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
+            Self::OpenPath => "ok OpenPath".to_string(),
             Self::Echo(_) => "ok Echo".to_string(),
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),
             Self::GetAgentDetails(_) => "ok GetAgentDetails".to_string(),

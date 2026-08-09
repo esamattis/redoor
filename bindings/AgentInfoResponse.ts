@@ -20,4 +20,8 @@ binary: BinaryIdentity | null,
 /**
  * Whether the latest agent session can safely complete an in-place upgrade.
  */
-supports_self_exec: boolean, };
+supports_self_exec: boolean, 
+/**
+ * Whether the latest agent session can launch paths in a graphical desktop.
+ */
+supports_native_open: boolean, };

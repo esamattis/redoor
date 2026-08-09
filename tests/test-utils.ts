@@ -67,6 +67,7 @@ export async function createToxiproxyAgent(options: {
             connection_issue: options.agent.connectionIssue,
             binary: options.agent.binary,
             supports_self_exec: options.agent.supportsSelfExec,
+            supports_native_open: options.agent.supportsNativeOpen,
         },
         {
             getSessionCookie: () =>

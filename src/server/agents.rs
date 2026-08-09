@@ -18,12 +18,14 @@ use super::{
 };
 
 mod files;
+mod open_path;
 mod upgrade;
 
 pub(crate) use files::{
     cat_agent_handler, echo_agent_handler, file_search_agent_handler, ls_agent_handler,
     metadata_agent_handler,
 };
+pub(crate) use open_path::open_path_agent_handler;
 pub(crate) use upgrade::upgrade_agent_handler;
 
 /// Route: `GET /api/v1/server` — identity and agent bootstrap settings for the authenticated UI.
@@ -80,6 +82,7 @@ async fn list_agent_snapshots(state: &ServerState) -> Result<Vec<AgentInfoRespon
             connection_issue: agent.connection_issue,
             binary: agent.binary,
             supports_self_exec: agent.supports_self_exec,
+            supports_native_open: agent.supports_native_open,
         })
         .collect::<Vec<_>>();
     agents.sort_by(|left, right| {

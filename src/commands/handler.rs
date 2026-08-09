@@ -50,6 +50,10 @@ impl CommandHandler {
                 dest_path,
             } => self.rename_path(source_path, dest_path).await,
             Command::Metadata { path } => metadata::execute(path).await,
+            Command::OpenPath { .. } => CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "OpenPath is handled by the agent runtime",
+            ),
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,

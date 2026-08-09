@@ -52,6 +52,8 @@ pub struct AgentConnection {
     pub binary: BinaryIdentity,
     /// Whether destructive upgrade may safely send the replacement-path self-exec command.
     pub supports_self_exec: bool,
+    /// Whether this connection can launch paths in a graphical desktop.
+    pub supports_native_open: bool,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -79,6 +81,8 @@ pub struct KnownAgent {
     pub binary: Option<BinaryIdentity>,
     /// Last advertised support for replacement-path self-exec.
     pub supports_self_exec: bool,
+    /// Last advertised access to a graphical desktop path launcher.
+    pub supports_native_open: bool,
 }
 
 #[derive(Default)]

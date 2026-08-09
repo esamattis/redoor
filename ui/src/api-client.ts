@@ -27,6 +27,7 @@ import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { CreateOneTimeTokenResponse } from "#bindings/CreateOneTimeTokenResponse";
+import type { OpenPathResponse } from "#bindings/OpenPathResponse";
 import type { ServerInfoResponse } from "#bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "#bindings/ServerAuthMode";
 import type { ServerBuildMode } from "#bindings/ServerBuildMode";
@@ -282,6 +283,11 @@ export class Agent {
         return this.info.supports_self_exec;
     }
 
+    /** Reports whether this session can launch paths in its graphical desktop. */
+    get supportsNativeOpen(): boolean {
+        return this.info.supports_native_open;
+    }
+
     /** Requests desired-running without waiting for process preparation or registration. */
     async start(): Promise<StartAgentResponse> {
         return apiRequest(
@@ -322,6 +328,18 @@ export class Agent {
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}`,
             undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Asks the agent desktop to open a file or directory with its native application. */
+    async openPath(path: string): Promise<OpenPathResponse> {
+        return apiRequest<OpenPathResponse>(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/open`,
+                path,
+            )}`,
+            { method: "POST" },
             this.requestContext,
         );
     }

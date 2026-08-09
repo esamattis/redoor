@@ -178,6 +178,34 @@ async fn show_macos_notification(message: &str) -> bool {
     .await
 }
 
+/// Opens an existing filesystem path with the platform launcher for the detected desktop.
+pub(super) async fn open_path(path: &str) -> Result<(), String> {
+    let Some(desktop_environment) = detect_desktop_environment() else {
+        return Err("Agent does not have access to a graphical desktop".to_string());
+    };
+    let program = match desktop_environment {
+        #[cfg(target_os = "linux")]
+        DesktopEnvironment::LinuxGnome
+        | DesktopEnvironment::LinuxKde
+        | DesktopEnvironment::LinuxOther => "xdg-open",
+        #[cfg(target_os = "macos")]
+        DesktopEnvironment::MacOs => "open",
+    };
+    let status = Command::new(program)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|error| format!("Failed to start {program}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with status {status}"))
+    }
+}
+
 /// Runs one finite notification helper with all output suppressed for best-effort startup behavior.
 async fn command_succeeded(program: &str, args: &[&str]) -> bool {
     Command::new(program)

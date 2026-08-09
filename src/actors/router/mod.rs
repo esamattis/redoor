@@ -363,6 +363,7 @@ mod tests {
                 default_directory: "/tmp".to_string(),
                 binary: crate::commands::current_binary_identity(),
                 supports_self_exec: true,
+                supports_native_open: true,
                 watchdog: None,
             }))
             .expect("agent registered");
@@ -521,6 +522,7 @@ mod tests {
                 connection_issue: None,
                 binary: Some(crate::commands::current_binary_identity()),
                 supports_self_exec: true,
+                supports_native_open: true,
             }]
         );
 

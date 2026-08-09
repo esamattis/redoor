@@ -33,6 +33,7 @@ impl AgentConnection {
             default_directory: request.default_directory,
             binary: request.binary,
             supports_self_exec: request.supports_self_exec,
+            supports_native_open: request.supports_native_open,
         }
     }
 
@@ -132,6 +133,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let default_directory = connection.default_directory.clone();
     let binary = connection.binary.clone();
     let supports_self_exec = connection.supports_self_exec;
+    let supports_native_open = connection.supports_native_open;
     let transfer_token = connection.transfer_token.clone();
     let transfer_open_sender = connection.outgoing_text.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
@@ -151,6 +153,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             socket_id: None,
             binary: None,
             supports_self_exec: false,
+            supports_native_open: false,
         });
     known.name = name;
     known.default_directory = Some(default_directory);
@@ -168,6 +171,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.socket_id = Some(socket_id);
     known.binary = Some(binary);
     known.supports_self_exec = supports_self_exec;
+    known.supports_native_open = supports_native_open;
     ui::notify_refresh(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
@@ -428,6 +432,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             socket_id: None,
             binary: None,
             supports_self_exec: false,
+            supports_native_open: false,
         },
     );
     let _ = request.reply.send(());
@@ -520,6 +525,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             connection_issue: info.connection_issue.clone(),
             binary: info.binary.clone(),
             supports_self_exec: info.supports_self_exec,
+            supports_native_open: info.supports_native_open,
         })
         .collect()
 }
@@ -623,6 +629,7 @@ mod tests {
             default_directory: "/tmp".to_string(),
             binary: crate::commands::current_binary_identity(),
             supports_self_exec: true,
+            supports_native_open: true,
             watchdog: None,
         };
         commit_registration(state, request);

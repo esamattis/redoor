@@ -8,8 +8,8 @@ agent_token = "dev-agent-token" # required; shared registration secret
 # bind = "0.0.0.0"     # optional; default 127.0.0.1
 # cookie_secure = false # set true when serving over HTTPS
 # log = "log/server.log" # optional; also settable via --log
-#username = "admin"       # optional pair with password; omit both on Linux for PAM
-#password = "change-me"
+username = "admin"       # optional pair with password; omit both on Linux for PAM
+password = "secret"
 
 # Standalone agent (redoor agent / systemd --mode agent). Not used for [[agents]].
 # [agent]

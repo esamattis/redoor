@@ -37,6 +37,8 @@ pub struct RegisterAgentRequest {
     pub binary: BinaryIdentity,
     /// Advertises support for replacing the executable through `SelfExec`.
     pub supports_self_exec: bool,
+    /// Advertises access to a graphical desktop and platform path launcher.
+    pub supports_native_open: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
@@ -66,6 +68,8 @@ pub struct AgentListEntry {
     pub binary: Option<BinaryIdentity>,
     /// Latest registration's explicit support for replacement-path self-exec.
     pub supports_self_exec: bool,
+    /// Latest registration's access to a graphical desktop path launcher.
+    pub supports_native_open: bool,
 }
 
 /// Registers a configured entry before any process can be started.

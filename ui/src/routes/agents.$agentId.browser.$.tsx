@@ -31,6 +31,8 @@ import {
     HardDrive,
     Search,
     FilePlus,
+    ExternalLink,
+    LoaderCircle,
 } from "lucide-react";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
@@ -38,6 +40,7 @@ import { Dialog } from "#ui/components/dialog";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { RouteError } from "#ui/components/route-error";
 import { Tooltip } from "#ui/components/tooltip";
+import { Toast } from "#ui/components/toast";
 import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
 import { formatSize } from "#ui/utils/path";
 import {
@@ -78,6 +81,12 @@ type RenameState =
 type ShareableLinkState =
     | { type: "idle" }
     | { type: "creating" }
+    | { type: "error"; message: string };
+
+type NativeOpenState =
+    | { type: "idle" }
+    | { type: "opening" }
+    | { type: "success"; message: string }
     | { type: "error"; message: string };
 
 /** Identifies the destination that should restore filter focus after Enter navigation. */
@@ -1839,6 +1848,61 @@ function RenamePathForm(props: {
     );
 }
 
+/** Launches one remote path on the agent desktop while reporting the asynchronous result. */
+function NativeOpenButton(props: { agent: Agent; path: string }) {
+    const [openState, setOpenState] = React.useState<NativeOpenState>({
+        type: "idle",
+    });
+
+    if (!props.agent.supportsNativeOpen) {
+        return null;
+    }
+
+    const handleOpen = async () => {
+        setOpenState({ type: "opening" });
+        try {
+            await props.agent.openPath(props.path);
+            setOpenState({
+                type: "success",
+                message: "Opened on the agent computer",
+            });
+        } catch (error) {
+            setOpenState({
+                type: "error",
+                message: getErrorMessage(error, "Could not open the path"),
+            });
+        }
+    };
+
+    return (
+        <>
+            <button
+                type="button"
+                disabled={openState.type === "opening"}
+                onClick={handleOpen}
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-wait disabled:opacity-60"
+            >
+                {openState.type === "opening" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                    <ExternalLink className="h-4 w-4" />
+                )}
+                {openState.type === "opening" ? "Opening..." : "Open natively"}
+            </button>
+            {openState.type === "success" || openState.type === "error" ? (
+                <Toast
+                    tone={openState.type === "error" ? "error" : "success"}
+                    icon={<ExternalLink className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss native open message"
+                    onDismiss={() => setOpenState({ type: "idle" })}
+                >
+                    {openState.message}
+                </Toast>
+            ) : null}
+        </>
+    );
+}
+
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 function DirectoryDetailView(props: {
     agent: Agent;
@@ -1864,13 +1928,19 @@ function DirectoryDetailView(props: {
                         >
                             {props.directoryName}
                         </h1>
-                        <RenamePathForm
-                            agent={props.agent}
-                            path={props.path}
-                            currentName={props.directoryName}
-                            entryType="directory"
-                            view="details"
-                        />
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <NativeOpenButton
+                                agent={props.agent}
+                                path={props.path}
+                            />
+                            <RenamePathForm
+                                agent={props.agent}
+                                path={props.path}
+                                currentName={props.directoryName}
+                                entryType="directory"
+                                view="details"
+                            />
+                        </div>
                     </div>
                 </div>
 
@@ -2007,6 +2077,10 @@ function FileDetailView(props: {
                         <ArrowLeft className="h-4 w-4" />
                         Back
                     </Link>
+                    <NativeOpenButton
+                        agent={props.agent}
+                        path={props.lsResult.path}
+                    />
                     {props.editable ? (
                         <Link
                             to={getBrowserPathHref(props.agent, props.path)}
