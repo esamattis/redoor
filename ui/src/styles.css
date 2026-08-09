@@ -73,3 +73,24 @@ code {
         transform: translateX(320%);
     }
 }
+
+/*
+ * Brief emerald pulse after a successful clipboard copy so operators notice
+ * the action without needing a toast. Applied as an overlay so it can replay
+ * on repeated copies without remounting the control.
+ */
+@keyframes copy-success-flash {
+    0% {
+        opacity: 1;
+        background-color: rgb(16 185 129 / 0.45);
+    }
+
+    100% {
+        opacity: 0;
+        background-color: rgb(16 185 129 / 0.05);
+    }
+}
+
+.copy-success-flash {
+    animation: copy-success-flash 0.7s ease-out forwards;
+}

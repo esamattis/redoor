@@ -1,8 +1,10 @@
+import type { ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { FileCode2, KeyRound, Server } from "lucide-react";
+import { FileCode2, HardDrive, KeyRound, Server } from "lucide-react";
 
 import type { ServerAuthMode } from "../api-client";
 import { BinaryIdentityFields } from "../components/binary-identity";
+import { CopyablePath } from "../components/copyable-code-row";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -19,6 +21,38 @@ function authModeLabel(authMode: ServerAuthMode): string {
     }
 }
 
+/** Labeled path row that keeps long absolute paths scannable and copyable. */
+function PathField(props: {
+    icon: ReactNode;
+    label: string;
+    value: string;
+    copyAriaLabel: string;
+    bordered?: boolean;
+}) {
+    return (
+        <div
+            className={
+                props.bordered
+                    ? "flex items-start gap-3 border-t border-slate-800 pt-4"
+                    : "flex items-start gap-3"
+            }
+        >
+            <div className="mt-0.5 shrink-0 text-slate-400">{props.icon}</div>
+            <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-medium text-slate-400">
+                    {props.label}
+                </h2>
+                <div className="mt-1">
+                    <CopyablePath
+                        value={props.value}
+                        copyAriaLabel={props.copyAriaLabel}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 /** Shows server identity and runtime details without operational controls. */
 function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
@@ -33,17 +67,19 @@ function Index() {
                     </h1>
                 </div>
                 <div className="space-y-4 rounded-lg border border-slate-800 bg-[#11141b] p-6">
-                    <div className="flex items-start gap-3">
-                        <FileCode2 className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
-                            <h2 className="text-sm font-medium text-slate-400">
-                                Config file
-                            </h2>
-                            <p className="mt-1 break-all font-mono text-sm text-slate-100">
-                                {serverInfo.config_path}
-                            </p>
-                        </div>
-                    </div>
+                    <PathField
+                        icon={<FileCode2 className="h-5 w-5" />}
+                        label="Config file"
+                        value={serverInfo.config_path}
+                        copyAriaLabel="Copy config file path"
+                    />
+                    <PathField
+                        icon={<HardDrive className="h-5 w-5" />}
+                        label="Binary path"
+                        value={serverInfo.exe_path}
+                        copyAriaLabel="Copy binary path"
+                        bordered
+                    />
                     <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
                         <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
                         <div className="min-w-0">

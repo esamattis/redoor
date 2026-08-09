@@ -87,12 +87,48 @@ pub fn current_binary_identity() -> BinaryIdentity {
     }
 }
 
+/// Absolute filesystem path of the running binary for operator diagnostics.
+///
+/// Prefer the canonical path so `/proc/self/exe`-style links resolve to a real file.
+pub async fn current_exe_path() -> String {
+    match std::env::current_exe() {
+        Ok(path) => match tokio::fs::canonicalize(&path).await {
+            Ok(canonical) => canonical.display().to_string(),
+            Err(_) => path.display().to_string(),
+        },
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+/// Process-local agent config path recorded once at agent startup.
+///
+/// Empty when the agent was launched from CLI/env only without loading a TOML file.
+static AGENT_LOADED_CONFIG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Records the config file this agent process loaded, when any.
+///
+/// Called once during agent startup so `GetAgentDetails` can surface it without
+/// threading config state through every command handler call site.
+pub fn set_agent_loaded_config_path(path: Option<std::path::PathBuf>) {
+    let value = path
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let _ = AGENT_LOADED_CONFIG_PATH.set(value);
+}
+
+/// Absolute path of the TOML file this agent loaded, or empty when none was used.
+pub fn agent_loaded_config_path() -> String {
+    AGENT_LOADED_CONFIG_PATH.get().cloned().unwrap_or_default()
+}
+
 /// Non-secret server identity shown on the UI home page.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ServerInfoResponse {
     /// Absolute path of the TOML config file this process loaded.
     pub config_path: String,
+    /// Absolute path of the running server binary.
+    pub exe_path: String,
     /// Whether login uses TOML credentials or system PAM.
     pub auth_mode: ServerAuthMode,
     /// `CARGO_PKG_VERSION` baked into this binary.
@@ -451,6 +487,10 @@ pub struct AgentDetailsResponse {
     pub name: String,
     pub pid: u32,
     pub cwd: String,
+    /// Absolute path of the TOML config file this agent loaded, or empty when none.
+    pub config_path: String,
+    /// Absolute path of the running agent binary.
+    pub exe_path: String,
     pub load_average_one: f64,
     pub load_average_five: f64,
     pub load_average_fifteen: f64,
@@ -1023,6 +1063,10 @@ impl CommandHandler {
         let cwd = env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
+        // Operators need the on-disk binary path when diagnosing upgrades and restarts.
+        let exe_path = current_exe_path().await;
+        // Empty when the agent was launched without a TOML file (CLI/env only).
+        let config_path = agent_loaded_config_path();
 
         let mut sys = System::new_all();
         sys.refresh_all();
@@ -1040,6 +1084,8 @@ impl CommandHandler {
             name: String::new(),
             pid,
             cwd,
+            config_path,
+            exe_path,
             load_average_one: load_average.0,
             load_average_five: load_average.1,
             load_average_fifteen: load_average.2,
@@ -1426,6 +1472,17 @@ mod tests {
             CommandResult::GetAgentDetails(details) => {
                 assert!(details.pid > 0, "PID should be positive");
                 assert!(!details.cwd.is_empty(), "CWD should not be empty");
+                // Unit tests do not call set_agent_loaded_config_path, so path stays empty.
+                assert!(
+                    details.config_path.is_empty(),
+                    "config_path should be empty without agent startup registration"
+                );
+                // Absolute binary path lets operators confirm which file is running.
+                assert!(
+                    details.exe_path.starts_with('/'),
+                    "exe_path should be absolute, got {}",
+                    details.exe_path
+                );
                 assert!(!details.os.is_empty(), "OS should not be empty");
                 assert!(!details.arch.is_empty(), "ARCH should not be empty");
                 assert!(!details.hostname.is_empty(), "Hostname should not be empty");

@@ -115,6 +115,10 @@ describe("Agents API", () => {
         // List and details must publish the same immutable startup default directory.
         expect(testAgent.cwd).toBe(agentCwd);
         expect(result.cwd).toBe(agentCwd);
+        // Absolute binary path lets operators confirm which agent binary is running.
+        expect(result.exe_path.startsWith("/")).toBe(true);
+        // Config path is a string; empty means the agent was launched without a TOML file.
+        expect(typeof result.config_path).toBe("string");
         // Verify OS, arch, hostname are non-empty strings
         expect(result.os).toBeDefined();
         expect(result.os.length).toBeGreaterThan(0);

@@ -88,6 +88,8 @@ describe("HTTP authentication", () => {
         // Home UI needs an absolute config path so operators can find the file they edited.
         expect(serverInfo.config_path.startsWith("/")).toBe(true);
         expect(serverInfo.config_path.endsWith(".toml")).toBe(true);
+        // Home UI needs an absolute binary path so operators can verify upgrades.
+        expect(serverInfo.exe_path.startsWith("/")).toBe(true);
         // Test servers always pin username/password in TOML rather than PAM.
         expect(serverInfo.auth_mode).toBe("toml");
         // Package version is baked at compile time for the home page identity card.

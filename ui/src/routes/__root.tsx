@@ -206,6 +206,7 @@ export class RefreshListener {
 
 const emptyServerInfo: ServerInfoResponse = {
     config_path: "",
+    exe_path: "",
     auth_mode: "toml",
     version: "",
     git_rev: "",

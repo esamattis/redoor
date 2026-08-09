@@ -11,6 +11,10 @@ export type ServerInfoResponse = {
  */
 config_path: string, 
 /**
+ * Absolute path of the running server binary.
+ */
+exe_path: string, 
+/**
  * Whether login uses TOML credentials or system PAM.
  */
 auth_mode: ServerAuthMode, 

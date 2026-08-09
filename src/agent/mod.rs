@@ -131,14 +131,22 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let agent_name = resolved.name;
     let log_file = resolved.log;
     let token = resolved.token;
-    let loaded_config_path = resolved.loaded_config_path;
+    let loaded_config_path = match resolved.loaded_config_path {
+        Some(path) => match tokio::fs::canonicalize(&path).await {
+            Ok(canonical) => Some(canonical),
+            Err(_) => Some(path),
+        },
+        None => None,
+    };
+    // Details API reads this once-per-process value; set before any commands run.
+    redoor::commands::set_agent_loaded_config_path(loaded_config_path.clone());
 
     let agent_id = AgentId::from(agent_name.clone());
 
     redoor::logging::init(log_file)
         .await
         .map_err(|error| format!("{error:#}"))?;
-    match loaded_config_path {
+    match &loaded_config_path {
         Some(path) => {
             log!(Level::Info, "Loaded agent config: path={}", path.display());
         }

@@ -29,6 +29,7 @@ import {
     getAgentTabLocation,
 } from "../agent-tab-locations";
 import { BinaryIdentityFields } from "../components/binary-identity";
+import { CopyablePath } from "../components/copyable-code-row";
 import { RouteError } from "../components/route-error";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 
@@ -268,6 +269,19 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             label="Default Directory"
                             value={props.details.cwd}
                         />
+                        <DetailPathItem
+                            label="Config file"
+                            value={
+                                props.details.config_path ||
+                                "No config file loaded"
+                            }
+                            copyAriaLabel="Copy config file path"
+                        />
+                        <DetailPathItem
+                            label="Binary path"
+                            value={props.details.exe_path}
+                            copyAriaLabel="Copy binary path"
+                        />
                     </DetailCard>
                     <DetailCard
                         title="System Load"
@@ -377,6 +391,25 @@ function DetailItem(props: { label: string; value: string | number }) {
             >
                 {props.value}
             </span>
+        </div>
+    );
+}
+
+/** Labels a long path with horizontal scroll and an inline copy control. */
+function DetailPathItem(props: {
+    label: string;
+    value: string;
+    copyAriaLabel: string;
+}) {
+    return (
+        <div className="flex min-w-0 items-center gap-3 text-sm">
+            <span className="w-24 shrink-0 text-slate-400">{props.label}:</span>
+            <div className="min-w-0 flex-1">
+                <CopyablePath
+                    value={props.value}
+                    copyAriaLabel={props.copyAriaLabel}
+                />
+            </div>
         </div>
     );
 }

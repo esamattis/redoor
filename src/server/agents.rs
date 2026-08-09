@@ -25,10 +25,13 @@ pub(crate) async fn server_info_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let binary = redoor::commands::current_binary_identity();
+    // Home page shows which on-disk binary is serving so upgrades can be verified.
+    let exe_path = redoor::commands::current_exe_path().await;
     (
         StatusCode::OK,
         Json(ServerInfoResponse {
             config_path: state.config_path.display().to_string(),
+            exe_path,
             auth_mode: state.auth_mode.clone(),
             version: binary.version,
             git_rev: binary.git_rev,

@@ -6,7 +6,15 @@ import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 /**
  * Connected-agent detail view including the same binary identity as the server home.
  */
-export type AgentDetailsResponse = { id: AgentId, name: string, pid: number, cwd: string, load_average_one: number, load_average_five: number, load_average_fifteen: number, system_uptime: number, os: string, arch: string, hostname: string, username: string, connected_at: UnixTimestampSeconds, 
+export type AgentDetailsResponse = { id: AgentId, name: string, pid: number, cwd: string, 
+/**
+ * Absolute path of the TOML config file this agent loaded, or empty when none.
+ */
+config_path: string, 
+/**
+ * Absolute path of the running agent binary.
+ */
+exe_path: string, load_average_one: number, load_average_five: number, load_average_fifteen: number, system_uptime: number, os: string, arch: string, hostname: string, username: string, connected_at: UnixTimestampSeconds, 
 /**
  * Compile-time identity of the agent binary currently serving this connection.
  */

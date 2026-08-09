@@ -30,6 +30,7 @@ import {
     HardDrive,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
+import { CopyableCodeRow } from "../components/copyable-code-row";
 import { Dialog } from "../components/dialog";
 import { requestClipboardPaste } from "../components/global-file-import-handler";
 import { RouteError } from "../components/route-error";
@@ -1460,41 +1461,6 @@ function FilesystemMetadataSections(props: {
     );
 }
 
-/** Keeps shell commands readable on narrow screens while leaving copy controls accessible. */
-function CommandDownloadRow(props: {
-    label: string;
-    command: string;
-    copyAriaLabel: string;
-    isCopied: boolean;
-    onCopy: () => void;
-}) {
-    return (
-        <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/50">
-            <div className="flex items-center justify-between border-b border-slate-800/80 px-4 py-2">
-                <span className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    {props.label}
-                </span>
-                <button
-                    type="button"
-                    onClick={props.onCopy}
-                    className="inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-                    aria-label={props.copyAriaLabel}
-                >
-                    {props.isCopied ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : (
-                        <Copy className="h-3.5 w-3.5" />
-                    )}
-                    {props.isCopied ? "Copied" : "Copy"}
-                </button>
-            </div>
-            <code className="block overflow-x-auto whitespace-nowrap px-4 py-3 font-mono text-sm text-slate-300">
-                {props.command}
-            </code>
-        </div>
-    );
-}
-
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 function DirectoryDetailView(props: {
     path: string;
@@ -1833,35 +1799,15 @@ function FileDetailView(props: {
                                             </button>
                                         </div>
                                         <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">
-                                            <CommandDownloadRow
+                                            <CopyableCodeRow
                                                 label="wget"
-                                                command={wgetCommand}
+                                                value={wgetCommand}
                                                 copyAriaLabel={`Copy wget command for shareable link ${linkNumber}`}
-                                                isCopied={
-                                                    copiedCommand ===
-                                                    `${copyKeyPrefix}-wget`
-                                                }
-                                                onCopy={() =>
-                                                    copyToClipboard(
-                                                        wgetCommand,
-                                                        `${copyKeyPrefix}-wget`,
-                                                    )
-                                                }
                                             />
-                                            <CommandDownloadRow
+                                            <CopyableCodeRow
                                                 label="curl"
-                                                command={curlCommand}
+                                                value={curlCommand}
                                                 copyAriaLabel={`Copy curl command for shareable link ${linkNumber}`}
-                                                isCopied={
-                                                    copiedCommand ===
-                                                    `${copyKeyPrefix}-curl`
-                                                }
-                                                onCopy={() =>
-                                                    copyToClipboard(
-                                                        curlCommand,
-                                                        `${copyKeyPrefix}-curl`,
-                                                    )
-                                                }
                                             />
                                         </div>
                                     </article>
