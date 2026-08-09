@@ -2,7 +2,7 @@
 
 Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
 
-Supports Linux, macOS, and Termux on Android.
+
 
 ```mermaid
 graph TD
@@ -20,11 +20,13 @@ graph TD
 
 ## Install
 
+For Linux, macOS, and Termux on Android.
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"
 ```
 
-This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent.
+This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent. Or just manually download static pre-build binary from [releases](https://github.com/esamattis/redoor/releases).
 
 To configure background services do
 
