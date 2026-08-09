@@ -4,6 +4,7 @@ use super::{
     UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity, current_exe_path,
     external_ip, file_search, metadata,
 };
+use tokio::sync::watch;
 
 /// Executes agent-local commands while protocol models remain transport-owned.
 pub struct CommandHandler;
@@ -69,6 +70,16 @@ impl CommandHandler {
                 }
             }
         }
+    }
+
+    /// Runs recursive search with the agent runtime's per-connection supersession signal.
+    pub async fn execute_file_search(
+        &self,
+        path: String,
+        query: String,
+        cancel_receiver: watch::Receiver<bool>,
+    ) -> CommandResult {
+        file_search::execute_with_cancellation(path, query, cancel_receiver).await
     }
 
     /// Returns directory entries or file metadata from the requested path.

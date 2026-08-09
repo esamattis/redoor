@@ -77,6 +77,7 @@ impl AgentRuntime {
         self.state.active_downloads.clear();
         self.state.active_terminals.clear();
         self.state.active_log_streams.clear();
+        self.state.cancel_file_search();
 
         log!(
             Level::Info,
@@ -219,6 +220,7 @@ impl AgentRuntime {
                 self.state.active_downloads.clear();
                 self.state.active_terminals.clear();
                 self.state.active_log_streams.clear();
+                self.state.cancel_file_search();
                 self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
             }
             AgentMsg::SendWebSocketMessage { msg } => {

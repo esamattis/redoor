@@ -37,6 +37,8 @@ import type { UpgradeAgentResponse } from "#bindings/UpgradeAgentResponse";
 import type { LogEvent } from "#bindings/LogEvent";
 import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
+import type { FileSearchResponse } from "#bindings/FileSearchResponse";
+import type { FileSearchEntry } from "#bindings/FileSearchEntry";
 import { z } from "zod";
 
 export type {
@@ -71,6 +73,8 @@ export type {
     ShutdownAgentResponse,
     RenamePathRequest,
     RenamePathResponse,
+    FileSearchResponse,
+    FileSearchEntry,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -351,6 +355,26 @@ export class Agent {
                 path,
             )}`,
             undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Searches below one directory while allowing superseded UI requests to be cancelled. */
+    async searchFiles(
+        path: string,
+        query: string,
+        signal?: AbortSignal,
+    ): Promise<FileSearchResponse> {
+        const url = new URL(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/search`,
+                path,
+            )}`,
+        );
+        url.searchParams.set("query", query);
+        return apiRequest<FileSearchResponse>(
+            url.toString(),
+            { signal },
             this.requestContext,
         );
     }

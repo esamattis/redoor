@@ -4,6 +4,7 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 use std::{path::Path, time::Duration};
+use tokio::sync::watch;
 
 /// Prevents one broad or slow filesystem search from occupying an agent indefinitely.
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -19,6 +20,16 @@ struct RankedEntry {
 
 /// Traverses incrementally so timeout returns useful partial results without retaining the tree.
 pub(super) async fn execute(path: String, query: String) -> CommandResult {
+    let (_cancel_sender, cancel_receiver) = watch::channel(false);
+    execute_with_cancellation(path, query, cancel_receiver).await
+}
+
+/// Preserves partial matches when a newer search supersedes this traversal.
+pub(super) async fn execute_with_cancellation(
+    path: String,
+    query: String,
+    mut cancel_receiver: watch::Receiver<bool>,
+) -> CommandResult {
     if query.trim().is_empty() {
         return CommandResult::error(
             CommandErrorKind::InvalidInput,
@@ -27,18 +38,25 @@ pub(super) async fn execute(path: String, query: String) -> CommandResult {
     }
 
     let mut matches = Vec::with_capacity(RESULT_LIMIT);
-    let result = tokio::time::timeout(
-        TIMEOUT,
-        collect_matches(Path::new(&path), &query, &mut matches),
-    )
-    .await;
+    let result = {
+        let traversal = collect_matches(Path::new(&path), &query, &mut matches);
+        tokio::pin!(traversal);
+        let timeout = tokio::time::sleep(TIMEOUT);
+        tokio::pin!(timeout);
+        tokio::select! {
+            biased;
+            _ = cancel_receiver.changed() => None,
+            result = &mut traversal => Some(result),
+            _ = &mut timeout => None,
+        }
+    };
 
     let timed_out = match result {
-        Ok(Ok(())) => false,
-        Ok(Err(error)) => {
+        Some(Ok(())) => false,
+        Some(Err(error)) => {
             return CommandResult::io_error("Failed to search directory", error);
         }
-        Err(_) => true,
+        None => true,
     };
 
     matches.sort_unstable_by(|left, right| {
@@ -52,6 +70,34 @@ pub(super) async fn execute(path: String, query: String) -> CommandResult {
         results: matches.into_iter().map(|entry| entry.entry).collect(),
         timed_out,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies superseded searches still return a terminal response to their original caller.
+    #[tokio::test]
+    async fn canceled_search_returns_empty_partial_response() {
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        // Pre-canceling makes this deterministic without sleeping or constructing a large tree.
+        cancel_sender.send(true).expect("receiver remains active");
+
+        let result = execute_with_cancellation(
+            "/path-that-does-not-need-to-exist".to_string(),
+            "query".to_string(),
+            cancel_receiver,
+        )
+        .await;
+
+        let CommandResult::FileSearch(response) = result else {
+            panic!("cancellation should return a file search response");
+        };
+        // No traversal work should occur after the cancellation signal is already visible.
+        assert!(response.results.is_empty());
+        // Existing response schema marks every incomplete traversal with the timeout flag.
+        assert!(response.timed_out);
+    }
 }
 
 /// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.

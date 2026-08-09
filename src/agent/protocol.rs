@@ -21,6 +21,7 @@ async fn handle_command_message(
     request_id: RequestId,
     command: Command,
     active_downloads: ActiveDownloads,
+    file_search_cancel: Option<watch::Receiver<bool>>,
 ) {
     match command {
         Command::RawDownload {
@@ -120,6 +121,30 @@ async fn handle_command_message(
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
+        Command::FileSearch { path, query } => {
+            let result = match file_search_cancel {
+                Some(cancel_receiver) => {
+                    CommandHandler::new()
+                        .execute_file_search(path, query, cancel_receiver)
+                        .await
+                }
+                None => {
+                    CommandHandler::new()
+                        .execute(Command::FileSearch { path, query })
+                        .await
+                }
+            };
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
         other => {
             let result = CommandHandler::new().execute(other).await;
             log!(
@@ -175,6 +200,11 @@ impl AgentActor {
                             | Command::RawDownload { .. }
                             | Command::TarDownload { .. }
                     );
+                    let file_search_cancel = if matches!(&command, Command::FileSearch { .. }) {
+                        Some(state.begin_file_search())
+                    } else {
+                        None
+                    };
                     let transfer_sender = state.ws_transfer_tx.as_ref().cloned();
                     if requires_transfer && transfer_sender.is_none() {
                         let result = CommandResult::error(
@@ -214,6 +244,7 @@ impl AgentActor {
                             request_id,
                             command,
                             state.active_downloads.clone(),
+                            file_search_cancel,
                         ));
                     }
                 }

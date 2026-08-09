@@ -113,6 +113,81 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeFocused();
     });
 
+    test("should recursively search from the current directory", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        const searchRequests: Array<URL> = [];
+        page.on("request", (request) => {
+            const url = new URL(request.url());
+            if (url.pathname.includes(`/agents/${ctx.agentId}/search`)) {
+                searchRequests.push(url);
+            }
+        });
+        await page.goto(directoryUrl);
+
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        await filterInput.fill("nested3txt");
+
+        // Local filtering cannot discover a file below a child directory.
+        await expect(page.locator("main tbody tr")).toHaveCount(0);
+
+        await page
+            .getByRole("checkbox", { name: "Search recursively" })
+            .check();
+        await filterInput.fill("nested");
+        await filterInput.fill("nested3txt");
+
+        const nestedResult = page
+            .getByRole("link")
+            .filter({ hasText: "nested3.txt" });
+        // A nested match proves the checked mode uses the recursive API rather than the loaded listing.
+        await expect(nestedResult).toBeVisible();
+        // Settled results keep the same header occupied with a useful count.
+        await expect(page.getByText("1 result", { exact: true })).toBeVisible();
+        // The dedicated result renderer exposes the full path and does not reuse directory table rows.
+        await expect(
+            page.getByText(
+                path.join(ctx.testDirPath, "subdir2", "deep", "nested3.txt"),
+                { exact: true },
+            ),
+        ).toBeVisible();
+        await expect(page.locator("main tbody")).toHaveCount(0);
+        // Inputs inside one throttle window collapse into one request carrying the final keystrokes.
+        expect(searchRequests).toHaveLength(1);
+        expect(searchRequests[0]?.searchParams.get("query")).toBe("nested3txt");
+
+        let notifyRequestStarted: (() => void) | undefined;
+        let releaseRequest: (() => void) | undefined;
+        const requestStarted = new Promise<void>((resolve) => {
+            notifyRequestStarted = resolve;
+        });
+        const requestRelease = new Promise<void>((resolve) => {
+            releaseRequest = resolve;
+        });
+        await page.route("**/api/v1/agents/*/search/**", async (route) => {
+            notifyRequestStarted?.();
+            await requestRelease;
+            await route.continue();
+        });
+
+        await filterInput.fill("nested1txt");
+        await requestStarted;
+
+        // Keeping the old match visible while transport is pending prevents result-list flashing.
+        await expect(nestedResult).toBeVisible();
+        await expect(
+            page.getByText("Updating results...", { exact: true }),
+        ).toBeVisible();
+        releaseRequest?.();
+        // The replacement result appearing proves retained rows do not block the eventual update.
+        await expect(
+            page.getByRole("link").filter({ hasText: "nested1.txt" }),
+        ).toBeVisible();
+    });
+
     test("should show directory details from the view query", async ({
         page,
     }) => {

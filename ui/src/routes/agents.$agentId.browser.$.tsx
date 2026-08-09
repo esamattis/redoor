@@ -20,8 +20,6 @@ import {
     Check,
     Upload,
     Trash2,
-    Square,
-    CheckSquare,
     Eye,
     EyeOff,
     Info,
@@ -35,12 +33,18 @@ import {
     LoaderCircle,
 } from "lucide-react";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { Checkbox } from "#ui/components/checkbox";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { RouteError } from "#ui/components/route-error";
 import { Tooltip } from "#ui/components/tooltip";
 import { Toast } from "#ui/components/toast";
+import {
+    FILE_SEARCH_RESULT_EVENT,
+    FileSearcher,
+    type FileSearchState,
+} from "#ui/file-searcher";
 import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
 import { formatSize } from "#ui/utils/path";
 import {
@@ -1298,7 +1302,7 @@ function Breadcrumbs(props: {
     );
 }
 
-/** Filters directory entries locally so narrowing the current listing stays immediate. */
+/** Switches between immediate directory filtering and remote recursive search. */
 function FileList(props: {
     agentId: string;
     agentName: string;
@@ -1318,6 +1322,10 @@ function FileList(props: {
     const [filterFocusPath, setFilterFocusPath] = useAtom(filterFocusPathAtom);
     const filterInputRef = React.useRef<HTMLInputElement>(null);
     const [filter, setFilter] = React.useState("");
+    const [searchRecursively, setSearchRecursively] = React.useState(false);
+    const [searchState, setSearchState] = React.useState<FileSearchState>({
+        status: "idle",
+    });
     const normalizedFilter = filter.toLowerCase();
     const filteredFiles = props.files.filter((entry) =>
         entry.name.toLowerCase().includes(normalizedFilter),
@@ -1333,6 +1341,32 @@ function FileList(props: {
         setFilterFocusPath(null);
     }, [filterFocusPath, props.directoryPath, setFilterFocusPath]);
 
+    React.useEffect(() => {
+        const inputElement = filterInputRef.current;
+        if (!searchRecursively || !inputElement) {
+            return;
+        }
+
+        const searcher = new FileSearcher(agent, props.directoryPath);
+        const handleResult = (event: Event) => {
+            if (event instanceof CustomEvent) {
+                setSearchState(event.detail);
+            }
+        };
+        searcher.addEventListener(FILE_SEARCH_RESULT_EVENT, handleResult, {
+            passive: true,
+        });
+        searcher.listenTo(inputElement);
+
+        return () => {
+            searcher.removeEventListener(
+                FILE_SEARCH_RESULT_EVENT,
+                handleResult,
+            );
+            searcher.dispose();
+        };
+    }, [agent, props.directoryPath, searchRecursively]);
+
     const handleFilterKeyDown = async (
         event: React.KeyboardEvent<HTMLInputElement>,
     ) => {
@@ -1340,16 +1374,18 @@ function FileList(props: {
             return;
         }
 
-        const firstEntry = filteredFiles[0];
-        if (!firstEntry) {
+        const destinationPath = searchRecursively
+            ? searchState.status === "success"
+                ? searchState.results[0]?.path
+                : undefined
+            : filteredFiles[0]
+              ? joinBrowserPath(props.directoryPath, filteredFiles[0].name)
+              : undefined;
+        if (!destinationPath) {
             return;
         }
 
         event.preventDefault();
-        const destinationPath = joinBrowserPath(
-            props.directoryPath,
-            firstEntry.name,
-        );
         setFilterFocusPath(destinationPath);
         await navigate({
             to: agent.getBrowserUrl(destinationPath),
@@ -1358,7 +1394,7 @@ function FileList(props: {
 
     return (
         <div className="space-y-3">
-            <div className="flex max-w-md items-center gap-2">
+            <div className="flex max-w-2xl flex-wrap items-center gap-2">
                 <Link
                     to={
                         parentPath
@@ -1385,43 +1421,144 @@ function FileList(props: {
                         className="w-full rounded-md border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                 </label>
+                <div className="shrink-0">
+                    <Checkbox
+                        role="checkbox"
+                        checked={searchRecursively}
+                        onCheckedChange={(checked) => {
+                            setSearchRecursively(checked);
+                            if (!checked) {
+                                setSearchState({ status: "idle" });
+                            }
+                        }}
+                    >
+                        Search recursively
+                    </Checkbox>
+                </div>
             </div>
-            <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
-                <thead>
-                    <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Select
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Type
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Name
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Size
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Owner
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Group
-                        </th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {filteredFiles.map((entry) => (
-                        <FileEntry
-                            key={entry.name}
-                            agentId={props.agentId}
-                            agentName={props.agentName}
-                            directoryPath={props.directoryPath}
-                            entry={entry}
-                            isParent={false}
-                        />
-                    ))}
-                </tbody>
-            </table>
+            {searchRecursively ? (
+                <FileSearchResults agent={agent} state={searchState} />
+            ) : (
+                <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
+                    <thead>
+                        <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Select
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Type
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Name
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Size
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Owner
+                            </th>
+                            <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                Group
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {filteredFiles.map((entry) => (
+                            <FileEntry
+                                key={entry.name}
+                                agentId={props.agentId}
+                                agentName={props.agentName}
+                                directoryPath={props.directoryPath}
+                                entry={entry}
+                                isParent={false}
+                            />
+                        ))}
+                    </tbody>
+                </table>
+            )}
+        </div>
+    );
+}
+
+/** Renders recursive matches independently from metadata-rich directory entries. */
+function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
+    if (props.state.status === "idle") {
+        return (
+            <div className="rounded-lg border border-dashed border-slate-700 bg-[#11141b] px-5 py-10 text-center text-sm text-slate-500">
+                Type a file or directory name to search below this directory.
+            </div>
+        );
+    }
+    if (props.state.status === "error") {
+        return (
+            <div
+                role="alert"
+                className="rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-3 text-sm text-red-300"
+            >
+                {props.state.message}
+            </div>
+        );
+    }
+
+    return (
+        <div className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
+            <p
+                role={props.state.status === "searching" ? "status" : undefined}
+                className="flex h-9 items-center gap-2 border-b border-slate-800 bg-slate-950/40 px-4 text-xs text-slate-400"
+            >
+                {props.state.status === "searching" ? (
+                    <>
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-blue-400" />
+                        Updating results...
+                    </>
+                ) : (
+                    `${props.state.results.length} ${props.state.results.length === 1 ? "result" : "results"}`
+                )}
+            </p>
+            {props.state.timedOut && (
+                <p className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-xs text-amber-300">
+                    Search timed out. Showing the matches found so far.
+                </p>
+            )}
+            {props.state.status === "searching" &&
+            props.state.results.length === 0 ? (
+                <p className="px-5 py-10 text-center text-sm text-slate-500">
+                    Searching recursively...
+                </p>
+            ) : props.state.results.length === 0 ? (
+                <p className="px-5 py-10 text-center text-sm text-slate-500">
+                    No recursive matches found for &quot;{props.state.query}
+                    &quot;.
+                </p>
+            ) : (
+                <ul className="divide-y divide-slate-800/70">
+                    {props.state.results.map((entry) => {
+                        const isDirectory = entry.type === "directory";
+                        return (
+                            <li key={entry.path}>
+                                <Link
+                                    to={props.agent.getBrowserUrl(entry.path)}
+                                    className="group flex items-start gap-3 px-4 py-3 transition-colors hover:bg-white/5"
+                                >
+                                    {isDirectory ? (
+                                        <Folder className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
+                                    ) : (
+                                        <File className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
+                                    )}
+                                    <span className="min-w-0">
+                                        <span className="block font-medium text-blue-400 group-hover:underline">
+                                            {entry.name}
+                                        </span>
+                                        <span className="block truncate font-mono text-xs text-slate-500">
+                                            {entry.path}
+                                        </span>
+                                    </span>
+                                </Link>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
         </div>
     );
 }
@@ -1455,20 +1592,14 @@ function FileEntry(props: {
             aria-label={`${isDirectory ? "Directory" : "File"} entry ${entry.name}`}
         >
             <td className="p-3" aria-label="">
-                <button
-                    type="button"
-                    aria-label={
+                <Checkbox
+                    label={
                         isSelected
                             ? `Unselect ${isDirectory ? "directory" : "file"} ${entry.name}`
                             : `Select ${isDirectory ? "directory" : "file"} ${entry.name}`
                     }
-                    title={
-                        isSelected
-                            ? `Unselect ${isDirectory ? "directory" : "file"} ${entry.name}`
-                            : `Select ${isDirectory ? "directory" : "file"} ${entry.name}`
-                    }
-                    aria-pressed={isSelected}
-                    onClick={() =>
+                    checked={isSelected}
+                    onCheckedChange={() =>
                         toggleSelectedFile({
                             agentId,
                             agentName,
@@ -1476,14 +1607,7 @@ function FileEntry(props: {
                             fileName: entry.name,
                         })
                     }
-                    className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100"
-                >
-                    {isSelected ? (
-                        <CheckSquare className="h-4 w-4 text-blue-400" />
-                    ) : (
-                        <Square className="h-4 w-4" />
-                    )}
-                </button>
+                />
             </td>
             <td className="p-3">
                 {isDirectory ? (

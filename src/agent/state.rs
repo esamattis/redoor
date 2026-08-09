@@ -336,6 +336,8 @@ pub(crate) struct AgentState {
     pub(crate) active_downloads: ActiveDownloads,
     pub(crate) active_terminals: ActiveTerminals,
     pub(crate) active_log_streams: ActiveLogStreams,
+    /// Supersedes recursive traversal without serializing unrelated control commands.
+    active_file_search_cancel: Option<watch::Sender<bool>>,
 }
 
 impl AgentState {
@@ -363,6 +365,23 @@ impl AgentState {
             active_downloads: ActiveDownloads::new(),
             active_terminals: ActiveTerminals::new(),
             active_log_streams: ActiveLogStreams::new(),
+            active_file_search_cancel: None,
+        }
+    }
+
+    /// Cancels the previous traversal before returning a token for its replacement.
+    pub(crate) fn begin_file_search(&mut self) -> watch::Receiver<bool> {
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        if let Some(previous) = self.active_file_search_cancel.replace(cancel_sender) {
+            let _ = previous.send(true);
+        }
+        cancel_receiver
+    }
+
+    /// Stops recursive traversal when its owning agent connection is discarded.
+    pub(crate) fn cancel_file_search(&mut self) {
+        if let Some(cancel_sender) = self.active_file_search_cancel.take() {
+            let _ = cancel_sender.send(true);
         }
     }
 
@@ -406,6 +425,26 @@ mod tests {
     fn rejects_negative_notification_delay() {
         // Only non-negative seconds or the explicit `off` value are valid.
         assert!(parse_notification_delay("-1").is_err());
+    }
+
+    /// Ensures a replacement search synchronously cancels only the previous traversal.
+    #[test]
+    fn beginning_file_search_cancels_previous_search() {
+        let mut state = AgentState::new(
+            AgentId::from("test-agent"),
+            "test-agent".to_string(),
+            "ws://localhost/ws".to_string(),
+            "/tmp".to_string(),
+            "token".to_string(),
+        );
+        let first = state.begin_file_search();
+
+        let second = state.begin_file_search();
+
+        // Replacement must publish cancellation before the new traversal can be spawned.
+        assert!(*first.borrow());
+        // The replacement remains active rather than inheriting the old cancellation state.
+        assert!(!*second.borrow());
     }
 
     /// Protects authoritative disconnect cleanup across every active dedicated log task.

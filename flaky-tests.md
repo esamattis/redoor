@@ -5,3 +5,4 @@
 - `ui/e2e/terminal.spec.ts > Terminal panel lifecycle > keeps independent terminal tabs in their captured directories` timed out waiting for Terminal 2 to become selected, then all 48 Playwright tests passed on the immediate rerun (2026-08-09).
 - `pn integration-test` initially failed because a process left by an interrupted test run still held the shared test port, then all 88 Vitest tests passed after terminating the stale `redoor` process (2026-08-09).
 - `ui/e2e/terminal.spec.ts > Terminal panel lifecycle > keeps independent terminal tabs in their captured directories` again timed out waiting for Terminal 2 to become selected during `pn test`, then all 52 Playwright tests passed on the immediate rerun (2026-08-09).
+- `pn integration-test` failed because an interrupted run left a `redoor` server bound to port 36203, then all 90 Vitest tests and the full `pn test` suite passed after removing the stale test process (2026-08-09).
