@@ -141,6 +141,8 @@ pub fn agent_loaded_config_path() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ServerInfoResponse {
+    /// Filesystem and service namespace selected by `REDOOR_APP_NAME`.
+    pub app_name: String,
     /// Shared registration secret included so the authenticated UI can render a working agent config.
     pub agent_token: String,
     /// Absolute path of the TOML config file this process loaded.

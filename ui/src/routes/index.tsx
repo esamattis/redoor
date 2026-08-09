@@ -77,6 +77,9 @@ ws_address = ${JSON.stringify(websocketAddress)}
                         <h1 className="text-2xl font-bold text-slate-100">
                             Server
                         </h1>
+                        <span className="rounded border border-blue-400/30 bg-blue-400/10 px-2 py-0.5 font-mono text-xs text-blue-300">
+                            {serverInfo.app_name}
+                        </span>
                     </div>
                     <RestartButton
                         target="server"

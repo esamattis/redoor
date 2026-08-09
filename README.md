@@ -4,7 +4,7 @@ Remote agent (not AI one) control over WebSockets. Run a **server** (HTTP UI + A
 
 ## Shared config
 
-Server and agent use the same TOML file and the same parser. Default path: `/etc/redoor/config.toml` when running as root, otherwise `~/.config/redoor/config.toml`.
+Server and agent use the same TOML file and the same parser. Default path: `/etc/<app-name>/config.toml` when running as root, otherwise `~/.config/<app-name>/config.toml`. The root option `--app-name <name>` or its `REDOOR_APP_NAME` environment equivalent selects `<app-name>` and defaults to `redoor`, allowing independent installations to use separate config, data, log, SSH cache, and systemd namespaces. Managed agents receive the selected root option explicitly.
 
 Precedence for every overridable setting: **CLI > env > config file > default**.
 
@@ -42,7 +42,7 @@ target = "user@example.com"
 # username = "deploy"
 # ssh_port = 22
 # name = "prod"
-# remote_bin = "~/.local/redoor/<version>/redoor"
+# remote_bin = "~/.local/<app-name>/<version>/redoor"
 # dir = "/srv/app"
 # log = "log/prod.log"
 ```
@@ -72,7 +72,7 @@ redoor server --port 3000 --bind 127.0.0.1 --log log/server.log
 
 | Flag | Env | Config | Default |
 |------|-----|--------|---------|
-| `--config` | | | `/etc/redoor/config.toml` as root, else `~/.config/redoor/config.toml` (created on first run) |
+| `--config` | | | `/etc/<app-name>/config.toml` as root, else `~/.config/<app-name>/config.toml` (created on first run) |
 | `--port` | `REDOOR_PORT` | `[server].port` | `3000` |
 | `--bind` | | `[server].bind` | `127.0.0.1` |
 | `--log` | | `[server].log` | stderr |
@@ -86,7 +86,7 @@ Usually started by the server via `[[agents]]`. Manual start (any required value
 ```bash
 redoor agent
 redoor agent ws://127.0.0.1:3000/ws --name my-host --token "$TOKEN"
-redoor agent --config ~/.config/redoor/config.toml
+redoor agent --config ~/.config/<app-name>/config.toml
 redoor agent wss://example.com/ws --name edge -d /var/app --log log/agent.log
 ```
 
@@ -95,7 +95,7 @@ redoor agent wss://example.com/ws --name edge -d /var/app --log log/agent.log
 | `[WS_ADDRESS]` | `REDOOR_AGENT_WS` | `[agent].ws_address` | (required from one source) |
 | `--name` | `REDOOR_AGENT_NAME` | `[agent].name` | (required from one source) |
 | `--token` | `REDOOR_AGENT_TOKEN` | top-level `agent_token` | (required from one source) |
-| `--config` | | | `/etc/redoor/config.toml` as root, else `~/.config/redoor/config.toml` when present |
+| `--config` | | | `/etc/<app-name>/config.toml` as root, else `~/.config/<app-name>/config.toml` when present |
 | `-d` / `--dir` | `REDOOR_AGENT_DIR` | `[agent].dir` | process cwd |
 | `--log` | `REDOOR_AGENT_LOG` | `[agent].log` | stderr |
 
@@ -121,8 +121,8 @@ sudo redoor setup-systemd --mode agent
 | `--mode agent` | Non-root: `~/.config/systemd/user/redoor-agent.service`. Root: `/etc/systemd/system/redoor-agent.service` running as root |
 | `--unit-name NAME` | Override the unit file name (appends `.service` if missing). Use to install multiple agents/servers on one host |
 
-Creates the conventional shared config when missing (`~/.config/redoor/config.toml` non-root, `/etc/redoor/config.toml` as root). Agent and server modes write the same starter file (generated `agent_token`, `[server]`, `[agent]`, and a managed local `[[agents]]` entry). Log paths default to `~/.local/share/redoor/logs/{server,agent,agent-local}.log` for user installs and `/var/log/redoor/{server,agent,agent-local}.log` as root. Secrets are printed once; nothing is prompted. The unit is always enabled on boot but **never** started by setup — start it yourself after reviewing the config (agent settings usually need changes).
+Creates the conventional shared config when missing (`~/.config/<app-name>/config.toml` non-root, `/etc/<app-name>/config.toml` as root). Agent and server modes write the same starter file (generated `agent_token`, `[server]`, `[agent]`, and a managed local `[[agents]]` entry). Log paths default to `~/.local/share/<app-name>/{server,agent}.log` for user installs and `/var/log/<app-name>/{server,agent}.log` as root. Generated units persist `REDOOR_APP_NAME` and default to `<app-name>-server.service` or `<app-name>-agent.service`. Secrets are printed once; nothing is prompted. The unit is always enabled on boot but **never** started by setup — start it yourself after reviewing the config (agent settings usually need changes).
 
-Non-root enables linger via `loginctl`. Root creates the `redoor` user when installing the server, chowns `/etc/redoor` and pre-creates `/var/log/redoor` for that user.
+Non-root enables linger via `loginctl`. Root creates the fixed `redoor` service user when installing the server, chowns `/etc/<app-name>` and pre-creates `/var/log/<app-name>` for that user.
 
 The agent unit runs `redoor agent --config <path>` with no other CLI flags or environment variables — configure everything in the TOML (`agent_token` + `[agent]`). Setup refuses to install if the existing file is incomplete for standalone agent startup.

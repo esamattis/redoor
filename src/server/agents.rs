@@ -33,6 +33,7 @@ pub(crate) async fn server_info_handler(
     (
         StatusCode::OK,
         Json(ServerInfoResponse {
+            app_name: state.app_name.clone(),
             agent_token: state.auth.agent_token().to_string(),
             config_path: state.config_path.display().to_string(),
             exe_path,

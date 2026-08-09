@@ -43,7 +43,7 @@ struct ServiceArgs {
     /// Select whether the installed service runs the server or an agent.
     #[arg(long, value_enum)]
     mode: SystemdMode,
-    /// Override the systemd unit file name (default: redoor-agent.service / redoor-server.service).
+    /// Override the systemd unit file name (default: <app-name>-agent/server.service).
     ///
     /// Lets multiple agent or server installs coexist on one host. A missing
     /// `.service` suffix is appended automatically.
@@ -62,10 +62,10 @@ enum SystemdMode {
 
 impl SystemdMode {
     /// Returns the default loadable systemd service name for this process role.
-    fn default_service_name(self) -> &'static str {
+    fn service_name_suffix(self) -> &'static str {
         match self {
-            Self::Agent => "redoor-agent.service",
-            Self::Server => "redoor-server.service",
+            Self::Agent => "agent",
+            Self::Server => "server",
         }
     }
 
@@ -80,7 +80,14 @@ impl SystemdMode {
 
 /// Resolves the unit file name, appending `.service` when the operator omitted it.
 fn resolve_unit_name(mode: SystemdMode, unit_name: Option<String>) -> Result<String> {
-    let name = unit_name.unwrap_or_else(|| mode.default_service_name().to_owned());
+    let name = match unit_name {
+        Some(name) => name,
+        None => format!(
+            "{}-{}.service",
+            crate::app_name::app_name()?,
+            mode.service_name_suffix()
+        ),
+    };
     let name = name.trim();
     if name.is_empty() {
         bail!("--unit-name must not be empty");
@@ -226,13 +233,14 @@ fn validate_unit_load_state(
 /// Installs a lingering systemd user unit owned by the invoking account.
 #[cfg(target_os = "linux")]
 async fn run_user(mode: SystemdMode, unit_name: &str) -> Result<()> {
+    let app_name = crate::app_name::app_name()?;
     let config_path = crate::server::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
 
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
         .context("Failed to resolve the current redoor executable")?;
-    let unit_content = render_unit(mode, &binary, &config_path, false);
+    let unit_content = render_unit(mode, &binary, &config_path, false, &app_name);
     let home = home_directory()?;
     let unit_directory = home.join(".config/systemd/user");
     tokio::fs::create_dir_all(&unit_directory)
@@ -269,6 +277,7 @@ async fn run_user(mode: SystemdMode, unit_name: &str) -> Result<()> {
 /// Installs a system unit: server as the `redoor` user, agent as root.
 #[cfg(target_os = "linux")]
 async fn run_system(mode: SystemdMode, unit_name: &str) -> Result<()> {
+    let app_name = crate::app_name::app_name()?;
     let config_path = crate::server::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
 
@@ -287,7 +296,7 @@ async fn run_system(mode: SystemdMode, unit_name: &str) -> Result<()> {
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
         .context("Failed to resolve the current redoor executable")?;
-    let unit_content = render_unit(mode, &binary, &config_path, true);
+    let unit_content = render_unit(mode, &binary, &config_path, true, &app_name);
     let unit_directory = PathBuf::from("/etc/systemd/system");
     let unit_path = unit_directory.join(unit_name);
     tokio::fs::write(&unit_path, unit_content)
@@ -343,7 +352,7 @@ async fn activate_unit(service: &str, user: bool) -> Result<()> {
     Ok(())
 }
 
-/// Creates `/var/log/redoor` and hands ownership to `redoor` when that account exists.
+/// Creates the selected `/var/log/<app-name>` and hands ownership to `redoor` when available.
 #[cfg(target_os = "linux")]
 async fn ensure_system_log_directory() -> Result<()> {
     let log_directory = crate::server::default_log_directory()?;
@@ -573,9 +582,16 @@ async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> 
 }
 
 /// Renders a user or system unit. The agent has no CLI flags — the TOML is authoritative.
-fn render_unit(mode: SystemdMode, binary: &Path, config_path: &Path, system: bool) -> String {
+fn render_unit(
+    mode: SystemdMode,
+    binary: &Path,
+    config_path: &Path,
+    system: bool,
+    app_name: &str,
+) -> String {
     let binary = quote_unit_argument(binary.to_string_lossy().as_ref());
     let config_path = quote_unit_argument(config_path.to_string_lossy().as_ref());
+    let app_environment = quote_unit_argument(&format!("REDOOR_APP_NAME={app_name}"));
     let (description, command) = match mode {
         // Pin --config so the unit always loads the file prepared during setup.
         SystemdMode::Agent => (
@@ -606,7 +622,8 @@ After=network-online.target
 
 [Service]
 Type=notify
-{service_identity}ExecStart={command}
+{service_identity}Environment={app_environment}
+ExecStart={command}
 Restart=on-failure
 RestartSec=5s
 
@@ -637,13 +654,16 @@ mod tests {
     /// Verifies default and overridden unit names, including automatic .service suffix.
     #[test]
     fn resolve_unit_name_defaults_and_normalizes() {
+        let app_name = crate::app_name::app_name().unwrap();
         assert_eq!(
             resolve_unit_name(SystemdMode::Agent, None).unwrap(),
-            "redoor-agent.service"
+            format!("{app_name}-agent.service"),
+            "the default agent unit should use the effective application namespace"
         );
         assert_eq!(
             resolve_unit_name(SystemdMode::Server, None).unwrap(),
-            "redoor-server.service"
+            format!("{app_name}-server.service"),
+            "the default server unit should use the effective application namespace"
         );
         assert_eq!(
             resolve_unit_name(SystemdMode::Agent, Some("edge-agent".into())).unwrap(),
@@ -705,6 +725,7 @@ mod tests {
             Path::new("/home/test user/bin/redoor"),
             Path::new("/home/test user/.config/redoor/config.toml"),
             false,
+            "redoor",
         );
 
         assert!(
@@ -714,8 +735,12 @@ mod tests {
             "the agent service must pin the prepared config path: {unit}"
         );
         assert!(
-            !unit.contains("--token") && !unit.contains("--name") && !unit.contains("Environment="),
-            "agent runtime settings must come from the TOML file, not the unit: {unit}"
+            !unit.contains("--token") && !unit.contains("--name"),
+            "agent connection settings must come from the TOML file, not the unit: {unit}"
+        );
+        assert!(
+            unit.contains("Environment=\"REDOOR_APP_NAME=redoor\""),
+            "the unit must preserve the application namespace selected during setup: {unit}"
         );
         assert!(
             unit.contains("WantedBy=default.target"),
@@ -739,6 +764,7 @@ mod tests {
             Path::new("/home/test/bin/redoor"),
             Path::new("/home/test/.config/redoor/config.toml"),
             false,
+            "redoor-dev",
         );
 
         assert!(
@@ -751,6 +777,10 @@ mod tests {
             unit.contains("Type=notify"),
             "server services must wait for the listener readiness notification: {unit}"
         );
+        assert!(
+            unit.contains("Environment=\"REDOOR_APP_NAME=redoor-dev\""),
+            "custom application namespaces must survive service-manager startup: {unit}"
+        );
     }
 
     /// Verifies system server units drop privileges to the dedicated redoor account.
@@ -761,6 +791,7 @@ mod tests {
             Path::new("/usr/local/bin/redoor"),
             Path::new("/etc/redoor/config.toml"),
             true,
+            "redoor",
         );
 
         assert!(
@@ -787,6 +818,7 @@ mod tests {
             Path::new("/usr/local/bin/redoor"),
             Path::new("/etc/redoor/config.toml"),
             true,
+            "redoor",
         );
 
         assert!(

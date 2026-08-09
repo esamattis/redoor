@@ -7,6 +7,10 @@ import type { ServerBuildMode } from "./ServerBuildMode";
  */
 export type ServerInfoResponse = { 
 /**
+ * Filesystem and service namespace selected by `REDOOR_APP_NAME`.
+ */
+app_name: string, 
+/**
  * Shared registration secret included so the authenticated UI can render a working agent config.
  */
 agent_token: string, 

@@ -67,9 +67,9 @@ pub(crate) struct SshArgs {
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
     pub(crate) token: String,
     /// Path to the redoor binary on the remote host. Defaults to the
-    /// versioned install layout (`~/.local/redoor/<version>/redoor`).
-    #[arg(long, env = "REDOOR_REMOTE_BIN", default_value_t = default_remote_bin())]
-    pub(crate) remote_bin: String,
+    /// versioned install layout (`~/.local/<app-name>/<version>/redoor`).
+    #[arg(long, env = "REDOOR_REMOTE_BIN")]
+    pub(crate) remote_bin: Option<String>,
     /// Default directory the remote agent publishes for UI tab navigation.
     #[arg(short = 'd', long)]
     pub(crate) dir: Option<String>,
@@ -80,14 +80,21 @@ pub(crate) struct SshArgs {
 
 /// Default remote redoor binary path when the user does not override it
 /// via `--remote-bin` or `REDOOR_REMOTE_BIN`.
-fn default_remote_bin() -> String {
-    format!("~/.local/redoor/{}/redoor", env!("CARGO_PKG_VERSION"))
+fn default_remote_bin() -> anyhow::Result<String> {
+    Ok(format!(
+        "~/.local/{}/{}/redoor",
+        crate::app_name::app_name()?,
+        env!("CARGO_PKG_VERSION")
+    ))
 }
 
 /// Dedicated remote path for local debug binary uploads so iterative debug
 /// deploys never overwrite a versioned release install on the same host.
-fn debug_remote_bin() -> String {
-    "~/.local/redoor/debug/redoor".to_string()
+fn debug_remote_bin() -> anyhow::Result<String> {
+    Ok(format!(
+        "~/.local/{}/debug/redoor",
+        crate::app_name::app_name()?
+    ))
 }
 
 /// Derives a default agent name from the ssh target by stripping any
@@ -101,7 +108,7 @@ pub(crate) fn default_agent_name(target: &str) -> String {
 /// without depending on clap.
 ///
 /// `remote_bin` is optional so callers that want the versioned default
-/// (`~/.local/redoor/<version>/redoor`) don't have to compute it themselves;
+/// (`~/.local/<app-name>/<version>/redoor`) don't have to compute it themselves;
 /// `start_ssh_agent` fills it in when `None`.
 #[derive(Debug, Clone)]
 pub(crate) struct SshAgentConfig {
@@ -249,7 +256,7 @@ async fn ensure_remote_binary(
         // Use a dedicated path so a debug binary never overwrites the versioned one.
         // Content equality is decided by SHA-1 below because `--version` cannot
         // tell whether the remote executable contains the current local debug code.
-        let remote_bin = debug_remote_bin();
+        let remote_bin = debug_remote_bin()?;
         log!(
             Level::Info,
             "Using local debug binary for matching remote platform: path={}, remote_bin={}, os={}, arch={}",
@@ -372,16 +379,15 @@ async fn available_debug_binary(
 /// Local cache directory for redoor release binaries downloaded from GitHub.
 /// Caching avoids re-downloading the same tarball on every `redoor ssh` call
 /// against the same remote target.
-fn local_binaries_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(home).join(".local/share/redoor/binaries")
+fn local_binaries_dir() -> anyhow::Result<PathBuf> {
+    Ok(crate::app_name::user_data_directory()?.join("binaries"))
 }
 
 /// Final on-disk name of the cached binary for a given (version, os, arch).
 /// Embedding all three in the filename lets multiple targets coexist in the
 /// same cache directory and makes it obvious which file matches which host.
-fn cached_binary_path(version: &str, os: &str, arch: &str) -> PathBuf {
-    local_binaries_dir().join(format!("redoor-v{}-{}-{}", version, os, arch))
+fn cached_binary_path(version: &str, os: &str, arch: &str) -> anyhow::Result<PathBuf> {
+    Ok(local_binaries_dir()?.join(format!("redoor-v{}-{}-{}", version, os, arch)))
 }
 
 /// Builds the GitHub release download URL for a given (version, os, arch).
@@ -402,9 +408,9 @@ async fn ensure_local_binary(
     os: &str,
     arch: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let binaries_dir = local_binaries_dir();
+    let binaries_dir = local_binaries_dir()?;
     tokio::fs::create_dir_all(&binaries_dir).await?;
-    let final_path = cached_binary_path(version, os, arch);
+    let final_path = cached_binary_path(version, os, arch)?;
     if tokio::fs::try_exists(&final_path).await? {
         log!(
             Level::Info,
@@ -1050,9 +1056,8 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         username: args.username,
         ssh_port: args.ssh_port,
         name: args.name,
-        // `SshArgs` already resolved the default via clap's `default_value_t`,
-        // so forward it as-is rather than re-deriving it in `start_ssh_agent`.
-        remote_bin: Some(args.remote_bin),
+        // Keep None distinct so provisioning knows whether it may manage the default path.
+        remote_bin: args.remote_bin,
         dir: args.dir,
         target: args.target,
         log: None,
@@ -1071,6 +1076,8 @@ pub(crate) struct PreparedSshAgent {
     /// would otherwise reconnect through a new reverse tunnel and steal this
     /// name from the freshly spawned agent.
     agent_name: String,
+    /// Root CLI namespace passed explicitly so the remote process matches the server.
+    app_name: String,
     remote_bin: String,
     dir: Option<String>,
     local_port: u16,
@@ -1118,6 +1125,8 @@ impl PreparedSshAgent {
     /// agent always connects to the random port SSH actually requested.
     fn launch_settings(&self, remote_port: u16) -> (Vec<String>, SshRunOptions) {
         let mut remote_argv = vec![
+            "--app-name".to_string(),
+            self.app_name.clone(),
             "agent".to_string(),
             format!("ws://localhost:{remote_port}/ws"),
             "--name".to_string(),
@@ -1157,7 +1166,10 @@ pub(crate) async fn prepare_ssh_agent(
     redoor_port: u16,
     agent_token: &str,
 ) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
-    let remote_bin = config.remote_bin.clone().unwrap_or_else(default_remote_bin);
+    let remote_bin = match config.remote_bin.clone() {
+        Some(remote_bin) => remote_bin,
+        None => default_remote_bin()?,
+    };
     let agent_name = config
         .name
         .clone()
@@ -1201,6 +1213,7 @@ pub(crate) async fn prepare_ssh_agent(
     Ok(PreparedSshAgent {
         host,
         agent_name,
+        app_name: crate::app_name::app_name()?,
         remote_bin,
         dir: config.dir.clone(),
         local_port: redoor_port,
@@ -1314,8 +1327,12 @@ mod tests {
     /// versioned release layout, so both can coexist on one remote host.
     #[test]
     fn debug_remote_bin_uses_dedicated_debug_version() {
-        // Operators keep versioned release installs under ~/.local/redoor/<semver>.
-        assert_eq!(debug_remote_bin(), "~/.local/redoor/debug/redoor");
+        let app_name = crate::app_name::app_name().unwrap();
+        assert_eq!(
+            debug_remote_bin().unwrap(),
+            format!("~/.local/{app_name}/debug/redoor"),
+            "the debug install path should use the effective application namespace"
+        );
     }
 
     /// Verifies a debug server can provision its exact local build to a host

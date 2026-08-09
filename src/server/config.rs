@@ -18,30 +18,28 @@ use toml_edit::Document;
 
 /// Conventional config path for the current process privileges.
 ///
-/// Root loads `/etc/redoor/config.toml` so system units and admin installs share
-/// one file; non-root uses the XDG-style home path under `~/.config/redoor`.
+/// Root loads `/etc/<app-name>/config.toml` so system units and admin installs
+/// share one file; non-root uses the matching directory under `~/.config`.
 pub(crate) fn default_config_path() -> Result<PathBuf> {
+    let app_name = crate::app_name::app_name()?;
     if effective_uid_is_root() {
-        return Ok(PathBuf::from("/etc/redoor/config.toml"));
+        return Ok(PathBuf::from("/etc").join(app_name).join("config.toml"));
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME is not set; pass --config with a config.toml path")?;
-    Ok(home.join(".config/redoor/config.toml"))
+    Ok(home.join(".config").join(app_name).join("config.toml"))
 }
 
 /// Conventional directory for process log files under the current privileges.
 ///
-/// Root uses `/var/log/redoor` so system units share a writable location the
-/// `redoor` service user can own; non-root keeps logs under `~/.local/share/redoor`.
+/// Root uses `/var/log/<app-name>` so system units share a writable location;
+/// non-root keeps logs in the matching per-application data directory.
 pub(crate) fn default_log_directory() -> Result<PathBuf> {
     if effective_uid_is_root() {
-        return Ok(PathBuf::from("/var/log/redoor"));
+        return Ok(PathBuf::from("/var/log").join(crate::app_name::app_name()?));
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set; cannot resolve the default log directory")?;
-    Ok(home.join(".local/share/redoor"))
+    crate::app_name::user_data_directory()
 }
 
 /// Default persistent server log used when no CLI, environment, or TOML path is set.
@@ -116,6 +114,7 @@ fn generate_secret() -> String {
 struct DefaultConfigPaths {
     agent_dir: String,
     agent_name: String,
+    app_name: String,
 }
 
 /// Renders one shared starter config used by server bootstrap and systemd setup.
@@ -163,6 +162,7 @@ fn default_config_content(
     };
     let agent_dir = toml_edit::Value::from(paths.agent_dir.as_str()).to_string();
     let agent_name = toml_edit::Value::from(paths.agent_name.as_str()).to_string();
+    let remote_bin = format!("~/.local/{}/<version>/redoor", paths.app_name);
     format!(
         r#"# Redoor configuration (shared by server and agent).
 {header}
@@ -195,7 +195,7 @@ dir = {agent_dir}
 # username = "remote-user"
 # ssh_port = 22
 # name = "remote-agent"
-# remote_bin = "~/.local/redoor/<version>/redoor"
+# remote_bin = "{remote_bin}"
 # dir = "/home/remote-user"
 # log = "log/remote-agent.log"
 "#
@@ -251,6 +251,7 @@ pub(crate) async fn create_default_config_if_missing_with_token(
     let paths = DefaultConfigPaths {
         agent_dir: default_agent_dir()?,
         agent_name: default_local_agent_name(),
+        app_name: crate::app_name::app_name()?,
     };
     let parent = path
         .parent()
@@ -783,6 +784,8 @@ pub(crate) async fn spawn_local_agent(
 
     let mut command = Command::new(&bin);
     command
+        .arg("--app-name")
+        .arg(crate::app_name::app_name()?)
         .arg("agent")
         .arg(&ws_url)
         .arg("--name")

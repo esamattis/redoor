@@ -209,11 +209,8 @@ impl AuthState {
             }
         };
 
-        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
-            anyhow::anyhow!("HOME is not set; cannot locate the session directory")
-        })?;
-        // Namespace under redoor so other local tools cannot collide on a generic sessions path.
-        let sessions_directory = home.join(".local/share/redoor/sessions");
+        // Keep independent application namespaces from sharing browser sessions on disk.
+        let sessions_directory = crate::app_name::user_data_directory()?.join("sessions");
         tokio::fs::create_dir_all(&sessions_directory).await?;
 
         #[cfg(unix)]

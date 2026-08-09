@@ -13,6 +13,8 @@ use super::auth::AuthState;
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
+    /// Effective installation namespace displayed on the home page.
+    pub(crate) app_name: String,
     pub(crate) router_ref: actors::router::RouterHandle,
     /// Shared registry of agent supervisors. The WebSocket session uses
     /// this to look up the supervisor for the agent it just registered
@@ -38,6 +40,7 @@ pub(crate) struct ServerState {
 
 impl ServerState {
     pub(crate) fn new(
+        app_name: String,
         router_ref: actors::router::RouterHandle,
         watchdog_registry: WatchdogRegistry,
         terminal_registry: TerminalRegistry,
@@ -49,6 +52,7 @@ impl ServerState {
         shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     ) -> Self {
         Self {
+            app_name,
             router_ref,
             watchdog_registry,
             terminal_registry,
@@ -80,11 +84,11 @@ pub(crate) struct CoordinatorArgs {
     #[arg(long)]
     pub(crate) bind: Option<String>,
     /// Server log file path. Overrides `[server].log`. Defaults to
-    /// `~/.local/share/redoor/server.log` for non-root users.
+    /// `~/.local/share/<app-name>/server.log` for non-root users.
     #[arg(long, env = "REDOOR_SERVER_LOG")]
     pub(crate) log: Option<String>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates
-    /// `/etc/redoor/config.toml` as root, otherwise `~/.config/redoor/config.toml`.
+    /// `/etc/<app-name>/config.toml` as root, otherwise `~/.config/<app-name>/config.toml`.
     /// Top-level `agent_token` is required; `[server]` holds listener/auth
     /// settings (browser `username`/`password` may be omitted together on Linux
     /// for PAM). Optional `[[agents]]` entries are either ssh-backed (`target`)

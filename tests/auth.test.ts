@@ -86,6 +86,8 @@ describe("HTTP authentication", () => {
         expect(agents).toEqual([]);
 
         const serverInfo = await api.getServerInfo();
+        // The home page must identify which isolated application namespace is active.
+        expect(serverInfo.app_name).toBe("redoor");
         // The authenticated home page must receive the real secret for its copyable agent config.
         expect(serverInfo.agent_token).toBe(TEST_AGENT_TOKEN);
         // Home UI needs an absolute config path so operators can find the file they edited.

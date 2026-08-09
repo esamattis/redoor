@@ -1,4 +1,5 @@
 mod agent;
+mod app_name;
 mod process_logs;
 mod server;
 mod ssh;
@@ -14,6 +15,15 @@ use redoor::{Level, actors, log, logging};
 #[command(author, version, about)]
 #[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
+    /// Namespace for config, data, logs, SSH caches, and generated service names.
+    #[arg(
+        long,
+        env = app_name::APP_NAME_ENV,
+        default_value = "redoor",
+        value_parser = app_name::parse_app_name,
+        global = true
+    )]
+    app_name: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -95,7 +105,9 @@ struct AgentLogsArgs {
 
 #[tokio::main]
 async fn main() {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    app_name::initialize(cli.app_name);
+    match cli.command {
         Commands::Server(args) => match args.command {
             Some(ServerCommand::Logs(logs)) => {
                 run_utility(process_logs::run(
@@ -154,6 +166,7 @@ async fn run_utility(future: impl std::future::Future<Output = anyhow::Result<()
 
 /// Starts the long-lived server using the established flat startup arguments.
 async fn run_server(args: server::CoordinatorArgs) {
+    let app_name = app_name::app_name().expect("Clap validated the application name");
     // Explicit paths remain strict, while the conventional path bootstraps a
     // documented starter config so first startup does not require manual setup.
     let config_path = match args.config.clone() {
@@ -307,6 +320,7 @@ async fn run_server(args: server::CoordinatorArgs) {
     // the listen FD open would race the restarted process on the same port.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let app = server::build_app(server::ServerState::new(
+        app_name,
         router_ref.clone(),
         watchdog_registry.clone(),
         terminal_registry,

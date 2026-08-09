@@ -296,6 +296,7 @@ password = "${TEST_PASSWORD}"
         mkdirSync(TEST_SERVER_HOME, { recursive: true });
         return this.spawn(SERVER_PATH, cliArgs, PROJECT_ROOT, {
             HOME: TEST_SERVER_HOME,
+            REDOOR_APP_NAME: "redoor",
         });
     }
 
