@@ -33,7 +33,7 @@ pub(crate) fn default_config_path() -> Result<PathBuf> {
 /// Conventional directory for process log files under the current privileges.
 ///
 /// Root uses `/var/log/redoor` so system units share a writable location the
-/// `redoor` service user can own; non-root keeps logs under XDG data home.
+/// `redoor` service user can own; non-root keeps logs under `~/.local/share/redoor`.
 pub(crate) fn default_log_directory() -> Result<PathBuf> {
     if effective_uid_is_root() {
         return Ok(PathBuf::from("/var/log/redoor"));
@@ -41,7 +41,23 @@ pub(crate) fn default_log_directory() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME is not set; cannot resolve the default log directory")?;
-    Ok(home.join(".local/share/redoor/logs"))
+    Ok(home.join(".local/share/redoor"))
+}
+
+/// Default persistent server log used when no CLI, environment, or TOML path is set.
+pub(crate) fn default_server_log_path() -> Result<String> {
+    Ok(default_log_directory()?
+        .join("server.log")
+        .display()
+        .to_string())
+}
+
+/// Default persistent standalone-agent log used when no explicit path is set.
+pub(crate) fn default_agent_log_path() -> Result<String> {
+    Ok(default_log_directory()?
+        .join("agent.log")
+        .display()
+        .to_string())
 }
 
 /// Default UI/workdir for a local agent: home for normal users, filesystem root for root.
@@ -98,10 +114,6 @@ fn generate_secret() -> String {
 
 /// Paths and identity values baked into a starter config for the current host.
 struct DefaultConfigPaths {
-    server_log: String,
-    agent_log: String,
-    /// Separate file so the server-managed local child does not share the standalone agent log.
-    local_agent_log: String,
     agent_dir: String,
     agent_name: String,
 }
@@ -149,9 +161,6 @@ fn default_config_content(
             "# agent_token was supplied during setup.\n# Browser login uses the process owner's system username/password (Linux PAM)."
         }
     };
-    let server_log = toml_edit::Value::from(paths.server_log.as_str()).to_string();
-    let agent_log = toml_edit::Value::from(paths.agent_log.as_str()).to_string();
-    let local_agent_log = toml_edit::Value::from(paths.local_agent_log.as_str()).to_string();
     let agent_dir = toml_edit::Value::from(paths.agent_dir.as_str()).to_string();
     let agent_name = toml_edit::Value::from(paths.agent_name.as_str()).to_string();
     format!(
@@ -167,20 +176,17 @@ agent_token = {agent_token}
 {credentials}# port = 3000
 # bind = "127.0.0.1"
 # cookie_secure = false
-log = {server_log}
 
 [agent]
 ws_address = "ws://localhost:3000/ws"
 name = {agent_name}
 dir = {agent_dir}
-log = {agent_log}
 
 # Server-managed local agent (spawned by `redoor server`).
 [[agents]]
 local = true
 name = {agent_name}
 dir = {agent_dir}
-log = {local_agent_log}
 
 # SSH-backed agent example. Remove `# ` from this block to enable it.
 # [[agents]]
@@ -242,11 +248,7 @@ pub(crate) async fn create_default_config_if_missing_with_token(
             (Some(username), Some(password))
         }
     };
-    let log_directory = default_log_directory()?;
     let paths = DefaultConfigPaths {
-        server_log: log_directory.join("server.log").display().to_string(),
-        agent_log: log_directory.join("agent.log").display().to_string(),
-        local_agent_log: log_directory.join("agent-local.log").display().to_string(),
         agent_dir: default_agent_dir()?,
         agent_name: default_local_agent_name(),
     };
@@ -340,8 +342,9 @@ pub(crate) struct ServerSection {
 /// Parsed `[agent]` table for a standalone `redoor agent` process.
 ///
 /// All fields are optional in the file so CLI and env can supply missing
-/// values; agent startup requires `ws_address`, `name`, and top-level
-/// `agent_token` after applying CLI > env > config > default precedence.
+/// values; agent startup requires `ws_address` and top-level `agent_token`
+/// after applying CLI > env > config > default precedence. The name defaults
+/// to the computer hostname.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AgentSection {
     pub(crate) ws_address: Option<String>,
@@ -423,8 +426,9 @@ pub(crate) fn require_server_section(config: &RedoorConfig) -> Result<&ServerSec
         .with_context(|| "config file must contain a [server] table")
 }
 
-/// Returns whether `[agent]` supplies every field a bare `redoor agent` needs.
+/// Returns whether `[agent]` supplies every configured field a bare `redoor agent` needs.
 ///
+/// The name may be omitted because agent startup uses the computer hostname.
 /// Used by systemd agent setup so the unit can omit CLI flags safely.
 pub(crate) fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> bool {
     let Some(agent) = config.agent.as_ref() else {
@@ -435,7 +439,6 @@ pub(crate) fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> boo
             .ws_address
             .as_ref()
             .is_some_and(|value| !value.is_empty())
-        && agent.name.as_ref().is_some_and(|value| !value.is_empty())
 }
 
 /// Parses optional login credentials and listener settings from `[server]`.
@@ -1373,7 +1376,6 @@ log = "log/prod-db.log"
 
 [agent]
 ws_address = "ws://127.0.0.1:3000/ws"
-name = "edge"
 "#,
         )
         .unwrap();
@@ -1391,7 +1393,7 @@ name = "edge"
         );
         assert!(
             standalone_agent_is_fully_configured(&config),
-            "complete [agent] + token should satisfy bare agent startup"
+            "[agent] ws_address + token should satisfy bare startup without a name"
         );
     }
 
@@ -1594,8 +1596,8 @@ target = "host"
             .as_ref()
             .expect("starter config must include [agent]");
         assert!(
-            server.log.is_some() && agent.log.is_some(),
-            "starter config must set conventional server and agent log paths"
+            server.log.is_none() && agent.log.is_none(),
+            "starter config should rely on conventional runtime log paths"
         );
         assert!(
             agent.dir.is_some(),
@@ -1607,23 +1609,15 @@ target = "host"
         });
         let local_agent =
             local_agent.expect("starter config must include a managed local [[agents]] entry");
-        assert_eq!(
-            local_agent.log.as_deref(),
-            Some(
-                default_log_directory()
-                    .unwrap()
-                    .join("agent-local.log")
-                    .to_str()
-                    .unwrap()
-            ),
-            "managed local agent must log to agent-local.log, not the standalone agent.log"
+        assert!(
+            local_agent.log.is_none(),
+            "starter managed agents should inherit output unless a log is configured"
         );
         for option in [
             "agent_token =",
             "# port =",
             "# bind =",
             "# cookie_secure =",
-            "log =",
             "[agent]",
             "ws_address =",
             "local = true",

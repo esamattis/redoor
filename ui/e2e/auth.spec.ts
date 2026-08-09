@@ -44,7 +44,9 @@ test.describe("Authentication", () => {
         await expect(
             page.getByRole("heading", { name: "Server" }),
         ).toBeVisible();
-        await expect(page.getByText("config.toml")).toBeVisible();
+        await expect(
+            page.getByText("config.toml", { exact: true }),
+        ).toBeVisible();
         await expect(
             page.getByText("TOML (username/password in config file)"),
         ).toBeVisible();

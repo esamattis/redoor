@@ -654,7 +654,7 @@ export class ApiClient {
         };
     }
 
-    /** Returns non-secret server identity for the UI home page. */
+    /** Returns server identity and agent bootstrap settings for the authenticated home page. */
     async getServerInfo(): Promise<ServerInfoResponse> {
         return apiRequest<ServerInfoResponse>(
             this.baseUrl,

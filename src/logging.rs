@@ -100,7 +100,7 @@ impl Logger {
     /// Opens persistent output before startup continues so subscriptions never advertise an unusable file.
     ///
     /// Missing parent directories are created first so conventional paths like
-    /// `~/.local/share/redoor/logs/server.log` work on first boot.
+    /// `~/.local/share/redoor/server.log` work on first boot.
     pub async fn new(log_file_path: Option<PathBuf>) -> Result<Self> {
         let (log_file_path, log_file, log_file_position) = match log_file_path {
             Some(path) => {

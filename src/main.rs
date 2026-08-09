@@ -235,7 +235,16 @@ async fn run_server(args: server::CoordinatorArgs) {
         .or_else(|| server_section.bind.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
 
-    let log = args.log.clone().or_else(|| server_section.log.clone());
+    let log = match args.log.clone().or_else(|| server_section.log.clone()) {
+        Some(path) => Some(path),
+        None => match server::default_server_log_path() {
+            Ok(path) => Some(path),
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::exit(1);
+            }
+        },
+    };
 
     if let Err(error) = logging::init(log.clone()).await {
         eprintln!("{error:#}");

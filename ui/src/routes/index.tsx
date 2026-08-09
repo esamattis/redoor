@@ -4,7 +4,7 @@ import { FileCode2, Globe2, HardDrive, KeyRound, Server } from "lucide-react";
 
 import type { ServerAuthMode } from "../api-client";
 import { BinaryIdentityFields } from "../components/binary-identity";
-import { CopyablePath } from "../components/copyable-code-row";
+import { CopyableCodeRow, CopyablePath } from "../components/copyable-code-row";
 import { RestartButton, waitForRestart } from "../components/restart-button";
 import { Route as RootRoute } from "./__root";
 
@@ -59,6 +59,14 @@ function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
     const { api } = RootRoute.useRouteContext();
     const router = useRouter();
+    const websocketProtocol =
+        window.location.protocol === "https:" ? "wss:" : "ws:";
+    const websocketAddress = `${websocketProtocol}//${window.location.host}/ws`;
+    const agentConfig = `agent_token = ${JSON.stringify(serverInfo.agent_token)}
+
+[agent]
+ws_address = ${JSON.stringify(websocketAddress)}
+`;
 
     return (
         <div className="p-8">
@@ -138,6 +146,26 @@ function Index() {
                             build_mode: serverInfo.build_mode,
                             build_date: serverInfo.build_date,
                         }}
+                    />
+                </div>
+                <div className="mt-6">
+                    <div className="mb-3">
+                        <h2 className="text-lg font-semibold text-slate-100">
+                            Connect an agent
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-400">
+                            Save this as config.toml and run{" "}
+                            <code className="font-mono text-slate-200">
+                                redoor agent --config config.toml
+                            </code>
+                            . The agent uses the computer hostname as its name.
+                        </p>
+                    </div>
+                    <CopyableCodeRow
+                        label="config.toml"
+                        value={agentConfig}
+                        copyAriaLabel="Copy agent config"
+                        multiline
                     />
                 </div>
             </div>

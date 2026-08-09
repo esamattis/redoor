@@ -24,7 +24,8 @@ pub(crate) struct AgentArgs {
     /// Overrides `REDOOR_AGENT_WS` and `[agent].ws_address`.
     #[arg(env = "REDOOR_AGENT_WS")]
     pub(crate) ws_address: Option<String>,
-    /// Registration name shown in the UI. Overrides `REDOOR_AGENT_NAME` and `[agent].name`.
+    /// Registration name shown in the UI. Defaults to the computer hostname.
+    /// Overrides `REDOOR_AGENT_NAME` and `[agent].name`.
     #[arg(long, env = "REDOOR_AGENT_NAME")]
     pub(crate) name: Option<String>,
     /// Shared secret from top-level `agent_token` so registration cannot be spoofed.
@@ -36,6 +37,7 @@ pub(crate) struct AgentArgs {
     #[arg(long)]
     pub(crate) config: Option<String>,
     /// Agent log file path. Overrides `REDOOR_AGENT_LOG` and `[agent].log`.
+    /// Defaults to `~/.local/share/redoor/agent.log` for non-root users.
     #[arg(long, env = "REDOOR_AGENT_LOG")]
     pub(crate) log: Option<String>,
     /// Default directory opened by the UI without limiting filesystem access.

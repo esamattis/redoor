@@ -388,7 +388,7 @@ fn print_manage_help(
             config_path.display()
         );
         if mode == SystemdMode::Agent {
-            println!("The [agent] section probably needs to be changed (token, ws_address, name).");
+            println!("The [agent] section probably needs to be changed (token, ws_address).");
         }
     } else {
         println!("Config: {}", config_path.display());
@@ -461,7 +461,7 @@ async fn validate_existing_config(mode: SystemdMode, config_path: &Path) -> Resu
         SystemdMode::Agent => {
             if !crate::server::standalone_agent_is_fully_configured(&config) {
                 bail!(
-                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address and name so the service can start without CLI flags",
+                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address so the service can start without CLI flags",
                     config_path.display()
                 );
             }

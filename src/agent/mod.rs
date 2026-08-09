@@ -12,6 +12,7 @@ mod ws;
 use std::path::PathBuf;
 
 use redoor::{Level, log, types::AgentId};
+use sysinfo::System;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -187,9 +188,8 @@ struct ResolvedAgentSettings {
 
 /// Applies CLI > env > config file > default for every agent setting.
 ///
-/// Clap already merged CLI and env into `args`. Required values (`ws_address`,
-/// `name`, `token`) error when still missing after config fallback so a bare
-/// `redoor agent` only works when the TOML is complete.
+/// Clap already merged CLI and env into `args`. The agent name defaults to the
+/// machine hostname while `ws_address` and `token` remain required.
 async fn resolve_agent_settings(
     args: AgentArgs,
 ) -> Result<ResolvedAgentSettings, Box<dyn std::error::Error>> {
@@ -234,7 +234,8 @@ async fn resolve_agent_settings(
     )?;
 
     let name = first_non_empty([args.name, agent_section.name])
-        .ok_or("agent name is required; set it via --name, REDOOR_AGENT_NAME, or [agent].name")?;
+        .or_else(System::host_name)
+        .ok_or("agent name is not configured and the computer hostname is unavailable")?;
 
     let token = first_non_empty([
         args.token,
@@ -247,7 +248,10 @@ async fn resolve_agent_settings(
     )?;
 
     let dir = first_non_empty([args.dir, agent_section.dir]);
-    let log = first_non_empty([args.log, agent_section.log]);
+    let log = Some(match first_non_empty([args.log, agent_section.log]) {
+        Some(path) => path,
+        None => crate::server::default_agent_log_path()?,
+    });
 
     Ok(ResolvedAgentSettings {
         ws_address,

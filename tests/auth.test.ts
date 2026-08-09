@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ApiClient } from "@/api-client";
 import {
     ProcessManager,
+    TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_SERVER_HOME,
     TEST_USERNAME,
@@ -85,6 +86,8 @@ describe("HTTP authentication", () => {
         expect(agents).toEqual([]);
 
         const serverInfo = await api.getServerInfo();
+        // The authenticated home page must receive the real secret for its copyable agent config.
+        expect(serverInfo.agent_token).toBe(TEST_AGENT_TOKEN);
         // Home UI needs an absolute config path so operators can find the file they edited.
         expect(serverInfo.config_path.startsWith("/")).toBe(true);
         expect(serverInfo.config_path.endsWith(".toml")).toBe(true);

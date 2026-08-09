@@ -189,7 +189,7 @@ export const TEST_SERVER_HOME = join(
 
 export type SpawnAgentArgs = {
     wsAddress: string;
-    name: string;
+    name?: string;
     cwd: string;
     dir?: string;
     log?: string;
@@ -242,11 +242,13 @@ export class ProcessManager {
         const cliArgs = [
             "agent",
             args.wsAddress,
-            "--name",
-            args.name,
             "--token",
             args.token ?? TEST_AGENT_TOKEN,
         ];
+
+        if (args.name !== undefined) {
+            cliArgs.push("--name", args.name);
+        }
 
         if (args.dir !== undefined) {
             cliArgs.push("--dir", args.dir);
@@ -256,7 +258,11 @@ export class ProcessManager {
             rmSync(args.log, { force: true });
             cliArgs.push("--log", args.log);
         } else {
-            const logPath = join(PROJECT_ROOT, "log", `${args.name}.log`);
+            const logPath = join(
+                PROJECT_ROOT,
+                "log",
+                `${args.name ?? "hostname-agent"}.log`,
+            );
             rmSync(logPath, { force: true });
             cliArgs.push("--log", logPath);
         }

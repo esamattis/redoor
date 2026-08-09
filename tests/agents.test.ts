@@ -14,6 +14,7 @@ import {
     isLsFileResponse,
 } from "@/api-client";
 import fs from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
 import {
     ProcessManager,
@@ -65,6 +66,29 @@ async function getConnectedTestAgent(): Promise<Agent> {
 }
 
 describe("Agents API", () => {
+    it("uses the computer hostname when the agent name is omitted", async () => {
+        const agentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            cwd: agentCwd,
+        });
+        onTestFinished(() => processManager.kill(agentPid));
+
+        const registeredAgent = await waitForValue({
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find(
+                    (agent) =>
+                        agent.name === hostname() &&
+                        agent.status === "connected",
+                );
+            },
+            description: "hostname-defaulted agent registration",
+        });
+
+        // A connected hostname entry proves omission reaches runtime fallback instead of failing startup.
+        expect(registeredAgent?.name).toBe(hostname());
+    });
+
     it("publishes a relative --dir without changing the launch cwd", async () => {
         const launchDirectory = tempFiles.tempDirectory({
             suffix: "-launch-directory",

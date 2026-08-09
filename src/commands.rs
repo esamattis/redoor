@@ -137,10 +137,12 @@ pub fn agent_loaded_config_path() -> String {
     AGENT_LOADED_CONFIG_PATH.get().cloned().unwrap_or_default()
 }
 
-/// Non-secret server identity shown on the UI home page.
+/// Server identity and authenticated agent bootstrap settings shown on the UI home page.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ServerInfoResponse {
+    /// Shared registration secret included so the authenticated UI can render a working agent config.
+    pub agent_token: String,
     /// Absolute path of the TOML config file this process loaded.
     pub config_path: String,
     /// Absolute path of the running server binary.

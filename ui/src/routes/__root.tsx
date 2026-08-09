@@ -204,6 +204,7 @@ export class RefreshListener {
 }
 
 const emptyServerInfo: ServerInfoResponse = {
+    agent_token: "",
     config_path: "",
     exe_path: "",
     auth_mode: "toml",

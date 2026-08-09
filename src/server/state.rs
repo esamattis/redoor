@@ -79,8 +79,8 @@ pub(crate) struct CoordinatorArgs {
     /// when not set anywhere.
     #[arg(long)]
     pub(crate) bind: Option<String>,
-    /// Server log file path. Overrides `[server].log`. When not set, logging
-    /// goes to stderr.
+    /// Server log file path. Overrides `[server].log`. Defaults to
+    /// `~/.local/share/redoor/server.log` for non-root users.
     #[arg(long, env = "REDOOR_SERVER_LOG")]
     pub(crate) log: Option<String>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates

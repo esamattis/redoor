@@ -53,14 +53,11 @@ async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<St
         LogRole::Server => parsed.server.and_then(|section| section.log),
         LogRole::Agent => parsed.agent.and_then(|section| section.log),
     };
-    configured.with_context(|| {
-        let section = match role {
-            LogRole::Server => "[server].log or REDOOR_SERVER_LOG",
-            LogRole::Agent => "[agent].log or REDOOR_AGENT_LOG",
-        };
-        format!(
-            "No log file is configured for this process; set {section} (config: '{}')",
-            config_path.display()
-        )
-    })
+    match configured {
+        Some(path) if !path.trim().is_empty() => Ok(path),
+        _ => match role {
+            LogRole::Server => crate::server::default_server_log_path(),
+            LogRole::Agent => crate::server::default_agent_log_path(),
+        },
+    }
 }

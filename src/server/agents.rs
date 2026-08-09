@@ -20,7 +20,7 @@ use super::{
     state::ServerState,
 };
 
-/// Route: `GET /api/v1/server` — non-secret identity for the UI home page.
+/// Route: `GET /api/v1/server` — identity and agent bootstrap settings for the authenticated UI.
 pub(crate) async fn server_info_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
@@ -33,6 +33,7 @@ pub(crate) async fn server_info_handler(
     (
         StatusCode::OK,
         Json(ServerInfoResponse {
+            agent_token: state.auth.agent_token().to_string(),
             config_path: state.config_path.display().to_string(),
             exe_path,
             auth_mode: state.auth_mode.clone(),

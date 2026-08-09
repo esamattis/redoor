@@ -3,9 +3,13 @@ import type { ServerAuthMode } from "./ServerAuthMode";
 import type { ServerBuildMode } from "./ServerBuildMode";
 
 /**
- * Non-secret server identity shown on the UI home page.
+ * Server identity and authenticated agent bootstrap settings shown on the UI home page.
  */
 export type ServerInfoResponse = { 
+/**
+ * Shared registration secret included so the authenticated UI can render a working agent config.
+ */
+agent_token: string, 
 /**
  * Absolute path of the TOML config file this process loaded.
  */

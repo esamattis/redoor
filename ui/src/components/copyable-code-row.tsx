@@ -62,6 +62,7 @@ export function CopyableCodeRow(props: {
     label: string;
     value: string;
     copyAriaLabel?: string;
+    multiline?: boolean;
 }) {
     const { isCopied, flashKey, copy } = useCopyFeedback(props.value);
 
@@ -109,7 +110,14 @@ export function CopyableCodeRow(props: {
                     {isCopied ? "Copied!" : "Copy"}
                 </button>
             </div>
-            <code className="relative block overflow-x-auto whitespace-nowrap px-3 py-2.5 font-mono text-sm text-slate-200">
+            <code
+                aria-label={`${props.label} contents`}
+                className={
+                    props.multiline
+                        ? "relative block overflow-x-auto whitespace-pre px-3 py-2.5 font-mono text-sm leading-6 text-slate-200"
+                        : "relative block overflow-x-auto whitespace-nowrap px-3 py-2.5 font-mono text-sm text-slate-200"
+                }
+            >
                 {props.value}
             </code>
         </div>
