@@ -1,11 +1,12 @@
 mod agent;
+mod process_logs;
 mod server;
-mod setup_systemd;
 mod ssh;
+mod systemd;
 
 use std::{path::PathBuf, sync::Arc};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use redoor::{Level, actors, log, logging};
 
 #[derive(Parser)]
@@ -18,24 +19,113 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Server(server::CoordinatorArgs),
-    Agent(agent::AgentArgs),
-    SetupSystemd(setup_systemd::SetupSystemdArgs),
+    /// Run the server or print its configured file log.
+    Server(ServerArgs),
+    /// Run the agent or print its configured file log.
+    Agent(AgentCommandArgs),
+    /// Install and manage Redoor systemd services.
+    Systemd(systemd::SystemdArgs),
     Ssh(ssh::SshArgs),
+}
+
+/// Preserves flat server startup flags while exposing `server logs`.
+#[derive(Args)]
+struct ServerArgs {
+    /// Selects a utility action instead of starting the server.
+    #[command(subcommand)]
+    command: Option<ServerCommand>,
+    /// Existing server startup settings remain accepted directly after `server`.
+    #[command(flatten)]
+    run: server::CoordinatorArgs,
+}
+
+/// Server-specific utility commands.
+#[derive(Subcommand)]
+enum ServerCommand {
+    /// Print the configured server file log.
+    Logs(ServerLogsArgs),
+}
+
+/// Options used to locate and limit server file logs.
+#[derive(Args)]
+struct ServerLogsArgs {
+    /// Number of trailing lines to print.
+    #[arg(short = 'n', default_value_t = 500)]
+    lines: usize,
+    /// Override the shared TOML config path.
+    #[arg(long)]
+    config: Option<String>,
+    /// Override `REDOOR_SERVER_LOG` and `[server].log`.
+    #[arg(long, env = "REDOOR_SERVER_LOG")]
+    log: Option<String>,
+}
+
+/// Preserves flat agent startup flags while exposing `agent logs`.
+#[derive(Args)]
+struct AgentCommandArgs {
+    /// Selects a utility action instead of starting the agent.
+    #[command(subcommand)]
+    command: Option<AgentCommand>,
+    /// Existing agent startup settings remain accepted directly after `agent`.
+    #[command(flatten)]
+    run: agent::AgentArgs,
+}
+
+/// Agent-specific utility commands.
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Print the configured standalone-agent file log.
+    Logs(AgentLogsArgs),
+}
+
+/// Options used to locate and limit standalone-agent file logs.
+#[derive(Args)]
+struct AgentLogsArgs {
+    /// Number of trailing lines to print.
+    #[arg(short = 'n', default_value_t = 500)]
+    lines: usize,
+    /// Override the shared TOML config path.
+    #[arg(long)]
+    config: Option<String>,
+    /// Override `REDOOR_AGENT_LOG` and `[agent].log`.
+    #[arg(long, env = "REDOOR_AGENT_LOG")]
+    log: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     match Cli::parse().command {
-        Commands::Server(args) => run_server(args).await,
-        Commands::Agent(args) => {
-            if let Err(error) = agent::run(args).await {
-                eprintln!("{error}");
-                std::process::exit(1);
+        Commands::Server(args) => match args.command {
+            Some(ServerCommand::Logs(logs)) => {
+                run_utility(process_logs::run(
+                    process_logs::LogRole::Server,
+                    logs.config,
+                    logs.log,
+                    logs.lines,
+                ))
+                .await;
             }
-        }
-        Commands::SetupSystemd(args) => {
-            if let Err(error) = setup_systemd::run(args).await {
+            None => run_server(args.run).await,
+        },
+        Commands::Agent(args) => match args.command {
+            Some(AgentCommand::Logs(logs)) => {
+                run_utility(process_logs::run(
+                    process_logs::LogRole::Agent,
+                    logs.config,
+                    logs.log,
+                    logs.lines,
+                ))
+                .await;
+            }
+            None => {
+                if let Err(error) = agent::run(args.run).await {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Commands::Systemd(args) => {
+            if let Err(error) = systemd::run(args).await {
                 eprintln!("{error:#}");
                 std::process::exit(1);
             }
@@ -53,6 +143,15 @@ async fn main() {
     }
 }
 
+/// Reports a finite utility command failure consistently with other CLI branches.
+async fn run_utility(future: impl std::future::Future<Output = anyhow::Result<()>>) {
+    if let Err(error) = future.await {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+}
+
+/// Starts the long-lived server using the established flat startup arguments.
 async fn run_server(args: server::CoordinatorArgs) {
     // Explicit paths remain strict, while the conventional path bootstraps a
     // documented starter config so first startup does not require manual setup.

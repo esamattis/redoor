@@ -8,13 +8,38 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use tokio::process::Command;
 
-/// Arguments for `redoor setup-systemd`.
+/// Arguments for `redoor systemd` service installation and management.
 #[derive(Args)]
 #[command(author, version, about)]
-pub(crate) struct SetupSystemdArgs {
+pub(crate) struct SystemdArgs {
+    /// Selects the systemd operation while keeping service targeting consistent.
+    #[command(subcommand)]
+    command: SystemdCommand,
+}
+
+/// Operations supported for an installed Redoor systemd service.
+#[derive(Subcommand)]
+enum SystemdCommand {
+    /// Install the unit and its starter configuration without starting it.
+    Setup(ServiceArgs),
+    /// Start the installed unit.
+    Start(ServiceArgs),
+    /// Stop the installed unit.
+    Stop(ServiceArgs),
+    /// Reload unit definitions and restart the installed unit.
+    Restart(ServiceArgs),
+    /// Follow the unit journal without invoking a pager.
+    Logs(ServiceArgs),
+    /// Enable the installed unit at boot without starting it.
+    EnableBoot(ServiceArgs),
+}
+
+/// Identifies which Redoor unit an operation should manage.
+#[derive(Args)]
+struct ServiceArgs {
     /// Select whether the installed service runs the server or an agent.
     #[arg(long, value_enum)]
     mode: SystemdMode,
@@ -43,6 +68,14 @@ impl SystemdMode {
             Self::Server => "redoor-server.service",
         }
     }
+
+    /// Returns the Clap spelling used in actionable setup suggestions.
+    fn cli_name(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Server => "server",
+        }
+    }
 }
 
 /// Resolves the unit file name, appending `.service` when the operator omitted it.
@@ -63,23 +96,131 @@ fn resolve_unit_name(mode: SystemdMode, unit_name: Option<String>) -> Result<Str
     }
 }
 
-/// Configures and enables the requested systemd service for the current privileges.
-pub(crate) async fn run(args: SetupSystemdArgs) -> Result<()> {
+/// Runs one systemd operation against the unit scope implied by current privileges.
+pub(crate) async fn run(args: SystemdArgs) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = args;
-        bail!("systemd setup is only supported on Linux");
+        bail!("systemd commands are only supported on Linux");
     }
 
     #[cfg(target_os = "linux")]
     {
-        let unit_name = resolve_unit_name(args.mode, args.unit_name)?;
-        if nix::unistd::Uid::effective().is_root() {
-            run_system(args.mode, &unit_name).await
-        } else {
-            run_user(args.mode, &unit_name).await
+        match args.command {
+            SystemdCommand::Setup(service) => setup(service).await,
+            SystemdCommand::Start(service) => manage_unit(service, UnitAction::Start).await,
+            SystemdCommand::Stop(service) => manage_unit(service, UnitAction::Stop).await,
+            SystemdCommand::Restart(service) => manage_unit(service, UnitAction::Restart).await,
+            SystemdCommand::Logs(service) => manage_unit(service, UnitAction::Logs).await,
+            SystemdCommand::EnableBoot(service) => {
+                manage_unit(service, UnitAction::EnableBoot).await
+            }
         }
     }
+}
+
+/// Installs and enables the requested service using the original setup behavior.
+#[cfg(target_os = "linux")]
+async fn setup(args: ServiceArgs) -> Result<()> {
+    let unit_name = resolve_unit_name(args.mode, args.unit_name)?;
+    if nix::unistd::Uid::effective().is_root() {
+        run_system(args.mode, &unit_name).await
+    } else {
+        run_user(args.mode, &unit_name).await
+    }
+}
+
+/// Supported direct systemctl and journalctl shortcuts.
+#[cfg(target_os = "linux")]
+enum UnitAction {
+    Start,
+    Stop,
+    Restart,
+    Logs,
+    EnableBoot,
+}
+
+/// Executes a shortcut with `--user` for non-root callers and system scope for root.
+#[cfg(target_os = "linux")]
+async fn manage_unit(args: ServiceArgs, action: UnitAction) -> Result<()> {
+    let service = resolve_unit_name(args.mode, args.unit_name)?;
+    let user = !nix::unistd::Uid::effective().is_root();
+    let flag: &[&str] = if user { &["--user"] } else { &[] };
+    ensure_unit_exists(&service, args.mode, user, flag).await?;
+
+    if matches!(action, UnitAction::Restart) {
+        let mut reload = flag.to_vec();
+        reload.push("daemon-reload");
+        run_command("systemctl", &reload)
+            .await
+            .context("Failed to reload systemd before restarting the service")?;
+    }
+
+    let (program, mut arguments) = match action {
+        UnitAction::Start => ("systemctl", flag.to_vec()),
+        UnitAction::Stop => ("systemctl", flag.to_vec()),
+        UnitAction::Restart => ("systemctl", flag.to_vec()),
+        UnitAction::EnableBoot => ("systemctl", flag.to_vec()),
+        UnitAction::Logs => {
+            let mut arguments = flag.to_vec();
+            arguments.extend(["--no-pager", "-f", "-u", service.as_str()]);
+            return run_command_inherited("journalctl", &arguments).await;
+        }
+    };
+    let verb = match action {
+        UnitAction::Start => "start",
+        UnitAction::Stop => "stop",
+        UnitAction::Restart => "restart",
+        UnitAction::EnableBoot => "enable",
+        UnitAction::Logs => unreachable!("logs return before systemctl dispatch"),
+    };
+    arguments.extend([verb, service.as_str()]);
+    run_command(program, &arguments).await
+}
+
+/// Checks systemd's load state so journal and control shortcuts fail clearly for absent units.
+#[cfg(target_os = "linux")]
+async fn ensure_unit_exists(
+    service: &str,
+    mode: SystemdMode,
+    user: bool,
+    flag: &[&str],
+) -> Result<()> {
+    let mut arguments = flag.to_vec();
+    arguments.extend(["show", "--property=LoadState", "--value", service]);
+    let output = Command::new("systemctl")
+        .args(&arguments)
+        .output()
+        .await
+        .context("Failed to ask systemd whether the requested unit exists")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Failed to check whether systemd unit '{service}' exists: {}",
+            stderr.trim()
+        );
+    }
+
+    let load_state = String::from_utf8_lossy(&output.stdout);
+    validate_unit_load_state(service, mode, user, load_state.trim())
+}
+
+/// Turns systemd's `not-found` load state into an actionable Redoor error.
+fn validate_unit_load_state(
+    service: &str,
+    mode: SystemdMode,
+    user: bool,
+    load_state: &str,
+) -> Result<()> {
+    if load_state != "not-found" && !load_state.is_empty() {
+        return Ok(());
+    }
+
+    let scope = if user { "user" } else { "system" };
+    bail!(
+        "Systemd {scope} unit '{service}' does not exist. Install it first with: redoor systemd setup --mode {} --unit-name {service}",
+        mode.cli_name()
+    )
 }
 
 /// Installs a lingering systemd user unit owned by the invoking account.
@@ -417,6 +558,20 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
     )
 }
 
+/// Runs an interactive command with inherited streams for continuous journal output.
+async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(arguments)
+        .status()
+        .await
+        .with_context(|| format!("Failed to run {program}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("{} {} failed with {}", program, arguments.join(" "), status)
+    }
+}
+
 /// Renders a user or system unit. The agent has no CLI flags — the TOML is authoritative.
 fn render_unit(mode: SystemdMode, binary: &Path, config_path: &Path, system: bool) -> String {
     let binary = quote_unit_argument(binary.to_string_lossy().as_ref());
@@ -473,7 +628,9 @@ fn quote_unit_argument(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SystemdMode, quote_unit_argument, render_unit, resolve_unit_name};
+    use super::{
+        SystemdMode, quote_unit_argument, render_unit, resolve_unit_name, validate_unit_load_state,
+    };
     use std::path::Path;
 
     /// Verifies default and overridden unit names, including automatic .service suffix.
@@ -504,6 +661,38 @@ mod tests {
         assert!(
             resolve_unit_name(SystemdMode::Agent, Some("  ".into())).is_err(),
             "blank names must be rejected"
+        );
+    }
+
+    /// Verifies absent units produce a clear error with the correct scope and setup command.
+    #[test]
+    fn missing_unit_load_state_has_actionable_error() {
+        let error = validate_unit_load_state(
+            "custom-agent.service",
+            SystemdMode::Agent,
+            true,
+            "not-found",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("Systemd user unit 'custom-agent.service' does not exist"),
+            "the error must identify the missing unit and user scope: {error}"
+        );
+        assert!(
+            error.contains("redoor systemd setup --mode agent"),
+            "the error must explain how to install the expected unit: {error}"
+        );
+        assert!(
+            validate_unit_load_state(
+                "redoor-server.service",
+                SystemdMode::Server,
+                false,
+                "loaded"
+            )
+            .is_ok(),
+            "a loaded unit must allow the requested management action"
         );
     }
 
