@@ -3,10 +3,16 @@
 //! This module intentionally has no root or LaunchDaemon support. Services run
 //! only in the invoking user's GUI launchd domain and keep all state under home.
 
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", test))]
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
+#[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
@@ -114,6 +120,7 @@ fn ensure_non_root() -> Result<()> {
 }
 
 /// Resolves a safe launchd service label without permitting path traversal.
+#[cfg(any(target_os = "macos", test))]
 fn resolve_service_name(mode: ServiceRole, service_name: Option<String>) -> Result<String> {
     let name = match service_name {
         Some(name) => name,
@@ -251,6 +258,7 @@ async fn service_is_loaded(target: &str) -> Result<bool> {
 }
 
 /// Returns the conventional plist path for a user LaunchAgent label.
+#[cfg(target_os = "macos")]
 fn launch_agent_path(service: &str) -> Result<PathBuf> {
     Ok(home_directory()?
         .join("Library/LaunchAgents")
@@ -258,6 +266,7 @@ fn launch_agent_path(service: &str) -> Result<PathBuf> {
 }
 
 /// Rejects management requests for LaunchAgents that have not been installed.
+#[cfg(target_os = "macos")]
 async fn ensure_plist_exists(path: &Path, service: &str, mode: ServiceRole) -> Result<()> {
     if tokio::fs::try_exists(path)
         .await
@@ -297,6 +306,7 @@ async fn show_log(mode: ServiceRole, follow: bool) -> Result<()> {
 }
 
 /// Returns the home directory required for user config and LaunchAgents.
+#[cfg(target_os = "macos")]
 fn home_directory() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -304,6 +314,7 @@ fn home_directory() -> Result<PathBuf> {
 }
 
 /// Ensures setup has a complete shared config and reports whether it was created.
+#[cfg(target_os = "macos")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
         .await
@@ -345,6 +356,7 @@ Store this secret securely; it will not be shown again.",
 }
 
 /// Rejects configs that cannot run the selected role without extra CLI flags.
+#[cfg(target_os = "macos")]
 async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
     let config = crate::server::parse_config_file(&config_path.to_string_lossy())
         .await
@@ -366,6 +378,7 @@ async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Resu
 }
 
 /// Prints user-scoped launchctl commands after successful setup.
+#[cfg(target_os = "macos")]
 fn print_manage_help(
     service: &str,
     plist_path: &Path,
@@ -410,6 +423,7 @@ Manage the service:
 }
 
 /// Renders a LaunchAgent plist with separately escaped program arguments.
+#[cfg(any(target_os = "macos", test))]
 fn render_plist(
     mode: ServiceRole,
     service: &str,
@@ -457,6 +471,7 @@ fn render_plist(
 }
 
 /// Escapes dynamic text embedded in XML element content.
+#[cfg(any(target_os = "macos", test))]
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -467,6 +482,7 @@ fn escape_xml(value: &str) -> String {
 }
 
 /// Runs one finite administration command and preserves stderr on failure.
+#[cfg(target_os = "macos")]
 async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
     let output = Command::new(program)
         .args(arguments)
@@ -487,6 +503,7 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
 }
 
 /// Runs a continuous command with inherited streams for interactive log following.
+#[cfg(target_os = "macos")]
 async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(arguments)

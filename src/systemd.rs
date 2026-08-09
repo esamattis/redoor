@@ -5,10 +5,16 @@
 //! a dedicated `redoor` system user, while the agent stays root so it can manage
 //! the host.
 
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", test))]
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+#[cfg(target_os = "linux")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
+#[cfg(target_os = "linux")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
@@ -64,6 +70,7 @@ struct LogsArgs {
 }
 
 /// Resolves the unit file name, appending `.service` when the operator omitted it.
+#[cfg(any(target_os = "linux", test))]
 fn resolve_unit_name(role: ServiceRole, unit_name: Option<String>) -> Result<String> {
     let name = match unit_name {
         Some(name) => name,
@@ -221,6 +228,7 @@ async fn ensure_unit_exists(
 }
 
 /// Turns systemd's `not-found` load state into an actionable Redoor error.
+#[cfg(any(target_os = "linux", test))]
 fn validate_unit_load_state(
     service: &str,
     mode: ServiceRole,
@@ -372,6 +380,7 @@ async fn ensure_system_log_directory() -> Result<()> {
 }
 
 /// Prints how to control the installed unit after a successful setup.
+#[cfg(target_os = "linux")]
 fn print_manage_help(
     service: &str,
     unit_path: &Path,
@@ -415,6 +424,7 @@ Manage the service:
 }
 
 /// Returns the conventional home directory required by user services and config.
+#[cfg(target_os = "linux")]
 fn home_directory() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -425,6 +435,7 @@ fn home_directory() -> Result<PathBuf> {
 ///
 /// Agent and server modes create the same TOML so either role can share one file.
 /// Nothing is prompted; secrets are generated and printed once when the file is new.
+#[cfg(target_os = "linux")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
         .await
@@ -460,6 +471,7 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
 }
 
 /// Rejects incomplete configs before writing a unit that assumes the TOML is enough.
+#[cfg(target_os = "linux")]
 async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
     let config = crate::server::parse_config_file(&config_path.to_string_lossy())
         .await
@@ -545,6 +557,7 @@ async fn chown_path_to_redoor(path: &Path) -> Result<()> {
 }
 
 /// Runs one systemd administration command and preserves its diagnostic output on failure.
+#[cfg(target_os = "linux")]
 async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
     let output = Command::new(program)
         .args(arguments)
@@ -566,6 +579,7 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
 }
 
 /// Runs an interactive command with inherited streams for continuous journal output.
+#[cfg(target_os = "linux")]
 async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(arguments)
@@ -580,6 +594,7 @@ async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> 
 }
 
 /// Renders a user or system unit. The agent has no CLI flags — the TOML is authoritative.
+#[cfg(any(target_os = "linux", test))]
 fn render_unit(
     mode: ServiceRole,
     binary: &Path,
@@ -632,6 +647,7 @@ WantedBy={wanted_by}
 }
 
 /// Quotes one systemd command argument and escapes `%` specifier expansion.
+#[cfg(any(target_os = "linux", test))]
 fn quote_unit_argument(value: &str) -> String {
     format!(
         "\"{}\"",

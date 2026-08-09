@@ -83,6 +83,7 @@ enum LoginVerification {
     /// Authentication failed, so the rate limiter must record the rejected attempt.
     Rejected,
     /// PAM is already running, so callers should retry without counting a credential failure.
+    #[cfg(target_os = "linux")]
     Busy,
 }
 
@@ -588,6 +589,7 @@ pub(crate) async fn login_handler(
             )
                 .into_response();
         }
+        #[cfg(target_os = "linux")]
         LoginVerification::Busy => {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
