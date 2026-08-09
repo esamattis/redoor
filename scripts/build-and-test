@@ -39,8 +39,8 @@ playwright_unless_error() {
 
 silent_unless_error cargo fmt
 silent_unless_error cargo test
-silent_unless_error pnpm run format
-silent_unless_error pnpm run build
+silent_unless_error pn format
+silent_unless_error pn build
 silent_unless_error cargo build
 
 # Install fresh debug binary and restart local dev service so it picks it up
@@ -60,10 +60,10 @@ if [ "$(uname -s)" = "Linux" ] && systemctl --user cat redoor-dev &>/dev/null; t
     silent_unless_error systemctl --user restart redoor-dev
     silent_unless_error systemctl --user is-active --quiet redoor-dev
 fi
-silent_unless_error pnpm run types
-silent_unless_error pnpm run lint
-silent_unless_error pnpm run format:check
+silent_unless_error pn types
+silent_unless_error pn lint
+silent_unless_error pn format:check
 silent_unless_error cargo fmt -- --check
 silent_unless_error cargo clippy
-silent_unless_error pnpm run test
-playwright_unless_error pnpm run playwright
+silent_unless_error pn integration-test
+playwright_unless_error pn playwright

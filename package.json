@@ -20,8 +20,10 @@
         "dev:agent3": "mkdir -p dev_agents/agent3 && ./scripts/redoor agent ws://127.0.0.1:3001/ws --dir dev_agents/agent3 --name agent3_slow --token dev-agent-token --log ../../log/dev-agent3_slow.log",
         "lint:fix": "oxlint -c .oxlintrc.json --fix ui",
         "preview": "vite preview",
+        "debug-install": "./scripts/debug-install",
         "pretest": "node scripts/test/ensure-test-ports.mts",
-        "test": "vitest run --config vitest.config.ts tests"
+        "integration-test": "vitest run --config vitest.config.ts tests",
+        "test": "./scripts/build-and-test"
     },
     "dependencies": {
         "@playwright/mcp": "^0.0.79",
