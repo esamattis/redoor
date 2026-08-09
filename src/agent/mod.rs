@@ -1,6 +1,7 @@
 mod actor;
 mod logs;
 mod messages;
+mod notification;
 mod protocol;
 mod raw;
 pub(crate) mod state;
@@ -19,7 +20,7 @@ use tokio::sync::mpsc;
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
     ActiveDownloads, ActiveUploads, AgentArgs, AgentState, DownloadSessionHandle,
-    LogStreamSessionHandle, TerminalSessionHandle, UploadSessionHandle,
+    LogStreamSessionHandle, NotificationDelay, TerminalSessionHandle, UploadSessionHandle,
 };
 
 /// Wraps subsystem-specific agent command failures behind one protocol boundary type.
@@ -98,6 +99,14 @@ pub(crate) struct AgentActor;
 /// Long-lived agent runtime that owns connection lifecycle and transfer registries.
 pub(crate) struct AgentRuntime {
     pub(crate) state: AgentState,
+    /// Desktop detected at process startup, if this agent can plausibly reach a GUI session.
+    desktop_environment: Option<notification::DesktopEnvironment>,
+    /// User-selected wait after a successful connection, or `None` when notifications are disabled.
+    startup_notification_delay: Option<tokio::time::Duration>,
+    /// Identifies the connection whose delayed startup notification is currently authoritative.
+    startup_notification_generation: Option<(u64, u64)>,
+    /// Prevents reconnects from repeating the process-start notification.
+    startup_notification_sent: bool,
 }
 
 /// Runs an agent after resolving settings with CLI > env > config file > default.
@@ -132,6 +141,9 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let agent_name = resolved.name;
     let log_file = resolved.log;
     let token = resolved.token;
+    let notification_delay = resolved
+        .notification_delay_seconds
+        .map(tokio::time::Duration::from_secs);
     let loaded_config_path = match resolved.loaded_config_path {
         Some(path) => match tokio::fs::canonicalize(&path).await {
             Ok(canonical) => Some(canonical),
@@ -168,7 +180,14 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
     let handle = AgentHandle { sender };
-    let runtime = AgentRuntime::new(agent_id, agent_name, server_url, default_directory, token);
+    let runtime = AgentRuntime::new(
+        agent_id,
+        agent_name,
+        server_url,
+        default_directory,
+        token,
+        notification_delay,
+    );
 
     runtime.run(receiver, handle).await;
 
@@ -182,6 +201,8 @@ struct ResolvedAgentSettings {
     token: String,
     dir: Option<String>,
     log: Option<String>,
+    /// Non-negative delay selected on the command line, or `None` when explicitly disabled.
+    notification_delay_seconds: Option<u64>,
     /// Path of the TOML file that contributed settings, when one was loaded.
     loaded_config_path: Option<PathBuf>,
 }
@@ -248,6 +269,11 @@ async fn resolve_agent_settings(
     )?;
 
     let dir = first_non_empty([args.dir, agent_section.dir]);
+    let notification_delay_seconds =
+        match args.notification.unwrap_or(NotificationDelay::Seconds(5)) {
+            NotificationDelay::Off => None,
+            NotificationDelay::Seconds(seconds) => Some(seconds),
+        };
     let log = Some(match first_non_empty([args.log, agent_section.log]) {
         Some(path) => path,
         None => crate::server::default_agent_log_path()?,
@@ -259,6 +285,7 @@ async fn resolve_agent_settings(
         token,
         dir,
         log,
+        notification_delay_seconds,
         loaded_config_path,
     })
 }

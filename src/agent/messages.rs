@@ -32,6 +32,11 @@ pub(crate) enum AgentMsg {
         transfer_generation: u64,
         token: String,
     },
+    /// Delays desktop UI work and carries socket generations so stale timers are harmless.
+    StartupNotificationDue {
+        connection_generation: u64,
+        transfer_generation: u64,
+    },
     ConnectionLost {
         connection_generation: u64,
         reason: String,

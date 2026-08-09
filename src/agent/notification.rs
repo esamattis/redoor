@@ -1,0 +1,237 @@
+use std::process::Stdio;
+
+use tokio::process::Command;
+
+/// Desktop family used to choose notification fallbacks without coupling startup to a toolkit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DesktopEnvironment {
+    #[cfg(target_os = "linux")]
+    LinuxGnome,
+    #[cfg(target_os = "linux")]
+    LinuxKde,
+    #[cfg(target_os = "linux")]
+    LinuxOther,
+    #[cfg(target_os = "macos")]
+    MacOs,
+}
+
+/// Detects whether this process was started with access to a supported graphical desktop.
+pub(super) fn detect_desktop_environment() -> Option<DesktopEnvironment> {
+    #[cfg(target_os = "linux")]
+    {
+        let display = std::env::var_os("DISPLAY");
+        let wayland_display = std::env::var_os("WAYLAND_DISPLAY");
+        let desktop = std::env::var_os("XDG_CURRENT_DESKTOP");
+        let session = std::env::var_os("DESKTOP_SESSION");
+        return detect_linux_desktop(
+            display.as_deref(),
+            wayland_display.as_deref(),
+            desktop.as_deref(),
+            session.as_deref(),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Some(DesktopEnvironment::MacOs)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Classifies a Linux graphical session while excluding headless service and SSH environments.
+#[cfg(target_os = "linux")]
+fn detect_linux_desktop(
+    display: Option<&std::ffi::OsStr>,
+    wayland_display: Option<&std::ffi::OsStr>,
+    desktop: Option<&std::ffi::OsStr>,
+    session: Option<&std::ffi::OsStr>,
+) -> Option<DesktopEnvironment> {
+    if !has_non_empty_value(display) && !has_non_empty_value(wayland_display) {
+        return None;
+    }
+
+    let desktop_name = desktop
+        .into_iter()
+        .chain(session)
+        .map(|value| value.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(":")
+        .to_ascii_lowercase();
+    if desktop_name.contains("gnome") {
+        Some(DesktopEnvironment::LinuxGnome)
+    } else if desktop_name.contains("kde") || desktop_name.contains("plasma") {
+        Some(DesktopEnvironment::LinuxKde)
+    } else {
+        Some(DesktopEnvironment::LinuxOther)
+    }
+}
+
+/// Treats unset and explicitly empty display variables the same for GUI detection.
+#[cfg(target_os = "linux")]
+fn has_non_empty_value(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
+/// Attempts native notification commands in desktop-appropriate order without surfacing failures.
+pub(super) async fn show_agent_started(
+    desktop_environment: DesktopEnvironment,
+    agent_name: &str,
+) -> bool {
+    let message = format!(
+        "Agent '{agent_name}' connected successfully. The connected Redoor server can now control this computer."
+    );
+    match desktop_environment {
+        #[cfg(target_os = "macos")]
+        DesktopEnvironment::MacOs => show_macos_notification(&message).await,
+        #[cfg(target_os = "linux")]
+        DesktopEnvironment::LinuxGnome => {
+            show_notify_send(&message).await
+                || show_gnome_notification(&message).await
+                || show_kde_notification(&message).await
+        }
+        #[cfg(target_os = "linux")]
+        DesktopEnvironment::LinuxKde => {
+            show_notify_send(&message).await
+                || show_kde_notification(&message).await
+                || show_gnome_notification(&message).await
+        }
+        #[cfg(target_os = "linux")]
+        DesktopEnvironment::LinuxOther => {
+            show_notify_send(&message).await
+                || show_gnome_notification(&message).await
+                || show_kde_notification(&message).await
+        }
+    }
+}
+
+/// Uses the freedesktop client shared by GNOME, KDE, and many smaller Linux desktops.
+#[cfg(target_os = "linux")]
+async fn show_notify_send(message: &str) -> bool {
+    command_succeeded(
+        "notify-send",
+        &[
+            "--app-name=Redoor",
+            "--icon=network-transmit-receive",
+            "Redoor agent started",
+            message,
+        ],
+    )
+    .await
+}
+
+/// Uses GNOME's session-bus client when the libnotify command is unavailable.
+#[cfg(target_os = "linux")]
+async fn show_gnome_notification(message: &str) -> bool {
+    command_succeeded(
+        "gdbus",
+        &[
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+            "org.freedesktop.Notifications.Notify",
+            "Redoor",
+            "0",
+            "",
+            "Redoor agent started",
+            message,
+            "[]",
+            "{}",
+            "5000",
+        ],
+    )
+    .await
+}
+
+/// Uses KDE's dialog utility as a fallback when freedesktop helpers are unavailable.
+#[cfg(target_os = "linux")]
+async fn show_kde_notification(message: &str) -> bool {
+    command_succeeded(
+        "kdialog",
+        &["--title", "Redoor", "--passivepopup", message, "10"],
+    )
+    .await
+}
+
+/// Uses AppleScript arguments so agent names never need script-string escaping.
+#[cfg(target_os = "macos")]
+async fn show_macos_notification(message: &str) -> bool {
+    command_succeeded(
+        "osascript",
+        &[
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 1 of argv) with title \"Redoor agent started\"",
+            "-e",
+            "end run",
+            message,
+        ],
+    )
+    .await
+}
+
+/// Runs one finite notification helper with all output suppressed for best-effort startup behavior.
+async fn command_succeeded(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// Headless agents must not waste time probing notification commands.
+    #[test]
+    fn linux_detection_rejects_headless_sessions() {
+        // Desktop metadata alone does not prove that a graphical display is reachable.
+        assert_eq!(
+            detect_linux_desktop(None, None, Some(OsStr::new("GNOME")), None),
+            None
+        );
+    }
+
+    /// GNOME sessions are recognized from the standard desktop metadata.
+    #[test]
+    fn linux_detection_recognizes_gnome() {
+        // A Wayland display is sufficient even when the legacy X11 variable is absent.
+        assert_eq!(
+            detect_linux_desktop(
+                None,
+                Some(OsStr::new("wayland-0")),
+                Some(OsStr::new("ubuntu:GNOME")),
+                None,
+            ),
+            Some(DesktopEnvironment::LinuxGnome)
+        );
+    }
+
+    /// Plasma session names select KDE-specific fallbacks.
+    #[test]
+    fn linux_detection_recognizes_kde_plasma() {
+        // Session metadata is the fallback when XDG_CURRENT_DESKTOP is unavailable.
+        assert_eq!(
+            detect_linux_desktop(
+                Some(OsStr::new(":0")),
+                None,
+                None,
+                Some(OsStr::new("plasmawayland")),
+            ),
+            Some(DesktopEnvironment::LinuxKde)
+        );
+    }
+}

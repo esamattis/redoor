@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 ///
 /// Every field is `Option` so `agent::run` can apply the same
 /// CLI > env > config file > default precedence as the server. Clap `env`
-/// fills each field when the flag is omitted.
+/// fills configurable fields when their flags are omitted.
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct AgentArgs {
@@ -44,6 +44,35 @@ pub(crate) struct AgentArgs {
     /// Overrides `REDOOR_AGENT_DIR` and `[agent].dir`.
     #[arg(short = 'd', long, env = "REDOOR_AGENT_DIR")]
     pub(crate) dir: Option<String>,
+    /// Seconds to wait after connecting before notifying the desktop, or `off` to disable it.
+    #[arg(
+        long,
+        env = "REDOOR_AGENT_NOTIFICATION",
+        default_value = "5",
+        value_parser = parse_notification_delay
+    )]
+    pub(crate) notification: Option<NotificationDelay>,
+}
+
+/// Parsed startup-notification setting kept explicit so disabling cannot resemble a valid delay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NotificationDelay {
+    /// Suppresses startup desktop notifications entirely.
+    Off,
+    /// Waits this many whole seconds after a fully authenticated connection.
+    Seconds(u64),
+}
+
+/// Accepts a non-negative whole-second delay or the explicit `off` switch.
+fn parse_notification_delay(value: &str) -> Result<NotificationDelay, String> {
+    if value.eq_ignore_ascii_case("off") {
+        return Ok(NotificationDelay::Off);
+    }
+
+    value
+        .parse::<u64>()
+        .map(NotificationDelay::Seconds)
+        .map_err(|_| "notification delay must be a whole number of seconds or 'off'".to_string())
 }
 
 #[derive(Clone)]
@@ -364,6 +393,20 @@ impl AgentState {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    /// Keeps the human-readable disable value distinct from numeric delays.
+    #[test]
+    fn parses_notification_off_switch() {
+        // Case-insensitive parsing avoids surprising environment configuration differences.
+        assert_eq!(parse_notification_delay("OFF"), Ok(NotificationDelay::Off));
+    }
+
+    /// Prevents the removed numeric sentinel from remaining an undocumented compatibility path.
+    #[test]
+    fn rejects_negative_notification_delay() {
+        // Only non-negative seconds or the explicit `off` value are valid.
+        assert!(parse_notification_delay("-1").is_err());
+    }
 
     /// Protects authoritative disconnect cleanup across every active dedicated log task.
     #[test]

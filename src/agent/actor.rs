@@ -1,5 +1,5 @@
 use super::{
-    AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState,
+    AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState, notification,
     transfer::{begin_transfer_connection, schedule_transfer_reconnect},
     ws::{spawn_read_task, spawn_stdin_task},
 };
@@ -20,9 +20,14 @@ impl AgentRuntime {
         server_url: String,
         default_directory: String,
         token: String,
+        startup_notification_delay: Option<tokio::time::Duration>,
     ) -> Self {
         Self {
             state: AgentState::new(agent_id, agent_name, server_url, default_directory, token),
+            desktop_environment: notification::detect_desktop_environment(),
+            startup_notification_delay,
+            startup_notification_generation: None,
+            startup_notification_sent: false,
         }
     }
 
@@ -108,6 +113,7 @@ impl AgentRuntime {
                     self.state.ws_transfer_tx = Some(sender);
                     self.state.transfer_shutdown = Some(shutdown);
                     let _ = installed.send(true);
+                    self.schedule_startup_notification(handle);
                 } else {
                     let _ = shutdown.send(true);
                     let _ = installed.send(false);
@@ -162,6 +168,15 @@ impl AgentRuntime {
                 {
                     begin_transfer_connection(&mut self.state, handle, token);
                 }
+            }
+            AgentMsg::StartupNotificationDue {
+                connection_generation,
+                transfer_generation,
+            } => {
+                self.show_startup_notification_if_current(
+                    connection_generation,
+                    transfer_generation,
+                );
             }
             AgentMsg::ConnectionLost {
                 connection_generation,
@@ -223,6 +238,66 @@ impl AgentRuntime {
         }
 
         true
+    }
+
+    /// Starts a replaceable timer only after both authenticated websocket lanes are ready.
+    fn schedule_startup_notification(&mut self, handle: AgentHandle) {
+        let Some(_desktop_environment) = self.desktop_environment else {
+            return;
+        };
+        let Some(delay) = self.startup_notification_delay else {
+            return;
+        };
+        if self.startup_notification_sent {
+            return;
+        }
+
+        let connection_generation = self.state.connection_generation;
+        let transfer_generation = self.state.transfer_generation;
+        self.startup_notification_generation = Some((connection_generation, transfer_generation));
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = handle
+                .send(AgentMsg::StartupNotificationDue {
+                    connection_generation,
+                    transfer_generation,
+                })
+                .await;
+        });
+    }
+
+    /// Shows the delayed notification only when its fully connected socket pair is still current.
+    fn show_startup_notification_if_current(
+        &mut self,
+        connection_generation: u64,
+        transfer_generation: u64,
+    ) {
+        let generation = (connection_generation, transfer_generation);
+        let is_current = self.startup_notification_generation == Some(generation)
+            && self.state.connection_generation == connection_generation
+            && self.state.transfer_generation == transfer_generation
+            && self.state.ws_control_tx.is_some()
+            && self.state.ws_transfer_tx.is_some();
+        if !is_current {
+            return;
+        }
+
+        self.startup_notification_generation = None;
+        self.startup_notification_sent = true;
+        let Some(desktop_environment) = self.desktop_environment else {
+            return;
+        };
+        let agent_name = self.state.agent_name.clone();
+        tokio::spawn(async move {
+            if notification::show_agent_started(desktop_environment, &agent_name).await {
+                log!(Level::Debug, "Displayed agent startup desktop notification");
+            } else {
+                log!(
+                    Level::Debug,
+                    "No working desktop notification tool was found"
+                );
+            }
+        });
     }
 
     /// Opens a websocket connection and wires the connection tasks into the runtime channels.
@@ -349,6 +424,7 @@ mod tests {
             "ws://localhost".to_string(),
             "/tmp".to_string(),
             "test-token".to_string(),
+            None,
         );
         let stale_generation = runtime.state.advance_connection_generation();
         let current_generation = runtime.state.advance_connection_generation();
@@ -388,6 +464,7 @@ mod tests {
             "ws://localhost".to_string(),
             "/tmp".to_string(),
             "test-token".to_string(),
+            None,
         );
         runtime.state.advance_connection_generation();
         let stale_generation = runtime.state.advance_transfer_generation();
