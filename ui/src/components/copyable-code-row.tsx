@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { Check, Copy } from "lucide-react";
 
 /** Writes text to the clipboard, with a textarea fallback when the async API is unavailable. */
@@ -129,7 +130,12 @@ export function CopyableCodeRow(props: {
  *
  * Callers supply the visible field label outside this control.
  */
-export function CopyablePath(props: { value: string; copyAriaLabel: string }) {
+export function CopyablePath(props: {
+    value: string;
+    copyAriaLabel: string;
+    to?: string;
+    linkAriaLabel?: string;
+}) {
     const { isCopied, flashKey, copy } = useCopyFeedback(props.value);
 
     return (
@@ -147,9 +153,19 @@ export function CopyablePath(props: { value: string; copyAriaLabel: string }) {
                     className="copy-success-flash pointer-events-none absolute inset-0 rounded-md"
                 />
             ) : null}
-            <code className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-slate-200">
-                {props.value}
-            </code>
+            {props.to ? (
+                <Link
+                    to={props.to}
+                    aria-label={props.linkAriaLabel}
+                    className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-blue-300 underline decoration-blue-400/30 underline-offset-2 hover:text-blue-200 hover:decoration-blue-300"
+                >
+                    {props.value}
+                </Link>
+            ) : (
+                <code className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-slate-200">
+                    {props.value}
+                </code>
+            )}
             <button
                 type="button"
                 onClick={() => {

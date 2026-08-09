@@ -242,56 +242,6 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             {props.details.name}
                         </h1>
                         <div className="flex items-center gap-2">
-                            <UpgradeButton
-                                target={`agent ${props.details.name}`}
-                                agentOs={props.details.os}
-                                agentArch={props.details.arch}
-                                serverInfo={serverInfo}
-                                upgrade={() => props.agent.upgrade()}
-                                waitUntilReady={() =>
-                                    waitForRestart(async () => {
-                                        const upgradedAgent = (
-                                            await api.listAgents()
-                                        ).find(
-                                            (agent) =>
-                                                agent.id === props.agent.id &&
-                                                agent.status === "connected" &&
-                                                agent.connectionId !==
-                                                    props.agent.connectionId &&
-                                                agent.binary?.version ===
-                                                    serverInfo.version,
-                                        );
-                                        if (!upgradedAgent?.binary) {
-                                            throw new Error(
-                                                "Agent is still upgrading",
-                                            );
-                                        }
-                                        if (
-                                            (serverInfo.git_dirty ||
-                                                serverInfo.version_dirty) &&
-                                            (upgradedAgent.binary.git_rev !==
-                                                serverInfo.git_rev ||
-                                                upgradedAgent.binary
-                                                    .git_dirty !==
-                                                    serverInfo.git_dirty ||
-                                                upgradedAgent.binary
-                                                    .version_dirty !==
-                                                    serverInfo.version_dirty ||
-                                                upgradedAgent.binary
-                                                    .build_mode !==
-                                                    serverInfo.build_mode ||
-                                                upgradedAgent.binary
-                                                    .build_date !==
-                                                    serverInfo.build_date)
-                                        ) {
-                                            throw new Error(
-                                                "Agent has not loaded the exact server build",
-                                            );
-                                        }
-                                        await router.invalidate();
-                                    }, "Agent did not come back after upgrade")
-                                }
-                            />
                             <RestartButton
                                 target={`agent ${props.details.name}`}
                                 description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
@@ -355,6 +305,13 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                                 "No config file loaded"
                             }
                             copyAriaLabel="Copy config file path"
+                            browserUrl={
+                                props.details.config_path
+                                    ? props.agent.getBrowserUrl(
+                                          props.details.config_path,
+                                      )
+                                    : undefined
+                            }
                         />
                         <DetailPathItem
                             label="Binary path"
@@ -437,6 +394,57 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             />
                         </div>
                     </DetailCard>
+                    <div className="md:col-span-2">
+                        <UpgradeButton
+                            target={`agent ${props.details.name}`}
+                            agentOs={props.details.os}
+                            agentArch={props.details.arch}
+                            agentExePath={props.details.exe_path}
+                            supportsSelfExec={props.agent.supportsSelfExec}
+                            serverInfo={serverInfo}
+                            upgrade={() => props.agent.upgrade()}
+                            waitUntilReady={() =>
+                                waitForRestart(async () => {
+                                    const upgradedAgent = (
+                                        await api.listAgents()
+                                    ).find(
+                                        (agent) =>
+                                            agent.id === props.agent.id &&
+                                            agent.status === "connected" &&
+                                            agent.connectionId !==
+                                                props.agent.connectionId &&
+                                            agent.binary?.version ===
+                                                serverInfo.version,
+                                    );
+                                    if (!upgradedAgent?.binary) {
+                                        throw new Error(
+                                            "Agent is still upgrading",
+                                        );
+                                    }
+                                    if (
+                                        (serverInfo.git_dirty ||
+                                            serverInfo.version_dirty) &&
+                                        (upgradedAgent.binary.git_rev !==
+                                            serverInfo.git_rev ||
+                                            upgradedAgent.binary.git_dirty !==
+                                                serverInfo.git_dirty ||
+                                            upgradedAgent.binary
+                                                .version_dirty !==
+                                                serverInfo.version_dirty ||
+                                            upgradedAgent.binary.build_mode !==
+                                                serverInfo.build_mode ||
+                                            upgradedAgent.binary.build_date !==
+                                                serverInfo.build_date)
+                                    ) {
+                                        throw new Error(
+                                            "Agent has not loaded the exact server build",
+                                        );
+                                    }
+                                    await router.invalidate();
+                                }, "Agent did not come back after upgrade")
+                            }
+                        />
+                    </div>
                 </div>
             </div>
             <Outlet />
@@ -483,6 +491,7 @@ function DetailPathItem(props: {
     label: string;
     value: string;
     copyAriaLabel: string;
+    browserUrl?: string;
 }) {
     return (
         <div className="flex min-w-0 items-center gap-3 text-sm">
@@ -491,6 +500,12 @@ function DetailPathItem(props: {
                 <CopyablePath
                     value={props.value}
                     copyAriaLabel={props.copyAriaLabel}
+                    to={props.browserUrl}
+                    linkAriaLabel={
+                        props.browserUrl
+                            ? `Open ${props.label.toLowerCase()} in file browser`
+                            : undefined
+                    }
                 />
             </div>
         </div>
