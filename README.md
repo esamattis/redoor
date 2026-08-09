@@ -2,15 +2,21 @@
 
 Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent.
 
-Support Linux, macOS, and Termux on Android.
+Supports Linux, macOS, and Termux on Android.
 
 ```mermaid
 graph TD
     Server[redoor server]
-    Server -->|ssh| LinuxServer[Linux server agent]
-    LinuxDesktop[Linux desktop agent] -->|ws| Server
-    macOS[macOS agent] -->|ws| Server
-    Termux[Termux on Android agent] -->|ws| Server
+    Server -->|ssh| LinuxServer["Linux server
+redoor agent"]
+    LinuxDesktop["Linux desktop
+redoor agent"] -->|ws| Server
+    macOS["macOS
+redoor agent"] -->|ws| Server
+    Termux["Termux on Android
+redoor agent"] -->|ws| Server
+    style LinuxServer,LinuxDesktop,macOS,Termux font-size:10px
+    style Server fill:lightblue,color:black
 ```
 
 ## Install
@@ -19,7 +25,7 @@ graph TD
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"
 ```
 
-This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root).
+This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent.
 
 To configure background services do
 
