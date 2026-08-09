@@ -40,6 +40,8 @@ redoor server launchd setup
 redoor agent launchd setup
 ```
 
+See `redoor --help` for more
+
 ## Configuration
 
 Server and agent use the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
@@ -60,22 +62,14 @@ agent_token = "replace-me"
 # cookie_secure = false       # set true behind HTTPS
 # log = "log/server.log"      # also --log
 
-## `redoor agent`
-[agent]
-ws_address = "ws://127.0.0.1:3000/ws"   # also positional CLI / REDOOR_AGENT_WS
-name = "local"                          # also --name / REDOOR_AGENT_NAME
-# dir = "/home/me/projects"             # also -d/--dir / REDOOR_AGENT_DIR
-# log = "log/agent.log"                 # also --log / REDOOR_AGENT_LOG
-
-## Server-managed agents, that connect directly to the computer via SSH
+## `redoor server` managed agents, connects via ssh tunnels, auto installs agent binary
 [[agents]]
 target = "user@example.com"
 # username = "deploy"
 # ssh_port = 22
-# name = "prod"
-# remote_bin = "${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor"
+# name = "prod-server"
 # dir = "/srv/app"
-# log = "log/prod.log"
+# log = "/var/log/redoor/agent.log"
 
 [[agents]]
 # local agent, that runs on the same computer as the server
@@ -84,4 +78,10 @@ name = "local"
 dir = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
 
+## Manually managed `redoor agent`
+[agent]
+ws_address = "ws://127.0.0.1:3000/ws"   # also positional CLI / REDOOR_AGENT_WS
+name = "macbook"                        # also --name / REDOOR_AGENT_NAME
+# dir = "/home/me/projects"             # also -d/--dir / REDOOR_AGENT_DIR
+# log = "log/agent.log"                 # also --log / REDOOR_AGENT_LOG
 ```
