@@ -232,62 +232,10 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     return (
         <div className="p-8">
             <div className="mx-auto max-w-4xl">
-                <div className="mb-6">
-                    <div className="flex items-center justify-between">
-                        <h1
-                            aria-label="Agent name"
-                            className="flex items-center gap-3 text-2xl font-bold text-slate-100"
-                        >
-                            <HardDrive className="h-8 w-8 text-blue-400" />
-                            {props.details.name}
-                        </h1>
-                        <div className="flex items-center gap-2">
-                            <RestartButton
-                                target={`agent ${props.details.name}`}
-                                description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
-                                restart={() => props.agent.restart()}
-                                waitUntilReady={() =>
-                                    waitForRestart(async () => {
-                                        const restartedAgent = (
-                                            await api.listAgents()
-                                        ).find(
-                                            (agent) =>
-                                                agent.id === props.agent.id &&
-                                                agent.status === "connected" &&
-                                                agent.connectionId !==
-                                                    props.agent.connectionId,
-                                        );
-                                        if (!restartedAgent) {
-                                            throw new Error(
-                                                "Agent is still restarting",
-                                            );
-                                        }
-                                        await router.invalidate();
-                                    }, "Agent did not come back after restart")
-                                }
-                            />
-                            <Link
-                                to="/agents/$agentId/logs"
-                                params={{ agentId: props.details.id }}
-                                className="flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
-                            >
-                                <ScrollText className="h-4 w-4" /> View logs
-                            </Link>
-                            <Link
-                                to={getBrowserUrl(
-                                    props.details.id,
-                                    props.details.cwd,
-                                )}
-                                className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
-                            >
-                                <FolderOpen className="h-4 w-4" /> Browse Files
-                            </Link>
-                        </div>
-                    </div>
-                    <p className="mt-1 text-sm text-slate-500">
-                        ID: {props.details.id}
-                    </p>
-                </div>
+                <AgentDetailsHeader
+                    agent={props.agent}
+                    details={props.details}
+                />
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <DetailCard
                         title="Process Information"
@@ -448,6 +396,71 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                 </div>
             </div>
             <Outlet />
+        </div>
+    );
+}
+
+/** Keeps restart controls isolated from the static detail cards and their data. */
+function AgentDetailsHeader(props: {
+    agent: Agent;
+    details: AgentDetailsResponse;
+}) {
+    const router = useRouter();
+    const { api } = Route.useRouteContext();
+
+    return (
+        <div className="mb-6">
+            <div className="flex items-center justify-between">
+                <h1
+                    aria-label="Agent name"
+                    className="flex items-center gap-3 text-2xl font-bold text-slate-100"
+                >
+                    <HardDrive className="h-8 w-8 text-blue-400" />
+                    {props.details.name}
+                </h1>
+                <div className="flex items-center gap-2">
+                    <RestartButton
+                        target={`agent ${props.details.name}`}
+                        description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
+                        restart={() => props.agent.restart()}
+                        waitUntilReady={() =>
+                            waitForRestart(async () => {
+                                const restartedAgent = (
+                                    await api.listAgents()
+                                ).find(
+                                    (agent) =>
+                                        agent.id === props.agent.id &&
+                                        agent.status === "connected" &&
+                                        agent.connectionId !==
+                                            props.agent.connectionId,
+                                );
+                                if (!restartedAgent) {
+                                    throw new Error(
+                                        "Agent is still restarting",
+                                    );
+                                }
+                                await router.invalidate();
+                            }, "Agent did not come back after restart")
+                        }
+                    />
+                    <Link
+                        to="/agents/$agentId/logs"
+                        params={{ agentId: props.details.id }}
+                        className="flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
+                    >
+                        <ScrollText className="h-4 w-4" /> View logs
+                    </Link>
+                    <Link
+                        to={getBrowserUrl(props.details.id, props.details.cwd)}
+                        className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+                    >
+                        <FolderOpen className="h-4 w-4" /> Browse Files
+                    </Link>
+                </div>
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
+                ID: {props.details.id}
+            </p>
         </div>
     );
 }

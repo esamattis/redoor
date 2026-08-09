@@ -38,6 +38,7 @@ import {
     selectedFilesAtom,
     unselectFileAtom,
     clearSelectedFilesAtom,
+    type SelectedPath,
 } from "../selected-files";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { Dialog } from "../components/dialog";
@@ -541,108 +542,87 @@ function TopTabStrip(props: {
                     }
                 }}
             >
-                <nav
-                    aria-label="Application"
-                    className="mt-3 flex flex-col gap-1"
-                >
-                    <Link
-                        to="/"
-                        aria-label="Server home"
-                        aria-current={
-                            props.pathname === "/" ? "page" : undefined
-                        }
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            props.pathname === "/"
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <Home
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        Home
-                    </Link>
-                    <Link
-                        to="/agents"
-                        aria-label="Manage agents"
-                        aria-current={
-                            props.pathname === "/agents" ? "page" : undefined
-                        }
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            props.pathname === "/agents"
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <Users
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        Agents
-                    </Link>
-                    <Link
-                        to="/logs"
-                        aria-current={
-                            props.pathname === "/logs" ? "page" : undefined
-                        }
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            props.pathname === "/logs"
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <ScrollText
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        Server logs
-                    </Link>
-                    <Link
-                        to="/transfers"
-                        aria-current={
-                            props.pathname.startsWith("/transfers")
-                                ? "page"
-                                : undefined
-                        }
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            props.pathname.startsWith("/transfers")
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <ArrowLeftRight
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        Transfers
-                    </Link>
-                    <button
-                        type="button"
-                        onClick={logout}
-                        disabled={isLoggingOut}
-                        className="flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
-                    >
-                        {isLoggingOut ? (
-                            <LoaderCircle
-                                className="h-4 w-4 shrink-0 animate-spin text-slate-400"
-                                aria-hidden="true"
-                            />
-                        ) : (
-                            <LogOut
-                                className="h-4 w-4 shrink-0 text-slate-400"
-                                aria-hidden="true"
-                            />
-                        )}
-                        {isLoggingOut ? "Logging out…" : "Log out"}
-                    </button>
-                </nav>
+                <ApplicationMenu
+                    pathname={props.pathname}
+                    isLoggingOut={isLoggingOut}
+                    onClose={() => setIsMenuOpen(false)}
+                    onLogout={logout}
+                />
             </Dialog>
         </header>
+    );
+}
+
+/** Keeps the dialog navigation markup separate from the tab-strip state and agent controls. */
+function ApplicationMenu(props: {
+    pathname: string;
+    isLoggingOut: boolean;
+    onClose: () => void;
+    onLogout: () => void;
+}) {
+    const menuItems = [
+        { to: "/", label: "Home", ariaLabel: "Server home", icon: Home },
+        {
+            to: "/agents",
+            label: "Agents",
+            ariaLabel: "Manage agents",
+            icon: Users,
+        },
+        { to: "/logs", label: "Server logs", icon: ScrollText },
+        { to: "/transfers", label: "Transfers", icon: ArrowLeftRight },
+    ] as const;
+
+    return (
+        <nav aria-label="Application" className="mt-3 flex flex-col gap-1">
+            {menuItems.map((item) => {
+                const isActive =
+                    item.to === "/transfers"
+                        ? props.pathname.startsWith(item.to)
+                        : props.pathname === item.to;
+                const Icon = item.icon;
+                return (
+                    <Link
+                        key={item.to}
+                        to={item.to}
+                        aria-label={
+                            "ariaLabel" in item ? item.ariaLabel : undefined
+                        }
+                        aria-current={isActive ? "page" : undefined}
+                        onClick={props.onClose}
+                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
+                            isActive
+                                ? "bg-white/5 text-slate-100"
+                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                        }`}
+                    >
+                        <Icon
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                        {item.label}
+                    </Link>
+                );
+            })}
+            <button
+                type="button"
+                onClick={props.onLogout}
+                disabled={props.isLoggingOut}
+                className="flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+            >
+                {props.isLoggingOut ? (
+                    <LoaderCircle
+                        className="h-4 w-4 shrink-0 animate-spin text-slate-400"
+                        aria-hidden="true"
+                    />
+                ) : (
+                    <LogOut
+                        className="h-4 w-4 shrink-0 text-slate-400"
+                        aria-hidden="true"
+                    />
+                )}
+                {props.isLoggingOut ? "Logging out…" : "Log out"}
+            </button>
+        </nav>
     );
 }
 
@@ -702,6 +682,135 @@ type DeleteState =
     | { type: "idle" }
     | { type: "deleting" }
     | { type: "error"; message: string };
+
+/** Renders controls that operate on the complete selected-items list. */
+function SelectedFilesPanelActions(props: {
+    deleteState: DeleteState;
+    selectedFileCount: number;
+    onOpenDeleteDialog: () => void;
+    onClearSelectedFiles: () => void;
+}) {
+    return (
+        <div className="flex items-center gap-2">
+            {props.deleteState.type === "deleting" ? (
+                <span
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500/10 text-red-400"
+                    aria-label="Deleting selected items"
+                    role="status"
+                >
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                </span>
+            ) : (
+                <Tooltip content="Delete selected items">
+                    <span className="inline-flex">
+                        <button
+                            type="button"
+                            onClick={props.onOpenDeleteDialog}
+                            disabled={props.selectedFileCount === 0}
+                            aria-label="Delete selected items"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Trash2 className="h-4 w-4" />
+                        </button>
+                    </span>
+                </Tooltip>
+            )}
+
+            <button
+                type="button"
+                onClick={props.onClearSelectedFiles}
+                className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+            >
+                Clear all
+            </button>
+        </div>
+    );
+}
+
+/** Displays selected paths in their scan-friendly order with per-item removal controls. */
+function SelectedFilesTable(props: {
+    agents: RootLoaderData["agents"];
+    selectedFiles: SelectedPath[];
+    onUnselectFile: (file: Pick<SelectedPath, "agentId" | "path">) => void;
+}) {
+    return (
+        <div className="max-h-64 overflow-auto bg-[#11141b]">
+            <table className="w-full">
+                <thead className="sticky top-0 bg-[#1a1f2a]">
+                    <tr className="border-b border-slate-800">
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Agent
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Item
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Path
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-slate-400">
+                            Action
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {props.selectedFiles.map((file) => (
+                        <tr
+                            key={`${file.agentId}:${file.path}`}
+                            className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5 align-top"
+                        >
+                            <td className="p-3">
+                                <div className="flex flex-col">
+                                    <span className="text-sm font-medium text-slate-100">
+                                        {file.agentName}
+                                    </span>
+                                    <span className="text-xs text-slate-500">
+                                        {file.agentId}
+                                    </span>
+                                </div>
+                            </td>
+                            <td className="p-3">
+                                <Link
+                                    to={
+                                        props.agents
+                                            .find(
+                                                (agent) =>
+                                                    agent.id === file.agentId,
+                                            )
+                                            ?.getBrowserUrl(file.path) ?? "/"
+                                    }
+                                    className="text-sm font-medium text-blue-400 hover:underline"
+                                >
+                                    {file.fileName}
+                                </Link>
+                            </td>
+                            <td className="p-3">
+                                <div className="break-all font-mono text-xs text-slate-300">
+                                    {file.path}
+                                </div>
+                            </td>
+                            <td className="p-3">
+                                <button
+                                    type="button"
+                                    aria-label={`Unselect ${file.fileName}`}
+                                    onClick={() =>
+                                        props.onUnselectFile({
+                                            agentId: file.agentId,
+                                            path: file.path,
+                                        })
+                                    }
+                                    className="inline-flex items-center gap-2 rounded border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/5"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                    Unselect
+                                </button>
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
 
 function getErrorMessage(error: unknown) {
     if (error instanceof Error) {
@@ -843,122 +952,22 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                     </span>
                 }
                 actions={
-                    <div className="flex items-center gap-2">
-                        {deleteState.type === "deleting" ? (
-                            <span
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500/10 text-red-400"
-                                aria-label="Deleting selected items"
-                                role="status"
-                            >
-                                <LoaderCircle className="h-4 w-4 animate-spin" />
-                            </span>
-                        ) : (
-                            <Tooltip content="Delete selected items">
-                                <span className="inline-flex">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setDeleteState({ type: "idle" });
-                                            setIsDeleteDialogOpen(true);
-                                        }}
-                                        disabled={selectedFiles.length === 0}
-                                        aria-label="Delete selected items"
-                                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                        <Trash2 className="h-4 w-4" />
-                                    </button>
-                                </span>
-                            </Tooltip>
-                        )}
-
-                        <button
-                            type="button"
-                            onClick={() => clearSelectedFiles()}
-                            className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            Clear all
-                        </button>
-                    </div>
+                    <SelectedFilesPanelActions
+                        deleteState={deleteState}
+                        selectedFileCount={selectedFiles.length}
+                        onOpenDeleteDialog={() => {
+                            setDeleteState({ type: "idle" });
+                            setIsDeleteDialogOpen(true);
+                        }}
+                        onClearSelectedFiles={clearSelectedFiles}
+                    />
                 }
             >
-                <div className="max-h-64 overflow-auto bg-[#11141b]">
-                    <table className="w-full">
-                        <thead className="sticky top-0 bg-[#1a1f2a]">
-                            <tr className="border-b border-slate-800">
-                                <th className="p-3 text-left text-sm font-medium text-slate-400">
-                                    Agent
-                                </th>
-                                <th className="p-3 text-left text-sm font-medium text-slate-400">
-                                    Item
-                                </th>
-                                <th className="p-3 text-left text-sm font-medium text-slate-400">
-                                    Path
-                                </th>
-                                <th className="p-3 text-left text-sm font-medium text-slate-400">
-                                    Action
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {sortedSelectedFiles.map((file) => (
-                                <tr
-                                    key={`${file.agentId}:${file.path}`}
-                                    className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5 align-top"
-                                >
-                                    <td className="p-3">
-                                        <div className="flex flex-col">
-                                            <span className="text-sm font-medium text-slate-100">
-                                                {file.agentName}
-                                            </span>
-                                            <span className="text-xs text-slate-500">
-                                                {file.agentId}
-                                            </span>
-                                        </div>
-                                    </td>
-                                    <td className="p-3">
-                                        <Link
-                                            to={
-                                                props.agents
-                                                    .find(
-                                                        (agent) =>
-                                                            agent.id ===
-                                                            file.agentId,
-                                                    )
-                                                    ?.getBrowserUrl(
-                                                        file.path,
-                                                    ) ?? "/"
-                                            }
-                                            className="text-sm font-medium text-blue-400 hover:underline"
-                                        >
-                                            {file.fileName}
-                                        </Link>
-                                    </td>
-                                    <td className="p-3">
-                                        <div className="break-all font-mono text-xs text-slate-300">
-                                            {file.path}
-                                        </div>
-                                    </td>
-                                    <td className="p-3">
-                                        <button
-                                            type="button"
-                                            aria-label={`Unselect ${file.fileName}`}
-                                            onClick={() =>
-                                                unselectFile({
-                                                    agentId: file.agentId,
-                                                    path: file.path,
-                                                })
-                                            }
-                                            className="inline-flex items-center gap-2 rounded border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/5"
-                                        >
-                                            <X className="h-3.5 w-3.5" />
-                                            Unselect
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                <SelectedFilesTable
+                    agents={props.agents}
+                    selectedFiles={sortedSelectedFiles}
+                    onUnselectFile={unselectFile}
+                />
             </CollapsibleBottomPanel>
 
             <ConfirmationDialog

@@ -210,106 +210,15 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
                 </span>
             }
             actions={
-                <div className="flex min-w-0 items-center gap-1">
-                    <div className="flex min-w-0 max-w-[60vw] items-center overflow-x-auto">
-                        <div
-                            role="tablist"
-                            aria-label="Terminal tabs"
-                            className="flex min-h-8 min-w-px items-center gap-1"
-                        >
-                            {tabs.map((tab, tabIndex) => {
-                                const status = getTerminalStatus(tab.state);
-                                const isActive = tab.id === activeTabId;
-                                return (
-                                    <div
-                                        key={tab.id}
-                                        className={`flex shrink-0 items-center overflow-hidden rounded-md border transition-colors ${
-                                            isActive
-                                                ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
-                                                : "border-slate-700 bg-slate-900"
-                                        }`}
-                                        title={`${tab.title}: ${tab.cwd}`}
-                                    >
-                                        <button
-                                            type="button"
-                                            id={`terminal-tab-${tab.id}`}
-                                            role="tab"
-                                            aria-label={tab.title}
-                                            aria-selected={isActive}
-                                            aria-controls={`terminal-panel-${tab.id}`}
-                                            tabIndex={isActive ? 0 : -1}
-                                            onClick={() =>
-                                                setActiveTabId(tab.id)
-                                            }
-                                            onKeyDown={(event) =>
-                                                handleTabKeyDown(
-                                                    event,
-                                                    tabIndex,
-                                                )
-                                            }
-                                            className={`flex h-8 items-center gap-2 px-2.5 text-xs font-medium transition-colors ${
-                                                isActive
-                                                    ? "text-slate-100"
-                                                    : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                                            }`}
-                                        >
-                                            <span>{tab.title}</span>
-                                            <span
-                                                role="status"
-                                                aria-label={`${tab.title}: ${status.label}`}
-                                                title={status.label}
-                                                className={status.color}
-                                            >
-                                                {tab.state.type ===
-                                                "connected" ? (
-                                                    <CircleCheck className="h-3.5 w-3.5" />
-                                                ) : tab.state.type ===
-                                                  "disconnected" ? (
-                                                    <CircleX className="h-3.5 w-3.5" />
-                                                ) : (
-                                                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                                                )}
-                                            </span>
-                                        </button>
-                                        {tab.state.type === "disconnected" ? (
-                                            <button
-                                                type="button"
-                                                aria-label={`Restart ${tab.title}`}
-                                                title={`Restart ${tab.title}`}
-                                                onClick={() =>
-                                                    restartTerminal(tab.id)
-                                                }
-                                                className="inline-flex h-8 w-7 items-center justify-center border-l border-red-500/20 text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
-                                            >
-                                                <RotateCcw className="h-3.5 w-3.5" />
-                                            </button>
-                                        ) : null}
-                                        <button
-                                            type="button"
-                                            aria-label={`Close ${tab.title}`}
-                                            title={`Close ${tab.title}`}
-                                            onClick={() =>
-                                                closeTerminal(tab.id)
-                                            }
-                                            className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                                        >
-                                            <X className="h-3.5 w-3.5" />
-                                        </button>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                        <button
-                            type="button"
-                            aria-label="New terminal"
-                            title="New terminal"
-                            onClick={createTerminal}
-                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            <Plus className="h-4 w-4" />
-                        </button>
-                    </div>
-                </div>
+                <TerminalTabActions
+                    tabs={tabs}
+                    activeTabId={activeTabId}
+                    onCreate={createTerminal}
+                    onClose={closeTerminal}
+                    onRestart={restartTerminal}
+                    onSelect={setActiveTabId}
+                    onTabKeyDown={handleTabKeyDown}
+                />
             }
             actionsAlignment="start"
             isCollapsed={isCollapsed}
@@ -333,21 +242,266 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
     );
 }
 
-/** Owns one tab's browser resources so sibling sessions cannot affect it. */
-function TerminalSession(props: {
+/** Renders terminal-tab controls while keeping panel lifecycle state local to the parent. */
+function TerminalTabActions(props: {
+    tabs: TerminalTab[];
+    activeTabId: number | null;
+    onCreate: () => void;
+    onClose: (tabId: number) => void;
+    onRestart: (tabId: number) => void;
+    onSelect: (tabId: number) => void;
+    onTabKeyDown: (
+        event: React.KeyboardEvent<HTMLButtonElement>,
+        tabIndex: number,
+    ) => void;
+}) {
+    return (
+        <div className="flex min-w-0 items-center gap-1">
+            <div className="flex min-w-0 max-w-[60vw] items-center overflow-x-auto">
+                <div
+                    role="tablist"
+                    aria-label="Terminal tabs"
+                    className="flex min-h-8 min-w-px items-center gap-1"
+                >
+                    {props.tabs.map((tab, tabIndex) => {
+                        const status = getTerminalStatus(tab.state);
+                        const isActive = tab.id === props.activeTabId;
+                        return (
+                            <div
+                                key={tab.id}
+                                className={`flex shrink-0 items-center overflow-hidden rounded-md border transition-colors ${
+                                    isActive
+                                        ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
+                                        : "border-slate-700 bg-slate-900"
+                                }`}
+                                title={`${tab.title}: ${tab.cwd}`}
+                            >
+                                <button
+                                    type="button"
+                                    id={`terminal-tab-${tab.id}`}
+                                    role="tab"
+                                    aria-label={tab.title}
+                                    aria-selected={isActive}
+                                    aria-controls={`terminal-panel-${tab.id}`}
+                                    tabIndex={isActive ? 0 : -1}
+                                    onClick={() => props.onSelect(tab.id)}
+                                    onKeyDown={(event) =>
+                                        props.onTabKeyDown(event, tabIndex)
+                                    }
+                                    className={`flex h-8 items-center gap-2 px-2.5 text-xs font-medium transition-colors ${
+                                        isActive
+                                            ? "text-slate-100"
+                                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                                    }`}
+                                >
+                                    <span>{tab.title}</span>
+                                    <span
+                                        role="status"
+                                        aria-label={`${tab.title}: ${status.label}`}
+                                        title={status.label}
+                                        className={status.color}
+                                    >
+                                        {tab.state.type === "connected" ? (
+                                            <CircleCheck className="h-3.5 w-3.5" />
+                                        ) : tab.state.type ===
+                                          "disconnected" ? (
+                                            <CircleX className="h-3.5 w-3.5" />
+                                        ) : (
+                                            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                        )}
+                                    </span>
+                                </button>
+                                {tab.state.type === "disconnected" ? (
+                                    <button
+                                        type="button"
+                                        aria-label={`Restart ${tab.title}`}
+                                        title={`Restart ${tab.title}`}
+                                        onClick={() => props.onRestart(tab.id)}
+                                        className="inline-flex h-8 w-7 items-center justify-center border-l border-red-500/20 text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                                    >
+                                        <RotateCcw className="h-3.5 w-3.5" />
+                                    </button>
+                                ) : null}
+                                <button
+                                    type="button"
+                                    aria-label={`Close ${tab.title}`}
+                                    title={`Close ${tab.title}`}
+                                    onClick={() => props.onClose(tab.id)}
+                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+                <button
+                    type="button"
+                    aria-label="New terminal"
+                    title="New terminal"
+                    onClick={props.onCreate}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <Plus className="h-4 w-4" />
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** Describes the parent-managed state and callbacks required by one terminal session. */
+type TerminalSessionProps = {
     agent: Agent;
     tab: TerminalTab;
     isActive: boolean;
     isPanelCollapsed: boolean;
     onStateChange: (tabId: number, state: TerminalState) => void;
+};
+
+/** Groups mutable browser resources so teardown can release them consistently. */
+type TerminalResources = {
+    terminalRef: React.RefObject<GhosttyTerminal | null>;
+    fitAddonRef: React.RefObject<GhosttyFitAddon | null>;
+    socketRef: React.RefObject<WebSocket | null>;
+    terminalDisposablesRef: React.RefObject<IDisposable[]>;
+    removeSocketListenersRef: React.RefObject<(() => void) | null>;
+};
+
+/** Connects one initialized terminal to its shell while keeping socket protocol handling isolated. */
+function connectTerminal(props: {
+    agent: Agent;
+    cwd: string;
+    generation: number;
+    resources: TerminalResources;
+    terminal: GhosttyTerminal;
+    updateTerminalState: (state: TerminalState) => void;
+    showDisconnected: (generation: number, message: string) => void;
+    generationRef: React.RefObject<number>;
+    stateRef: React.RefObject<TerminalState>;
+    isActiveRef: React.RefObject<boolean>;
+    isPanelCollapsedRef: React.RefObject<boolean>;
 }) {
-    const stateRef = React.useRef<TerminalState>(props.tab.state);
+    const socket = new WebSocket(
+        props.agent.getTerminalWebSocketUrl(
+            { rows: props.terminal.rows, cols: props.terminal.cols },
+            props.cwd,
+        ),
+    );
+    socket.binaryType = "arraybuffer";
+    props.resources.socketRef.current = socket;
+    const encoder = new TextEncoder();
+    let isReady = false;
+
+    props.resources.terminalDisposablesRef.current = [
+        props.terminal.onData((data) => {
+            if (isReady && socket.readyState === WebSocket.OPEN) {
+                socket.send(encoder.encode(data));
+            }
+        }),
+        props.terminal.onResize((size) => {
+            if (!isReady || socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            const message: TerminalClientMessage = {
+                type: "resize",
+                size: { rows: size.rows, cols: size.cols },
+            };
+            socket.send(JSON.stringify(message));
+        }),
+    ];
+
+    /** Applies typed binary output and lifecycle notifications. */
+    const handleMessage = (event: MessageEvent) => {
+        if (props.generationRef.current !== props.generation) {
+            return;
+        }
+        if (event.data instanceof ArrayBuffer) {
+            props.terminal.write(new Uint8Array(event.data));
+            return;
+        }
+        if (typeof event.data !== "string") {
+            socket.close(1002, "Unsupported terminal frame");
+            return;
+        }
+
+        let parsedMessage: unknown;
+        try {
+            parsedMessage = JSON.parse(event.data);
+        } catch {
+            socket.close(1002, "Invalid terminal control message");
+            return;
+        }
+        const message = parseServerMessage(parsedMessage);
+        if (!message) {
+            socket.close(1002, "Invalid terminal control message");
+            return;
+        }
+        if (message.type === "ready") {
+            isReady = true;
+            props.updateTerminalState({ type: "connected" });
+            if (
+                props.isActiveRef.current &&
+                !props.isPanelCollapsedRef.current
+            ) {
+                props.resources.fitAddonRef.current?.fit();
+                props.terminal.focus();
+            }
+            return;
+        }
+
+        const disconnectMessage = getServerDisconnectMessage(message);
+        if (!disconnectMessage) {
+            socket.close(1002, "Invalid terminal control message");
+            return;
+        }
+        props.showDisconnected(props.generation, disconnectMessage);
+        socket.close();
+    };
+
+    /** Distinguishes setup loss from an established shell disconnect. */
+    const handleClose = () => {
+        if (
+            props.generationRef.current !== props.generation ||
+            props.stateRef.current.type === "disconnected"
+        ) {
+            return;
+        }
+        props.showDisconnected(
+            props.generation,
+            isReady
+                ? "Terminal connection closed"
+                : "Terminal connection closed during setup",
+        );
+    };
+
+    /** Relies on close for one deterministic state transition. */
+    const handleError = () => {
+        if (props.generationRef.current === props.generation) {
+            socket.close();
+        }
+    };
+
+    socket.addEventListener("message", handleMessage);
+    socket.addEventListener("close", handleClose);
+    socket.addEventListener("error", handleError);
+    props.resources.removeSocketListenersRef.current = () => {
+        socket.removeEventListener("message", handleMessage);
+        socket.removeEventListener("close", handleClose);
+        socket.removeEventListener("error", handleError);
+    };
+}
+
+/** Manages one terminal's browser resources independently from its tab presentation. */
+function useTerminalLifecycle(props: TerminalSessionProps) {
     const hostRef = React.useRef<HTMLDivElement | null>(null);
-    const terminalRef = React.useRef<GhosttyTerminal | null>(null);
-    const fitAddonRef = React.useRef<GhosttyFitAddon | null>(null);
-    const socketRef = React.useRef<WebSocket | null>(null);
-    const terminalDisposablesRef = React.useRef<IDisposable[]>([]);
-    const removeSocketListenersRef = React.useRef<(() => void) | null>(null);
+    const stateRef = React.useRef<TerminalState>(props.tab.state);
+    const resources: TerminalResources = {
+        terminalRef: React.useRef<GhosttyTerminal | null>(null),
+        fitAddonRef: React.useRef<GhosttyFitAddon | null>(null),
+        socketRef: React.useRef<WebSocket | null>(null),
+        terminalDisposablesRef: React.useRef<IDisposable[]>([]),
+        removeSocketListenersRef: React.useRef<(() => void) | null>(null),
+    };
     const generationRef = React.useRef(0);
     const restartGenerationRef = React.useRef(props.tab.restartGeneration);
     const isActiveRef = React.useRef(props.isActive);
@@ -363,26 +517,20 @@ function TerminalSession(props: {
 
     /** Releases every resource associated with only this terminal tab. */
     const disposeResources = () => {
-        const socket = socketRef.current;
-        socketRef.current = null;
-        removeSocketListenersRef.current?.();
-        removeSocketListenersRef.current = null;
-        if (
-            socket &&
-            socket.readyState !== WebSocket.CLOSING &&
-            socket.readyState !== WebSocket.CLOSED
-        ) {
+        const socket = resources.socketRef.current;
+        resources.socketRef.current = null;
+        resources.removeSocketListenersRef.current?.();
+        resources.removeSocketListenersRef.current = null;
+        if (socket && socket.readyState < WebSocket.CLOSING) {
             socket.close();
         }
-
-        terminalDisposablesRef.current.forEach((disposable) =>
+        resources.terminalDisposablesRef.current.forEach((disposable) =>
             disposable.dispose(),
         );
-        terminalDisposablesRef.current = [];
-
-        const terminal = terminalRef.current;
-        terminalRef.current = null;
-        fitAddonRef.current = null;
+        resources.terminalDisposablesRef.current = [];
+        const terminal = resources.terminalRef.current;
+        resources.terminalRef.current = null;
+        resources.fitAddonRef.current = null;
         terminal?.dispose();
         hostRef.current?.replaceChildren();
     };
@@ -397,40 +545,27 @@ function TerminalSession(props: {
         updateTerminalState({ type: "disconnected", message });
     };
 
-    /** Preserves terminal output while exposing an explicit recovery action. */
-    const showDisconnected = (generation: number, message: string) => {
-        if (generationRef.current !== generation) {
-            return;
-        }
-        updateTerminalState({ type: "disconnected", message });
-    };
-
     /** Creates Ghostty and a shell only for a selected, expanded tab. */
     const startTerminal = async () => {
         if (stateRef.current.type !== "not_started") {
             return;
         }
-
         const generation = generationRef.current + 1;
         generationRef.current = generation;
         updateTerminalState({ type: "initializing" });
-
         try {
             const ghostty = await initializeGhostty();
             await new Promise<void>((resolve) =>
                 requestAnimationFrame(() => resolve()),
             );
-
             if (generationRef.current !== generation) {
                 return;
             }
-
             const host = hostRef.current;
             if (!host) {
                 failSetup(generation, "Terminal host is unavailable");
                 return;
             }
-
             const terminal = new ghostty.Terminal({
                 cursorBlink: true,
                 fontFamily:
@@ -444,9 +579,9 @@ function TerminalSession(props: {
                     selectionBackground: "#334155",
                 },
             });
-            terminalRef.current = terminal;
+            resources.terminalRef.current = terminal;
             const fitAddon = new ghostty.FitAddon();
-            fitAddonRef.current = fitAddon;
+            resources.fitAddonRef.current = fitAddon;
             terminal.loadAddon(fitAddon);
             terminal.open(host);
             host.setAttribute(
@@ -455,118 +590,27 @@ function TerminalSession(props: {
             );
             fitAddon.fit();
             fitAddon.observeResize();
-
             if (generationRef.current !== generation) {
                 return;
             }
-
             updateTerminalState({ type: "connecting" });
-            const socket = new WebSocket(
-                props.agent.getTerminalWebSocketUrl(
-                    { rows: terminal.rows, cols: terminal.cols },
-                    props.tab.cwd,
-                ),
-            );
-            socket.binaryType = "arraybuffer";
-            socketRef.current = socket;
-            const encoder = new TextEncoder();
-            let isReady = false;
-
-            terminalDisposablesRef.current = [
-                terminal.onData((data) => {
-                    if (isReady && socket.readyState === WebSocket.OPEN) {
-                        socket.send(encoder.encode(data));
+            connectTerminal({
+                agent: props.agent,
+                cwd: props.tab.cwd,
+                generation,
+                resources,
+                terminal,
+                updateTerminalState,
+                showDisconnected: (currentGeneration, message) => {
+                    if (generationRef.current === currentGeneration) {
+                        updateTerminalState({ type: "disconnected", message });
                     }
-                }),
-                terminal.onResize((size) => {
-                    if (!isReady || socket.readyState !== WebSocket.OPEN) {
-                        return;
-                    }
-                    const message: TerminalClientMessage = {
-                        type: "resize",
-                        size: { rows: size.rows, cols: size.cols },
-                    };
-                    socket.send(JSON.stringify(message));
-                }),
-            ];
-
-            /** Applies typed binary output and lifecycle notifications. */
-            const handleMessage = (event: MessageEvent) => {
-                if (generationRef.current !== generation) {
-                    return;
-                }
-                if (event.data instanceof ArrayBuffer) {
-                    terminal.write(new Uint8Array(event.data));
-                    return;
-                }
-                if (typeof event.data !== "string") {
-                    socket.close(1002, "Unsupported terminal frame");
-                    return;
-                }
-
-                let parsedMessage: unknown;
-                try {
-                    parsedMessage = JSON.parse(event.data);
-                } catch {
-                    socket.close(1002, "Invalid terminal control message");
-                    return;
-                }
-                const message = parseServerMessage(parsedMessage);
-                if (!message) {
-                    socket.close(1002, "Invalid terminal control message");
-                    return;
-                }
-
-                if (message.type === "ready") {
-                    isReady = true;
-                    updateTerminalState({ type: "connected" });
-                    if (isActiveRef.current && !isPanelCollapsedRef.current) {
-                        fitAddon.fit();
-                        terminal.focus();
-                    }
-                    return;
-                }
-
-                const disconnectMessage = getServerDisconnectMessage(message);
-                if (!disconnectMessage) {
-                    socket.close(1002, "Invalid terminal control message");
-                    return;
-                }
-                showDisconnected(generation, disconnectMessage);
-                socket.close();
-            };
-
-            /** Distinguishes setup loss from an established shell disconnect. */
-            const handleClose = () => {
-                if (
-                    generationRef.current !== generation ||
-                    stateRef.current.type === "disconnected"
-                ) {
-                    return;
-                }
-                showDisconnected(
-                    generation,
-                    isReady
-                        ? "Terminal connection closed"
-                        : "Terminal connection closed during setup",
-                );
-            };
-
-            /** Relies on close for one deterministic state transition. */
-            const handleError = () => {
-                if (generationRef.current === generation) {
-                    socket.close();
-                }
-            };
-
-            socket.addEventListener("message", handleMessage);
-            socket.addEventListener("close", handleClose);
-            socket.addEventListener("error", handleError);
-            removeSocketListenersRef.current = () => {
-                socket.removeEventListener("message", handleMessage);
-                socket.removeEventListener("close", handleClose);
-                socket.removeEventListener("error", handleError);
-            };
+                },
+                generationRef,
+                stateRef,
+                isActiveRef,
+                isPanelCollapsedRef,
+            });
         } catch {
             failSetup(generation, "Failed to initialize terminal");
         }
@@ -579,32 +623,24 @@ function TerminalSession(props: {
             disposeResources();
             stateRef.current = { type: "not_started" };
         }
-
-        if (
-            props.isActive &&
-            !props.isPanelCollapsed &&
-            stateRef.current.type === "not_started"
-        ) {
-            void startTerminal();
-            return;
-        }
-
-        if (
-            props.isActive &&
-            !props.isPanelCollapsed &&
-            stateRef.current.type === "connected"
-        ) {
-            const generation = generationRef.current;
-            requestAnimationFrame(() => {
-                if (
-                    generationRef.current === generation &&
-                    isActiveRef.current &&
-                    !isPanelCollapsedRef.current
-                ) {
-                    fitAddonRef.current?.fit();
-                    terminalRef.current?.focus();
-                }
-            });
+        if (props.isActive && !props.isPanelCollapsed) {
+            if (stateRef.current.type === "not_started") {
+                void startTerminal();
+                return;
+            }
+            if (stateRef.current.type === "connected") {
+                const generation = generationRef.current;
+                requestAnimationFrame(() => {
+                    if (
+                        generationRef.current === generation &&
+                        isActiveRef.current &&
+                        !isPanelCollapsedRef.current
+                    ) {
+                        resources.fitAddonRef.current?.fit();
+                        resources.terminalRef.current?.focus();
+                    }
+                });
+            }
         }
     }, [
         props.isActive,
@@ -621,6 +657,13 @@ function TerminalSession(props: {
             stateRef.current = { type: "not_started" };
         };
     }, []);
+
+    return hostRef;
+}
+
+/** Owns one tab's browser resources so sibling sessions cannot affect it. */
+function TerminalSession(props: TerminalSessionProps) {
+    const hostRef = useTerminalLifecycle(props);
 
     return (
         <div

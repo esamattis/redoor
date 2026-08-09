@@ -25,7 +25,6 @@ describe("Raw Upload API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
     let apiClient: ApiClient;
-    let serverPort: number;
     let serverPid: number;
     let testAgent: Agent;
 
@@ -41,7 +40,6 @@ describe("Raw Upload API", () => {
         });
 
         apiClient = setup.apiClient;
-        serverPort = setup.serverPort;
         serverPid = setup.serverPid;
         testAgent = setup.testAgent;
     }, 30000);

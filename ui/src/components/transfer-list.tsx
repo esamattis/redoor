@@ -26,6 +26,30 @@ function getTransferSpeedBytesPerSecond(
     return transfer.transferred_bytes / elapsedSeconds;
 }
 
+function TransferTableHeader() {
+    return (
+        <thead className="sticky top-0 bg-[#1a1f2a]">
+            <tr className="border-b border-slate-800">
+                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                    Agent
+                </th>
+                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                    Direction
+                </th>
+                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                    Path
+                </th>
+                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                    Progress
+                </th>
+                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                    Status
+                </th>
+            </tr>
+        </thead>
+    );
+}
+
 export function TransferList(props: {
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transfers: TransferProgressEntry[];
@@ -41,25 +65,7 @@ export function TransferList(props: {
     return (
         <div className="overflow-auto bg-[#11141b]">
             <table className="w-full bg-[#11141b]">
-                <thead className="sticky top-0 bg-[#1a1f2a]">
-                    <tr className="border-b border-slate-800">
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Agent
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Direction
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Path
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Progress
-                        </th>
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
-                            Status
-                        </th>
-                    </tr>
-                </thead>
+                <TransferTableHeader />
                 <tbody>
                     {props.transfers.map((transfer) => {
                         const agent = props.agents.find(

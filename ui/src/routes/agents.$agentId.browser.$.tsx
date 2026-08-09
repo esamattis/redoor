@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines */
 import React from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -2020,81 +2021,19 @@ function FileDetailView(props: {
             </div>
 
             <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-                <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-                    <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-                    <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
-                        <div className="flex min-w-0 items-start gap-4">
-                            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                                <File className="h-7 w-7 text-blue-400" />
-                            </div>
-                            <div className="min-w-0 pt-0.5">
-                                <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                                    File details
-                                </p>
-                                <h1
-                                    aria-label="File name"
-                                    className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                                >
-                                    {props.fileName}
-                                </h1>
-                                <RenamePathForm
-                                    agent={props.agent}
-                                    path={props.path}
-                                    currentName={props.fileName}
-                                    entryType="file"
-                                />
-                            </div>
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-2">
-                            <a
-                                href={props.downloadUrl}
-                                download={props.fileName}
-                                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
-                            >
-                                <Download className="h-4 w-4" />
-                                Download File
-                            </a>
-                            <button
-                                type="button"
-                                aria-label="Delete file"
-                                onClick={() => {
-                                    setDeleteState({ type: "idle" });
-                                    setIsConfirmDeleteOpen(true);
-                                }}
-                                className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm font-semibold text-red-300 transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-200"
-                            >
-                                <Trash2 className="h-4 w-4" />
-                                Delete
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="relative mt-6">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                            <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                                Full Path
-                            </p>
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    copyToClipboard(props.lsResult.path, "path")
-                                }
-                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
-                                aria-label="Copy full path"
-                            >
-                                {copiedCommand === "path" ? (
-                                    <Check className="h-3.5 w-3.5 text-emerald-400" />
-                                ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                )}
-                                {copiedCommand === "path" ? "Copied" : "Copy"}
-                            </button>
-                        </div>
-                        <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
-                            {props.lsResult.path}
-                        </code>
-                    </div>
-                </header>
+                <FileDetailHeader
+                    agent={props.agent}
+                    path={props.path}
+                    fileName={props.fileName}
+                    filePath={props.lsResult.path}
+                    downloadUrl={props.downloadUrl}
+                    copiedCommand={copiedCommand}
+                    onCopyPath={copyToClipboard}
+                    onOpenDelete={() => {
+                        setDeleteState({ type: "idle" });
+                        setIsConfirmDeleteOpen(true);
+                    }}
+                />
 
                 <FilesystemMetadataSections
                     metadata={props.lsResult}
@@ -2102,111 +2041,14 @@ function FileDetailView(props: {
                     headingPrefix="file"
                 />
 
-                <section
-                    aria-labelledby="shareable-links-heading"
-                    className="border-t border-slate-800 bg-slate-950/15 p-6 md:p-8"
-                >
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                            <h2
-                                id="shareable-links-heading"
-                                className="text-base font-semibold text-slate-100"
-                            >
-                                Shareable links
-                            </h2>
-                            <p className="mt-1 text-sm text-slate-500">
-                                Create an anonymous link for a single download.
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={handleCreateShareableLink}
-                            disabled={shareableLinkState.type === "creating"}
-                            className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                            <Download className="h-4 w-4" />
-                            {shareableLinkState.type === "creating"
-                                ? "Creating link..."
-                                : "Create shareable link"}
-                        </button>
-                    </div>
-
-                    {shareableLinkState.type === "error" ? (
-                        <p
-                            role="alert"
-                            className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
-                        >
-                            {shareableLinkState.message}
-                        </p>
-                    ) : null}
-
-                    {oneTimeTokens.length > 0 ? (
-                        <div className="mt-5 grid gap-4">
-                            {oneTimeTokens.map((token, index) => {
-                                const linkNumber = index + 1;
-                                const shareableUrl = `${props.downloadUrl}?one_time_token=${encodeURIComponent(token)}`;
-                                const wgetCommand = `wget --content-disposition "${shareableUrl}"`;
-                                const curlCommand = `curl -JO "${shareableUrl}"`;
-                                const copyKeyPrefix = `one-time-${token}`;
-
-                                return (
-                                    <article
-                                        key={token}
-                                        aria-label={`One-time shareable link ${linkNumber}`}
-                                        className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/30 p-4"
-                                    >
-                                        <p className="text-sm font-semibold text-slate-200">
-                                            One-time shareable link {linkNumber}
-                                        </p>
-                                        <p className="mt-1 text-sm text-amber-300/90">
-                                            This link works only once. The first
-                                            download consumes it, and later
-                                            requests will be rejected.
-                                        </p>
-                                        <div className="mt-3 flex min-w-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                                            <a
-                                                href={shareableUrl}
-                                                className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-blue-300 underline decoration-blue-400/40 underline-offset-4 hover:text-blue-200"
-                                            >
-                                                {shareableUrl}
-                                            </a>
-                                            <button
-                                                type="button"
-                                                onClick={() =>
-                                                    copyToClipboard(
-                                                        shareableUrl,
-                                                        `${copyKeyPrefix}-link`,
-                                                    )
-                                                }
-                                                aria-label={`Copy shareable link ${linkNumber}`}
-                                                className="shrink-0 rounded-md p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-                                            >
-                                                {copiedCommand ===
-                                                `${copyKeyPrefix}-link` ? (
-                                                    <Check className="h-4 w-4 text-emerald-400" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </button>
-                                        </div>
-                                        <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">
-                                            <CopyableCodeRow
-                                                label="wget"
-                                                value={wgetCommand}
-                                                copyAriaLabel={`Copy wget command for shareable link ${linkNumber}`}
-                                            />
-                                            <CopyableCodeRow
-                                                label="curl"
-                                                value={curlCommand}
-                                                copyAriaLabel={`Copy curl command for shareable link ${linkNumber}`}
-                                            />
-                                        </div>
-                                    </article>
-                                );
-                            })}
-                        </div>
-                    ) : null}
-                </section>
+                <ShareableLinksSection
+                    downloadUrl={props.downloadUrl}
+                    oneTimeTokens={oneTimeTokens}
+                    state={shareableLinkState}
+                    copiedCommand={copiedCommand}
+                    onCreate={handleCreateShareableLink}
+                    onCopy={copyToClipboard}
+                />
             </article>
 
             <ConfirmationDialog
@@ -2235,6 +2077,219 @@ function FileDetailView(props: {
                 </p>
             </ConfirmationDialog>
         </div>
+    );
+}
+
+/** Renders the file identity, immediate actions, and canonical path. */
+function FileDetailHeader(props: {
+    agent: Agent;
+    path: string;
+    fileName: string;
+    filePath: string;
+    downloadUrl: string;
+    copiedCommand: string | null;
+    onCopyPath: (text: string, commandType: string) => void;
+    onOpenDelete: () => void;
+}) {
+    return (
+        <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
+            <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
+            <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
+                <div className="flex min-w-0 items-start gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                        <File className="h-7 w-7 text-blue-400" />
+                    </div>
+                    <div className="min-w-0 pt-0.5">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                            File details
+                        </p>
+                        <h1
+                            aria-label="File name"
+                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                        >
+                            {props.fileName}
+                        </h1>
+                        <RenamePathForm
+                            agent={props.agent}
+                            path={props.path}
+                            currentName={props.fileName}
+                            entryType="file"
+                        />
+                    </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                    <a
+                        href={props.downloadUrl}
+                        download={props.fileName}
+                        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
+                    >
+                        <Download className="h-4 w-4" />
+                        Download File
+                    </a>
+                    <button
+                        type="button"
+                        aria-label="Delete file"
+                        onClick={props.onOpenDelete}
+                        className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm font-semibold text-red-300 transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-200"
+                    >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                    </button>
+                </div>
+            </div>
+            <div className="relative mt-6">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                        Full Path
+                    </p>
+                    <button
+                        type="button"
+                        onClick={() => props.onCopyPath(props.filePath, "path")}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
+                        aria-label="Copy full path"
+                    >
+                        {props.copiedCommand === "path" ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                        )}
+                        {props.copiedCommand === "path" ? "Copied" : "Copy"}
+                    </button>
+                </div>
+                <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
+                    {props.filePath}
+                </code>
+            </div>
+        </header>
+    );
+}
+
+/** Displays one-time download links and preserves their associated copy affordances. */
+function ShareableLinksSection(props: {
+    downloadUrl: string;
+    oneTimeTokens: Array<string>;
+    state: ShareableLinkState;
+    copiedCommand: string | null;
+    onCreate: () => void;
+    onCopy: (text: string, commandType: string) => void;
+}) {
+    return (
+        <section
+            aria-labelledby="shareable-links-heading"
+            className="border-t border-slate-800 bg-slate-950/15 p-6 md:p-8"
+        >
+            <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <h2
+                        id="shareable-links-heading"
+                        className="text-base font-semibold text-slate-100"
+                    >
+                        Shareable links
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                        Create an anonymous link for a single download.
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={props.onCreate}
+                    disabled={props.state.type === "creating"}
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    <Download className="h-4 w-4" />
+                    {props.state.type === "creating"
+                        ? "Creating link..."
+                        : "Create shareable link"}
+                </button>
+            </div>
+
+            {props.state.type === "error" ? (
+                <p
+                    role="alert"
+                    className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+                >
+                    {props.state.message}
+                </p>
+            ) : null}
+
+            {props.oneTimeTokens.length > 0 ? (
+                <div className="mt-5 grid gap-4">
+                    {props.oneTimeTokens.map((token, index) => (
+                        <ShareableLinkCard
+                            key={token}
+                            token={token}
+                            linkNumber={index + 1}
+                            downloadUrl={props.downloadUrl}
+                            copiedCommand={props.copiedCommand}
+                            onCopy={props.onCopy}
+                        />
+                    ))}
+                </div>
+            ) : null}
+        </section>
+    );
+}
+
+/** Keeps link-specific commands and feedback together for each generated token. */
+function ShareableLinkCard(props: {
+    token: string;
+    linkNumber: number;
+    downloadUrl: string;
+    copiedCommand: string | null;
+    onCopy: (text: string, commandType: string) => void;
+}) {
+    const shareableUrl = `${props.downloadUrl}?one_time_token=${encodeURIComponent(props.token)}`;
+    const wgetCommand = `wget --content-disposition "${shareableUrl}"`;
+    const curlCommand = `curl -JO "${shareableUrl}"`;
+    const copyKeyPrefix = `one-time-${props.token}`;
+
+    return (
+        <article
+            aria-label={`One-time shareable link ${props.linkNumber}`}
+            className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/30 p-4"
+        >
+            <p className="text-sm font-semibold text-slate-200">
+                One-time shareable link {props.linkNumber}
+            </p>
+            <p className="mt-1 text-sm text-amber-300/90">
+                This link works only once. The first download consumes it, and
+                later requests will be rejected.
+            </p>
+            <div className="mt-3 flex min-w-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <a
+                    href={shareableUrl}
+                    className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-blue-300 underline decoration-blue-400/40 underline-offset-4 hover:text-blue-200"
+                >
+                    {shareableUrl}
+                </a>
+                <button
+                    type="button"
+                    onClick={() =>
+                        props.onCopy(shareableUrl, `${copyKeyPrefix}-link`)
+                    }
+                    aria-label={`Copy shareable link ${props.linkNumber}`}
+                    className="shrink-0 rounded-md p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
+                >
+                    {props.copiedCommand === `${copyKeyPrefix}-link` ? (
+                        <Check className="h-4 w-4 text-emerald-400" />
+                    ) : (
+                        <Copy className="h-4 w-4" />
+                    )}
+                </button>
+            </div>
+            <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">
+                <CopyableCodeRow
+                    label="wget"
+                    value={wgetCommand}
+                    copyAriaLabel={`Copy wget command for shareable link ${props.linkNumber}`}
+                />
+                <CopyableCodeRow
+                    label="curl"
+                    value={curlCommand}
+                    copyAriaLabel={`Copy curl command for shareable link ${props.linkNumber}`}
+                />
+            </div>
+        </article>
     );
 }
 
@@ -2360,41 +2415,12 @@ function FileEditView(props: {
 
     return (
         <div>
-            <div className="mb-4">
-                <div className="mb-3 flex items-center gap-3">
-                    <Link
-                        to="/agents/$agentId"
-                        params={{ agentId: props.agentId }}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <HardDrive className="h-3.5 w-3.5" />
-                        Agent details
-                    </Link>
-                    <div className="min-w-0 flex-1">
-                        <Breadcrumbs agent={props.agent} path={props.path} />
-                    </div>
-                </div>
-                <div
-                    aria-label="File actions"
-                    className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
-                >
-                    <Link
-                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                    >
-                        <ArrowLeft className="h-4 w-4" />
-                        Back
-                    </Link>
-                    <Link
-                        to={getBrowserPathHref(props.agent, props.path)}
-                        search={{}}
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <Info className="h-4 w-4" />
-                        View details
-                    </Link>
-                </div>
-            </div>
+            <FileEditNavigation
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                parentPath={parentPath}
+            />
 
             <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
@@ -2478,6 +2504,55 @@ function FileEditView(props: {
                     )}
                 </div>
             </article>
+        </div>
+    );
+}
+
+/** Keeps edit navigation separate from content-loading and save state. */
+function FileEditNavigation(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    parentPath: string | null;
+}) {
+    return (
+        <div className="mb-4">
+            <div className="mb-3 flex items-center gap-3">
+                <Link
+                    to="/agents/$agentId"
+                    params={{ agentId: props.agentId }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <HardDrive className="h-3.5 w-3.5" />
+                    Agent details
+                </Link>
+                <div className="min-w-0 flex-1">
+                    <Breadcrumbs agent={props.agent} path={props.path} />
+                </div>
+            </div>
+            <div
+                aria-label="File actions"
+                className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+            >
+                <Link
+                    to={getBrowserPathHref(
+                        props.agent,
+                        props.parentPath ?? "/",
+                    )}
+                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                >
+                    <ArrowLeft className="h-4 w-4" />
+                    Back
+                </Link>
+                <Link
+                    to={getBrowserPathHref(props.agent, props.path)}
+                    search={{}}
+                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <Info className="h-4 w-4" />
+                    View details
+                </Link>
+            </div>
         </div>
     );
 }
