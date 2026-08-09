@@ -43,14 +43,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             archive_name: redoor-x86_64-linux
+            cc: musl-gcc
           - os: macos-latest
             target: aarch64-apple-darwin
             archive_name: redoor-aarch64-macos
+            cc: clang
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             archive_name: redoor-aarch64-linux
+            cc: musl-gcc
 
     runs-on: ${{ matrix.os }}
 
@@ -65,6 +68,10 @@ jobs:
           path: ui/dist
           merge-multiple: true
 
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -76,7 +83,13 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build release binary
+        env:
+          CC: ${{ matrix.cc }}
         run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Verify static Linux binary
+        if: runner.os == 'Linux'
+        run: file target/${{ matrix.target }}/release/redoor | grep -Eq "static(-pie)? linked|statically linked"
 
       - name: Package binary
         run: tar czf ${{ matrix.archive_name }}.tar.gz -C target/${{ matrix.target }}/release redoor
