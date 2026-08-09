@@ -315,6 +315,10 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             label="Hostname"
                             value={props.details.hostname}
                         />
+                        <DetailItem
+                            label="External IP"
+                            value={props.details.external_ip ?? "Unavailable"}
+                        />
                     </DetailCard>
                     <DetailCard
                         title="User Info"

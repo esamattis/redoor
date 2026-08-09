@@ -208,6 +208,7 @@ const emptyServerInfo: ServerInfoResponse = {
     config_path: "",
     exe_path: "",
     auth_mode: "toml",
+    external_ip: null,
     version: "",
     git_rev: "",
     git_dirty: false,

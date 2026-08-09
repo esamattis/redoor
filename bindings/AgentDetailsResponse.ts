@@ -14,7 +14,11 @@ config_path: string,
 /**
  * Absolute path of the running agent binary.
  */
-exe_path: string, load_average_one: number, load_average_five: number, load_average_fifteen: number, system_uptime: number, os: string, arch: string, hostname: string, username: string, connected_at: UnixTimestampSeconds, 
+exe_path: string, load_average_one: number, load_average_five: number, load_average_fifteen: number, system_uptime: number, os: string, arch: string, hostname: string, 
+/**
+ * Primary non-loopback IP selected from the agent's local routing table.
+ */
+external_ip: string | null, username: string, connected_at: UnixTimestampSeconds, 
 /**
  * Compile-time identity of the agent binary currently serving this connection.
  */

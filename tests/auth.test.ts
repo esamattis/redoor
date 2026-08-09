@@ -92,6 +92,11 @@ describe("HTTP authentication", () => {
         expect(serverInfo.exe_path.startsWith("/")).toBe(true);
         // Test servers always pin username/password in TOML rather than PAM.
         expect(serverInfo.auth_mode).toBe("toml");
+        // Hosts without a default route may omit the local external address.
+        expect(
+            serverInfo.external_ip === null ||
+                typeof serverInfo.external_ip === "string",
+        ).toBe(true);
         // Package version is baked at compile time for the home page identity card.
         expect(serverInfo.version).toMatch(/^\d+\.\d+\.\d+/);
         // Git revision comes from build.rs so operators can map a binary to source.

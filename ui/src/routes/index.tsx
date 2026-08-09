@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { FileCode2, HardDrive, KeyRound, Server } from "lucide-react";
+import { FileCode2, Globe2, HardDrive, KeyRound, Server } from "lucide-react";
 
 import type { ServerAuthMode } from "../api-client";
 import { BinaryIdentityFields } from "../components/binary-identity";
@@ -80,6 +80,17 @@ function Index() {
                         copyAriaLabel="Copy binary path"
                         bordered
                     />
+                    <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
+                        <Globe2 className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-medium text-slate-400">
+                                External IP
+                            </h2>
+                            <p className="mt-1 font-mono text-xs text-slate-100">
+                                {serverInfo.external_ip ?? "Unavailable"}
+                            </p>
+                        </div>
+                    </div>
                     <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
                         <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
                         <div className="min-w-0">

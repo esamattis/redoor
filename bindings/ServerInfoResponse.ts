@@ -19,6 +19,10 @@ exe_path: string,
  */
 auth_mode: ServerAuthMode, 
 /**
+ * Primary non-loopback IP selected from the server's local routing table.
+ */
+external_ip: string | null, 
+/**
  * `CARGO_PKG_VERSION` baked into this binary.
  */
 version: string, 

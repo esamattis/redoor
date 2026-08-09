@@ -100,6 +100,22 @@ pub async fn current_exe_path() -> String {
     }
 }
 
+/// Resolves and caches the primary non-loopback IP selected by the local routing table.
+pub async fn external_ip() -> Option<String> {
+    static EXTERNAL_IP: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+
+    EXTERNAL_IP
+        .get_or_init(|| async {
+            let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+            // UDP connect only asks the kernel to choose a route; it sends no network traffic.
+            socket.connect("1.1.1.1:80").await.ok()?;
+            let address = socket.local_addr().ok()?.ip();
+            (!address.is_loopback() && !address.is_unspecified()).then(|| address.to_string())
+        })
+        .await
+        .clone()
+}
+
 /// Process-local agent config path recorded once at agent startup.
 ///
 /// Empty when the agent was launched from CLI/env only without loading a TOML file.
@@ -131,6 +147,8 @@ pub struct ServerInfoResponse {
     pub exe_path: String,
     /// Whether login uses TOML credentials or system PAM.
     pub auth_mode: ServerAuthMode,
+    /// Primary non-loopback IP selected from the server's local routing table.
+    pub external_ip: Option<String>,
     /// `CARGO_PKG_VERSION` baked into this binary.
     pub version: String,
     /// Full git commit SHA (or `unknown` when git metadata was unavailable at build).
@@ -499,6 +517,8 @@ pub struct AgentDetailsResponse {
     pub os: String,
     pub arch: String,
     pub hostname: String,
+    /// Primary non-loopback IP selected from the agent's local routing table.
+    pub external_ip: Option<String>,
     pub username: String,
     pub connected_at: UnixTimestampSeconds,
     /// Compile-time identity of the agent binary currently serving this connection.
@@ -1064,7 +1084,7 @@ impl CommandHandler {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
         // Operators need the on-disk binary path when diagnosing upgrades and restarts.
-        let exe_path = current_exe_path().await;
+        let (exe_path, external_ip) = tokio::join!(current_exe_path(), external_ip());
         // Empty when the agent was launched without a TOML file (CLI/env only).
         let config_path = agent_loaded_config_path();
 
@@ -1093,6 +1113,7 @@ impl CommandHandler {
             os,
             arch,
             hostname,
+            external_ip,
             username,
             connected_at: UnixTimestampSeconds::new(0),
             // Agent process reports its own baked identity; router may also rewrite from registration.

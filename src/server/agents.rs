@@ -26,13 +26,17 @@ pub(crate) async fn server_info_handler(
 ) -> impl IntoResponse {
     let binary = redoor::commands::current_binary_identity();
     // Home page shows which on-disk binary is serving so upgrades can be verified.
-    let exe_path = redoor::commands::current_exe_path().await;
+    let (exe_path, external_ip) = tokio::join!(
+        redoor::commands::current_exe_path(),
+        redoor::commands::external_ip()
+    );
     (
         StatusCode::OK,
         Json(ServerInfoResponse {
             config_path: state.config_path.display().to_string(),
             exe_path,
             auth_mode: state.auth_mode.clone(),
+            external_ip,
             version: binary.version,
             git_rev: binary.git_rev,
             git_dirty: binary.git_dirty,

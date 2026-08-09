@@ -126,6 +126,11 @@ describe("Agents API", () => {
         expect(result.arch.length).toBeGreaterThan(0);
         expect(result.hostname).toBeDefined();
         expect(result.hostname.length).toBeGreaterThan(0);
+        // Hosts without a default route may omit the local external address.
+        expect(
+            result.external_ip === null ||
+                typeof result.external_ip === "string",
+        ).toBe(true);
         // Verify load averages are numbers
         expect(result.load_average_one).toBeDefined();
         expect(typeof result.load_average_one).toBe("number");
