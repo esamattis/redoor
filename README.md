@@ -6,17 +6,16 @@ Supports Linux, macOS, and Termux on Android.
 
 ```mermaid
 graph TD
-    Server[redoor server]
+    Server["Web UI
+[redoor server]"]
     Server -->|ssh| LinuxServer["Linux server
-redoor agent"]
+[redoor agent]"]
     LinuxDesktop["Linux desktop
-redoor agent"] -->|ws| Server
+[redoor agent]"] -->|ws| Server
     macOS["macOS
-redoor agent"] -->|ws| Server
+[redoor agent]"] -->|ws| Server
     Termux["Termux on Android
-redoor agent"] -->|ws| Server
-    style LinuxServer,LinuxDesktop,macOS,Termux font-size:10px
-    style Server fill:lightblue,color:black
+[redoor agent]"] -->|ws| Server
 ```
 
 ## Install
