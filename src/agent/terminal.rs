@@ -137,7 +137,8 @@ fn start_pty(
     pty.resize(pty_process::Size::new(size.rows, size.cols))
         .context("failed to set initial PTY size")?;
 
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
+    // Resolve the fallback through PATH because Android/Termux has no `/bin/sh`.
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("sh"));
     // Login mode restores the user's profile environment when the agent was started by
     // a service manager such as launchd, which otherwise supplies only a minimal PATH.
     let command = pty_process::Command::new(shell)

@@ -42,7 +42,7 @@ pub(crate) enum UpgradeBinaryError {
 fn validate_release_platform(os: &str, arch: &str) -> Result<(), UpgradeBinaryError> {
     if matches!(
         (os, arch),
-        ("linux", "x86_64") | ("linux", "aarch64") | ("macos", "aarch64")
+        ("linux", "x86_64") | ("linux", "aarch64") | ("macos", "aarch64") | ("android", "aarch64")
     ) {
         Ok(())
     } else {
@@ -447,6 +447,18 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Unsupported Redoor release platform: macos/x86_64"
+        );
+    }
+
+    /// Android agents must resolve to the archive emitted by the release workflow.
+    #[test]
+    fn aarch64_android_release_is_supported() {
+        // Accepting the platform lets clean servers provision upgrades for Termux agents.
+        assert!(validate_release_platform("android", "aarch64").is_ok());
+        // The URL must remain aligned with the workflow's Android archive name.
+        assert_eq!(
+            release_url("1.2.3", "android", "aarch64"),
+            "https://github.com/esamattis/redoor/releases/download/v1.2.3/redoor-aarch64-android.tar.gz"
         );
     }
 

@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
@@ -54,6 +55,9 @@ jobs:
             target: aarch64-unknown-linux-musl
             archive_name: redoor-aarch64-linux
             cc: musl-gcc
+          - os: ubuntu-latest
+            target: aarch64-linux-android
+            archive_name: redoor-aarch64-android
 
     runs-on: ${{ matrix.os }}
 
@@ -69,7 +73,7 @@ jobs:
           merge-multiple: true
 
       - name: Install musl tools
-        if: runner.os == 'Linux'
+        if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
 
       - name: Install Rust
@@ -83,14 +87,27 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Install cargo-ndk
+        if: matrix.target == 'aarch64-linux-android'
+        run: cargo install cargo-ndk --locked --version 4.1.2
+
       - name: Build release binary
+        if: matrix.target != 'aarch64-linux-android'
         env:
           CC: ${{ matrix.cc }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
+      - name: Build Android release binary
+        if: matrix.target == 'aarch64-linux-android'
+        run: cargo ndk --target arm64-v8a --platform 24 build --locked --release
+
       - name: Verify static Linux binary
-        if: runner.os == 'Linux'
+        if: contains(matrix.target, 'musl')
         run: file target/${{ matrix.target }}/release/redoor | grep -Eq "static(-pie)? linked|statically linked"
+
+      - name: Verify Android binary
+        if: matrix.target == 'aarch64-linux-android'
+        run: file target/${{ matrix.target }}/release/redoor | grep -Eq "ELF 64-bit.*ARM aarch64.*(pie executable|executable)"
 
       - name: Package binary
         run: tar czf ${{ matrix.archive_name }}.tar.gz -C target/${{ matrix.target }}/release redoor
@@ -103,6 +120,7 @@ jobs:
 
   release:
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
