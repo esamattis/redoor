@@ -54,7 +54,7 @@ jobs:
               run: cargo test --locked
 
             - name: Run Vitest integration tests
-              run: pnpm run test
+              run: pnpm run integration-test
 
             - name: Run Playwright tests
               run: pnpm run playwright
