@@ -8,10 +8,12 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use tokio::process::Command;
 
-/// Arguments for `redoor systemd` service installation and management.
+use crate::ServiceRole;
+
+/// Arguments for role-scoped `redoor agent|server systemd` service management.
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct SystemdArgs {
@@ -31,18 +33,17 @@ enum SystemdCommand {
     Stop(ServiceArgs),
     /// Reload unit definitions and restart the installed unit.
     Restart(ServiceArgs),
-    /// Follow the unit journal without invoking a pager.
-    Logs(ServiceArgs),
-    /// Enable the installed unit at boot without starting it.
-    EnableBoot(ServiceArgs),
+    /// Print the unit journal without invoking a pager.
+    Logs(LogsArgs),
+    /// Show the current unit status without invoking a pager.
+    Status(ServiceArgs),
+    /// Enable the installed unit without starting it.
+    Enable(ServiceArgs),
 }
 
 /// Identifies which Redoor unit an operation should manage.
 #[derive(Args)]
 struct ServiceArgs {
-    /// Select whether the installed service runs the server or an agent.
-    #[arg(long, value_enum)]
-    mode: SystemdMode,
     /// Override the systemd unit file name (default: <app-name>-agent/server.service).
     ///
     /// Lets multiple agent or server installs coexist on one host. A missing
@@ -51,41 +52,25 @@ struct ServiceArgs {
     unit_name: Option<String>,
 }
 
-/// Redoor process role represented by the generated service.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum SystemdMode {
-    /// Run the Redoor agent connected to the local default server address.
-    Agent,
-    /// Run the Redoor HTTP and WebSocket server.
-    Server,
-}
-
-impl SystemdMode {
-    /// Returns the default loadable systemd service name for this process role.
-    fn service_name_suffix(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Server => "server",
-        }
-    }
-
-    /// Returns the Clap spelling used in actionable setup suggestions.
-    fn cli_name(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Server => "server",
-        }
-    }
+/// Options for printing or following a systemd unit journal.
+#[derive(Args)]
+struct LogsArgs {
+    /// Common service selection options.
+    #[command(flatten)]
+    service: ServiceArgs,
+    /// Continue printing new journal entries until interrupted.
+    #[arg(short = 'f', long)]
+    follow: bool,
 }
 
 /// Resolves the unit file name, appending `.service` when the operator omitted it.
-fn resolve_unit_name(mode: SystemdMode, unit_name: Option<String>) -> Result<String> {
+fn resolve_unit_name(role: ServiceRole, unit_name: Option<String>) -> Result<String> {
     let name = match unit_name {
         Some(name) => name,
         None => format!(
             "{}-{}.service",
             crate::app_name::app_name()?,
-            mode.service_name_suffix()
+            role.cli_name()
         ),
     };
     let name = name.trim();
@@ -104,56 +89,68 @@ fn resolve_unit_name(mode: SystemdMode, unit_name: Option<String>) -> Result<Str
 }
 
 /// Runs one systemd operation against the unit scope implied by current privileges.
-pub(crate) async fn run(args: SystemdArgs) -> Result<()> {
+pub(crate) async fn run(args: SystemdArgs, role: ServiceRole) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = args;
+        let _ = (args, role);
         bail!("systemd commands are only supported on Linux");
     }
 
     #[cfg(target_os = "linux")]
     {
         match args.command {
-            SystemdCommand::Setup(service) => setup(service).await,
-            SystemdCommand::Start(service) => manage_unit(service, UnitAction::Start).await,
-            SystemdCommand::Stop(service) => manage_unit(service, UnitAction::Stop).await,
-            SystemdCommand::Restart(service) => manage_unit(service, UnitAction::Restart).await,
-            SystemdCommand::Logs(service) => manage_unit(service, UnitAction::Logs).await,
-            SystemdCommand::EnableBoot(service) => {
-                manage_unit(service, UnitAction::EnableBoot).await
+            SystemdCommand::Setup(service) => setup(service, role).await,
+            SystemdCommand::Start(service) => manage_unit(service, role, UnitAction::Start).await,
+            SystemdCommand::Stop(service) => manage_unit(service, role, UnitAction::Stop).await,
+            SystemdCommand::Restart(service) => {
+                manage_unit(service, role, UnitAction::Restart).await
             }
+            SystemdCommand::Logs(logs) => {
+                manage_unit(
+                    logs.service,
+                    role,
+                    UnitAction::Logs {
+                        follow: logs.follow,
+                    },
+                )
+                .await
+            }
+            SystemdCommand::Status(service) => manage_unit(service, role, UnitAction::Status).await,
+            SystemdCommand::Enable(service) => manage_unit(service, role, UnitAction::Enable).await,
         }
     }
 }
 
 /// Installs and enables the requested service using the original setup behavior.
 #[cfg(target_os = "linux")]
-async fn setup(args: ServiceArgs) -> Result<()> {
-    let unit_name = resolve_unit_name(args.mode, args.unit_name)?;
+async fn setup(args: ServiceArgs, role: ServiceRole) -> Result<()> {
+    let unit_name = resolve_unit_name(role, args.unit_name)?;
     if nix::unistd::Uid::effective().is_root() {
-        run_system(args.mode, &unit_name).await
+        run_system(role, &unit_name).await
     } else {
-        run_user(args.mode, &unit_name).await
+        run_user(role, &unit_name).await
     }
 }
 
 /// Supported direct systemctl and journalctl shortcuts.
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
 enum UnitAction {
     Start,
     Stop,
     Restart,
-    Logs,
-    EnableBoot,
+    Logs { follow: bool },
+    Status,
+    Enable,
 }
 
 /// Executes a shortcut with `--user` for non-root callers and system scope for root.
 #[cfg(target_os = "linux")]
-async fn manage_unit(args: ServiceArgs, action: UnitAction) -> Result<()> {
-    let service = resolve_unit_name(args.mode, args.unit_name)?;
+async fn manage_unit(args: ServiceArgs, role: ServiceRole, action: UnitAction) -> Result<()> {
+    let service = resolve_unit_name(role, args.unit_name)?;
     let user = !nix::unistd::Uid::effective().is_root();
     let flag: &[&str] = if user { &["--user"] } else { &[] };
-    ensure_unit_exists(&service, args.mode, user, flag).await?;
+    ensure_unit_exists(&service, role, user, flag).await?;
 
     if matches!(action, UnitAction::Restart) {
         let mut reload = flag.to_vec();
@@ -167,19 +164,30 @@ async fn manage_unit(args: ServiceArgs, action: UnitAction) -> Result<()> {
         UnitAction::Start => ("systemctl", flag.to_vec()),
         UnitAction::Stop => ("systemctl", flag.to_vec()),
         UnitAction::Restart => ("systemctl", flag.to_vec()),
-        UnitAction::EnableBoot => ("systemctl", flag.to_vec()),
-        UnitAction::Logs => {
+        UnitAction::Enable => ("systemctl", flag.to_vec()),
+        UnitAction::Logs { follow } => {
             let mut arguments = flag.to_vec();
-            arguments.extend(["--no-pager", "-f", "-u", service.as_str()]);
+            arguments.extend(["--no-pager", "-n", "500"]);
+            if follow {
+                arguments.push("-f");
+            }
+            arguments.extend(["-u", service.as_str()]);
             return run_command_inherited("journalctl", &arguments).await;
+        }
+        UnitAction::Status => {
+            let mut arguments = flag.to_vec();
+            arguments.extend(["status", "--no-pager", service.as_str()]);
+            return run_command_inherited("systemctl", &arguments).await;
         }
     };
     let verb = match action {
         UnitAction::Start => "start",
         UnitAction::Stop => "stop",
         UnitAction::Restart => "restart",
-        UnitAction::EnableBoot => "enable",
-        UnitAction::Logs => unreachable!("logs return before systemctl dispatch"),
+        UnitAction::Enable => "enable",
+        UnitAction::Logs { .. } | UnitAction::Status => {
+            unreachable!("logs and status return before systemctl dispatch")
+        }
     };
     arguments.extend([verb, service.as_str()]);
     run_command(program, &arguments).await
@@ -189,7 +197,7 @@ async fn manage_unit(args: ServiceArgs, action: UnitAction) -> Result<()> {
 #[cfg(target_os = "linux")]
 async fn ensure_unit_exists(
     service: &str,
-    mode: SystemdMode,
+    mode: ServiceRole,
     user: bool,
     flag: &[&str],
 ) -> Result<()> {
@@ -215,7 +223,7 @@ async fn ensure_unit_exists(
 /// Turns systemd's `not-found` load state into an actionable Redoor error.
 fn validate_unit_load_state(
     service: &str,
-    mode: SystemdMode,
+    mode: ServiceRole,
     user: bool,
     load_state: &str,
 ) -> Result<()> {
@@ -225,14 +233,14 @@ fn validate_unit_load_state(
 
     let scope = if user { "user" } else { "system" };
     bail!(
-        "Systemd {scope} unit '{service}' does not exist. Install it first with: redoor systemd setup --mode {} --unit-name {service}",
+        "Systemd {scope} unit '{service}' does not exist. Install it first with: redoor {} systemd setup --unit-name {service}",
         mode.cli_name()
     )
 }
 
 /// Installs a lingering systemd user unit owned by the invoking account.
 #[cfg(target_os = "linux")]
-async fn run_user(mode: SystemdMode, unit_name: &str) -> Result<()> {
+async fn run_user(mode: ServiceRole, unit_name: &str) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
     let config_path = crate::server::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
@@ -263,25 +271,18 @@ async fn run_user(mode: SystemdMode, unit_name: &str) -> Result<()> {
     // Enable on boot only — never start here so the operator can review config first.
     activate_unit(unit_name, true).await?;
 
-    print_manage_help(
-        unit_name,
-        &unit_path,
-        &config_path,
-        true,
-        config_created,
-        mode,
-    );
+    print_manage_help(unit_name, &unit_path, &config_path, config_created, mode);
     Ok(())
 }
 
 /// Installs a system unit: server as the `redoor` user, agent as root.
 #[cfg(target_os = "linux")]
-async fn run_system(mode: SystemdMode, unit_name: &str) -> Result<()> {
+async fn run_system(mode: ServiceRole, unit_name: &str) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
     let config_path = crate::server::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
 
-    if mode == SystemdMode::Server {
+    if mode == ServiceRole::Server {
         // Dedicated account so the listening server is not a long-lived root process.
         ensure_redoor_system_user().await?;
         // Config is 0600 from bootstrap; the service user must own it to read secrets.
@@ -306,14 +307,7 @@ async fn run_system(mode: SystemdMode, unit_name: &str) -> Result<()> {
     // Enable on boot only — never start here so the operator can review config first.
     activate_unit(unit_name, false).await?;
 
-    print_manage_help(
-        unit_name,
-        &unit_path,
-        &config_path,
-        false,
-        config_created,
-        mode,
-    );
+    print_manage_help(unit_name, &unit_path, &config_path, config_created, mode);
     Ok(())
 }
 
@@ -382,11 +376,9 @@ fn print_manage_help(
     service: &str,
     unit_path: &Path,
     config_path: &Path,
-    user: bool,
     config_created: bool,
-    mode: SystemdMode,
+    mode: ServiceRole,
 ) {
-    let flag = if user { " --user" } else { "" };
     println!(
         "Wrote unit {service} at {} and enabled it on boot (not started).",
         unit_path.display()
@@ -396,7 +388,7 @@ fn print_manage_help(
             "Created config at {}.\nEdit it before starting the service.",
             config_path.display()
         );
-        if mode == SystemdMode::Agent {
+        if mode == ServiceRole::Agent {
             println!("The [agent] section probably needs to be changed (token, ws_address).");
         }
     } else {
@@ -405,14 +397,20 @@ fn print_manage_help(
     println!(
         "
 Start when ready:
-  systemctl{flag} start {service}
+  redoor {} systemd start --unit-name {service}
 
 Manage the service:
-  systemctl{flag} start {service}
-  systemctl{flag} stop {service}
-  systemctl{flag} enable {service}
-  systemctl{flag} disable {service}
-  journalctl{flag} -u {service} -f   # follow journal; file logs are configured in config.toml"
+  redoor {} systemd start --unit-name {service}
+  redoor {} systemd stop --unit-name {service}
+  redoor {} systemd restart --unit-name {service}
+  redoor {} systemd status --unit-name {service}
+  redoor {} systemd logs --unit-name {service}   # file logs are configured in config.toml",
+        mode.cli_name(),
+        mode.cli_name(),
+        mode.cli_name(),
+        mode.cli_name(),
+        mode.cli_name(),
+        mode.cli_name()
     );
 }
 
@@ -427,7 +425,7 @@ fn home_directory() -> Result<PathBuf> {
 ///
 /// Agent and server modes create the same TOML so either role can share one file.
 /// Nothing is prompted; secrets are generated and printed once when the file is new.
-async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<bool> {
+async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
         .await
         .with_context(|| format!("Failed to inspect config '{}'", config_path.display()))?
@@ -462,12 +460,12 @@ async fn prepare_config(mode: SystemdMode, config_path: &Path) -> Result<bool> {
 }
 
 /// Rejects incomplete configs before writing a unit that assumes the TOML is enough.
-async fn validate_existing_config(mode: SystemdMode, config_path: &Path) -> Result<()> {
+async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
     let config = crate::server::parse_config_file(&config_path.to_string_lossy())
         .await
         .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
     match mode {
-        SystemdMode::Agent => {
+        ServiceRole::Agent => {
             if !crate::server::standalone_agent_is_fully_configured(&config) {
                 bail!(
                     "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address so the service can start without CLI flags",
@@ -475,7 +473,7 @@ async fn validate_existing_config(mode: SystemdMode, config_path: &Path) -> Resu
                 );
             }
         }
-        SystemdMode::Server => {
+        ServiceRole::Server => {
             crate::server::require_server_section(&config)?;
         }
     }
@@ -583,7 +581,7 @@ async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> 
 
 /// Renders a user or system unit. The agent has no CLI flags — the TOML is authoritative.
 fn render_unit(
-    mode: SystemdMode,
+    mode: ServiceRole,
     binary: &Path,
     config_path: &Path,
     system: bool,
@@ -594,18 +592,18 @@ fn render_unit(
     let app_environment = quote_unit_argument(&format!("REDOOR_APP_NAME={app_name}"));
     let (description, command) = match mode {
         // Pin --config so the unit always loads the file prepared during setup.
-        SystemdMode::Agent => (
+        ServiceRole::Agent => (
             "Redoor agent",
             format!("{binary} agent --config {config_path}"),
         ),
-        SystemdMode::Server => (
+        ServiceRole::Server => (
             "Redoor server",
             format!("{binary} server --config {config_path}"),
         ),
     };
     // System server drops privileges; system agent stays root for host management.
     let service_identity = match (system, mode) {
-        (true, SystemdMode::Server) => "User=redoor\nGroup=redoor\n",
+        (true, ServiceRole::Server) => "User=redoor\nGroup=redoor\n",
         _ => "",
     };
     let wanted_by = if system {
@@ -647,7 +645,7 @@ fn quote_unit_argument(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SystemdMode, quote_unit_argument, render_unit, resolve_unit_name, validate_unit_load_state,
+        ServiceRole, quote_unit_argument, render_unit, resolve_unit_name, validate_unit_load_state,
     };
     use std::path::Path;
 
@@ -656,31 +654,31 @@ mod tests {
     fn resolve_unit_name_defaults_and_normalizes() {
         let app_name = crate::app_name::app_name().unwrap();
         assert_eq!(
-            resolve_unit_name(SystemdMode::Agent, None).unwrap(),
+            resolve_unit_name(ServiceRole::Agent, None).unwrap(),
             format!("{app_name}-agent.service"),
             "the default agent unit should use the effective application namespace"
         );
         assert_eq!(
-            resolve_unit_name(SystemdMode::Server, None).unwrap(),
+            resolve_unit_name(ServiceRole::Server, None).unwrap(),
             format!("{app_name}-server.service"),
             "the default server unit should use the effective application namespace"
         );
         assert_eq!(
-            resolve_unit_name(SystemdMode::Agent, Some("edge-agent".into())).unwrap(),
+            resolve_unit_name(ServiceRole::Agent, Some("edge-agent".into())).unwrap(),
             "edge-agent.service",
             "missing .service should be appended"
         );
         assert_eq!(
-            resolve_unit_name(SystemdMode::Server, Some("redoor-api.service".into())).unwrap(),
+            resolve_unit_name(ServiceRole::Server, Some("redoor-api.service".into())).unwrap(),
             "redoor-api.service",
             "explicit .service should be kept"
         );
         assert!(
-            resolve_unit_name(SystemdMode::Agent, Some("../escape".into())).is_err(),
+            resolve_unit_name(ServiceRole::Agent, Some("../escape".into())).is_err(),
             "path components must be rejected"
         );
         assert!(
-            resolve_unit_name(SystemdMode::Agent, Some("  ".into())).is_err(),
+            resolve_unit_name(ServiceRole::Agent, Some("  ".into())).is_err(),
             "blank names must be rejected"
         );
     }
@@ -690,7 +688,7 @@ mod tests {
     fn missing_unit_load_state_has_actionable_error() {
         let error = validate_unit_load_state(
             "custom-agent.service",
-            SystemdMode::Agent,
+            ServiceRole::Agent,
             true,
             "not-found",
         )
@@ -702,13 +700,13 @@ mod tests {
             "the error must identify the missing unit and user scope: {error}"
         );
         assert!(
-            error.contains("redoor systemd setup --mode agent"),
+            error.contains("redoor agent systemd setup"),
             "the error must explain how to install the expected unit: {error}"
         );
         assert!(
             validate_unit_load_state(
                 "redoor-server.service",
-                SystemdMode::Server,
+                ServiceRole::Server,
                 false,
                 "loaded"
             )
@@ -721,7 +719,7 @@ mod tests {
     #[test]
     fn agent_unit_pins_config_without_other_cli_flags() {
         let unit = render_unit(
-            SystemdMode::Agent,
+            ServiceRole::Agent,
             Path::new("/home/test user/bin/redoor"),
             Path::new("/home/test user/.config/redoor/config.toml"),
             false,
@@ -760,7 +758,7 @@ mod tests {
     #[test]
     fn server_unit_uses_default_config_path() {
         let unit = render_unit(
-            SystemdMode::Server,
+            ServiceRole::Server,
             Path::new("/home/test/bin/redoor"),
             Path::new("/home/test/.config/redoor/config.toml"),
             false,
@@ -787,7 +785,7 @@ mod tests {
     #[test]
     fn system_server_unit_runs_as_redoor() {
         let unit = render_unit(
-            SystemdMode::Server,
+            ServiceRole::Server,
             Path::new("/usr/local/bin/redoor"),
             Path::new("/etc/redoor/config.toml"),
             true,
@@ -814,7 +812,7 @@ mod tests {
     #[test]
     fn system_agent_unit_runs_as_root_with_config_path() {
         let unit = render_unit(
-            SystemdMode::Agent,
+            ServiceRole::Agent,
             Path::new("/usr/local/bin/redoor"),
             Path::new("/etc/redoor/config.toml"),
             true,

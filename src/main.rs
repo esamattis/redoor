@@ -1,6 +1,7 @@
 mod agent;
 mod app_name;
 mod binaries;
+mod launchd;
 mod process_logs;
 mod server;
 mod ssh;
@@ -31,13 +32,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the server or print its configured file log.
+    /// Run the server or use its role-specific utilities.
     Server(ServerArgs),
-    /// Run the agent or print its configured file log.
+    /// Run the agent or use its role-specific utilities.
     Agent(AgentCommandArgs),
-    /// Install and manage Redoor systemd services.
-    Systemd(systemd::SystemdArgs),
     Ssh(ssh::SshArgs),
+}
+
+/// Process role selected by the parent CLI command for service management.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ServiceRole {
+    /// Manage a standalone Redoor agent process.
+    Agent,
+    /// Manage the Redoor HTTP and WebSocket server process.
+    Server,
+}
+
+impl ServiceRole {
+    /// Returns the stable CLI and generated-service suffix for this role.
+    pub(crate) fn cli_name(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Server => "server",
+        }
+    }
 }
 
 /// Preserves flat server startup flags while exposing `server logs`.
@@ -56,6 +74,10 @@ struct ServerArgs {
 enum ServerCommand {
     /// Print the configured server file log.
     Logs(ServerLogsArgs),
+    /// Install or manage the server as a systemd service.
+    Systemd(systemd::SystemdArgs),
+    /// Install or manage the server as a macOS LaunchAgent.
+    Launchd(launchd::LaunchdArgs),
 }
 
 /// Options used to locate and limit server file logs.
@@ -88,6 +110,10 @@ struct AgentCommandArgs {
 enum AgentCommand {
     /// Print the configured standalone-agent file log.
     Logs(AgentLogsArgs),
+    /// Install or manage the agent as a systemd service.
+    Systemd(systemd::SystemdArgs),
+    /// Install or manage the agent as a macOS LaunchAgent.
+    Launchd(launchd::LaunchdArgs),
 }
 
 /// Options used to locate and limit standalone-agent file logs.
@@ -119,6 +145,12 @@ async fn main() {
                 ))
                 .await;
             }
+            Some(ServerCommand::Systemd(systemd)) => {
+                run_utility(systemd::run(systemd, ServiceRole::Server)).await;
+            }
+            Some(ServerCommand::Launchd(launchd)) => {
+                run_utility(launchd::run(launchd, ServiceRole::Server)).await;
+            }
             None => run_server(args.run).await,
         },
         Commands::Agent(args) => match args.command {
@@ -131,6 +163,12 @@ async fn main() {
                 ))
                 .await;
             }
+            Some(AgentCommand::Systemd(systemd)) => {
+                run_utility(systemd::run(systemd, ServiceRole::Agent)).await;
+            }
+            Some(AgentCommand::Launchd(launchd)) => {
+                run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
+            }
             None => {
                 if let Err(error) = agent::run(args.run).await {
                     eprintln!("{error}");
@@ -138,12 +176,6 @@ async fn main() {
                 }
             }
         },
-        Commands::Systemd(args) => {
-            if let Err(error) = systemd::run(args).await {
-                eprintln!("{error:#}");
-                std::process::exit(1);
-            }
-        }
         Commands::Ssh(args) => {
             if let Err(error) = logging::init(None).await {
                 eprintln!("{error:#}");
@@ -380,4 +412,33 @@ async fn run_server(args: server::CoordinatorArgs) {
     // Only reached after restart (or future shutdown paths). Replace this process
     // with the same binary and arguments so startup re-reads config.toml.
     redoor::process::reexec_current_process();
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    /// Keeps service-manager commands nested under their selected process role.
+    #[test]
+    fn parses_role_scoped_service_commands() {
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "systemd", "status"]).is_ok(),
+            "agent systemd status should parse without a redundant mode flag"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "server", "launchd", "setup"]).is_ok(),
+            "server launchd setup should parse under the server role"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "systemd", "status", "--mode", "agent"]).is_err(),
+            "the former top-level systemd command must no longer be accepted"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "launchd", "status", "--mode", "agent",])
+                .is_err(),
+            "role-scoped service commands must reject the removed mode flag"
+        );
+    }
 }

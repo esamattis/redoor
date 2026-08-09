@@ -23,7 +23,7 @@ agent_token = "replace-me"
 # cookie_secure = false       # set true behind HTTPS
 # log = "log/server.log"      # also --log
 
-# Standalone agent process (redoor agent / systemd --mode agent)
+# Standalone agent process (`redoor agent` or `redoor agent systemd|launchd`) 
 [agent]
 ws_address = "ws://127.0.0.1:3000/ws"   # also positional CLI / REDOOR_AGENT_WS
 name = "local"                          # also --name / REDOOR_AGENT_NAME
@@ -107,22 +107,43 @@ Install and start a service. Non-root installs a lingering user unit; root insta
 
 ```bash
 # as your user (user systemd + linger)
-redoor setup-systemd --mode server
-redoor setup-systemd --mode agent
+redoor server systemd setup
+redoor agent systemd setup
 
 # as root (system systemd)
-sudo redoor setup-systemd --mode server
-sudo redoor setup-systemd --mode agent
+sudo redoor server systemd setup
+sudo redoor agent systemd setup
+
+redoor server systemd status
+redoor server systemd logs       # print the latest entries and exit
+redoor server systemd logs -f    # continue following new entries
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--mode server` | Non-root: `~/.config/systemd/user/redoor-server.service`. Root: `/etc/systemd/system/redoor-server.service` running as the `redoor` system user |
-| `--mode agent` | Non-root: `~/.config/systemd/user/redoor-agent.service`. Root: `/etc/systemd/system/redoor-agent.service` running as root |
-| `--unit-name NAME` | Override the unit file name (appends `.service` if missing). Use to install multiple agents/servers on one host |
+The parent `server` or `agent` command selects the service role. `--unit-name NAME` overrides the default `<app-name>-server.service` or `<app-name>-agent.service` name (a missing `.service` suffix is appended), allowing multiple services to coexist.
 
 Creates the conventional shared config when missing (`~/.config/<app-name>/config.toml` non-root, `/etc/<app-name>/config.toml` as root). Agent and server modes write the same starter file (generated `agent_token`, `[server]`, `[agent]`, and a managed local `[[agents]]` entry). Log paths default to `~/.local/share/<app-name>/{server,agent}.log` for user installs and `/var/log/<app-name>/{server,agent}.log` as root. Generated units persist `REDOOR_APP_NAME` and default to `<app-name>-server.service` or `<app-name>-agent.service`. Secrets are printed once; nothing is prompted. The unit is always enabled on boot but **never** started by setup — start it yourself after reviewing the config (agent settings usually need changes).
 
 Non-root enables linger via `loginctl`. Root creates the fixed `redoor` service user when installing the server, chowns `/etc/<app-name>` and pre-creates `/var/log/<app-name>` for that user.
 
 The agent unit runs `redoor agent --config <path>` with no other CLI flags or environment variables — configure everything in the TOML (`agent_token` + `[agent]`). Setup refuses to install if the existing file is incomplete for standalone agent startup.
+
+## launchd (macOS)
+
+Install and manage a per-user LaunchAgent. Root and system LaunchDaemons are intentionally unsupported.
+
+```bash
+redoor server launchd setup
+redoor agent launchd setup
+
+# Setup enables login startup but does not start the service immediately.
+redoor server launchd start
+redoor server launchd status
+redoor server launchd logs       # print the latest entries and exit
+redoor server launchd logs -f    # continue following new entries
+redoor server launchd stop
+redoor server launchd restart
+```
+
+The parent `server` or `agent` command selects the service role and installs `~/Library/LaunchAgents/<app-name>-server.plist` or `~/Library/LaunchAgents/<app-name>-agent.plist`. `--service-name NAME` overrides the launchd label and plist basename so multiple services can coexist.
+
+Setup creates the conventional shared config at `~/.config/<app-name>/config.toml` when missing, persists `REDOOR_APP_NAME` in the plist, and enables the LaunchAgent for future user logins. The service always runs as the invoking user. Use `redoor server|agent launchd enable` to clear a disabled launchd override without starting the service.
