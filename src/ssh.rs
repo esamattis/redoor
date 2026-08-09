@@ -1,7 +1,31 @@
-//! `redoor ssh` subcommand: starts a redoor agent on a remote host through
-//! ssh and tunnels the local redoor server port to the remote host so the
-//! agent can connect back to the server running on the machine that issued
-//! the ssh command.
+//! Starts redoor agents on remote hosts and connects them back to the local
+//! server through SSH reverse forwarding.
+//!
+//! # How SSH agent spawning works
+//!
+//! Preparation and spawning are separate so TOML-managed agents can restart
+//! cheaply. Preparation probes the remote operating system and architecture,
+//! installs a compatible redoor binary when the operator did not provide one,
+//! and stores the settings needed for subsequent launches.
+//!
+//! Each launch starts `ssh` with a reverse forward shaped like
+//! `remote_port:localhost:server_port`. SSH listens on `remote_port` on the
+//! remote host and carries traffic back to the redoor server's local port. The
+//! remote agent is given `ws://localhost:<remote_port>/ws`, so what looks like
+//! a local WebSocket connection to the agent actually reaches the server
+//! through that tunnel.
+//!
+//! The agent token is not included in either process's command-line arguments.
+//! The local process writes it as the first line of SSH stdin; a small remote
+//! shell preamble reads it, exports it as `REDOOR_AGENT_TOKEN`, and `exec`s the
+//! agent so it inherits the secret only through its environment. Remaining
+//! stdin is then forwarded normally.
+//!
+//! Standalone `redoor ssh` uses the requested redoor port on both sides of the
+//! tunnel. TOML-managed agents instead select a random dynamic remote port for
+//! every watchdog spawn attempt. `ExitOnForwardFailure=yes` makes SSH exit when
+//! that port is already occupied, allowing the watchdog to retry with a new
+//! random port while reusing the prepared host and binary.
 
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -628,6 +652,9 @@ pub(crate) struct SshRunOptions {
     /// for the long-running agent session which is mostly idle and would just
     /// burn CPU on compression.
     pub(crate) compressed: bool,
+    /// When set, the value is sent through ssh stdin and exported by a remote
+    /// shell preamble so secrets never appear in either process's argv.
+    pub(crate) secret_env: Option<(String, String)>,
     /// When set, the ssh process's stdout/stderr is redirected (append
     /// mode) to this local file path. Used only for the long-running
     /// agent run so sniff/upload diagnostics still go to the terminal.
@@ -648,6 +675,17 @@ impl SshRunOptions {
     /// Enables ssh compression (`-C`) for this connection.
     pub(crate) fn compressed(mut self) -> Self {
         self.compressed = true;
+        self
+    }
+
+    /// Sends one secret environment value through stdin instead of exposing it
+    /// in the local ssh or remote command process lists.
+    pub(crate) fn with_secret_env(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.secret_env = Some((name.into(), value.into()));
         self
     }
 
@@ -716,7 +754,20 @@ impl SshHost {
         // Note: this only kills the local ssh client; the remote
         // `redoor agent` would need a separate shutdown signal.
         ssh.kill_on_drop(true);
-        ssh.spawn()
+        let mut child = ssh.spawn()?;
+        if let Some((_, value)) = &options.secret_env {
+            let mut child_stdin = child
+                .stdin
+                .take()
+                .expect("secret environment requires piped ssh stdin");
+            child_stdin.write_all(value.as_bytes()).await?;
+            child_stdin.write_all(b"\n").await?;
+            tokio::spawn(async move {
+                let mut stdin = tokio::io::stdin();
+                let _ = tokio::io::copy(&mut stdin, &mut child_stdin).await;
+            });
+        }
+        Ok(child)
     }
 
     /// Spawns `ssh` to execute `command` with `args` on the remote host,
@@ -921,12 +972,24 @@ async fn build_ssh_command(
     }
 
     ssh.arg(&host.target);
-    ssh.arg(command);
+    if let Some((name, _)) = &options.secret_env {
+        // Keep the secret out of both the local ssh argv and the remote agent argv,
+        // since either can be exposed by process listings. `spawn` writes the value
+        // as the first stdin line; this preamble reads and exports it, then `exec`
+        // replaces the shell so the agent inherits the environment without a wrapper.
+        ssh.arg(format!("read -r {name}; export {name}; exec {command}"));
+    } else {
+        ssh.arg(command);
+    }
     for arg in args {
         ssh.arg(arg);
     }
 
-    ssh.stdin(Stdio::inherit());
+    if options.secret_env.is_some() {
+        ssh.stdin(Stdio::piped());
+    } else {
+        ssh.stdin(Stdio::inherit());
+    }
 
     if let Some(log_path) = &options.log_file {
         // Open in append mode via the async tokio API, then convert to a
@@ -1009,86 +1072,78 @@ pub(crate) struct PreparedSshAgent {
     /// name from the freshly spawned agent.
     agent_name: String,
     remote_bin: String,
-    remote_argv: Vec<String>,
+    dir: Option<String>,
+    local_port: u16,
     options: SshRunOptions,
+    /// Remembers the previous managed tunnel port so a retry after an occupied
+    /// port cannot immediately choose the same unusable endpoint again.
+    previous_random_port: std::sync::Arc<std::sync::atomic::AtomicU16>,
 }
 
 impl PreparedSshAgent {
     /// Spawns the long-running ssh child for this agent. The returned
     /// `Child` is owned by the caller (the supervisor) so it can wait
     /// for normal exit or kill it when the WebSocket goes stale.
-    pub(crate) async fn spawn(&self) -> Result<tokio::process::Child, std::io::Error> {
-        // Local `kill_on_drop` only terminates the ssh client; a previous
-        // remote agent can survive as PPID 1 and immediately reconnect via the
-        // new `-R` tunnel under the same agent name. Clear those first.
-        kill_stale_remote_agents(&self.host, &self.agent_name).await?;
-
-        // Re-borrow the argv as a slice of &str for the spawn helper.
-        let argv_refs: Vec<&str> = self.remote_argv.iter().map(String::as_str).collect();
+    pub(crate) async fn spawn(
+        &self,
+        remote_port: u16,
+    ) -> Result<tokio::process::Child, std::io::Error> {
+        let (remote_argv, options) = self.launch_settings(remote_port);
+        let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
         self.host
-            .spawn(&self.remote_bin, &argv_refs, &self.options)
+            .spawn(&self.remote_bin, &argv_refs, &options)
             .await
     }
+
+    /// Starts a TOML-managed agent through a fresh random remote port. SSH's
+    /// `ExitOnForwardFailure` makes an occupied port terminate this child; the
+    /// watchdog then invokes this method again and receives a different port.
+    pub(crate) async fn spawn_managed(&self) -> Result<tokio::process::Child, std::io::Error> {
+        let previous = self
+            .previous_random_port
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let remote_port = random_remote_port(previous);
+        self.previous_random_port
+            .store(remote_port, std::sync::atomic::Ordering::Relaxed);
+        log!(
+            Level::Info,
+            "Starting managed SSH tunnel: remote_port={}, local_port={}",
+            remote_port,
+            self.local_port
+        );
+        self.spawn(remote_port).await
+    }
+
+    /// Builds the matching remote agent argv and reverse-forward options so the
+    /// agent always connects to the random port SSH actually requested.
+    fn launch_settings(&self, remote_port: u16) -> (Vec<String>, SshRunOptions) {
+        let mut remote_argv = vec![
+            "agent".to_string(),
+            format!("ws://localhost:{remote_port}/ws"),
+            "--name".to_string(),
+            self.agent_name.clone(),
+        ];
+        if let Some(dir) = &self.dir {
+            remote_argv.push("-d".to_string());
+            remote_argv.push(dir.clone());
+        }
+        let options = self
+            .options
+            .clone()
+            .with_reverse_forward(remote_port, self.local_port);
+        (remote_argv, options)
+    }
 }
 
-/// Best-effort kill of leftover remote `redoor agent --name <agent_name>`
-/// processes. Orphans from a dead ssh session keep trying `localhost:<port>`
-/// and will race the newly tunneled agent for registration.
-async fn kill_stale_remote_agents(host: &SshHost, agent_name: &str) -> Result<(), std::io::Error> {
-    // Pattern matches the argv shape from prepare_ssh_agent
-    // (`.../redoor agent ... --name <name> ...`). Regex-escape the name, then
-    // single-quote the whole pattern for the remote shell so metacharacters
-    // cannot break out of the pkill argument.
-    let pattern = format!(
-        "redoor agent .*--name {}( |$)",
-        regex_escape_basic(agent_name)
-    );
-    let shell_command = format!(
-        "pkill -f -- {} 2>/dev/null || true",
-        shell_single_quote(&pattern)
-    );
-    let options = SshRunOptions::default().compressed();
-    log!(
-        Level::Info,
-        "Clearing stale remote agents before spawn: name={}",
-        agent_name
-    );
-    // Capture stdout so a chatty remote shell profile cannot pollute logs; ignore
-    // status via the remote `|| true` so missing pkill/no matches are fine.
-    let _ = host.run_captured(&shell_command, &options).await?;
-    Ok(())
-}
-
-/// Escapes basic-regex metacharacters so an agent name is matched literally by
-/// `pkill -f`.
-fn regex_escape_basic(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
+/// Chooses an IANA dynamic/private port and excludes the immediately previous
+/// choice so a managed watchdog retry always attempts a new tunnel endpoint.
+fn random_remote_port(previous: u16) -> u16 {
+    loop {
+        let port = fastrand::u16(49152..=65535);
+        if port != previous {
+            return port;
         }
     }
-    out
-}
-
-/// Wraps `value` in single quotes for safe inclusion in a remote shell command.
-/// Internal single quotes are escaped with the usual `'\''` sequence.
-fn shell_single_quote(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 /// One-time setup for an ssh-backed agent: resolves the remote binary
@@ -1107,8 +1162,6 @@ pub(crate) async fn prepare_ssh_agent(
         .name
         .clone()
         .unwrap_or_else(|| default_agent_name(&config.target));
-    let ws_url = format!("ws://localhost:{}/ws", redoor_port);
-
     let host = SshHost::new(config.target.clone())
         .username(config.username.clone())
         .ssh_port(config.ssh_port);
@@ -1129,35 +1182,17 @@ pub(crate) async fn prepare_ssh_agent(
         remote_bin
     };
 
-    // The reverse forward is a run-time option because it describes the
-    // tunnel, not the remote command itself. ExitOnForwardFailure is always
-    // enabled so the agent fails fast if its tunnel cannot be established.
-    let mut options = SshRunOptions::default().with_reverse_forward(redoor_port, redoor_port);
+    // The reverse forward is added for each spawn because TOML-managed agents
+    // choose a fresh remote port on every watchdog attempt.
+    let mut options = SshRunOptions::default().with_secret_env("REDOOR_AGENT_TOKEN", agent_token);
     if let Some(log) = &config.log {
         options = options.with_log_file(log);
     }
 
-    // ssh joins all trailing args after the command into one remote argv, so
-    // the agent name must be appended after the fixed flags. The optional
-    // `-d/--dir` is appended last so absence publishes the remote launch cwd.
-    let mut remote_argv: Vec<String> = vec![
-        "agent".to_string(),
-        ws_url.clone(),
-        "--name".to_string(),
-        agent_name.clone(),
-        "--token".to_string(),
-        agent_token.to_string(),
-    ];
-    if let Some(dir) = &config.dir {
-        remote_argv.push("-d".to_string());
-        remote_argv.push(dir.clone());
-    }
-
     log!(
         Level::Info,
-        "Starting redoor agent on remote host: name={}, ws_url={}, remote_bin={}, dir={:?}, log={:?}",
+        "Prepared redoor agent on remote host: name={}, remote_bin={}, dir={:?}, log={:?}",
         agent_name,
-        ws_url,
         remote_bin,
         config.dir,
         config.log,
@@ -1167,8 +1202,10 @@ pub(crate) async fn prepare_ssh_agent(
         host,
         agent_name,
         remote_bin,
-        remote_argv,
+        dir: config.dir.clone(),
+        local_port: redoor_port,
         options,
+        previous_random_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
     })
 }
 
@@ -1187,8 +1224,7 @@ pub(crate) async fn start_ssh_agent(
     agent_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prepared = prepare_ssh_agent(&config, redoor_port, agent_token).await?;
-    // Use spawn so stale remote agents are cleared the same way as the watchdog path.
-    let mut child = prepared.spawn().await?;
+    let mut child = prepared.spawn(redoor_port).await?;
     let status = child.wait().await?;
     if !status.success() {
         return Err(format!(
@@ -1202,8 +1238,51 @@ pub(crate) async fn start_ssh_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::{debug_binary_candidate, debug_remote_bin, file_sha1sum, remote_upload_tmp_path};
+    use super::{
+        debug_binary_candidate, debug_remote_bin, file_sha1sum, random_remote_port,
+        remote_upload_tmp_path,
+    };
     use std::path::{Path, PathBuf};
+
+    /// Verifies the secret value is delivered through stdin and never embedded
+    /// in the local ssh process arguments or remote command arguments.
+    #[tokio::test]
+    async fn secret_environment_value_is_absent_from_ssh_command() {
+        let host = super::SshHost::new("example.test".to_string());
+        let options = super::SshRunOptions::default()
+            .with_secret_env("REDOOR_AGENT_TOKEN", "top-secret-token");
+        let command = super::build_ssh_command(
+            &host,
+            "/opt/redoor",
+            &["agent", "ws://localhost:50000/ws"],
+            &options,
+        )
+        .await
+        .unwrap();
+        let debug_command = format!("{command:?}");
+
+        // Process listings may expose argv, so the token value must not be there.
+        assert!(!debug_command.contains("top-secret-token"));
+        // The fixed environment name is safe and proves the remote preamble exports it.
+        assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
+        // The remote agent command must still be present after the environment preamble.
+        assert!(debug_command.contains("/opt/redoor"));
+    }
+
+    /// Verifies managed tunnel ports stay in the dynamic/private range and a
+    /// retry cannot repeat the port that just failed to bind.
+    #[test]
+    fn random_remote_port_uses_new_dynamic_port() {
+        let first = random_remote_port(0);
+        let second = random_remote_port(first);
+
+        // Dynamic ports avoid commonly configured services on the remote host.
+        assert!((49152..=65535).contains(&first));
+        // A failed forward must retry with a genuinely new remote endpoint.
+        assert_ne!(second, first);
+        // Every retry must remain inside the dynamic/private range.
+        assert!((49152..=65535).contains(&second));
+    }
 
     /// Verifies local SHA-1 matches the well-known digest for a fixed payload so
     /// remote `sha1sum` comparisons cannot drift from a buggy hasher.
@@ -1229,22 +1308,6 @@ mod tests {
             remote_upload_tmp_path("~/.local/redoor/debug/redoor", "1-2"),
             "~/.local/redoor/debug/redoor.tmp.1-2"
         );
-    }
-
-    /// Verifies remote shell quoting keeps apostrophes inside the single-quoted
-    /// pattern so pkill cannot see an unescaped break-out.
-    #[test]
-    fn shell_single_quote_escapes_apostrophes() {
-        assert_eq!(super::shell_single_quote("devbox"), "'devbox'");
-        assert_eq!(super::shell_single_quote("a'b"), "'a'\\''b'");
-    }
-
-    /// Verifies agent names with regex metacharacters stay literal in the
-    /// pkill pattern and cannot match unrelated processes.
-    #[test]
-    fn regex_escape_basic_escapes_metacharacters() {
-        assert_eq!(super::regex_escape_basic("devbox"), "devbox");
-        assert_eq!(super::regex_escape_basic("a.b+c"), r"a\.b\+c");
     }
 
     /// Verifies debug uploads target a dedicated install path rather than the

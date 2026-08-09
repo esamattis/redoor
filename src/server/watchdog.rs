@@ -212,5 +212,7 @@ async fn ssh_spawn_once(
             }
         }
     };
-    prepared.spawn().await.map_err(|e| e.to_string())
+    // ExitOnForwardFailure makes an occupied random remote port terminate the
+    // child; the supervisor's next cycle calls this again with a new port.
+    prepared.spawn_managed().await.map_err(|e| e.to_string())
 }
