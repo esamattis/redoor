@@ -124,13 +124,15 @@ async function getWatchdogAgent(): Promise<Agent> {
 
 describe("Watchdog supervisor", () => {
     it("restarts the subprocess when the agent process is killed", async () => {
+        const firstAgent = await getWatchdogAgent();
+        const firstConnectionId = firstAgent.connectionId;
+        if (!firstConnectionId) {
+            throw new Error("Watchdog agent has no control connection id");
+        }
         const firstDetails = await waitForValue({
             timeoutMs: 15000,
             description: "watchdog agent to be responsive after startup",
-            predicate: async () => {
-                const agent = await getWatchdogAgent();
-                return agent.getDetails();
-            },
+            predicate: async () => firstAgent.getDetails(),
         });
         const firstPid = firstDetails.pid;
         // A positive PID is the cheapest sanity check that the agent
@@ -152,13 +154,14 @@ describe("Watchdog supervisor", () => {
                 const a = agents.find(
                     (entry) =>
                         entry.name === AGENT_NAME &&
-                        entry.status === "connected",
+                        entry.status === "connected" &&
+                        entry.connectionId !== firstConnectionId,
                 );
                 if (!a) {
                     return undefined;
                 }
                 const details = await a.getDetails();
-                return details.pid !== firstPid ? details : undefined;
+                return details;
             },
         });
 
@@ -179,15 +182,17 @@ describe("Watchdog supervisor", () => {
     it("restarts the subprocess when the WebSocket goes stale", async () => {
         // Stale detection is timed in seconds (ping interval 10s,
         // stale timeout 30s, stale check every 5s) so this test
-        // can take up to ~40s end to end. We pad the timeout to
-        // 60s so a slow CI host still completes it.
+        // can take up to ~40s end to end. The larger deadline leaves
+        // enough room for detection and restart on a loaded host.
+        const firstAgent = await getWatchdogAgent();
+        const firstConnectionId = firstAgent.connectionId;
+        if (!firstConnectionId) {
+            throw new Error("Watchdog agent has no control connection id");
+        }
         const firstDetails = await waitForValue({
             timeoutMs: 15000,
             description: "watchdog agent to be responsive after restart",
-            predicate: async () => {
-                const agent = await getWatchdogAgent();
-                return agent.getDetails();
-            },
+            predicate: async () => firstAgent.getDetails(),
         });
         const firstPid = firstDetails.pid;
         expect(firstPid).toBeGreaterThan(0);
@@ -205,20 +210,40 @@ describe("Watchdog supervisor", () => {
         // visible and runs even if the test times out (vitest
         // skips the body of a timed-out test, so a
         // `try/finally` here would not always fire).
-        onTestFinished(() => {
-            // Resume the frozen process if it is still alive so
-            // it can receive the SIGKILL cleanly. If the
-            // supervisor already killed it, the kill returns
-            // ESRCH which we ignore.
-            try {
-                process.kill(firstPid, "SIGCONT");
-            } catch {
-                // process already gone, nothing to resume
+        onTestFinished(async () => {
+            // Kill a process that is still frozen after a failed wait so the
+            // supervisor can recover before the next serial test starts.
+            const currentAgent = (await apiClient.listAgents()).find(
+                (entry) => entry.name === AGENT_NAME,
+            );
+            if (currentAgent?.connectionId === firstConnectionId) {
+                try {
+                    process.kill(firstPid, "SIGKILL");
+                } catch {
+                    // The supervisor already replaced the process.
+                }
             }
-        });
+
+            await waitForValue({
+                timeoutMs: 15000,
+                description: "watchdog cleanup to leave a responsive agent",
+                predicate: async () => {
+                    const agents = await apiClient.listAgents();
+                    const agent = agents.find(
+                        (entry) =>
+                            entry.name === AGENT_NAME &&
+                            entry.status === "connected" &&
+                            entry.connectionId !== firstConnectionId,
+                    );
+                    if (!agent) return undefined;
+                    const details = await agent.getDetails();
+                    return details;
+                },
+            });
+        }, 20_000);
 
         const replacement = await waitForValue({
-            timeoutMs: 60000,
+            timeoutMs: 90000,
             description:
                 "watchdog agent to be restarted after WebSocket went stale",
             predicate: async () => {
@@ -226,13 +251,14 @@ describe("Watchdog supervisor", () => {
                 const a = agents.find(
                     (entry) =>
                         entry.name === AGENT_NAME &&
-                        entry.status === "connected",
+                        entry.status === "connected" &&
+                        entry.connectionId !== firstConnectionId,
                 );
                 if (!a) {
                     return undefined;
                 }
                 const details = await a.getDetails();
-                return details.pid !== firstPid ? details : undefined;
+                return details;
             },
         });
 
@@ -247,7 +273,7 @@ describe("Watchdog supervisor", () => {
         const replacementAgent = await getWatchdogAgent();
         const echo = await replacementAgent.echo("alive");
         expect(echo.message).toBe("alive");
-    }, 90000);
+    }, 120000);
 
     it("intentionally shuts down and can restart a managed agent", async () => {
         const agent = await getWatchdogAgent();

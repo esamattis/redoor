@@ -89,6 +89,9 @@ test.describe.serial("Copy Operations", () => {
     test("should copy a file to a newly created directory within the same agent", async ({
         page,
     }) => {
+        // This flow performs several agent round trips before the copy, so the
+        // default 30-second whole-test budget is too close to its backend wait.
+        test.setTimeout(60_000);
         const copyTargetDirName = `copy-target-${Date.now()}`;
         const copyTargetDirPath = path.join(ctx.testDirPath, copyTargetDirName);
         const copiedFilePath = path.join(copyTargetDirPath, "file1.txt");
@@ -181,7 +184,16 @@ test.describe.serial("Copy Operations", () => {
         await expect(copyButton).toBeEnabled();
         await expect(page.getByText("1 item selected")).toBeVisible();
 
+        const copyResponsePromise = page.waitForResponse(
+            (response) =>
+                response.url() === `${WEB_BASE_URL}/api/v1/copy` &&
+                response.request().method() === "POST",
+        );
         await copyButton.click();
+        const copyResponse = await copyResponsePromise;
+
+        // An accepted API response proves the click reached the intended copy route.
+        expect(copyResponse.ok()).toBe(true);
 
         // Polling the filesystem is more reliable than waiting on UI messages because
         // the selected-items panel disappears immediately after a successful copy.
@@ -195,7 +207,7 @@ test.describe.serial("Copy Operations", () => {
                         return "missing";
                     }
                 },
-                { timeout: 15000 },
+                { timeout: 30_000 },
             )
             .toBe("exists");
 

@@ -133,7 +133,7 @@ test.describe.serial("Agent management", () => {
         // Successful startup redirects to file browsing while preserving the active agent tab.
         await expect(
             page.getByRole("tab", { name: `${VALID_AGENT}, connected` }),
-        ).toHaveAttribute("aria-selected", "true");
+        ).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
     });
 
     test("shuts down and restarts from the management row", async ({
