@@ -52,8 +52,7 @@ agent_token = "replace-me"
 
 ## `redoor server`
 [server]
-# Optional browser login. On Linux, omit both to use PAM
-# (process owner's system username/password).
+# Web UI ogin. On Linux, omit both to use PAM (system user).
 # username = "admin"
 # password = "long-private-password"
 
