@@ -79,5 +79,9 @@ export default defineConfig({
         command: "../scripts/test/playwright-dev",
         url: `http://localhost:${testPorts.playwright}/`,
         reuseExistingServer: false,
+        env: {
+            // The server and its agents inherit this to avoid flashing the developer's desktop.
+            REDOOR_AGENT_NOTIFICATION: "off",
+        },
     },
 });

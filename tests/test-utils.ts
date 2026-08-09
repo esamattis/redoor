@@ -218,6 +218,8 @@ export class ProcessManager {
             env: {
                 ...process.env,
                 RUST_BACKTRACE: "1",
+                // Integration agents must not flash desktop notifications during development.
+                REDOOR_AGENT_NOTIFICATION: "off",
                 ...env,
             },
         });
