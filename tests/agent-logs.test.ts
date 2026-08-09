@@ -16,6 +16,7 @@ import {
     TempFileManager,
     startServerAndAgent,
     waitForValue,
+    webSocketDataToString,
 } from "./test-utils";
 
 const processManager = new ProcessManager();
@@ -46,7 +47,7 @@ afterAll(() => {
 
 /** Parses one text WebSocket payload into the generated shared event shape. */
 function parseEvent(data: WebSocket.RawData): LogEvent {
-    const event: LogEvent = JSON.parse(data.toString());
+    const event: LogEvent = JSON.parse(webSocketDataToString(data));
     return event;
 }
 

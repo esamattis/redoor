@@ -22,6 +22,7 @@ import {
     TempFileManager,
     startServerAndAgent,
     waitForValue,
+    webSocketDataToString,
 } from "./test-utils";
 
 const AGENT_NAME = "upgrade-external-agent";
@@ -44,7 +45,7 @@ async function nextJsonMessage(
             try {
                 resolve(
                     jsonControlMessageSchema.parse(
-                        JSON.parse(data.toString()),
+                        JSON.parse(webSocketDataToString(data)),
                     ),
                 );
             } catch (error) {
@@ -207,7 +208,9 @@ describe("connected external agent upgrade", () => {
         const receivedCommands: Array<Record<string, unknown>> = [];
         control.on("message", (data) => {
             receivedCommands.push(
-                jsonControlMessageSchema.parse(JSON.parse(data.toString())),
+                jsonControlMessageSchema.parse(
+                    JSON.parse(webSocketDataToString(data)),
+                ),
             );
         });
         let error: unknown;

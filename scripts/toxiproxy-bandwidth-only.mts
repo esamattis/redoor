@@ -42,12 +42,13 @@ async function requestJson<TSchema extends z.ZodType>(
     schema: TSchema,
     init?: RequestInit,
 ): Promise<z.output<TSchema>> {
+    const headers = new Headers(init?.headers);
+    if (!headers.has("content-type")) {
+        headers.set("content-type", "application/json");
+    }
     const response = await fetch(`${apiBaseUrl}${path}`, {
         ...init,
-        headers: {
-            "content-type": "application/json",
-            ...init?.headers,
-        },
+        headers,
     });
 
     if (!response.ok) {

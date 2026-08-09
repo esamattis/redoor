@@ -27,7 +27,8 @@
             {
                 "assertionStyle": "never"
             }
-        ]
+        ],
+        "typescript/no-floating-promises": "error"
     },
     "env": {
         "builtin": true

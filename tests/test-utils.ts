@@ -8,6 +8,17 @@ import { Toxiproxy } from "toxiproxy-node-client";
 import type Proxy from "toxiproxy-node-client/dist/Proxy";
 import { testPorts } from "#test-ports";
 import { isErrorCode } from "#error-utils";
+import type WebSocket from "ws";
+
+/** Normalizes every WebSocket payload representation before tests decode its contents. */
+export function webSocketDataToString(data: WebSocket.RawData): string {
+    if (Array.isArray(data)) {
+        return Buffer.concat(data).toString();
+    }
+    return data instanceof ArrayBuffer
+        ? Buffer.from(data).toString()
+        : data.toString();
+}
 
 export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
