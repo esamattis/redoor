@@ -50,6 +50,7 @@ pub(crate) enum ServiceRole {
 
 impl ServiceRole {
     /// Returns the stable CLI and generated-service suffix for this role.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn cli_name(self) -> &'static str {
         match self {
             Self::Agent => "agent",

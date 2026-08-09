@@ -169,6 +169,7 @@ pub(crate) fn require_server_section(config: &RedoorConfig) -> Result<&ServerSec
 ///
 /// The name may be omitted because agent startup uses the computer hostname.
 /// Used by systemd agent setup so the unit can omit CLI flags safely.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> bool {
     let Some(agent) = config.agent.as_ref() else {
         return false;
