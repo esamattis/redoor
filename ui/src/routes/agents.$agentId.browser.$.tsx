@@ -121,22 +121,13 @@ type PathLoadError = {
 
 /** Converts expected filesystem lookup failures into navigable in-page states. */
 function getPathLoadError(error: unknown): PathLoadError | null {
-    if (!(error instanceof Error)) {
+    if (!(error instanceof ApiError)) {
         return null;
     }
-    const errorMessage = error.message.toLowerCase();
-    if (
-        errorMessage.includes("no such file or directory") ||
-        errorMessage.includes("directory not found")
-    ) {
+    if (error.status === 404) {
         return { type: "missing", message: error.message };
     }
-    if (
-        (error instanceof ApiError && error.status === 403) ||
-        errorMessage.startsWith("failed to read directory") ||
-        errorMessage.startsWith("failed to get metadata") ||
-        errorMessage.startsWith("failed to get file metadata")
-    ) {
+    if (error.status === 403) {
         return { type: "unreadable", message: error.message };
     }
     return null;

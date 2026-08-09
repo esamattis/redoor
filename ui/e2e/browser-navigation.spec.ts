@@ -72,7 +72,7 @@ test.describe.serial("File Browser Navigation", () => {
     }) => {
         const restrictedPath = `${ctx.testDirPath}/restricted`;
         const restrictedUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(restrictedPath)}`;
-        const errorMessage = `Failed to read directory "${restrictedPath}": Permission denied (os error 13)`;
+        const errorMessage = `Access to ${restrictedPath} was rejected`;
         await page.route(
             `**/api/v1/agents/${encodeURIComponent(ctx.agentId)}/ls/**`,
             async (route) => {
@@ -86,7 +86,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         await page.goto(restrictedUrl);
 
-        // A filesystem permission failure should remain inside the browser instead of using the route error UI.
+        // The HTTP status keeps permission failures in the browser without relying on error text.
         await expect(
             page.getByRole("heading", {
                 name: "Could not read file or directory",
