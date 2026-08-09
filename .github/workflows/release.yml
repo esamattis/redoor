@@ -107,7 +107,9 @@ jobs:
 
       - name: Verify Android binary
         if: matrix.target == 'aarch64-linux-android'
-        run: file target/${{ matrix.target }}/release/redoor | grep -Eq "ELF 64-bit.*ARM aarch64.*(pie executable|executable)"
+        run: |
+          file target/${{ matrix.target }}/release/redoor | grep -Eq "ELF 64-bit.*ARM aarch64"
+          readelf --program-headers target/${{ matrix.target }}/release/redoor | grep -Fq "/system/bin/linker64"
 
       - name: Package binary
         run: tar czf ${{ matrix.archive_name }}.tar.gz -C target/${{ matrix.target }}/release redoor

@@ -95,4 +95,6 @@ jobs:
         run: cargo ndk --target arm64-v8a --platform 24 build --locked
 
       - name: Verify Android binary
-        run: file target/aarch64-linux-android/debug/redoor | grep -Eq "ELF 64-bit.*ARM aarch64.*(pie executable|executable)"
+        run: |
+          file target/aarch64-linux-android/debug/redoor | grep -Eq "ELF 64-bit.*ARM aarch64"
+          readelf --program-headers target/aarch64-linux-android/debug/redoor | grep -Fq "/system/bin/linker64"

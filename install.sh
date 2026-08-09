@@ -55,8 +55,13 @@ resolve_tag() {
     echo "$tag"
 }
 
+# Detect Android before the Linux mapping because Termux reports `uname -s` as Linux.
+is_android() {
+    [[ "${OSTYPE:-}" == linux-android* || -n "${TERMUX_VERSION:-}" || -n "${ANDROID_ROOT:-}" ]]
+}
+
 # Map the host OS/arch to the archive name produced by .github/workflows/release.yml.
-# Only the three targets built in CI are supported; everything else errors out
+# Only targets built in CI are supported; everything else errors out
 # with a clear message rather than a confusing download failure.
 archive_name_for() {
     local os arch
@@ -71,6 +76,13 @@ archive_name_for() {
             esac
             ;;
         Linux)
+            if is_android; then
+                case "$arch" in
+                    aarch64|arm64) echo "redoor-aarch64-android.tar.gz" ;;
+                    *) err "no Android release asset for arch '$arch' (only aarch64 is built)"; return 1 ;;
+                esac
+                return
+            fi
             case "$arch" in
                 x86_64)      echo "redoor-x86_64-linux.tar.gz" ;;
                 aarch64|arm64) echo "redoor-aarch64-linux.tar.gz" ;;
