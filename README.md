@@ -1,6 +1,17 @@
 # redoor
 
-Remote agent (not AI one) control over WebSockets. Run a **server** (HTTP UI + API) and one or more **agents** that connect back to it. Features: file explorer, download/upload, remote shell.
+Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent.
+
+Support Linux, macOS, and Termux on Android.
+
+```mermaid
+graph TD
+    Server[redoor server]
+    Server -->|ssh| LinuxServer[Linux server agent]
+    LinuxDesktop[Linux desktop agent] -->|ws| Server
+    macOS[macOS agent] -->|ws| Server
+    Termux[Termux on Android agent] -->|ws| Server
+```
 
 ## Install
 
@@ -26,14 +37,13 @@ redoor agent launchd setup
 
 ## Configuration
 
-Server and agent use the same TOML file. Default path: `/etc/<app-name>/config.toml` when running as root, otherwise `~/.config/<app-name>/config.toml`.
-
-Precedence for every overridable setting: **CLI > env > config file > default**.
+Server and agent use the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
 
 ```toml
 # Top-level: shared by server and agent (required)
 agent_token = "replace-me"
 
+## `redoor server`
 [server]
 # Optional browser login. On Linux, omit both to use PAM
 # (process owner's system username/password).
@@ -45,20 +55,14 @@ agent_token = "replace-me"
 # cookie_secure = false       # set true behind HTTPS
 # log = "log/server.log"      # also --log
 
-# Standalone agent process (`redoor agent` or `redoor agent systemd|launchd`)
+## `redoor agent`
 [agent]
 ws_address = "ws://127.0.0.1:3000/ws"   # also positional CLI / REDOOR_AGENT_WS
 name = "local"                          # also --name / REDOOR_AGENT_NAME
 # dir = "/home/me/projects"             # also -d/--dir / REDOOR_AGENT_DIR
 # log = "log/agent.log"                 # also --log / REDOOR_AGENT_LOG
 
-# Server-managed agents (started lazily by the server; not the [agent] table)
-[[agents]]
-local = true
-name = "local"
-dir = "/home/me/projects"
-log = "log/local.log"
-
+## Server-managed agents, that connect directly to the computer via SSH
 [[agents]]
 target = "user@example.com"
 # username = "deploy"
@@ -67,4 +71,12 @@ target = "user@example.com"
 # remote_bin = "${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor"
 # dir = "/srv/app"
 # log = "log/prod.log"
+
+[[agents]]
+# local agent, that runs on the same computer as the server
+local = true
+name = "local"
+dir = "/home/me/projects"
+log = "~/.local/share/redoor/log/local.log"
+
 ```
