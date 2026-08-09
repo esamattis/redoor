@@ -1,4 +1,4 @@
-use crate::types::{AgentId, TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, SocketId, TransferId, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -163,11 +163,11 @@ pub struct ServerInfoResponse {
     pub build_date: String,
 }
 
-/// Confirms the server accepted a config reload and is about to restart.
+/// Confirms a server or agent accepted a restart request before its connection closes.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct ReloadConfigResponse {
-    pub reloaded: bool,
+pub struct RestartResponse {
+    pub restarting: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +215,7 @@ pub enum Command {
     },
     AgentInfo,
     GetAgentDetails,
+    Restart,
 }
 
 impl Command {
@@ -256,6 +257,7 @@ impl Command {
             Self::Echo { .. } => "Echo".to_string(),
             Self::AgentInfo => "AgentInfo".to_string(),
             Self::GetAgentDetails => "GetAgentDetails".to_string(),
+            Self::Restart => "Restart".to_string(),
         }
     }
 }
@@ -381,6 +383,7 @@ pub enum CommandResult {
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(AgentDetailsResponse),
+    Restart,
     Error {
         kind: CommandErrorKind,
         message: String,
@@ -415,6 +418,8 @@ pub struct AgentInfoResponse {
     pub managed: bool,
     pub status: AgentConnectionStatus,
     pub connected_at: Option<UnixTimestampSeconds>,
+    /// Current WebSocket generation; changes whenever this agent reconnects.
+    pub connection_id: Option<SocketId>,
     pub last_seen_at: Option<UnixTimestampSeconds>,
     pub connection_issue: Option<String>,
     /// Binary identity from the latest registration; absent until first connect.
@@ -654,6 +659,7 @@ impl CommandResult {
             Self::Echo(_) => "ok Echo".to_string(),
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),
             Self::GetAgentDetails(_) => "ok GetAgentDetails".to_string(),
+            Self::Restart => "ok Restart".to_string(),
             Self::Error { kind, message } => {
                 format!("error kind={kind:?} message={message}")
             }
@@ -717,6 +723,7 @@ impl CommandHandler {
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
+            Command::Restart => CommandResult::Restart,
         }
     }
 

@@ -257,6 +257,18 @@ impl AgentRuntime {
                 tokio::spawn(async move {
                     let mut write = write;
                     while let Some(message) = control_rx.recv().await {
+                        let should_restart = matches!(
+                            &message,
+                            WsMessage::Text(text)
+                                if serde_json::from_str::<Message>(text)
+                                    .is_ok_and(|message| matches!(
+                                        message,
+                                        Message::CommandResponse {
+                                            result: redoor::commands::CommandResult::Restart,
+                                            ..
+                                        }
+                                    ))
+                        );
                         if write.send(message).await.is_err() {
                             log!(Level::Warning, "Failed to send WebSocket message");
                             let _ = writer_handle
@@ -266,6 +278,10 @@ impl AgentRuntime {
                                 })
                                 .await;
                             break;
+                        }
+                        if should_restart {
+                            // The response is on the socket before exec interrupts this connection.
+                            redoor::process::reexec_current_process();
                         }
                     }
                 });

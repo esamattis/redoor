@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { FileCode2, Globe2, HardDrive, KeyRound, Server } from "lucide-react";
 
 import type { ServerAuthMode } from "../api-client";
 import { BinaryIdentityFields } from "../components/binary-identity";
 import { CopyablePath } from "../components/copyable-code-row";
+import { RestartButton, waitForRestart } from "../components/restart-button";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -53,18 +54,44 @@ function PathField(props: {
     );
 }
 
-/** Shows server identity and runtime details without operational controls. */
+/** Shows server identity, runtime details, and its process-level restart control. */
 function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
+    const { api } = RootRoute.useRouteContext();
+    const router = useRouter();
 
     return (
         <div className="p-8">
             <div className="mx-auto max-w-3xl">
-                <div className="mb-6 flex items-center gap-3">
-                    <Server className="h-6 w-6 text-blue-400" />
-                    <h1 className="text-2xl font-bold text-slate-100">
-                        Server
-                    </h1>
+                <div className="mb-6 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                        <Server className="h-6 w-6 text-blue-400" />
+                        <h1 className="text-2xl font-bold text-slate-100">
+                            Server
+                        </h1>
+                    </div>
+                    <RestartButton
+                        target="server"
+                        description="The server will restart and re-read its configuration. Connected agents reconnect automatically. In-flight transfers and terminals are interrupted."
+                        restart={() => api.restartServer()}
+                        waitUntilReady={() => {
+                            let oldServerClosed = false;
+                            return waitForRestart(async () => {
+                                try {
+                                    await api.getServerInfo();
+                                } catch (error) {
+                                    oldServerClosed = true;
+                                    throw error;
+                                }
+                                if (!oldServerClosed) {
+                                    throw new Error(
+                                        "Old server is still shutting down",
+                                    );
+                                }
+                                await router.invalidate();
+                            }, "Server did not come back after restart");
+                        }}
+                    />
                 </div>
                 <div className="space-y-4 rounded-lg border border-slate-800 bg-[#11141b] p-6">
                     <PathField

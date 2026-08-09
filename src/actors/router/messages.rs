@@ -54,6 +54,8 @@ pub struct AgentListEntry {
     pub status: AgentConnectionStatus,
     /// Start of the current authoritative connection.
     pub connected_at: Option<UnixTimestampSeconds>,
+    /// Current socket generation so clients can distinguish fast reconnects.
+    pub connection_id: Option<SocketId>,
     /// End of the most recent authoritative connection.
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed lifecycle diagnostic.

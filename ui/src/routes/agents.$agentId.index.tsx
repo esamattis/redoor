@@ -31,6 +31,7 @@ import {
 import { BinaryIdentityFields } from "../components/binary-identity";
 import { CopyablePath } from "../components/copyable-code-row";
 import { RouteError } from "../components/route-error";
+import { RestartButton, waitForRestart } from "../components/restart-button";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 
 export const Route = createFileRoute("/agents/$agentId/")({
@@ -197,6 +198,7 @@ function AgentLifecycle(props: { agent: Agent }) {
 /** Preserves the existing connected detail cards while displaying live connection duration. */
 function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     const router = useRouter();
+    const { api } = Route.useRouteContext();
     const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const locations = useAtomValue(agentTabLocationsAtom);
@@ -237,6 +239,30 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             {props.details.name}
                         </h1>
                         <div className="flex items-center gap-2">
+                            <RestartButton
+                                target={`agent ${props.details.name}`}
+                                description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
+                                restart={() => props.agent.restart()}
+                                waitUntilReady={() =>
+                                    waitForRestart(async () => {
+                                        const restartedAgent = (
+                                            await api.listAgents()
+                                        ).find(
+                                            (agent) =>
+                                                agent.id === props.agent.id &&
+                                                agent.status === "connected" &&
+                                                agent.connectionId !==
+                                                    props.agent.connectionId,
+                                        );
+                                        if (!restartedAgent) {
+                                            throw new Error(
+                                                "Agent is still restarting",
+                                            );
+                                        }
+                                        await router.invalidate();
+                                    }, "Agent did not come back after restart")
+                                }
+                            />
                             <Link
                                 to="/agents/$agentId/logs"
                                 params={{ agentId: props.details.id }}

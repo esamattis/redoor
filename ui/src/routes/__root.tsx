@@ -21,7 +21,6 @@ import {
     LogOut,
     Home,
     Menu,
-    RefreshCw,
     ScrollText,
     Users,
 } from "lucide-react";
@@ -617,26 +616,6 @@ function TopTabStrip(props: {
                             aria-hidden="true"
                         />
                         Transfers
-                    </Link>
-                    <Link
-                        to="/config/reload"
-                        aria-current={
-                            props.pathname === "/config/reload"
-                                ? "page"
-                                : undefined
-                        }
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            props.pathname === "/config/reload"
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <RefreshCw
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        Reload config
                     </Link>
                     <button
                         type="button"

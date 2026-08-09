@@ -335,6 +335,7 @@ describe("Raw Upload API", () => {
                 managed: false,
                 status: "disconnected",
                 connected_at: null,
+                connection_id: null,
                 last_seen_at: null,
                 connection_issue: null,
                 binary: null,

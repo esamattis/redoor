@@ -510,6 +510,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             managed: info.managed,
             status: info.status.clone(),
             connected_at: info.connected_at,
+            connection_id: info.socket_id.clone(),
             last_seen_at: info.last_seen_at,
             connection_issue: info.connection_issue.clone(),
             binary: info.binary.clone(),

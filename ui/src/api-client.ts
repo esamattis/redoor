@@ -31,7 +31,7 @@ import type { ServerInfoResponse } from "../../bindings/ServerInfoResponse";
 import type { ServerAuthMode } from "../../bindings/ServerAuthMode";
 import type { ServerBuildMode } from "../../bindings/ServerBuildMode";
 import type { BinaryIdentity } from "../../bindings/BinaryIdentity";
-import type { ReloadConfigResponse } from "../../bindings/ReloadConfigResponse";
+import type { RestartResponse } from "../../bindings/RestartResponse";
 import type { LogEvent } from "../../bindings/LogEvent";
 
 export type {
@@ -58,7 +58,7 @@ export type {
     ServerAuthMode,
     ServerBuildMode,
     BinaryIdentity,
-    ReloadConfigResponse,
+    RestartResponse,
     LogEvent,
     AgentConnectionStatus,
     StartAgentResponse,
@@ -246,6 +246,11 @@ export class Agent {
         return this.info.connected_at;
     }
 
+    /** Identifies the current control socket so process restarts can await a replacement. */
+    get connectionId(): string | null {
+        return this.info.connection_id;
+    }
+
     /** Returns the server-observed end of the most recent connection. */
     get lastSeenAt(): number | null {
         return this.info.last_seen_at;
@@ -276,6 +281,16 @@ export class Agent {
         return apiRequest(
             this.baseUrl,
             `/api/v1/agents/${encodeURIComponent(this.info.id)}/shutdown`,
+            { method: "POST" },
+            this.requestContext,
+        );
+    }
+
+    /** Asks the connected agent process to replace itself with the same binary and arguments. */
+    async restart(): Promise<RestartResponse> {
+        return apiRequest(
+            this.baseUrl,
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/restart`,
             { method: "POST" },
             this.requestContext,
         );
@@ -589,11 +604,11 @@ export class ApiClient {
         return response;
     }
 
-    /** Asks the server to re-read config.toml by restarting the process in place. */
-    async reloadConfig(): Promise<ReloadConfigResponse> {
-        return apiRequest<ReloadConfigResponse>(
+    /** Asks the server to restart in place after validating its configuration. */
+    async restartServer(): Promise<RestartResponse> {
+        return apiRequest<RestartResponse>(
             this.baseUrl,
-            "/api/v1/config/reload",
+            "/api/v1/server/restart",
             { method: "POST" },
             this.requestContext(),
         );

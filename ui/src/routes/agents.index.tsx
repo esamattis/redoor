@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { LoaderCircle, Play, Power, FolderOpen } from "lucide-react";
+import { MoreHorizontal, Play, Power, FolderOpen } from "lucide-react";
 import type { Agent, BinaryIdentity } from "../api-client";
 import {
     fieldMatchTone,
@@ -8,6 +8,8 @@ import {
     VersionValue,
 } from "../components/binary-identity";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
+import { Dialog } from "../components/dialog";
+import { RestartButton, waitForRestart } from "../components/restart-button";
 import { formatAgentRecency, useNow } from "../utils/agent-time";
 import { Route as RootRoute } from "./__root";
 
@@ -20,6 +22,8 @@ type MutationState = Record<string, "start" | "shutdown" | undefined>;
 /** Lists retained inventory and scopes lifecycle mutation state to individual rows. */
 function AgentManagement() {
     const router = useRouter();
+    const actionsButtonRef = React.useRef<HTMLButtonElement>(null);
+    const { api } = RootRoute.useRouteContext();
     const { agents, serverInfo } = RootRoute.useLoaderData();
     const serverBinary = React.useMemo(
         () => ({
@@ -42,6 +46,7 @@ function AgentManagement() {
     const [shutdownAgent, setShutdownAgent] = React.useState<Agent | null>(
         null,
     );
+    const [actionsAgent, setActionsAgent] = React.useState<Agent | null>(null);
     const [mutationErrors, setMutationErrors] = React.useState<
         Record<string, string | undefined>
     >({});
@@ -118,14 +123,6 @@ function AgentManagement() {
                         <tbody className="divide-y divide-slate-800">
                             {sortedAgents.map((agent) => {
                                 const mutation = mutations[agent.id];
-                                const canStart =
-                                    agent.managed &&
-                                    (agent.status === "stopped" ||
-                                        agent.status === "disconnected");
-                                const canShutdown =
-                                    agent.managed &&
-                                    (agent.status === "starting" ||
-                                        agent.status === "connected");
                                 return (
                                     <tr
                                         key={agent.id}
@@ -191,61 +188,22 @@ function AgentManagement() {
                                             ) : null}
                                         </td>
                                         <td className="px-4 py-3">
-                                            <div className="flex flex-wrap gap-2">
-                                                {canStart ? (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                            start(agent)
-                                                        }
-                                                        disabled={
-                                                            mutation !==
-                                                            undefined
-                                                        }
-                                                        className="inline-flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-500 disabled:opacity-50"
-                                                    >
-                                                        {mutation ===
-                                                        "start" ? (
-                                                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                                                        ) : (
-                                                            <Play className="h-4 w-4" />
-                                                        )}
-                                                        {mutation === "start"
-                                                            ? "Starting…"
-                                                            : "Start"}
-                                                    </button>
-                                                ) : null}
-                                                {canShutdown ? (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                            setShutdownAgent(
-                                                                agent,
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            mutation !==
-                                                            undefined
-                                                        }
-                                                        className="inline-flex items-center gap-1 rounded border border-red-800 px-3 py-1.5 text-red-300 hover:bg-red-950/30 disabled:opacity-50"
-                                                    >
-                                                        <Power className="h-4 w-4" />{" "}
-                                                        Shutdown
-                                                    </button>
-                                                ) : null}
-                                                {agent.status === "connected" &&
-                                                agent.cwd !== null ? (
-                                                    <Link
-                                                        to={agent.getBrowserUrl(
-                                                            agent.cwd,
-                                                        )}
-                                                        className="inline-flex items-center gap-1 rounded border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-white/5"
-                                                    >
-                                                        <FolderOpen className="h-4 w-4" />{" "}
-                                                        Browse files
-                                                    </Link>
-                                                ) : null}
-                                            </div>
+                                            <button
+                                                type="button"
+                                                aria-label={`Open actions for ${agent.name}`}
+                                                onClick={(event) => {
+                                                    actionsButtonRef.current =
+                                                        event.currentTarget;
+                                                    setActionsAgent(agent);
+                                                }}
+                                                disabled={
+                                                    mutation !== undefined
+                                                }
+                                                className="inline-flex items-center gap-1 rounded border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-white/5 disabled:opacity-50"
+                                            >
+                                                <MoreHorizontal className="h-4 w-4" />
+                                                Actions
+                                            </button>
                                         </td>
                                     </tr>
                                 );
@@ -254,6 +212,88 @@ function AgentManagement() {
                     </table>
                 </div>
             </div>
+            <Dialog
+                isOpen={actionsAgent !== null}
+                title={
+                    actionsAgent
+                        ? `${actionsAgent.name} actions`
+                        : "Agent actions"
+                }
+                closeAriaLabel="Close agent actions"
+                anchorRef={actionsButtonRef}
+                onClose={() => setActionsAgent(null)}
+            >
+                {actionsAgent ? (
+                    <div className="mt-3 flex flex-col gap-2">
+                        {actionsAgent.managed &&
+                        (actionsAgent.status === "stopped" ||
+                            actionsAgent.status === "disconnected") ? (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    start(actionsAgent);
+                                    setActionsAgent(null);
+                                }}
+                                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
+                            >
+                                <Play className="h-4 w-4" /> Start
+                            </button>
+                        ) : null}
+                        {actionsAgent.status === "connected" ? (
+                            <RestartButton
+                                target={`agent ${actionsAgent.name}`}
+                                description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
+                                restart={() => actionsAgent.restart()}
+                                waitUntilReady={() =>
+                                    waitForRestart(async () => {
+                                        const restartedAgent = (
+                                            await api.listAgents()
+                                        ).find(
+                                            (entry) =>
+                                                entry.id === actionsAgent.id &&
+                                                entry.status === "connected" &&
+                                                entry.connectionId !==
+                                                    actionsAgent.connectionId,
+                                        );
+                                        if (!restartedAgent) {
+                                            throw new Error(
+                                                "Agent is still restarting",
+                                            );
+                                        }
+                                        await router.invalidate();
+                                    }, "Agent did not come back after restart")
+                                }
+                            />
+                        ) : null}
+                        {actionsAgent.managed &&
+                        (actionsAgent.status === "starting" ||
+                            actionsAgent.status === "connected") ? (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShutdownAgent(actionsAgent);
+                                    setActionsAgent(null);
+                                }}
+                                className="inline-flex items-center gap-2 rounded border border-red-800 px-4 py-2 text-red-300 hover:bg-red-950/30"
+                            >
+                                <Power className="h-4 w-4" /> Shutdown
+                            </button>
+                        ) : null}
+                        {actionsAgent.status === "connected" &&
+                        actionsAgent.cwd !== null ? (
+                            <Link
+                                to={actionsAgent.getBrowserUrl(
+                                    actionsAgent.cwd,
+                                )}
+                                onClick={() => setActionsAgent(null)}
+                                className="inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
+                            >
+                                <FolderOpen className="h-4 w-4" /> Browse files
+                            </Link>
+                        ) : null}
+                    </div>
+                ) : null}
+            </Dialog>
             <ConfirmationDialog
                 isOpen={shutdownAgent !== null}
                 title={

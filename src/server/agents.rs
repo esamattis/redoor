@@ -8,8 +8,8 @@ use redoor::{
     actors,
     commands::{
         AgentInfoResponse, AgentListResponse, CatResponse, Command, CommandResult, EchoRequest,
-        EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, ServerInfoResponse,
-        ShutdownAgentResponse, StartAgentResponse,
+        EchoResponse, ErrorResponse, LsDirectoryResponse, LsFileResponse, RestartResponse,
+        ServerInfoResponse, ShutdownAgentResponse, StartAgentResponse,
     },
     types::AgentId,
 };
@@ -65,6 +65,7 @@ async fn list_agent_snapshots(state: &ServerState) -> Result<Vec<AgentInfoRespon
             managed: agent.managed,
             status: agent.status,
             connected_at: agent.connected_at,
+            connection_id: agent.connection_id,
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
             binary: agent.binary,
@@ -272,6 +273,48 @@ pub(crate) async fn get_agent_details_handler(
             }
         }
         Err(response) => response,
+    }
+}
+
+/// Route: `POST /api/v1/agents/{agent}/restart` asks the process to exec itself in place.
+pub(crate) async fn restart_agent_handler(
+    Path(agent): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    let agent_id = AgentId::from(agent);
+    match state
+        .router_ref
+        .request(5000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id,
+                command: Command::Restart,
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(CommandResult::Restart) => {
+            (StatusCode::OK, Json(RestartResponse { restarting: true })).into_response()
+        }
+        Ok(CommandResult::Error { kind, message }) => (
+            command_error_status(&kind),
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unexpected response from agent restart".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to restart agent: {error:?}"),
+            }),
+        )
+            .into_response(),
     }
 }
 

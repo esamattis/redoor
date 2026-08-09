@@ -50,6 +50,7 @@ export async function createToxiproxyAgent(options: {
             managed: options.agent.managed,
             status: options.agent.status,
             connected_at: options.agent.connectedAt,
+            connection_id: options.agent.connectionId,
             last_seen_at: options.agent.lastSeenAt,
             connection_issue: options.agent.connectionIssue,
             binary: options.agent.binary,

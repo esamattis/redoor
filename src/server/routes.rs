@@ -9,14 +9,14 @@ use super::{
     agent_transfers::agent_transfer_websocket_handler,
     agents::{
         cat_agent_handler, echo_agent_handler, get_agent_details_handler, list_agents_handler,
-        ls_agent_handler, metadata_agent_handler, server_info_handler, shutdown_agent_handler,
-        start_agent_handler,
+        ls_agent_handler, metadata_agent_handler, restart_agent_handler, server_info_handler,
+        shutdown_agent_handler, start_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
     files::{create_directory_handler, raw_agent_delete_handler},
     logs::server_logs_websocket_handler,
     raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
-    reload::reload_config_handler,
+    restart::restart_server_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
@@ -63,6 +63,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
         .route("/api/v1/agents/{agent}/start", post(start_agent_handler))
         .route(
+            "/api/v1/agents/{agent}/restart",
+            post(restart_agent_handler),
+        )
+        .route(
             "/api/v1/agents/{agent}/shutdown",
             post(shutdown_agent_handler),
         )
@@ -108,7 +112,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route("/api/v1/copy", post(copy_file_handler))
         .route("/api/v1/agents/{agent}/echo", post(echo_agent_handler))
-        .route("/api/v1/config/reload", post(reload_config_handler))
+        .route("/api/v1/server/restart", post(restart_server_handler))
         .layer(middleware::from_fn_with_state(auth, require_authentication))
         .layer(
             CorsLayer::new()

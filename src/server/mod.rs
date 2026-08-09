@@ -9,8 +9,8 @@ mod logs;
 #[cfg(target_os = "linux")]
 mod pam;
 mod raw;
-mod reload;
 mod responses;
+mod restart;
 mod routes;
 pub(crate) mod state;
 mod terminals;
@@ -26,7 +26,6 @@ pub(crate) use config::{
     parse_config_file, require_server_section, standalone_agent_is_fully_configured,
 };
 pub(crate) use redoor::watchdog::WatchdogRegistry;
-pub(crate) use reload::reexec_current_process;
 pub(crate) use routes::build_app;
 pub(crate) use state::{CoordinatorArgs, ServerState};
 pub(crate) use watchdog::register_agents;

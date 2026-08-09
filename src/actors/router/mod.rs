@@ -515,6 +515,7 @@ mod tests {
                 managed: false,
                 status: crate::commands::AgentConnectionStatus::Connected,
                 connected_at: list_agents[0].connected_at,
+                connection_id: list_agents[0].connection_id.clone(),
                 last_seen_at: None,
                 connection_issue: None,
                 binary: Some(crate::commands::current_binary_identity()),

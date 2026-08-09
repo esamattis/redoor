@@ -27,11 +27,11 @@ pub(crate) struct ServerState {
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
     /// Absolute path of the TOML config loaded at process start (for the server
-    /// home UI and so reload can re-validate the same file).
+    /// home UI and so restart can re-validate the same file).
     pub(crate) config_path: PathBuf,
     /// Login backend resolved from the TOML credentials (or their absence).
     pub(crate) auth_mode: ServerAuthMode,
-    /// Signals axum graceful shutdown; reload fires this after a successful
+    /// Signals axum graceful shutdown; restart fires this after a successful
     /// pre-validation so the listener is dropped before exec.
     pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }

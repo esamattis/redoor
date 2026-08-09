@@ -21,7 +21,7 @@ export default defineConfig({
     forbidOnly: !!process.env.CI,
     /* Retry on CI only */
     retries: process.env.CI ? 2 : 0,
-    // One worker: reload-config self-execs the shared server and would race
+    // One worker: restart self-execs the shared server and would race
     // other files if they hit the API while the process is restarting.
     workers: 1,
     /* Reporter to use. See https://playwright.dev/docs/test-reporters */

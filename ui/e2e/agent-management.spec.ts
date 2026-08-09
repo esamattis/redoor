@@ -52,7 +52,10 @@ test.describe.serial("Agent management", () => {
         });
         await expect(externalOne).toContainText("connected");
         await expect(
-            externalOne.getByRole("button", { name: "Start" }),
+            externalOne.getByRole("button", {
+                name: "Start",
+                exact: true,
+            }),
         ).toHaveCount(0);
         await expect(externalTwo).toContainText("connected", {
             timeout: 30_000,
@@ -65,9 +68,18 @@ test.describe.serial("Agent management", () => {
         // TOML entries are registered as stopped and expose lifecycle controls before processes exist.
         await expect(valid).toContainText("Managed (TOML)");
         await expect(valid).toContainText("stopped");
+        await valid
+            .getByRole("button", { name: `Open actions for ${VALID_AGENT}` })
+            .click();
         await expect(
-            valid.getByRole("button", { name: "Start" }),
+            page
+                .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+                .getByRole("button", { name: "Start", exact: true }),
         ).toBeVisible();
+        await page
+            .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+            .getByRole("button", { name: "Close agent actions" })
+            .click();
         await expect(failing).toContainText("stopped");
 
         const log = await fs.readFile(SERVER_LOG, "utf8");
@@ -129,17 +141,26 @@ test.describe.serial("Agent management", () => {
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents`);
         const row = page.getByRole("row", { name: `Agent ${VALID_AGENT}` });
-        await row.getByRole("button", { name: "Start" }).click();
+        await row
+            .getByRole("button", { name: `Open actions for ${VALID_AGENT}` })
+            .click();
+        await page
+            .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+            .getByRole("button", { name: "Start", exact: true })
+            .click();
         await expect
             .poll(
                 async () => (await getAgent(page.request, VALID_AGENT)).status,
                 { timeout: 20_000 },
             )
             .toBe("connected");
-        await expect(
-            row.getByRole("button", { name: "Shutdown" }),
-        ).toBeVisible();
-        await row.getByRole("button", { name: "Shutdown" }).click();
+        await row
+            .getByRole("button", { name: `Open actions for ${VALID_AGENT}` })
+            .click();
+        await page
+            .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+            .getByRole("button", { name: "Shutdown" })
+            .click();
         const dialog = page.getByRole("dialog", {
             name: `Shut down ${VALID_AGENT}?`,
         });
@@ -150,7 +171,13 @@ test.describe.serial("Agent management", () => {
         // Shutdown retains the row and switches duration into server-observed last-seen recency.
         await expect(row).toContainText("stopped", { timeout: 15_000 });
         await expect(row).toContainText(/Last seen .* ago/);
-        await row.getByRole("button", { name: "Start" }).click();
+        await row
+            .getByRole("button", { name: `Open actions for ${VALID_AGENT}` })
+            .click();
+        await page
+            .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+            .getByRole("button", { name: "Start", exact: true })
+            .click();
         await expect
             .poll(
                 async () => (await getAgent(page.request, VALID_AGENT)).status,
@@ -168,7 +195,13 @@ test.describe.serial("Agent management", () => {
     }) => {
         await page.goto(`${WEB_BASE_URL}/agents`);
         const row = page.getByRole("row", { name: `Agent ${FAILING_AGENT}` });
-        await row.getByRole("button", { name: "Start" }).click();
+        await row
+            .getByRole("button", { name: `Open actions for ${FAILING_AGENT}` })
+            .click();
+        await page
+            .getByRole("dialog", { name: `${FAILING_AGENT} actions` })
+            .getByRole("button", { name: "Start", exact: true })
+            .click();
 
         await expect
             .poll(

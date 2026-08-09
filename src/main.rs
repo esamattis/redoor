@@ -293,7 +293,7 @@ async fn run_server(args: server::CoordinatorArgs) {
     // registry exists by the time the first WebSocket connects.
     let watchdog_registry = server::WatchdogRegistry::new();
 
-    // Oneshot so reload can drop the axum listener before self-exec; keeping
+    // Oneshot so restart can drop the axum listener before self-exec; keeping
     // the listen FD open would race the restarted process on the same port.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let app = server::build_app(server::ServerState::new(
@@ -346,7 +346,7 @@ async fn run_server(args: server::CoordinatorArgs) {
     // inventory will be recreated dormant by the new process.
     watchdog_registry.shutdown_all().await;
 
-    // Only reached after reload (or future shutdown paths). Replace this process
+    // Only reached after restart (or future shutdown paths). Replace this process
     // with the same binary and arguments so startup re-reads config.toml.
-    server::reexec_current_process();
+    redoor::process::reexec_current_process();
 }
