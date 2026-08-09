@@ -65,6 +65,52 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(fileEntries).toHaveCount(5);
     });
 
+    test("should filter directory entries and navigate to the first match", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        await filterInput.fill("DIR2");
+
+        // Matching is case-insensitive and leaves only names containing the entered text.
+        await expect(page.locator("main tbody tr")).toHaveCount(1);
+        // The remaining link identifies the first result that Enter should open.
+        await expect(
+            page.getByRole("link", { name: "subdir2", exact: true }),
+        ).toBeVisible();
+        // Non-matching entries must be removed from the client-side listing.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).not.toBeVisible();
+
+        await filterInput.press("Enter");
+
+        // Enter follows the first filtered entry using the same route as its visible link.
+        await expect(page).toHaveURL(
+            `${directoryUrl}/${encodeURIComponent("subdir2")}`,
+        );
+        // Loaded child contents prove the navigation completed rather than only changing the URL.
+        await expect(
+            page.getByRole("link", { name: "deep", exact: true }),
+        ).toBeVisible();
+        const destinationFilterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        // Filter-driven navigation restores keyboard focus in the destination listing.
+        await expect(destinationFilterInput).toBeFocused();
+
+        await destinationFilterInput.press("Shift+Tab");
+
+        // Up immediately precedes the filter so reverse tabbing reaches parent navigation.
+        await expect(
+            page.getByRole("link", { name: "Up", exact: true }),
+        ).toBeFocused();
+    });
+
     test("should show directory details from the view query", async ({
         page,
     }) => {

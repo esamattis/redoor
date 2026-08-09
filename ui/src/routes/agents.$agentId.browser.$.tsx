@@ -1,5 +1,5 @@
 import React from "react";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
     createFileRoute,
     Link,
@@ -28,6 +28,7 @@ import {
     ClipboardPaste,
     Pencil,
     HardDrive,
+    Search,
 } from "lucide-react";
 import { ConfirmationDialog } from "../components/confirmation-dialog";
 import { CopyableCodeRow } from "../components/copyable-code-row";
@@ -65,6 +66,9 @@ type ShareableLinkState =
     | { type: "idle" }
     | { type: "creating" }
     | { type: "error"; message: string };
+
+/** Identifies the destination that should restore filter focus after Enter navigation. */
+const filterFocusPathAtom = atom<string | null>(null);
 
 /** Keeps the hidden-file visibility preference consistent across reloads. */
 const showHiddenFilesAtom = atomWithLocalStorage(
@@ -261,6 +265,7 @@ function FileBrowser() {
                             />
 
                             <FileList
+                                key={path}
                                 agentId={agentId}
                                 agentName={agentName}
                                 directoryPath={path}
@@ -808,36 +813,39 @@ function BrowserHeader(props: {
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
             >
                 <div className="flex flex-wrap items-center gap-1">
-                    <Link
-                        to={
-                            props.parentPath
-                                ? getBrowserPathHref(
-                                      props.agent,
-                                      props.parentPath,
-                                  )
-                                : props.agent.getBrowserUrl("/")
-                        }
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-                        disabled={props.parentPath === null}
-                    >
-                        <ArrowUp className="h-4 w-4" />
-                        Up
-                    </Link>
+                    {props.isDetailsView || pathMissing ? (
+                        <Link
+                            to={
+                                props.parentPath
+                                    ? getBrowserPathHref(
+                                          props.agent,
+                                          props.parentPath,
+                                      )
+                                    : props.agent.getBrowserUrl("/")
+                            }
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+                            disabled={props.parentPath === null}
+                        >
+                            <ArrowUp className="h-4 w-4" />
+                            Up
+                        </Link>
+                    ) : null}
                     {!pathMissing ? (
                         <>
-                            <div className="mx-1 h-5 w-px bg-slate-700" />
                             {props.isDetailsView ? (
-                                <Link
-                                    to={getBrowserPathHref(
-                                        props.agent,
-                                        props.directoryPath,
-                                    )}
-                                    search={{}}
-                                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
-                                >
-                                    <List className="h-4 w-4" />
-                                    View files
-                                </Link>
+                                <>
+                                    <Link
+                                        to={getBrowserPathHref(
+                                            props.agent,
+                                            props.directoryPath,
+                                        )}
+                                        search={{}}
+                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
+                                    >
+                                        <List className="h-4 w-4" />
+                                        View files
+                                    </Link>
+                                </>
                             ) : (
                                 <>
                                     <Link
@@ -1107,6 +1115,7 @@ function Breadcrumbs(props: {
     );
 }
 
+/** Filters directory entries locally so narrowing the current listing stays immediate. */
 function FileList(props: {
     agentId: string;
     agentName: string;
@@ -1121,45 +1130,116 @@ function FileList(props: {
         gid: number;
     }>;
 }) {
-    const { agentId, agentName, directoryPath, files } = props;
+    const navigate = useNavigate();
+    const agent = Route.useLoaderData().agent;
+    const [filterFocusPath, setFilterFocusPath] = useAtom(filterFocusPathAtom);
+    const filterInputRef = React.useRef<HTMLInputElement>(null);
+    const [filter, setFilter] = React.useState("");
+    const normalizedFilter = filter.toLowerCase();
+    const filteredFiles = props.files.filter((entry) =>
+        entry.name.toLowerCase().includes(normalizedFilter),
+    );
+    const parentPath = getImmediateParentPath(props.directoryPath);
+
+    React.useEffect(() => {
+        if (filterFocusPath !== props.directoryPath) {
+            return;
+        }
+
+        filterInputRef.current?.focus();
+        setFilterFocusPath(null);
+    }, [filterFocusPath, props.directoryPath, setFilterFocusPath]);
+
+    const handleFilterKeyDown = async (
+        event: React.KeyboardEvent<HTMLInputElement>,
+    ) => {
+        if (event.key !== "Enter") {
+            return;
+        }
+
+        const firstEntry = filteredFiles[0];
+        if (!firstEntry) {
+            return;
+        }
+
+        event.preventDefault();
+        const destinationPath = joinBrowserPath(
+            props.directoryPath,
+            firstEntry.name,
+        );
+        setFilterFocusPath(destinationPath);
+        await navigate({
+            to: agent.getBrowserUrl(destinationPath),
+        });
+    };
 
     return (
-        <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
-            <thead>
-                <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Select
-                    </th>
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Type
-                    </th>
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Name
-                    </th>
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Size
-                    </th>
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Owner
-                    </th>
-                    <th className="text-left p-3 text-sm font-medium text-slate-400">
-                        Group
-                    </th>
-                </tr>
-            </thead>
-            <tbody>
-                {files.map((entry, index) => (
-                    <FileEntry
-                        key={index}
-                        agentId={agentId}
-                        agentName={agentName}
-                        directoryPath={directoryPath}
-                        entry={entry}
-                        isParent={false}
+        <div className="space-y-3">
+            <div className="flex max-w-md items-center gap-2">
+                <Link
+                    to={
+                        parentPath
+                            ? getBrowserPathHref(agent, parentPath)
+                            : agent.getBrowserUrl("/")
+                    }
+                    className="inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-slate-900"
+                    disabled={parentPath === null}
+                >
+                    <ArrowUp className="h-4 w-4" />
+                    Up
+                </Link>
+                <label className="relative min-w-0 flex-1">
+                    <span className="sr-only">Filter files</span>
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <input
+                        ref={filterInputRef}
+                        type="search"
+                        aria-label="Filter files"
+                        value={filter}
+                        onChange={(event) => setFilter(event.target.value)}
+                        onKeyDown={handleFilterKeyDown}
+                        placeholder="Filter files"
+                        className="w-full rounded-md border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
-                ))}
-            </tbody>
-        </table>
+                </label>
+            </div>
+            <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
+                <thead>
+                    <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Select
+                        </th>
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Type
+                        </th>
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Name
+                        </th>
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Size
+                        </th>
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Owner
+                        </th>
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Group
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filteredFiles.map((entry) => (
+                        <FileEntry
+                            key={entry.name}
+                            agentId={props.agentId}
+                            agentName={props.agentName}
+                            directoryPath={props.directoryPath}
+                            entry={entry}
+                            isParent={false}
+                        />
+                    ))}
+                </tbody>
+            </table>
+        </div>
     );
 }
 
