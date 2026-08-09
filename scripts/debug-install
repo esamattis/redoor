@@ -1,0 +1,54 @@
+#!/bin/sh
+
+set -eu
+
+# Resolve the project relative to this script so building and installation work from any directory.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir="$script_dir/.."
+source_binary="$project_dir/target/debug/redoor"
+
+# Always refresh the debug executable so installation cannot silently deploy a stale build.
+cargo build --manifest-path "$project_dir/Cargo.toml"
+install_dir=${REDOOR_INSTALL_DIR:-"$HOME/.local/bin"}
+installed_binary="$install_dir/redoor"
+
+case $(uname -s) in
+    Darwin|Linux) ;;
+    *)
+        echo "debug-install: unsupported operating system: $(uname -s)" >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -f "$source_binary" ]; then
+    echo "debug-install: debug binary not found at $source_binary" >&2
+    echo "debug-install: build it first with: cargo build" >&2
+    exit 1
+fi
+
+if [ ! -x "$source_binary" ]; then
+    echo "debug-install: debug binary is not executable: $source_binary" >&2
+    exit 1
+fi
+
+mkdir -p "$install_dir"
+staging_binary=$(mktemp "$install_dir/.redoor.XXXXXX")
+
+# Cleanup protects against leaving a partial staging file when copying or validation fails.
+cleanup() {
+    rm -f "$staging_binary"
+}
+trap cleanup EXIT HUP INT TERM
+
+cp "$source_binary" "$staging_binary"
+chmod 0755 "$staging_binary"
+
+# Validate the complete staged image before it can replace a working installation.
+"$staging_binary" --version >/dev/null
+
+# The staging file is in the destination directory, so rename replaces the directory entry
+# atomically without modifying an executable inode still used by a running process.
+mv -f "$staging_binary" "$installed_binary"
+trap - EXIT HUP INT TERM
+
+printf 'Installed debug binary to %s\n' "$installed_binary"
