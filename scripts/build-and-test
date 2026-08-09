@@ -38,9 +38,9 @@ playwright_unless_error() {
 }
 
 silent_unless_error cargo fmt
+silent_unless_error cargo test
 silent_unless_error pnpm run format
 silent_unless_error pnpm run build
-silent_unless_error cargo test
 silent_unless_error cargo build
 
 # Install fresh debug binary and restart local dev service so it picks it up
