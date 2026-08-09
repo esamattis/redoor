@@ -215,12 +215,7 @@ function AgentTable(props: {
                                 />
                             </td>
                             <td className="px-4 py-3 text-slate-400">
-                                {formatAgentRecency(
-                                    agent.status,
-                                    agent.connectedAt,
-                                    agent.lastSeenAt,
-                                    props.now,
-                                )}
+                                {formatAgentRecency(agent, props.now)}
                             </td>
                             <td className="max-w-sm px-4 py-3 text-amber-300">
                                 {agent.connectionIssue ? (

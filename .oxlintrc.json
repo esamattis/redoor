@@ -5,7 +5,7 @@
         "correctness": "error"
     },
     "rules": {
-        // "max-params": "error",
+        "max-params": "error",
         "max-lines-per-function": [
             "error",
             {
@@ -22,12 +22,12 @@
                 "skipBlankLines": true
             }
         ],
-        // "typescript/consistent-type-assertions": [
-        //     "error",
-        //     {
-        //         "assertionStyle": "never"
-        //     }
-        // ]
+        "typescript/consistent-type-assertions": [
+            "error",
+            {
+                "assertionStyle": "never"
+            }
+        ]
     },
     "env": {
         "builtin": true

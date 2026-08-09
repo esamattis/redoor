@@ -203,6 +203,12 @@ export type SpawnServerArgs = {
     config?: string;
 };
 
+/** Groups optional process settings so callers cannot confuse cwd and environment. */
+type SpawnOptions = {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+};
+
 export class ProcessManager {
     private processes: Map<number, ChildProcess> = new Map();
     private stdoutBuffers: Map<number, OutputBuffer> = new Map();
@@ -210,19 +216,18 @@ export class ProcessManager {
     spawn(
         command: string,
         args: string[],
-        cwd = PROJECT_ROOT,
-        env?: NodeJS.ProcessEnv,
+        options: SpawnOptions = {},
     ): number {
         const proc = spawn(command, args, {
             detached: true,
             stdio: ["ignore", "pipe", "inherit"],
-            cwd,
+            cwd: options.cwd ?? PROJECT_ROOT,
             env: {
                 ...process.env,
                 RUST_BACKTRACE: "1",
                 // Integration agents must not flash desktop notifications during development.
                 REDOOR_AGENT_NOTIFICATION: "off",
-                ...env,
+                ...options.env,
             },
         });
 
@@ -271,7 +276,9 @@ export class ProcessManager {
             cliArgs.push("--log", logPath);
         }
 
-        return this.spawn(args.executablePath ?? AGENT_PATH, cliArgs, args.cwd);
+        return this.spawn(args.executablePath ?? AGENT_PATH, cliArgs, {
+            cwd: args.cwd,
+        });
     }
 
     spawnServer(args: SpawnServerArgs): number {
@@ -296,9 +303,12 @@ password = "${TEST_PASSWORD}"
         }
 
         mkdirSync(TEST_SERVER_HOME, { recursive: true });
-        return this.spawn(SERVER_PATH, cliArgs, PROJECT_ROOT, {
-            HOME: TEST_SERVER_HOME,
-            REDOOR_APP_NAME: "redoor",
+        return this.spawn(SERVER_PATH, cliArgs, {
+            cwd: PROJECT_ROOT,
+            env: {
+                HOME: TEST_SERVER_HOME,
+                REDOOR_APP_NAME: "redoor",
+            },
         });
     }
 

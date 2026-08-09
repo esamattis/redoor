@@ -148,12 +148,7 @@ function AgentLifecycle(props: { agent: Agent }) {
                           : "This external agent is currently disconnected."}
                 </p>
                 <p className="mt-2 text-sm text-slate-500">
-                    {formatAgentRecency(
-                        props.agent.status,
-                        props.agent.connectedAt,
-                        props.agent.lastSeenAt,
-                        now,
-                    )}
+                    {formatAgentRecency(props.agent, now)}
                 </p>
                 {props.agent.connectionIssue ? (
                     <p
@@ -323,12 +318,7 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                         />
                         <DetailItem
                             label="Connected"
-                            value={formatAgentRecency(
-                                "connected",
-                                props.agent.connectedAt,
-                                props.agent.lastSeenAt,
-                                now,
-                            )}
+                            value={formatAgentRecency(props.agent, now)}
                         />
                     </DetailCard>
                     <DetailCard

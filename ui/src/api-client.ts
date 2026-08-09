@@ -280,8 +280,7 @@ export class Agent {
     /** Requests desired-running without waiting for process preparation or registration. */
     async start(): Promise<StartAgentResponse> {
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
             { method: "POST" },
             this.requestContext,
         );
@@ -290,8 +289,7 @@ export class Agent {
     /** Waits for the managed supervisor to cancel work and reap its child. */
     async shutdown(): Promise<ShutdownAgentResponse> {
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/shutdown`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/shutdown`,
             { method: "POST" },
             this.requestContext,
         );
@@ -300,8 +298,7 @@ export class Agent {
     /** Asks the connected agent process to replace itself with the same binary and arguments. */
     async restart(): Promise<RestartResponse> {
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/restart`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/restart`,
             { method: "POST" },
             this.requestContext,
         );
@@ -310,8 +307,7 @@ export class Agent {
     /** Atomically installs the server-selected binary and asks the agent to execute it in place. */
     async upgrade(): Promise<UpgradeAgentResponse> {
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
             { method: "POST" },
             this.requestContext,
         );
@@ -319,8 +315,7 @@ export class Agent {
 
     async getDetails(): Promise<AgentDetailsResponse> {
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}`,
             undefined,
             this.requestContext,
         );
@@ -328,11 +323,10 @@ export class Agent {
 
     async ls(path: string): Promise<LsResponse> {
         return apiRequest<LsResponse>(
-            this.baseUrl,
-            appendFilesystemPath(
+            `${this.baseUrl}${appendFilesystemPath(
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls`,
                 path,
-            ),
+            )}`,
             undefined,
             this.requestContext,
         );
@@ -344,8 +338,7 @@ export class Agent {
     ): Promise<EchoResponse> {
         const request: EchoRequest = { message, random_sleep };
         return apiRequest(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/echo`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/echo`,
             {
                 method: "POST",
                 headers: {
@@ -365,11 +358,10 @@ export class Agent {
     /** Fetches agent-side file sniffing results including the UTF-8 editable gate. */
     async metadata(path: string): Promise<MetadataResponse> {
         return apiRequest<MetadataResponse>(
-            this.baseUrl,
-            appendFilesystemPath(
+            `${this.baseUrl}${appendFilesystemPath(
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/metadata`,
                 path,
-            ),
+            )}`,
             undefined,
             this.requestContext,
         );
@@ -380,11 +372,10 @@ export class Agent {
         path: string,
     ): Promise<CreateOneTimeTokenResponse> {
         return apiRequest<CreateOneTimeTokenResponse>(
-            this.baseUrl,
-            appendFilesystemPath(
+            `${this.baseUrl}${appendFilesystemPath(
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/one-time-token`,
                 path,
-            ),
+            )}`,
             { method: "POST" },
             this.requestContext,
         );
@@ -489,8 +480,7 @@ export class Agent {
         };
 
         return apiRequest<RenamePathResponse>(
-            this.baseUrl,
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/rename`,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/rename`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -515,8 +505,7 @@ export class Agent {
         };
 
         const response = await apiRequest<CopyFileResponseJson>(
-            this.baseUrl,
-            "/api/v1/copy",
+            `${this.baseUrl}/api/v1/copy`,
             {
                 method: "POST",
                 headers: {
@@ -577,12 +566,10 @@ export class Agent {
 }
 
 async function apiRequest<T>(
-    baseUrl: string,
-    endpoint: string,
+    url: string,
     options?: RequestInit,
     context: RequestContext = {},
 ): Promise<T> {
-    const url = `${baseUrl}${endpoint}`;
     const response = await fetch(url, withAuthentication(options, context));
     await requireSuccessfulResponse(response, context);
     return response.json();
@@ -640,8 +627,7 @@ export class ApiClient {
     /** Deletes the server-side session and forgets any Node-managed cookie. */
     async logout(): Promise<LogoutResponse> {
         const response = await apiRequest<LogoutResponse>(
-            this.baseUrl,
-            "/api/v1/logout",
+            `${this.baseUrl}/api/v1/logout`,
             { method: "POST" },
             this.requestContext(),
         );
@@ -652,8 +638,7 @@ export class ApiClient {
     /** Asks the server to restart in place after validating its configuration. */
     async restartServer(): Promise<RestartResponse> {
         return apiRequest<RestartResponse>(
-            this.baseUrl,
-            "/api/v1/server/restart",
+            `${this.baseUrl}/api/v1/server/restart`,
             { method: "POST" },
             this.requestContext(),
         );
@@ -674,8 +659,7 @@ export class ApiClient {
 
     async listAgents(): Promise<Agent[]> {
         const response = await apiRequest<AgentListResponse>(
-            this.baseUrl,
-            "/api/v1/agents",
+            `${this.baseUrl}/api/v1/agents`,
             undefined,
             this.requestContext(),
         );
@@ -686,8 +670,7 @@ export class ApiClient {
 
     async getTransferProgress(): Promise<TransferProgressListResponse> {
         const response = await apiRequest<TransferProgressListResponseJson>(
-            this.baseUrl,
-            "/api/v1/transfers/progress",
+            `${this.baseUrl}/api/v1/transfers/progress`,
             undefined,
             this.requestContext(),
         );
@@ -702,8 +685,7 @@ export class ApiClient {
     /** Returns server identity and agent bootstrap settings for the authenticated home page. */
     async getServerInfo(): Promise<ServerInfoResponse> {
         return apiRequest<ServerInfoResponse>(
-            this.baseUrl,
-            "/api/v1/server",
+            `${this.baseUrl}/api/v1/server`,
             undefined,
             this.requestContext(),
         );

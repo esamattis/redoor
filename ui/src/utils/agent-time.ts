@@ -14,18 +14,20 @@ function formatElapsed(totalSeconds: number): string {
     return `${remainder}s`;
 }
 
+/** Groups the server timestamps needed to describe an agent's connection recency. */
+type AgentRecency = {
+    status: AgentConnectionStatus;
+    connectedAt: number | null;
+    lastSeenAt: number | null;
+};
+
 /** Describes current connection duration or retained last-seen recency. */
-export function formatAgentRecency(
-    status: AgentConnectionStatus,
-    connectedAt: number | null,
-    lastSeenAt: number | null,
-    nowMs: number,
-): string {
-    if (status === "connected" && connectedAt !== null) {
-        return `Connected for ${formatElapsed(nowMs / 1000 - connectedAt)}`;
+export function formatAgentRecency(agent: AgentRecency, nowMs: number): string {
+    if (agent.status === "connected" && agent.connectedAt !== null) {
+        return `Connected for ${formatElapsed(nowMs / 1000 - agent.connectedAt)}`;
     }
-    if (lastSeenAt !== null) {
-        return `Last seen ${formatElapsed(nowMs / 1000 - lastSeenAt)} ago`;
+    if (agent.lastSeenAt !== null) {
+        return `Last seen ${formatElapsed(nowMs / 1000 - agent.lastSeenAt)} ago`;
     }
     return "Never connected";
 }
