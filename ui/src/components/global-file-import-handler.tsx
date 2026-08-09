@@ -1,8 +1,9 @@
 import React from "react";
 import { useRouter } from "@tanstack/react-router";
-import { ClipboardPaste, Upload, X } from "lucide-react";
+import { ClipboardPaste, Upload } from "lucide-react";
 import type { Agent } from "../api-client";
 import { Dialog } from "./dialog";
+import { Toast } from "./toast";
 
 export const REQUEST_CLIPBOARD_PASTE_EVENT = "redoor:request-clipboard-paste";
 
@@ -421,34 +422,30 @@ export function GlobalFileImportHandler(props: {
             ) : null}
 
             {statusMessage ? (
-                <div
-                    role={importState.type === "error" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`fixed left-1/2 top-16 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-lg border px-4 py-3 text-sm shadow-2xl ${
+                <Toast
+                    tone={
                         importState.type === "error"
-                            ? "border-red-500/50 bg-red-950 text-red-100"
+                            ? "error"
                             : importState.type === "uploading"
-                              ? "border-blue-500/50 bg-blue-950 text-blue-100"
-                              : "border-emerald-500/50 bg-emerald-950 text-emerald-100"
-                    }`}
+                              ? "info"
+                              : "success"
+                    }
+                    icon={
+                        importState.type === "uploading" ? (
+                            <Upload className="h-4 w-4 animate-pulse" />
+                        ) : (
+                            <ClipboardPaste className="h-4 w-4" />
+                        )
+                    }
+                    dismissAriaLabel="Dismiss file import message"
+                    onDismiss={
+                        importState.type === "uploading"
+                            ? undefined
+                            : () => setImportState({ type: "idle" })
+                    }
                 >
-                    {importState.type === "uploading" ? (
-                        <Upload className="h-4 w-4 animate-pulse" />
-                    ) : (
-                        <ClipboardPaste className="h-4 w-4" />
-                    )}
-                    <span>{statusMessage}</span>
-                    {importState.type !== "uploading" ? (
-                        <button
-                            type="button"
-                            aria-label="Dismiss file import message"
-                            onClick={() => setImportState({ type: "idle" })}
-                            className="ml-1 rounded p-1 hover:bg-white/10"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                    ) : null}
-                </div>
+                    {statusMessage}
+                </Toast>
             ) : null}
 
             <Dialog

@@ -66,3 +66,5 @@ After modifying the routes run `cd ui && pnpm run build` to regenerate the route
 Do dot use class names in the playwright tests. Add accessibility aria attributes if there are no text to select with.
 
 Never use ! to fix nullish issues in typescript. Always handle nullish values properly.
+
+Reuse the overlay components in `ui/src/components`: `Toast` for transient live-region feedback, `Dialog` for modal workflows, and `Tooltip` for hover and keyboard-focus descriptions. Do not use the native `<dialog>` element for toasts or tooltips because they must remain non-modal.

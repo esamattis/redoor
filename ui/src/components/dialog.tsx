@@ -26,6 +26,7 @@ export function Dialog(props: {
 }) {
     const titleId = React.useId();
     const descriptionId = React.useId();
+    const dialogRef = React.useRef<HTMLDialogElement>(null);
     const panelRef = React.useRef<HTMLDivElement>(null);
     const [anchorPosition, setAnchorPosition] = React.useState<{
         top: number;
@@ -34,7 +35,7 @@ export function Dialog(props: {
     const isAnchored = props.anchorRef != null;
 
     React.useEffect(() => {
-        if (!props.isOpen || props.isBusy) {
+        if (!props.isOpen || !isAnchored || props.isBusy) {
             return;
         }
 
@@ -47,7 +48,24 @@ export function Dialog(props: {
 
         document.addEventListener("keydown", handleKeyDown);
         return () => document.removeEventListener("keydown", handleKeyDown);
-    }, [props.isBusy, props.isOpen, props.onClose]);
+    }, [isAnchored, props.isBusy, props.isOpen, props.onClose]);
+
+    React.useEffect(() => {
+        const dialog = dialogRef.current;
+        if (!props.isOpen || isAnchored || !dialog) {
+            return;
+        }
+
+        if (!dialog.open) {
+            dialog.showModal();
+        }
+
+        return () => {
+            if (dialog.open) {
+                dialog.close();
+            }
+        };
+    }, [isAnchored, props.isOpen]);
 
     React.useLayoutEffect(() => {
         if (!props.isOpen || !props.anchorRef) {
@@ -106,84 +124,110 @@ export function Dialog(props: {
         return null;
     }
 
-    return (
+    const panel = (
         <div
+            ref={panelRef}
             className={
                 isAnchored
-                    ? "fixed inset-0 z-50"
-                    : "fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+                    ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
+                    : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 shadow-2xl shadow-black/40"
             }
+            style={
+                isAnchored && anchorPosition
+                    ? {
+                          top: anchorPosition.top,
+                          left: anchorPosition.left,
+                      }
+                    : isAnchored
+                      ? { visibility: "hidden" }
+                      : undefined
+            }
+        >
+            <div className="flex items-start justify-between gap-4">
+                <div>
+                    <h2
+                        id={titleId}
+                        className={
+                            isAnchored
+                                ? "text-sm font-semibold text-slate-100"
+                                : "text-lg font-semibold text-slate-100"
+                        }
+                    >
+                        {props.title}
+                    </h2>
+                    {props.description ? (
+                        <div
+                            id={descriptionId}
+                            className="mt-2 text-sm text-slate-400"
+                        >
+                            {props.description}
+                        </div>
+                    ) : null}
+                </div>
+                <button
+                    type="button"
+                    aria-label={props.closeAriaLabel}
+                    onClick={props.onClose}
+                    disabled={props.isBusy}
+                    className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    <X className="h-4 w-4" />
+                </button>
+            </div>
+
+            {props.errorMessage ? (
+                <p
+                    role="alert"
+                    className="mt-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
+                >
+                    {props.errorMessage}
+                </p>
+            ) : null}
+
+            {props.children}
+        </div>
+    );
+
+    if (isAnchored) {
+        return (
+            <div
+                className="fixed inset-0 z-50"
+                role={props.role ?? "dialog"}
+                aria-modal="true"
+                aria-labelledby={titleId}
+                aria-describedby={props.description ? descriptionId : undefined}
+                onMouseDown={(event) => {
+                    if (event.target === event.currentTarget && !props.isBusy) {
+                        props.onClose();
+                    }
+                }}
+            >
+                {panel}
+            </div>
+        );
+    }
+
+    return (
+        <dialog
+            ref={dialogRef}
             role={props.role ?? "dialog"}
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
+            className="m-auto w-[calc(100%-2rem)] max-w-md overflow-visible border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60"
+            onCancel={(event) => {
+                event.preventDefault();
+                if (!props.isBusy) {
+                    props.onClose();
+                }
+            }}
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget && !props.isBusy) {
                     props.onClose();
                 }
             }}
         >
-            <div
-                ref={panelRef}
-                className={
-                    isAnchored
-                        ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
-                        : "w-full max-w-md rounded-xl border border-slate-700 bg-[#11141b] p-6 shadow-2xl shadow-black/40"
-                }
-                style={
-                    isAnchored && anchorPosition
-                        ? {
-                              top: anchorPosition.top,
-                              left: anchorPosition.left,
-                          }
-                        : isAnchored
-                          ? { visibility: "hidden" }
-                          : undefined
-                }
-            >
-                <div className="flex items-start justify-between gap-4">
-                    <div>
-                        <h2
-                            id={titleId}
-                            className={
-                                isAnchored
-                                    ? "text-sm font-semibold text-slate-100"
-                                    : "text-lg font-semibold text-slate-100"
-                            }
-                        >
-                            {props.title}
-                        </h2>
-                        {props.description ? (
-                            <div
-                                id={descriptionId}
-                                className="mt-2 text-sm text-slate-400"
-                            >
-                                {props.description}
-                            </div>
-                        ) : null}
-                    </div>
-                    <button
-                        type="button"
-                        aria-label={props.closeAriaLabel}
-                        onClick={props.onClose}
-                        disabled={props.isBusy}
-                        className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-
-                {props.errorMessage ? (
-                    <p
-                        role="alert"
-                        className="mt-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
-                    >
-                        {props.errorMessage}
-                    </p>
-                ) : null}
-
-                {props.children}
-            </div>
-        </div>
+            {panel}
+        </dialog>
     );
 }
