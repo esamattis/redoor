@@ -605,6 +605,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+Type=notify
 {service_identity}ExecStart={command}
 Restart=on-failure
 RestartSec=5s
@@ -724,6 +725,10 @@ mod tests {
             !unit.contains("User="),
             "user agent units must not set User=: {unit}"
         );
+        assert!(
+            unit.contains("Type=notify"),
+            "agent services must wait for the websocket readiness notification: {unit}"
+        );
     }
 
     /// Verifies server units explicitly pin the config used during setup.
@@ -741,6 +746,10 @@ mod tests {
                 "ExecStart=\"/home/test/bin/redoor\" server --config \"/home/test/.config/redoor/config.toml\""
             ),
             "the service should run the selected binary with the prepared config"
+        );
+        assert!(
+            unit.contains("Type=notify"),
+            "server services must wait for the listener readiness notification: {unit}"
         );
     }
 

@@ -3,6 +3,7 @@ mod process_logs;
 mod server;
 mod ssh;
 mod systemd;
+mod systemd_notify;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -312,6 +313,12 @@ async fn run_server(args: server::CoordinatorArgs) {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
+    if let Err(error) = systemd_notify::ready().await {
+        log!(
+            Level::Warning,
+            "Failed to notify systemd readiness: {error}"
+        );
+    }
     println!("Server running on http://{addr}");
 
     // Register configured agents after binding so later lazy starts can connect to

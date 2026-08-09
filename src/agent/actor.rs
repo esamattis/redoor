@@ -251,6 +251,13 @@ impl AgentRuntime {
 
                 self.state.ws_control_tx = Some(control_tx.clone());
 
+                if let Err(error) = crate::systemd_notify::ready().await {
+                    log!(
+                        Level::Warning,
+                        "Failed to notify systemd readiness: {error}"
+                    );
+                }
+
                 spawn_read_task(read, handle.clone(), connection_generation).await;
 
                 let writer_handle = handle.clone();
