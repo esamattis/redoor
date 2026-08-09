@@ -44,24 +44,26 @@ See `redoor --help` for more
 
 ## Configuration
 
-Server and agent use the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
+Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
+
+`redoor server` example 
 
 ```toml
 # Top-level: shared by server and agent (required)
 agent_token = "replace-me"
 
-## `redoor server`
+## Server configuration
 [server]
 # Web UI ogin. On Linux, omit both to use PAM (system user).
 # username = "admin"
 # password = "long-private-password"
 
-# port = 3000                 # also --port / REDOOR_PORT
-# bind = "0.0.0.0"            # also --bind; default 127.0.0.1
-# cookie_secure = false       # set true behind HTTPS
-# log = "log/server.log"      # also --log
+# port = 3000
+# bind = "0.0.0.0" # default 127.0.0.1
+# cookie_secure = false # set true behind HTTPS
+# log = "log/server.log"
 
-## `redoor server` managed agents, connects via ssh tunnels, auto installs agent binary
+## Managed agents, connects via ssh tunnels, auto installs agent binary
 [[agents]]
 target = "user@example.com"
 # username = "deploy"
@@ -76,11 +78,16 @@ local = true
 name = "local"
 dir = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
+```
 
-## Manually managed `redoor agent`
+`redoor agent` example 
+
+```toml
+agent_token = "replace-me"
+
 [agent]
-ws_address = "ws://127.0.0.1:3000/ws"   # also positional CLI / REDOOR_AGENT_WS
-name = "macbook"                        # also --name / REDOOR_AGENT_NAME
-# dir = "/home/me/projects"             # also -d/--dir / REDOOR_AGENT_DIR
-# log = "log/agent.log"                 # also --log / REDOOR_AGENT_LOG
+ws_address = "ws://127.0.0.1:3000/ws"
+name = "macbook"
+# dir = "/home/me/projects"
+# log = "log/agent.log"
 ```
