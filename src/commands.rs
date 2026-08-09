@@ -88,7 +88,19 @@ pub struct RestartResponse {
     pub restarting: bool,
 }
 
-/// Confirms the agent acknowledged execution of the newly installed server version.
+/// Selects which server-side executable should replace a connected agent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "source", rename_all = "snake_case")]
+#[ts(tag = "source", rename_all = "snake_case")]
+pub enum UpgradeAgentRequest {
+    /// Downloads or reuses a published release for the agent platform.
+    PublishedRelease { target_version: String },
+    /// Force-installs the exact executable currently running the server.
+    RunningServer,
+}
+
+/// Confirms the agent acknowledged execution of the newly installed target version.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct UpgradeAgentResponse {

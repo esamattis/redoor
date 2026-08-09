@@ -1,41 +1,34 @@
 //! Selects and provisions Redoor binaries without coupling local release caching to SSH.
 
 use futures_util::StreamExt;
-use redoor::{Level, commands::BinaryIdentity, log};
+use redoor::{Level, log};
 use std::path::{Path, PathBuf};
 use tokio::{io::AsyncWriteExt, process::Command};
 
 /// Serializes cache misses so one process downloads each missing artifact only once.
 static BINARY_PROVISION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Identifies whether an upgrade uses this exact process image or a cached release.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum UpgradeBinary {
-    /// Dirty builds have no release artifact, so matching agents receive the running server image.
-    ExactServer { path: PathBuf },
-    /// Clean builds use the release artifact for the agent's platform.
-    CachedRelease { path: PathBuf },
-}
-
 /// Stable failure categories used by the REST endpoint to choose an operator-facing status.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UpgradeBinaryError {
+    /// Keeps release identifiers safe as URL and cache path components.
+    #[error("Invalid Redoor release version: {version}")]
+    InvalidVersion { version: String },
     /// Rejects target pairs that have no published release artifact.
     #[error("Unsupported Redoor release platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
-    /// Prevents a local dirty executable from being sent to an incompatible target.
-    #[error(
-        "This dirty server binary is {server_os}/{server_arch}, but the agent is {agent_os}/{agent_arch}. Dirty builds can only upgrade agents on the server's platform."
-    )]
-    DirtyPlatformMismatch {
-        server_os: String,
-        server_arch: String,
-        agent_os: String,
-        agent_arch: String,
-    },
     /// Covers local executable lookup and release download/extraction failures.
     #[error("{0}")]
     Provision(String),
+}
+
+/// Accepts semantic versions because release tags and cache directories use this value verbatim.
+fn validate_release_version(version: &str) -> Result<(), UpgradeBinaryError> {
+    semver::Version::parse(version)
+        .map(|_| ())
+        .map_err(|_| UpgradeBinaryError::InvalidVersion {
+            version: version.to_string(),
+        })
 }
 
 /// Validates a platform before any artifact URL can be constructed.
@@ -81,6 +74,7 @@ pub(crate) async fn ensure_local_binary(
     os: &str,
     arch: &str,
 ) -> Result<PathBuf, UpgradeBinaryError> {
+    validate_release_version(version)?;
     validate_release_platform(os, arch)?;
     let binaries_dir = local_binaries_dir(version, os, arch)
         .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
@@ -94,6 +88,8 @@ async fn ensure_local_binary_in(
     arch: &str,
     binaries_dir: &Path,
 ) -> Result<PathBuf, UpgradeBinaryError> {
+    validate_release_version(version)?;
+    validate_release_platform(os, arch)?;
     let url = release_url(version, os, arch);
     ensure_local_binary_in_from_url(version, os, arch, binaries_dir, &url).await
 }
@@ -106,6 +102,7 @@ async fn ensure_local_binary_in_from_url(
     binaries_dir: &Path,
     url: &str,
 ) -> Result<PathBuf, UpgradeBinaryError> {
+    validate_release_version(version)?;
     validate_release_platform(os, arch)?;
     tokio::fs::create_dir_all(binaries_dir)
         .await
@@ -137,17 +134,6 @@ async fn cached_binary_is_ready(path: &Path) -> Result<bool, UpgradeBinaryError>
         Err(error) => return Err(UpgradeBinaryError::Provision(error.to_string())),
     };
     Ok(metadata.is_file() && metadata.len() > 0 && metadata.permissions().mode() & 0o111 != 0)
-}
-
-/// Selects a clean build from an explicit platform cache, downloading only on a miss.
-async fn clean_binary_for_connected_agent_in(
-    server: &BinaryIdentity,
-    agent_os: &str,
-    agent_arch: &str,
-    binaries_dir: &Path,
-) -> Result<UpgradeBinary, UpgradeBinaryError> {
-    let path = ensure_local_binary_in(&server.version, agent_os, agent_arch, binaries_dir).await?;
-    Ok(UpgradeBinary::CachedRelease { path })
 }
 
 /// Streams a release archive to disk and extracts its executable without whole-file buffering.
@@ -262,37 +248,10 @@ async fn make_executable(path: &Path) -> std::io::Result<()> {
     tokio::fs::set_permissions(path, permissions).await
 }
 
-/// Selects the exact server image for dirty builds or a same-version release for clean builds.
-pub(crate) async fn binary_for_connected_agent(
-    server: &BinaryIdentity,
-    agent_os: &str,
-    agent_arch: &str,
-) -> Result<UpgradeBinary, UpgradeBinaryError> {
-    validate_release_platform(agent_os, agent_arch)?;
-    if server.git_dirty || server.version_dirty {
-        if agent_os != std::env::consts::OS || agent_arch != std::env::consts::ARCH {
-            return Err(UpgradeBinaryError::DirtyPlatformMismatch {
-                server_os: std::env::consts::OS.to_string(),
-                server_arch: std::env::consts::ARCH.to_string(),
-                agent_os: agent_os.to_string(),
-                agent_arch: agent_arch.to_string(),
-            });
-        }
-        let path = std::env::current_exe()
-            .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
-        return Ok(UpgradeBinary::ExactServer { path });
-    }
-
-    let binaries_dir = local_binaries_dir(&server.version, agent_os, agent_arch)
-        .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
-    clean_binary_for_connected_agent_in(server, agent_os, agent_arch, &binaries_dir).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{Router, body::Body, extract::State, routing::get};
-    use redoor::commands::{BinaryIdentity, ServerBuildMode};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -373,71 +332,17 @@ mod tests {
         archive
     }
 
-    /// Builds a selectable identity while keeping tests independent of compile-time metadata.
-    fn identity(dirty: bool) -> BinaryIdentity {
-        BinaryIdentity {
-            version: "1.2.3".to_string(),
-            git_rev: "abc".to_string(),
-            git_dirty: dirty,
-            version_dirty: false,
-            build_mode: ServerBuildMode::Debug,
-            build_date: "today".to_string(),
+    /// Release versions must be safe semantic-version path and URL components.
+    #[test]
+    fn validates_release_versions() {
+        for valid in ["1.2.3", "1.2.3-beta.1", "1.2.3+build.4"] {
+            // Published semver tags, including prerelease metadata, must remain selectable.
+            assert!(validate_release_version(valid).is_ok());
         }
-    }
-
-    /// Matching dirty targets must receive the actual running executable.
-    #[tokio::test]
-    async fn dirty_matching_platform_selects_running_server() {
-        let selected = binary_for_connected_agent(
-            &identity(true),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            selected,
-            UpgradeBinary::ExactServer {
-                path: std::env::current_exe().unwrap()
-            }
-        );
-    }
-
-    /// A dirty executable cannot run on another supported target platform.
-    #[tokio::test]
-    async fn dirty_mismatching_platform_is_rejected() {
-        let (other_os, other_arch) = match (std::env::consts::OS, std::env::consts::ARCH) {
-            ("linux", "x86_64") => ("linux", "aarch64"),
-            _ => ("linux", "x86_64"),
-        };
-        let error = binary_for_connected_agent(&identity(true), other_os, other_arch)
-            .await
-            .unwrap_err();
-        // A published target that differs from the running executable must reach the dirty-build guard.
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "This dirty server binary is {}/{}, but the agent is {}/{}. Dirty builds can only upgrade agents on the server's platform.",
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                other_os,
-                other_arch
-            )
-        );
-    }
-
-    /// Matching architectures are still incompatible across operating systems.
-    #[tokio::test]
-    async fn dirty_mismatching_os_is_rejected() {
-        let (other_os, other_arch) = if std::env::consts::OS == "linux" {
-            ("macos", "aarch64")
-        } else {
-            ("linux", "x86_64")
-        };
-        assert!(matches!(
-            binary_for_connected_agent(&identity(true), other_os, other_arch).await,
-            Err(UpgradeBinaryError::DirtyPlatformMismatch { .. })
-        ));
+        for invalid in ["", "v1.2.3", "../1.2.3", "1.2"] {
+            // Invalid values cannot escape the versioned cache directory or alter the URL.
+            assert!(validate_release_version(invalid).is_err());
+        }
     }
 
     /// A release target must match an artifact actually emitted by the workflow.
@@ -453,22 +358,13 @@ mod tests {
     /// Android agents must resolve to the archive emitted by the release workflow.
     #[test]
     fn aarch64_android_release_is_supported() {
-        // Accepting the platform lets clean servers provision upgrades for Termux agents.
+        // Accepting the platform lets servers provision upgrades for Termux agents.
         assert!(validate_release_platform("android", "aarch64").is_ok());
         // The URL must remain aligned with the workflow's Android archive name.
         assert_eq!(
             release_url("1.2.3", "android", "aarch64"),
             "https://github.com/esamattis/redoor/releases/download/v1.2.3/redoor-aarch64-android.tar.gz"
         );
-    }
-
-    /// Dirty builds cannot bypass the exact published-platform allowlist.
-    #[tokio::test]
-    async fn dirty_x86_64_macos_target_is_rejected() {
-        assert!(matches!(
-            binary_for_connected_agent(&identity(true), "macos", "x86_64").await,
-            Err(UpgradeBinaryError::UnsupportedPlatform { .. })
-        ));
     }
 
     /// Release cache paths expose version, operating system, and architecture.
@@ -481,9 +377,9 @@ mod tests {
         );
     }
 
-    /// Clean selection uses a versioned platform cache and avoids the downloader on a hit.
+    /// Provisioning uses a versioned platform cache and avoids the downloader on a hit.
     #[tokio::test]
-    async fn clean_build_selects_existing_versioned_cache_file() {
+    async fn ensure_binary_selects_existing_versioned_cache_file() {
         let root = std::env::temp_dir().join(format!(
             "redoor-binary-cache-{}-{}",
             std::process::id(),
@@ -494,11 +390,10 @@ mod tests {
         let expected = dir.join("redoor");
         tokio::fs::write(&expected, b"cached").await.unwrap();
         make_executable(&expected).await.unwrap();
-        let selected =
-            clean_binary_for_connected_agent_in(&identity(false), "linux", "x86_64", &dir)
-                .await
-                .unwrap();
-        assert_eq!(selected, UpgradeBinary::CachedRelease { path: expected });
+        let selected = ensure_local_binary_in("1.2.3", "linux", "x86_64", &dir)
+            .await
+            .unwrap();
+        assert_eq!(selected, expected);
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

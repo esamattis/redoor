@@ -18,7 +18,12 @@ import {
     ScrollText,
     Package,
 } from "lucide-react";
-import { getBrowserUrl, type Agent } from "#ui/api-client";
+import {
+    getBrowserUrl,
+    type Agent,
+    type BinaryIdentity,
+    type ServerInfoResponse,
+} from "#ui/api-client";
 import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import {
     agentStartStatesAtom,
@@ -54,6 +59,20 @@ export const Route = createFileRoute("/agents/$agentId/")({
     component: AgentBoundary,
     errorComponent: RouteError,
 });
+
+/** Proves a force-installed agent loaded the exact executable running the server. */
+function matchesServerIdentity(
+    binary: BinaryIdentity,
+    server: ServerInfoResponse,
+): boolean {
+    return (
+        binary.git_rev === server.git_rev &&
+        binary.git_dirty === server.git_dirty &&
+        binary.version_dirty === server.version_dirty &&
+        binary.build_mode === server.build_mode &&
+        binary.build_date === server.build_date
+    );
+}
 
 /** Renders retained lifecycle state without issuing connected-only commands prematurely. */
 function AgentBoundary() {
@@ -340,8 +359,16 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             agentExePath={props.details.exe_path}
                             supportsSelfExec={props.agent.supportsSelfExec}
                             serverInfo={serverInfo}
-                            upgrade={() => props.agent.upgrade()}
-                            waitUntilReady={() =>
+                            upgrade={(targetVersion) =>
+                                props.agent.upgrade(targetVersion)
+                            }
+                            forceInstallRunningBinary={() =>
+                                props.agent.forceInstallRunningBinary()
+                            }
+                            waitUntilReady={(
+                                targetVersion,
+                                requireServerIdentity,
+                            ) =>
                                 waitForRestart(async () => {
                                     const upgradedAgent = (
                                         await api.listAgents()
@@ -352,7 +379,7 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                                             agent.connectionId !==
                                                 props.agent.connectionId &&
                                             agent.binary?.version ===
-                                                serverInfo.version,
+                                                targetVersion,
                                     );
                                     if (!upgradedAgent?.binary) {
                                         throw new Error(
@@ -360,22 +387,14 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                                         );
                                     }
                                     if (
-                                        (serverInfo.git_dirty ||
-                                            serverInfo.version_dirty) &&
-                                        (upgradedAgent.binary.git_rev !==
-                                            serverInfo.git_rev ||
-                                            upgradedAgent.binary.git_dirty !==
-                                                serverInfo.git_dirty ||
-                                            upgradedAgent.binary
-                                                .version_dirty !==
-                                                serverInfo.version_dirty ||
-                                            upgradedAgent.binary.build_mode !==
-                                                serverInfo.build_mode ||
-                                            upgradedAgent.binary.build_date !==
-                                                serverInfo.build_date)
+                                        requireServerIdentity &&
+                                        !matchesServerIdentity(
+                                            upgradedAgent.binary,
+                                            serverInfo,
+                                        )
                                     ) {
                                         throw new Error(
-                                            "Agent has not loaded the exact server build",
+                                            "Agent has not loaded the running server binary",
                                         );
                                     }
                                     await router.invalidate();

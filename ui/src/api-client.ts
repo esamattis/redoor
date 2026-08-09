@@ -34,6 +34,7 @@ import type { ServerBuildMode } from "#bindings/ServerBuildMode";
 import type { BinaryIdentity } from "#bindings/BinaryIdentity";
 import type { RestartResponse } from "#bindings/RestartResponse";
 import type { UpgradeAgentResponse } from "#bindings/UpgradeAgentResponse";
+import type { UpgradeAgentRequest } from "#bindings/UpgradeAgentRequest";
 import type { LogEvent } from "#bindings/LogEvent";
 import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
@@ -67,6 +68,7 @@ export type {
     BinaryIdentity,
     RestartResponse,
     UpgradeAgentResponse,
+    UpgradeAgentRequest,
     LogEvent,
     AgentConnectionStatus,
     StartAgentResponse,
@@ -319,11 +321,37 @@ export class Agent {
         );
     }
 
-    /** Atomically installs the server-selected binary and asks the agent to execute it in place. */
-    async upgrade(): Promise<UpgradeAgentResponse> {
+    /** Atomically installs a selected release and asks the agent to execute it in place. */
+    async upgrade(targetVersion: string): Promise<UpgradeAgentResponse> {
+        const request: UpgradeAgentRequest = {
+            source: "published_release",
+            target_version: targetVersion,
+        };
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
-            { method: "POST" },
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
+    }
+
+    /** Force-installs the exact running server executable on a matching architecture. */
+    async forceInstallRunningBinary(): Promise<UpgradeAgentResponse> {
+        const request: UpgradeAgentRequest = { source: "running_server" };
+        return apiRequest(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(request),
+            },
             this.requestContext,
         );
     }
