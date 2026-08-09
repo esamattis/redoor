@@ -3,4 +3,4 @@
 /**
  * Confirms a server or agent accepted a restart request before its connection closes.
  */
-export type RestartResponse = { restarting: boolean };
+export type RestartResponse = { restarting: boolean, };

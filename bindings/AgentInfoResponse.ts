@@ -8,21 +8,12 @@ import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 /**
  * Summarizes one known agent without requiring a current WebSocket connection.
  */
-export type AgentInfoResponse = {
-    id: AgentId;
-    name: string;
-    cwd: string | null;
-    managed: boolean;
-    status: AgentConnectionStatus;
-    connected_at: UnixTimestampSeconds | null;
-    /**
-     * Current WebSocket generation; changes whenever this agent reconnects.
-     */
-    connection_id: SocketId | null;
-    last_seen_at: UnixTimestampSeconds | null;
-    connection_issue: string | null;
-    /**
-     * Binary identity from the latest registration; absent until first connect.
-     */
-    binary: BinaryIdentity | null;
-};
+export type AgentInfoResponse = { id: AgentId, name: string, cwd: string | null, managed: boolean, status: AgentConnectionStatus, connected_at: UnixTimestampSeconds | null, 
+/**
+ * Current WebSocket generation; changes whenever this agent reconnects.
+ */
+connection_id: SocketId | null, last_seen_at: UnixTimestampSeconds | null, connection_issue: string | null, 
+/**
+ * Binary identity from the latest registration; absent until first connect.
+ */
+binary: BinaryIdentity | null, };
