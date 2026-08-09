@@ -162,7 +162,10 @@ fn default_config_content(
     };
     let agent_dir = toml_edit::Value::from(paths.agent_dir.as_str()).to_string();
     let agent_name = toml_edit::Value::from(paths.agent_name.as_str()).to_string();
-    let remote_bin = format!("~/.local/{}/<version>/redoor", paths.app_name);
+    let remote_bin = format!(
+        "${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/binaries/<version>/redoor",
+        paths.app_name
+    );
     format!(
         r#"# Redoor configuration (shared by server and agent).
 {header}

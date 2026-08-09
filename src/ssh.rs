@@ -67,7 +67,7 @@ pub(crate) struct SshArgs {
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
     pub(crate) token: String,
     /// Path to the redoor binary on the remote host. Defaults to the
-    /// versioned install layout (`~/.local/<app-name>/<version>/redoor`).
+    /// XDG data layout (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN")]
     pub(crate) remote_bin: Option<String>,
     /// Default directory the remote agent publishes for UI tab navigation.
@@ -82,7 +82,7 @@ pub(crate) struct SshArgs {
 /// via `--remote-bin` or `REDOOR_REMOTE_BIN`.
 fn default_remote_bin() -> anyhow::Result<String> {
     Ok(format!(
-        "~/.local/{}/{}/redoor",
+        "${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/binaries/{}/redoor",
         crate::app_name::app_name()?,
         env!("CARGO_PKG_VERSION")
     ))
@@ -92,7 +92,7 @@ fn default_remote_bin() -> anyhow::Result<String> {
 /// deploys never overwrite a versioned release install on the same host.
 fn debug_remote_bin() -> anyhow::Result<String> {
     Ok(format!(
-        "~/.local/{}/debug/redoor",
+        "${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/binaries/debug/redoor",
         crate::app_name::app_name()?
     ))
 }
@@ -108,7 +108,8 @@ pub(crate) fn default_agent_name(target: &str) -> String {
 /// without depending on clap.
 ///
 /// `remote_bin` is optional so callers that want the versioned default
-/// (`~/.local/<app-name>/<version>/redoor`) don't have to compute it themselves;
+/// (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`)
+/// don't have to compute it themselves;
 /// `start_ssh_agent` fills it in when `None`.
 #[derive(Debug, Clone)]
 pub(crate) struct SshAgentConfig {
@@ -376,18 +377,20 @@ async fn available_debug_binary(
     }
 }
 
-/// Local cache directory for redoor release binaries downloaded from GitHub.
-/// Caching avoids re-downloading the same tarball on every `redoor ssh` call
-/// against the same remote target.
-fn local_binaries_dir() -> anyhow::Result<PathBuf> {
-    Ok(crate::app_name::user_data_directory()?.join("binaries"))
+/// Platform-specific local cache directory for release binaries downloaded
+/// from GitHub. Mirroring the remote `binaries/<version>` hierarchy makes the
+/// artifact identity visible while OS and architecture keep local targets apart.
+fn local_binaries_dir(version: &str, os: &str, arch: &str) -> anyhow::Result<PathBuf> {
+    Ok(crate::app_name::user_cache_directory()?
+        .join("binaries")
+        .join(version)
+        .join(os)
+        .join(arch))
 }
 
-/// Final on-disk name of the cached binary for a given (version, os, arch).
-/// Embedding all three in the filename lets multiple targets coexist in the
-/// same cache directory and makes it obvious which file matches which host.
+/// Final on-disk path of the cached binary for a given platform and version.
 fn cached_binary_path(version: &str, os: &str, arch: &str) -> anyhow::Result<PathBuf> {
-    Ok(local_binaries_dir()?.join(format!("redoor-v{}-{}-{}", version, os, arch)))
+    Ok(local_binaries_dir(version, os, arch)?.join("redoor"))
 }
 
 /// Builds the GitHub release download URL for a given (version, os, arch).
@@ -408,7 +411,7 @@ async fn ensure_local_binary(
     os: &str,
     arch: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let binaries_dir = local_binaries_dir()?;
+    let binaries_dir = local_binaries_dir(version, os, arch)?;
     tokio::fs::create_dir_all(&binaries_dir).await?;
     let final_path = cached_binary_path(version, os, arch)?;
     if tokio::fs::try_exists(&final_path).await? {
@@ -522,8 +525,8 @@ async fn make_executable(path: &Path) -> std::io::Result<()> {
 }
 
 /// Returns the parent directory of a posix-style path that may start with
-/// `~`. We split on the last `/` so `~/.local/redoor/0.0.3/redoor` becomes
-/// `~/.local/redoor/0.0.3`, which the remote shell can still expand.
+/// `~`. We split on the last `/` so a versioned data path becomes its
+/// containing directory while leaving the leading `~` for the remote shell.
 fn parent_dir_of(path: &str) -> String {
     match path.rfind('/') {
         Some(idx) => path[..idx].to_string(),
@@ -1252,8 +1255,8 @@ pub(crate) async fn start_ssh_agent(
 #[cfg(test)]
 mod tests {
     use super::{
-        debug_binary_candidate, debug_remote_bin, file_sha1sum, random_remote_port,
-        remote_upload_tmp_path,
+        cached_binary_path, debug_binary_candidate, debug_remote_bin, default_remote_bin,
+        file_sha1sum, random_remote_port, remote_upload_tmp_path,
     };
     use std::path::{Path, PathBuf};
 
@@ -1318,8 +1321,38 @@ mod tests {
     #[test]
     fn remote_upload_tmp_path_stays_in_same_directory() {
         assert_eq!(
-            remote_upload_tmp_path("~/.local/redoor/debug/redoor", "1-2"),
-            "~/.local/redoor/debug/redoor.tmp.1-2"
+            remote_upload_tmp_path(
+                "${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/debug/redoor",
+                "1-2"
+            ),
+            "${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/debug/redoor.tmp.1-2"
+        );
+    }
+
+    /// Verifies cached releases use the shared version/platform hierarchy under
+    /// the disposable application cache rather than persistent application data.
+    #[test]
+    fn cached_binary_uses_versioned_platform_hierarchy() {
+        let cache_dir = crate::app_name::user_cache_directory().unwrap();
+        assert_eq!(
+            cached_binary_path("1.2.3", "linux", "x86_64").unwrap(),
+            cache_dir.join("binaries/1.2.3/linux/x86_64/redoor"),
+            "the cache path should identify the release and target platform"
+        );
+    }
+
+    /// Verifies remote releases mirror the local versioned binary hierarchy
+    /// while using the persistent XDG data location on the target host.
+    #[test]
+    fn default_remote_bin_uses_versioned_data_hierarchy() {
+        let app_name = crate::app_name::app_name().unwrap();
+        assert_eq!(
+            default_remote_bin().unwrap(),
+            format!(
+                "${{XDG_DATA_HOME:-$HOME/.local/share}}/{app_name}/binaries/{}/redoor",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "the remote install should live under the application data hierarchy"
         );
     }
 
@@ -1330,7 +1363,7 @@ mod tests {
         let app_name = crate::app_name::app_name().unwrap();
         assert_eq!(
             debug_remote_bin().unwrap(),
-            format!("~/.local/{app_name}/debug/redoor"),
+            format!("${{XDG_DATA_HOME:-$HOME/.local/share}}/{app_name}/binaries/debug/redoor"),
             "the debug install path should use the effective application namespace"
         );
     }

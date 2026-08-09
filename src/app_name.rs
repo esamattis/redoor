@@ -50,6 +50,24 @@ pub(crate) fn user_data_directory() -> Result<PathBuf> {
     Ok(home.join(".local/share").join(app_name()?))
 }
 
+/// Returns the per-application cache directory using the XDG cache root when set.
+/// Keeping disposable downloads out of the data directory lets cache cleanup tools
+/// reclaim them without removing persistent configuration or application state.
+pub(crate) fn user_cache_directory() -> Result<PathBuf> {
+    let cache_root = match std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+        Some(cache_root) => PathBuf::from(cache_root),
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("HOME is not set; cannot locate the application cache directory")?
+            .join(".cache"),
+    };
+    anyhow::ensure!(
+        cache_root.is_absolute(),
+        "XDG_CACHE_HOME must be an absolute path"
+    );
+    Ok(cache_root.join(app_name()?))
+}
+
 /// Rejects names that could escape their intended path or systemd namespace.
 fn validate_app_name(name: &str) -> Result<(), String> {
     let valid = !name.is_empty()

@@ -42,7 +42,7 @@ target = "user@example.com"
 # username = "deploy"
 # ssh_port = 22
 # name = "prod"
-# remote_bin = "~/.local/<app-name>/<version>/redoor"
+# remote_bin = "${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor"
 # dir = "/srv/app"
 # log = "log/prod.log"
 ```
