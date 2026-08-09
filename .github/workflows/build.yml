@@ -1,11 +1,18 @@
-name: Release
+name: Build and maybe release
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
       - "v[0-9]*.[0-9]*.[0-9]*-*"
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !(github.event_name == 'push' && github.ref_type == 'tag') }}
 
 jobs:
   build-ui:
@@ -119,7 +126,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
