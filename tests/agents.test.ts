@@ -386,6 +386,7 @@ describe("Agents API", () => {
                 last_seen_at: null,
                 connection_issue: null,
                 binary: null,
+                supports_self_exec: false,
             },
             {
                 getSessionCookie: () =>

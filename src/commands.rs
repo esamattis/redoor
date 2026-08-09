@@ -447,6 +447,8 @@ pub struct AgentInfoResponse {
     pub connection_issue: Option<String>,
     /// Binary identity from the latest registration; absent until first connect.
     pub binary: Option<BinaryIdentity>,
+    /// Whether the latest agent session can safely complete an in-place upgrade.
+    pub supports_self_exec: bool,
 }
 
 /// Confirms that a managed supervisor accepted an idempotent start request.

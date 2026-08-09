@@ -216,6 +216,9 @@ pub enum Message {
         token: String,
         /// Compile-time identity of the connecting agent binary.
         binary: crate::commands::BinaryIdentity,
+        /// Whether this agent understands the replacement-path self-exec command.
+        #[serde(default)]
+        supports_self_exec: bool,
     },
 
     /// Instructs the authoritative control session to establish its persistent

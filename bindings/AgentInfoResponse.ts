@@ -16,4 +16,8 @@ connection_id: SocketId | null, last_seen_at: UnixTimestampSeconds | null, conne
 /**
  * Binary identity from the latest registration; absent until first connect.
  */
-binary: BinaryIdentity | null, };
+binary: BinaryIdentity | null,
+/**
+ * Whether the latest agent session can safely complete an in-place upgrade.
+ */
+supports_self_exec: boolean, };

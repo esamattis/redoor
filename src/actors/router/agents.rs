@@ -32,6 +32,7 @@ impl AgentConnection {
             username: request.username,
             default_directory: request.default_directory,
             binary: request.binary,
+            supports_self_exec: request.supports_self_exec,
         }
     }
 
@@ -130,6 +131,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let name = connection.agent_name.clone();
     let default_directory = connection.default_directory.clone();
     let binary = connection.binary.clone();
+    let supports_self_exec = connection.supports_self_exec;
     let transfer_token = connection.transfer_token.clone();
     let transfer_open_sender = connection.outgoing_text.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
@@ -148,6 +150,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             connection_issue: None,
             socket_id: None,
             binary: None,
+            supports_self_exec: false,
         });
     known.name = name;
     known.default_directory = Some(default_directory);
@@ -164,6 +167,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.connection_issue = None;
     known.socket_id = Some(socket_id);
     known.binary = Some(binary);
+    known.supports_self_exec = supports_self_exec;
     ui::notify_refresh(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
@@ -423,6 +427,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             connection_issue: None,
             socket_id: None,
             binary: None,
+            supports_self_exec: false,
         },
     );
     let _ = request.reply.send(());
@@ -514,6 +519,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             last_seen_at: info.last_seen_at,
             connection_issue: info.connection_issue.clone(),
             binary: info.binary.clone(),
+            supports_self_exec: info.supports_self_exec,
         })
         .collect()
 }
@@ -616,6 +622,7 @@ mod tests {
             username: "user".to_string(),
             default_directory: "/tmp".to_string(),
             binary: crate::commands::current_binary_identity(),
+            supports_self_exec: true,
             watchdog: None,
         };
         commit_registration(state, request);

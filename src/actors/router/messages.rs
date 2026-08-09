@@ -35,6 +35,8 @@ pub struct RegisterAgentRequest {
     pub default_directory: String,
     /// Compile-time identity of the connecting agent binary.
     pub binary: BinaryIdentity,
+    /// Advertises support for replacing the executable through `SelfExec`.
+    pub supports_self_exec: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
@@ -62,6 +64,8 @@ pub struct AgentListEntry {
     pub connection_issue: Option<String>,
     /// Binary identity from the latest registration when one has occurred.
     pub binary: Option<BinaryIdentity>,
+    /// Latest registration's explicit support for replacement-path self-exec.
+    pub supports_self_exec: bool,
 }
 
 /// Registers a configured entry before any process can be started.

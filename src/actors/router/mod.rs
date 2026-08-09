@@ -362,6 +362,7 @@ mod tests {
                 username: "user".to_string(),
                 default_directory: "/tmp".to_string(),
                 binary: crate::commands::current_binary_identity(),
+                supports_self_exec: true,
                 watchdog: None,
             }))
             .expect("agent registered");
@@ -519,6 +520,7 @@ mod tests {
                 last_seen_at: None,
                 connection_issue: None,
                 binary: Some(crate::commands::current_binary_identity()),
+                supports_self_exec: true,
             }]
         );
 

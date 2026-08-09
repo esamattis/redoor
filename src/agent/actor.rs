@@ -393,6 +393,8 @@ impl AgentRuntime {
                     token: self.state.token.clone(),
                     // Lets the server compare agent builds against itself without a round-trip command.
                     binary: redoor::commands::current_binary_identity(),
+                    // Upgrade safety depends on the server knowing this command is implemented.
+                    supports_self_exec: true,
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {

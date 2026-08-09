@@ -74,6 +74,7 @@ async fn list_agent_snapshots(state: &ServerState) -> Result<Vec<AgentInfoRespon
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
             binary: agent.binary,
+            supports_self_exec: agent.supports_self_exec,
         })
         .collect::<Vec<_>>();
     agents.sort_by(|left, right| {
@@ -345,6 +346,24 @@ fn upgrade_upload_start_error(error: AgentUploadStartError) -> axum::response::R
     }
 }
 
+/// Maps binary selection failures to stable operator-facing upgrade responses.
+fn upgrade_binary_error_response(
+    error: crate::binaries::UpgradeBinaryError,
+) -> axum::response::Response {
+    let status = match error {
+        crate::binaries::UpgradeBinaryError::DirtyPlatformMismatch { .. } => StatusCode::CONFLICT,
+        crate::binaries::UpgradeBinaryError::UnsupportedPlatform { .. } => StatusCode::BAD_REQUEST,
+        crate::binaries::UpgradeBinaryError::Provision(_) => StatusCode::BAD_GATEWAY,
+    };
+    (
+        status,
+        Json(ErrorResponse {
+            error: error.to_string(),
+        }),
+    )
+        .into_response()
+}
+
 /// Streams one local executable through the same bounded transfer producer as HTTP PUT.
 async fn upload_upgrade_binary(
     state: &ServerState,
@@ -454,6 +473,17 @@ pub(crate) async fn upgrade_agent_handler(
         )
             .into_response();
     }
+    if !snapshot.supports_self_exec {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!(
+                    "Agent does not support safe self-exec upgrades: {agent}. Install a current Redoor agent manually, reconnect it, and retry the upgrade."
+                ),
+            }),
+        )
+            .into_response();
+    }
     let details = match get_agent_details(&state, &agent_id).await {
         Ok(details) => details,
         Err(response) => return response,
@@ -476,33 +506,7 @@ pub(crate) async fn upgrade_agent_handler(
     .await
     {
         Ok(selected) => selected,
-        Err(error @ crate::binaries::UpgradeBinaryError::DirtyPlatformMismatch { .. }) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: error.to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(error @ crate::binaries::UpgradeBinaryError::UnsupportedPlatform { .. }) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: error.to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: error.to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(error) => return upgrade_binary_error_response(error),
     };
     let source_path = match selected {
         crate::binaries::UpgradeBinary::ExactServer { path }
@@ -553,6 +557,33 @@ pub(crate) async fn upgrade_agent_handler(
             }),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unsupported release pairs return a client error with the exact rejected target.
+    #[tokio::test]
+    async fn unsupported_upgrade_platform_response_is_actionable() {
+        let response = upgrade_binary_error_response(
+            crate::binaries::UpgradeBinaryError::UnsupportedPlatform {
+                os: "macos".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        );
+        // A nonexistent release artifact is a target validation error, not an upstream outage.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let error: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        // Naming the exact pair lets operators select one emitted by release.yml.
+        assert_eq!(
+            error.error,
+            "Unsupported Redoor release platform: macos/x86_64"
+        );
     }
 }
 

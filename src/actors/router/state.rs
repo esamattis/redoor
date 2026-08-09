@@ -50,6 +50,8 @@ pub struct AgentConnection {
     pub default_directory: String,
     /// Compile-time identity reported by the agent at registration.
     pub binary: BinaryIdentity,
+    /// Whether destructive upgrade may safely send the replacement-path self-exec command.
+    pub supports_self_exec: bool,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -75,6 +77,8 @@ pub struct KnownAgent {
     pub socket_id: Option<SocketId>,
     /// Last registered binary identity, retained after disconnect for list warnings.
     pub binary: Option<BinaryIdentity>,
+    /// Last advertised support for replacement-path self-exec.
+    pub supports_self_exec: bool,
 }
 
 #[derive(Default)]

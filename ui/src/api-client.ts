@@ -268,6 +268,11 @@ export class Agent {
         return this.info.binary;
     }
 
+    /** Reports whether this session can complete the safe in-place upgrade protocol. */
+    get supportsSelfExec(): boolean {
+        return this.info.supports_self_exec;
+    }
+
     /** Requests desired-running without waiting for process preparation or registration. */
     async start(): Promise<StartAgentResponse> {
         return apiRequest(

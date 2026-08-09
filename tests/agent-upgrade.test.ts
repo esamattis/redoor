@@ -1,7 +1,20 @@
 import { copyFileSync, chmodSync, statSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
+import WebSocket from "ws";
 
-import type { Agent, ApiClient, BinaryIdentity } from "@/api-client";
+import {
+    ApiError,
+    type Agent,
+    type ApiClient,
+    type BinaryIdentity,
+} from "@/api-client";
 import {
     ProcessManager,
     SERVER_PATH,
@@ -11,6 +24,30 @@ import {
 } from "./test-utils";
 
 const AGENT_NAME = "upgrade-external-agent";
+
+/** Waits for a websocket to become writable without relying on timing delays. */
+async function waitForSocketOpen(socket: WebSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+    });
+}
+
+/** Reads one JSON control message from a websocket fixture. */
+async function nextJsonMessage(
+    socket: WebSocket,
+): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+        socket.once("message", (data) => {
+            try {
+                resolve(JSON.parse(data.toString()) as Record<string, unknown>);
+            } catch (error) {
+                reject(error);
+            }
+        });
+        socket.once("error", reject);
+    });
+}
 
 /** Compares every reported build field so dirty upgrades prove byte-identical selection. */
 function expectSameIdentity(
@@ -27,6 +64,7 @@ describe("connected external agent upgrade", () => {
     let api: ApiClient;
     let agent: Agent;
     let agentPid: number;
+    let serverPort: number;
     let executablePath: string;
 
     beforeAll(async () => {
@@ -42,6 +80,7 @@ describe("connected external agent upgrade", () => {
         api = setup.apiClient;
         agent = setup.testAgent;
         agentPid = setup.agentPid;
+        serverPort = setup.serverPort;
     }, 30000);
 
     afterAll(() => {
@@ -97,4 +136,89 @@ describe("connected external agent upgrade", () => {
             "upgrade-ready",
         );
     }, 60000);
+
+    it("rejects an older agent before sending an upload command", async () => {
+        const oldAgentName = "upgrade-unsupported-agent";
+        const serverInfo = await api.getServerInfo();
+        const control = new WebSocket(`ws://127.0.0.1:${serverPort}/ws`);
+        let transfer: WebSocket | undefined;
+        onTestFinished(() => {
+            control.close();
+            transfer?.close();
+        });
+        await waitForSocketOpen(control);
+        control.send(
+            JSON.stringify({
+                type: "agent_register",
+                agent_id: oldAgentName,
+                agent_name: oldAgentName,
+                os: "linux",
+                arch: "x86_64",
+                hostname: "old-host",
+                username: "old-user",
+                cwd: "/tmp",
+                token: serverInfo.agent_token,
+                binary: {
+                    version: "0.0.3",
+                    git_rev: "old",
+                    git_dirty: false,
+                    version_dirty: false,
+                    build_mode: "release",
+                    build_date: "unknown",
+                },
+                // Deliberately omit supports_self_exec to model a pre-protocol agent.
+            }),
+        );
+        const transferOpen = await nextJsonMessage(control);
+        expect(transferOpen.type).toBe("transfer_socket_open");
+        expect(typeof transferOpen.token).toBe("string");
+
+        transfer = new WebSocket(
+            `ws://127.0.0.1:${serverPort}/api/v1/agent-transfer/ws`,
+        );
+        await waitForSocketOpen(transfer);
+        transfer.send(
+            JSON.stringify({
+                type: "authenticate",
+                agent_id: oldAgentName,
+                token: transferOpen.token,
+            }),
+        );
+        const oldAgent = await waitForValue({
+            description: "unsupported fixture transfer registration",
+            predicate: async () => {
+                const candidate = (await api.listAgents()).find(
+                    (entry) => entry.name === oldAgentName,
+                );
+                return candidate?.status === "connected"
+                    ? candidate
+                    : undefined;
+            },
+        });
+        // An omitted capability must remain visible as unsupported metadata.
+        expect(oldAgent.supportsSelfExec).toBe(false);
+
+        const receivedCommands: Array<Record<string, unknown>> = [];
+        control.on("message", (data) => {
+            receivedCommands.push(
+                JSON.parse(data.toString()) as Record<string, unknown>,
+            );
+        });
+        let error: unknown;
+        try {
+            await oldAgent.upgrade();
+        } catch (caught) {
+            error = caught;
+        }
+        // Conflict plus remediation tells operators how to make the upgrade safe.
+        expect(error).toBeInstanceOf(ApiError);
+        expect(error).toMatchObject({
+            status: 409,
+            message: expect.stringContaining(
+                "Install a current Redoor agent manually",
+            ),
+        });
+        // No RawUpload command proves rejection happened before any remote mutation began.
+        expect(receivedCommands).toEqual([]);
+    });
 });

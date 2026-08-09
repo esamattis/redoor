@@ -121,7 +121,9 @@ describe("Raw Upload API", () => {
         );
 
         // Replacement must update bytes while preserving the destination inode's prior role.
-        expect(fs.readFileSync(uploadedFilePath, "utf8")).toBe("new executable");
+        expect(fs.readFileSync(uploadedFilePath, "utf8")).toBe(
+            "new executable",
+        );
         // Atomic replacement must retain the executable bit and every prior mode bit.
         expect(fs.statSync(uploadedFilePath).mode & 0o777).toBe(0o751);
     });
@@ -357,6 +359,7 @@ describe("Raw Upload API", () => {
                 last_seen_at: null,
                 connection_issue: null,
                 binary: null,
+                supports_self_exec: false,
             },
             {
                 getSessionCookie: () =>
