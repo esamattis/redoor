@@ -398,17 +398,17 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
         .map(|s| s.to_string());
 
     let ssh_port = match entry.get("ssh_port") {
-        None => 22,
+        None => None,
         Some(item) => {
             let raw = item.as_integer().with_context(|| {
                 format!("agents entry #{} 'ssh_port' must be an integer", index)
             })?;
-            u16::try_from(raw).with_context(|| {
+            Some(u16::try_from(raw).with_context(|| {
                 format!(
                     "ssh_port '{}' in agents entry #{} does not fit in a u16",
                     raw, index
                 )
-            })?
+            })?)
         }
     };
 
@@ -531,9 +531,8 @@ mod tests {
         std::fs::write(path, complete)
     }
 
-    /// Verifies that all optional fields fall back to their defaults when
-    /// omitted, so a minimal agents file with only a `target` is valid.
-    /// `ssh_port` defaults to 22 when missing.
+    /// Verifies that all optional fields remain unset when omitted so OpenSSH
+    /// can apply host-specific configuration for a minimal target-only entry.
     #[tokio::test]
     async fn test_parse_config_file_minimal_entry() {
         let temp = std::env::temp_dir().join(format!(
@@ -564,8 +563,8 @@ target = "user@example.com"
             AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(agent.target, "user@example.com");
-        // ssh_port defaults to 22 when not specified, matching `redoor agent relay`.
-        assert_eq!(agent.ssh_port, 22);
+        // An omitted port must defer to OpenSSH host configuration rather than force port 22.
+        assert_eq!(agent.ssh_port, None);
         // username, name, remote_bin and dir are None so the SSH launcher can
         // derive them (default name from target, default remote_bin from
         // versioned layout, default dir from the remote shell's cwd).
@@ -612,20 +611,19 @@ target = "web-1"
         };
         assert_eq!(first.target, "prod-db");
         assert_eq!(first.username.as_deref(), Some("deploy"));
-        assert_eq!(first.ssh_port, 2222);
+        assert_eq!(first.ssh_port, Some(2222));
         assert_eq!(first.name.as_deref(), Some("db-agent"));
         assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
         assert_eq!(first.dir.as_deref(), Some("/srv/app"));
         assert_eq!(first.log.as_deref(), Some("log/db-agent.log"));
 
-        // The second entry only has a target, confirming ssh_port defaults to 22
-        // when omitted while the first entry overrides it explicitly.
+        // The second entry defers to OpenSSH while the first overrides its port explicitly.
         let second = match &config.agents[1] {
             AgentConfig::SshBacked(config) => config,
             AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(second.target, "web-1");
-        assert_eq!(second.ssh_port, 22);
+        assert_eq!(second.ssh_port, None);
     }
 
     /// Verifies that credentials-only configuration can run without managed agents.

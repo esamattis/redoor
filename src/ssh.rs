@@ -58,9 +58,10 @@ pub(crate) struct RelayArgs {
     /// supply the username instead.
     #[arg(short = 'l')]
     pub(crate) username: Option<String>,
-    /// SSH server port. Forwarded to ssh via `-p`.
-    #[arg(short = 'p', default_value_t = 22)]
-    pub(crate) ssh_port: u16,
+    /// SSH server port override. When omitted, OpenSSH uses the matching host
+    /// configuration and otherwise defaults to port 22.
+    #[arg(short = 'p')]
+    pub(crate) ssh_port: Option<u16>,
     /// Redoor server URL reached from the machine running this command
     /// (`http(s)://` or `ws(s)://`). A random dynamic port on the SSH target
     /// forwards to this host/port. `https`/`wss` enable TLS; the hostname is
@@ -111,8 +112,9 @@ pub(crate) struct SshBackedAgentConfig {
     /// SSH login username. Forwarded to ssh via `-l`. When `None`, ssh config
     /// or the `user@host` target syntax supplies the username.
     pub(crate) username: Option<String>,
-    /// SSH server port. Forwarded to ssh via `-p`.
-    pub(crate) ssh_port: u16,
+    /// SSH server port override. `None` preserves the port resolved by OpenSSH
+    /// from its host configuration or built-in default.
+    pub(crate) ssh_port: Option<u16>,
     /// Name the remote agent registers with on the server. When `None`,
     /// defaults to the host portion of `target`.
     pub(crate) name: Option<String>,
@@ -237,7 +239,7 @@ impl PreparedSshBackedAgent {
             Level::Info,
             "Spawning SSH-backed redoor agent: target={}, ssh_server_port={}, name={}, remote_bin={}, random_remote_port={}, destination={}:{}",
             self.host.target(),
-            self.host.server_port(),
+            self.host.server_port_label(),
             self.agent_name,
             self.remote_bin,
             remote_port,
@@ -359,7 +361,7 @@ async fn prepare_ssh_backed_agent_for_destination(
             Level::Info,
             "Sniffing SSH target before relay: target={}, ssh_server_port={}, remote_bin={}",
             config.target,
-            config.ssh_port,
+            host.server_port_label(),
             remote_bin
         );
         let sniff = sniff_remote(&host, &remote_bin).await?;

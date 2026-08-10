@@ -117,7 +117,9 @@ impl SshRunOptions {
 #[derive(Clone)]
 pub(super) struct SshHost {
     username: Option<String>,
-    ssh_port: u16,
+    /// An explicit override passed with `-p`; `None` lets OpenSSH resolve the
+    /// port from its host configuration or built-in default.
+    ssh_port: Option<u16>,
     target: String,
 }
 
@@ -126,7 +128,7 @@ impl SshHost {
     pub(super) fn new(target: String) -> Self {
         Self {
             username: None,
-            ssh_port: 22,
+            ssh_port: None,
             target,
         }
     }
@@ -137,8 +139,9 @@ impl SshHost {
         self
     }
 
-    /// Sets the ssh server port (`ssh -p`). Defaults to 22 if not called.
-    pub(super) fn ssh_port(mut self, port: u16) -> Self {
+    /// Sets an optional SSH server port override. Leaving it unset preserves
+    /// host-specific ports from `~/.ssh/config` instead of forcing port 22.
+    pub(super) fn ssh_port(mut self, port: Option<u16>) -> Self {
         self.ssh_port = port;
         self
     }
@@ -149,10 +152,12 @@ impl SshHost {
         &self.target
     }
 
-    /// Exposes the configured SSH server port so launch logs distinguish it
-    /// from the random remote reverse-forward port.
-    pub(super) fn server_port(&self) -> u16 {
+    /// Describes whether the SSH server port is explicitly overridden or left
+    /// for OpenSSH configuration, keeping it distinct from the random tunnel port.
+    pub(super) fn server_port_label(&self) -> String {
         self.ssh_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "ssh-config".to_string())
     }
 
     /// Spawns `ssh` to execute `command` with `args` on the remote host,
@@ -273,7 +278,9 @@ impl SshHost {
         if let Some(ref username) = self.username {
             ssh.arg("-l").arg(username);
         }
-        ssh.arg("-p").arg(self.ssh_port.to_string());
+        if let Some(port) = self.ssh_port {
+            ssh.arg("-p").arg(port.to_string());
+        }
         // Compress the upload stream so large binaries transfer faster over
         // slow uplinks. ssh compression is cheap and transparent here.
         ssh.arg("-C");
@@ -365,7 +372,9 @@ async fn build_ssh_command(
     if let Some(ref username) = host.username {
         ssh.arg("-l").arg(username);
     }
-    ssh.arg("-p").arg(host.ssh_port.to_string());
+    if let Some(port) = host.ssh_port {
+        ssh.arg("-p").arg(port.to_string());
+    }
 
     if options.compressed {
         ssh.arg("-C");
@@ -472,6 +481,28 @@ mod tests {
         assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
         // The remote agent command must still be present after the environment preamble.
         assert!(debug_command.contains("/opt/redoor"));
+    }
+
+    /// Verifies an omitted port preserves SSH host aliases while an explicit
+    /// override still produces the expected OpenSSH `-p` arguments.
+    #[tokio::test]
+    async fn ssh_port_is_only_passed_when_explicitly_configured() {
+        let options = super::SshRunOptions::default();
+        let configured_host = super::SshHost::new("configured-alias".to_string());
+        let configured_command = super::build_ssh_command(&configured_host, "true", &[], &options)
+            .await
+            .unwrap();
+        // Omitting `-p` is what allows OpenSSH to use the alias's configured port.
+        assert!(!format!("{configured_command:?}").contains("\"-p\""));
+
+        let overridden_host =
+            super::SshHost::new("configured-alias".to_string()).ssh_port(Some(2222));
+        let overridden_command = super::build_ssh_command(&overridden_host, "true", &[], &options)
+            .await
+            .unwrap();
+        let overridden_debug = format!("{overridden_command:?}");
+        // An operator-provided port must override any conflicting SSH configuration.
+        assert!(overridden_debug.contains("\"-p\" \"2222\""));
     }
 
     /// Verifies a reverse route targets the host reachable from the local SSH

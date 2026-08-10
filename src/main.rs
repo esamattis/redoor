@@ -472,7 +472,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
 mod tests {
     use clap::Parser;
 
-    use super::Cli;
+    use super::{AgentCommand, Cli, Commands};
 
     /// Keeps service-manager commands nested under their selected process role.
     #[test]
@@ -494,6 +494,53 @@ mod tests {
                 .is_err(),
             "role-scoped service commands must reject the removed mode flag"
         );
+    }
+
+    /// Ensures relay leaves the SSH port unset unless the operator explicitly
+    /// overrides it, allowing host aliases to retain their configured ports.
+    #[test]
+    fn agent_relay_preserves_ssh_config_port_by_default() {
+        let default_cli = Cli::try_parse_from([
+            "redoor",
+            "agent",
+            "relay",
+            "--server",
+            "http://redoor.example:3000",
+            "--token",
+            "secret",
+            "configured-alias",
+        ])
+        .unwrap();
+        let Commands::Agent(default_agent) = default_cli.command else {
+            panic!("agent relay should parse into the agent command");
+        };
+        let Some(AgentCommand::Relay(default_relay)) = default_agent.command else {
+            panic!("agent relay should preserve its relay arguments");
+        };
+        // `None` prevents the transport from emitting `-p 22` over an SSH alias.
+        assert_eq!(default_relay.ssh_port, None);
+
+        let override_cli = Cli::try_parse_from([
+            "redoor",
+            "agent",
+            "relay",
+            "-p",
+            "2200",
+            "--server",
+            "http://redoor.example:3000",
+            "--token",
+            "secret",
+            "configured-alias",
+        ])
+        .unwrap();
+        let Commands::Agent(override_agent) = override_cli.command else {
+            panic!("agent relay should parse into the agent command");
+        };
+        let Some(AgentCommand::Relay(override_relay)) = override_agent.command else {
+            panic!("agent relay should preserve its relay arguments");
+        };
+        // An explicit CLI port must still override the alias configuration.
+        assert_eq!(override_relay.ssh_port, Some(2200));
     }
 
     /// Keeps the SSH relay command focused on the topology where this machine
