@@ -1,6 +1,10 @@
 # redoor
 
-Manual computer management using server-agent architecture. Agents run on computers and connect back to the central redoor server or the server starts the agents manually using SSH. The server provides a web UI with file browser and remote shell for each agent. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
+Manual computer management using server-agent architecture.
+
+Agents connect directly to the server via HTTP/WebSocket, or the server can provision and spawn agents using SSH. When direct connection is not possible in either direction, agents can connect via a relay agent that can reach both the server and the agent.
+
+The server provides an unified web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
 
 
 
