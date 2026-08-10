@@ -16,6 +16,8 @@
 //! machine running the command. The remote agent is given
 //! `ws://localhost:<remote_port>/ws`, so what looks like a local WebSocket
 //! connection to the agent actually reaches the server through that tunnel.
+//! Standalone WSS routes retain the real server authority for TLS and HTTP but
+//! open their TCP connections through the same random localhost tunnel port.
 //!
 //! The agent token is not included in either process's command-line arguments.
 //! The local process writes it as the first line of SSH stdin; a small remote
@@ -43,7 +45,7 @@ use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
 use transport::{SshHost, SshRunOptions};
 
 /// Starts a redoor agent on an SSH host that cannot reach the redoor server
-/// directly, routing its plain WebSocket connection through this machine.
+/// directly, routing its WebSocket connection through this machine.
 ///
 /// The machine running this command must be able to reach both the SSH target
 /// and `--route`. Redoor provisions the agent binary on the SSH target, opens a
@@ -62,10 +64,17 @@ pub(crate) struct SshArgs {
     pub(crate) ssh_port: u16,
     /// Redoor server destination reached from the machine running this command,
     /// formatted as `HOST:PORT` or `[IPv6]:PORT`. A random dynamic port on the
-    /// SSH target forwards to this destination. Only plain WebSocket backends
-    /// are supported; do not include a `ws://` scheme.
+    /// SSH target forwards to this destination. With `--wss`, the hostname is
+    /// also used for TLS SNI and WebSocket HTTP authority. Do not include a URL scheme.
     #[arg(long)]
     pub(crate) route: SshRoute,
+    /// Use secure WebSockets for an HTTPS/WSS deployment. Certificate verification is enabled.
+    #[arg(long)]
+    pub(crate) wss: bool,
+    /// Disable TLS certificate verification. This permits untrusted, expired,
+    /// or hostname-mismatched certificates and should be used only when necessary.
+    #[arg(long, requires = "wss")]
+    pub(crate) insecure: bool,
     /// Name the remote agent registers with on the server. Defaults to the
     /// host portion of the ssh target so multiple ssh agents are naturally
     /// distinguishable without requiring an explicit name.
@@ -93,7 +102,7 @@ pub(crate) struct SshArgs {
 pub(crate) struct SshRoute {
     /// Destination hostname or IP address, stored without IPv6 brackets.
     host: String,
-    /// Destination port where the plain redoor WebSocket server is listening.
+    /// Destination port where the redoor WebSocket server is listening.
     port: u16,
 }
 
@@ -104,7 +113,7 @@ impl FromStr for SshRoute {
     /// final port separator remains unambiguous to both Clap and OpenSSH.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.contains("://") {
-            return Err("route must be HOST:PORT without a ws:// scheme".to_string());
+            return Err("route must be HOST:PORT without a URL scheme".to_string());
         }
         let (host, port) = if let Some(bracketed) = value.strip_prefix('[') {
             bracketed
@@ -122,16 +131,42 @@ impl FromStr for SshRoute {
         if host.is_empty() || host.chars().any(char::is_whitespace) {
             return Err("route host must not be empty or contain whitespace".to_string());
         }
+        if host.contains(['/', '\\', '?', '#', '@', '[', ']', '%']) {
+            return Err(
+                "route host must not contain URL path, userinfo, or escape syntax".to_string(),
+            );
+        }
+        if value.starts_with('[') && host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err("IPv6 route must contain a valid IPv6 address".to_string());
+        }
         let port = port
             .parse::<u16>()
             .map_err(|_| "route port must be an integer from 1 to 65535".to_string())?;
         if port == 0 {
             return Err("route port must be an integer from 1 to 65535".to_string());
         }
+        let authority = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        reqwest::Url::parse(&format!("wss://{authority}/ws"))
+            .map_err(|_| "route host is not valid in a WebSocket authority".to_string())?;
         Ok(Self {
             host: host.to_string(),
             port,
         })
+    }
+}
+
+impl SshRoute {
+    /// Formats the logical WebSocket authority while restoring brackets required for IPv6 URLs.
+    fn authority(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
     }
 }
 
@@ -177,12 +212,17 @@ pub(crate) struct SshAgentConfig {
 /// the remote host.
 ///
 /// Reverse port forwarding (`-R`) makes the SSH target listen on a random
-/// dynamic port and asks the local SSH client to connect to `--route`. The
-/// agent uses `ws://localhost:<random-port>/ws` on the SSH target, so it does
-/// not need direct network access to the routed server. Stdio is inherited so
-/// the user can observe agent logs while this command owns the SSH session.
+/// dynamic port and asks the local SSH client to connect to `--route`. Plain
+/// routes use the tunnel URL directly. WSS routes connect TCP through that same
+/// tunnel while retaining the route hostname for TLS and HTTP. Stdio is
+/// inherited so the user can observe agent logs while this command owns the SSH session.
 pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>> {
     let route = args.route;
+    if args.insecure {
+        eprintln!(
+            "WARNING: --insecure disables TLS certificate verification for the routed server"
+        );
+    }
     let config = SshAgentConfig {
         username: args.username,
         ssh_port: args.ssh_port,
@@ -193,7 +233,7 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         target: args.target,
         log: None,
     };
-    start_ssh_agent(config, route, &args.token).await
+    start_ssh_agent(config, route, &args.token, args.wss, args.insecure).await
 }
 
 /// Remembers the last random remote port so every retry necessarily chooses a
@@ -202,6 +242,15 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
 struct RandomRemotePort {
     /// Atomic state keeps cloned prepared agents coordinated across spawn calls.
     previous: std::sync::Arc<std::sync::atomic::AtomicU16>,
+}
+
+/// WSS-only launch settings that preserve server identity across the localhost tunnel.
+#[derive(Clone)]
+struct SecureRoute {
+    /// Logical authority retained in the URL for TLS SNI and HTTP Host handling.
+    authority: String,
+    /// Whether the remote agent should deliberately skip certificate verification.
+    insecure: bool,
 }
 
 impl RandomRemotePort {
@@ -236,6 +285,8 @@ pub(crate) struct PreparedSshAgent {
     options: SshRunOptions,
     /// Shares random-port selection between standalone and managed launches.
     random_remote_port: RandomRemotePort,
+    /// Standalone WSS identity; absent for plain and server-managed SSH agents.
+    secure_route: Option<SecureRoute>,
 }
 
 impl PreparedSshAgent {
@@ -278,14 +329,25 @@ impl PreparedSshAgent {
     /// Builds the matching remote agent argv and reverse-forward options so the
     /// agent always connects to the random port SSH actually requested.
     fn launch_settings(&self, remote_port: u16) -> (Vec<String>, SshRunOptions) {
+        let server_url = match &self.secure_route {
+            Some(route) => format!("wss://{}/ws", route.authority),
+            None => format!("ws://localhost:{remote_port}/ws"),
+        };
         let mut remote_argv = vec![
             "--app-name".to_string(),
             self.app_name.clone(),
             "agent".to_string(),
-            format!("ws://localhost:{remote_port}/ws"),
+            server_url,
             "--name".to_string(),
             self.agent_name.clone(),
         ];
+        if let Some(route) = &self.secure_route {
+            remote_argv.push("--connect-address".to_string());
+            remote_argv.push(format!("localhost:{remote_port}"));
+            if route.insecure {
+                remote_argv.push("--insecure-tls".to_string());
+            }
+        }
         if let Some(dir) = &self.dir {
             remote_argv.push("-d".to_string());
             remote_argv.push(dir.clone());
@@ -327,6 +389,7 @@ pub(crate) async fn prepare_ssh_agent(
         redoor_port,
         agent_token,
         false,
+        None,
     )
     .await
 }
@@ -339,6 +402,7 @@ async fn prepare_ssh_agent_for_destination(
     destination_port: u16,
     agent_token: &str,
     monitor_forward_failure: bool,
+    secure_route: Option<SecureRoute>,
 ) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
@@ -397,6 +461,7 @@ async fn prepare_ssh_agent_for_destination(
         destination_port,
         options,
         random_remote_port: RandomRemotePort::default(),
+        secure_route,
     })
 }
 
@@ -536,10 +601,22 @@ pub(crate) async fn start_ssh_agent(
     config: SshAgentConfig,
     route: SshRoute,
     agent_token: &str,
+    wss: bool,
+    insecure: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared =
-        prepare_ssh_agent_for_destination(&config, route.host, route.port, agent_token, true)
-            .await?;
+    let secure_route = wss.then(|| SecureRoute {
+        authority: route.authority(),
+        insecure,
+    });
+    let prepared = prepare_ssh_agent_for_destination(
+        &config,
+        route.host,
+        route.port,
+        agent_token,
+        true,
+        secure_route,
+    )
+    .await?;
     run_standalone_random(&prepared).await
 }
 
@@ -602,8 +679,7 @@ mod tests {
         assert_eq!(route.port, 4000);
     }
 
-    /// Verifies routes reject URL syntax because this mode deliberately
-    /// supports only a plain WebSocket destination rather than WSS URLs.
+    /// Verifies routes reject URL syntax because scheme selection remains a separate flag.
     #[test]
     fn rejects_route_with_websocket_scheme() {
         let error = "ws://redoor.example:4000"
@@ -611,7 +687,7 @@ mod tests {
             .expect_err("route URL should be rejected");
 
         // A focused error keeps users from assuming URL schemes are supported.
-        assert!(error.contains("without a ws:// scheme"));
+        assert!(error.contains("without a URL scheme"));
     }
 
     /// Verifies raw IPv6 is rejected so the destination port cannot be parsed
@@ -624,6 +700,34 @@ mod tests {
 
         // The correction tells operators exactly how to make the route unambiguous.
         assert!(error.contains("[ADDRESS]:PORT"));
+    }
+
+    /// Prevents tunnel destinations from being reinterpreted when embedded in the WSS URL.
+    #[test]
+    fn rejects_route_with_url_authority_delimiters() {
+        for route in [
+            "redoor.example/path:443",
+            "user@redoor.example:443",
+            "redoor.example%2fpath:443",
+        ] {
+            let error = route
+                .parse::<super::SshRoute>()
+                .expect_err("URL syntax in a route host should be rejected");
+
+            // Rejecting the input keeps the OpenSSH destination and logical WSS host identical.
+            assert!(error.contains("URL path, userinfo, or escape syntax"));
+        }
+    }
+
+    /// Prevents arbitrary bracketed hostnames from masquerading as IPv6 URL authorities.
+    #[test]
+    fn rejects_invalid_bracketed_ipv6_route() {
+        let error = "[redoor.example]:443"
+            .parse::<super::SshRoute>()
+            .expect_err("brackets should be reserved for valid IPv6 literals");
+
+        // A focused error avoids producing an invalid logical WSS authority later.
+        assert!(error.contains("valid IPv6 address"));
     }
 
     /// Verifies managed tunnel ports stay in the dynamic/private range and a
@@ -639,5 +743,62 @@ mod tests {
         assert_ne!(second, first);
         // Every retry must remain inside the dynamic/private range.
         assert!((49152..=65535).contains(&second));
+    }
+
+    /// Builds prepared state without touching an SSH host so launch argv can be checked directly.
+    fn prepared_agent(secure_route: Option<super::SecureRoute>) -> super::PreparedSshAgent {
+        super::PreparedSshAgent {
+            host: super::SshHost::new("user@target".to_string()),
+            agent_name: "target".to_string(),
+            app_name: "redoor".to_string(),
+            remote_bin: "/tmp/redoor".to_string(),
+            dir: None,
+            destination_host: "redoor.example".to_string(),
+            destination_port: 443,
+            options: super::SshRunOptions::default(),
+            random_remote_port: super::RandomRemotePort::default(),
+            secure_route,
+        }
+    }
+
+    /// Keeps existing plain routes pointed directly at the random tunnel listener.
+    #[test]
+    fn plain_launch_uses_random_tunnel_url() {
+        let prepared = prepared_agent(None);
+        let (argv, _options) = prepared.launch_settings(52123);
+
+        // Plain routing must retain its existing URL and avoid hidden TLS routing flags.
+        assert!(argv.iter().any(|value| value == "ws://localhost:52123/ws"));
+        assert!(!argv.iter().any(|value| value == "--connect-address"));
+        assert!(!argv.iter().any(|value| value == "--insecure-tls"));
+    }
+
+    /// Keeps WSS server identity stable while retries change only the physical tunnel endpoint.
+    #[test]
+    fn secure_launch_separates_authority_from_tunnel() {
+        let prepared = prepared_agent(Some(super::SecureRoute {
+            authority: "redoor.example:443".to_string(),
+            insecure: true,
+        }));
+        let (first_argv, _options) = prepared.launch_settings(52123);
+        let (second_argv, _options) = prepared.launch_settings(52124);
+
+        // The logical URL supplies both SNI and WebSocket authority across tunnel retries.
+        assert!(
+            first_argv
+                .iter()
+                .any(|value| value == "wss://redoor.example:443/ws")
+        );
+        assert!(
+            second_argv
+                .iter()
+                .any(|value| value == "wss://redoor.example:443/ws")
+        );
+        // Each retry must direct TCP to the newly selected remote SSH listener.
+        assert!(first_argv.iter().any(|value| value == "localhost:52123"));
+        assert!(second_argv.iter().any(|value| value == "localhost:52124"));
+        // The explicit insecure choice must be propagated without exposing the agent token.
+        assert!(first_argv.iter().any(|value| value == "--insecure-tls"));
+        assert!(!first_argv.iter().any(|value| value == "secret"));
     }
 }

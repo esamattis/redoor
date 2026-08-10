@@ -1,3 +1,4 @@
+use super::connection::AgentConnection;
 use anyhow::{Context, Result};
 use futures_util::{
     SinkExt, StreamExt,
@@ -13,7 +14,7 @@ use tokio::{
     sync::{broadcast, watch},
 };
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message as WsMessage,
+    MaybeTlsStream, WebSocketStream, tungstenite::protocol::Message as WsMessage,
 };
 
 type LogSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -31,18 +32,18 @@ fn log_stream_url(server_url: &str, log_stream_id: &LogStreamId) -> Result<reqwe
 
 /// Connects one authenticated dedicated socket and owns its logger receiver until teardown.
 pub(crate) async fn connect_and_run(
-    server_url: &str,
+    connection: &AgentConnection,
     log_stream_id: LogStreamId,
     token: String,
     mut cancel_receiver: watch::Receiver<bool>,
 ) -> Result<()> {
-    let url = log_stream_url(server_url, &log_stream_id)?;
+    let url = log_stream_url(connection.server_url(), &log_stream_id)?;
     if *cancel_receiver.borrow() {
         return Ok(());
     }
     let connection = tokio::select! {
         _ = cancel_receiver.changed() => return Ok(()),
-        result = connect_async(url.as_str()) => result,
+        result = connection.connect(url.as_str()) => result,
     };
     let (mut socket, _) = connection.context("failed to connect dedicated log websocket")?;
 

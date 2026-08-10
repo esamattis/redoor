@@ -1,3 +1,4 @@
+use super::connection::AgentConnection;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use nix::{
@@ -22,7 +23,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message as WsMessage,
+    MaybeTlsStream, WebSocketStream, tungstenite::protocol::Message as WsMessage,
 };
 
 const PTY_BUFFER_SIZE: usize = 8 * 1024;
@@ -60,7 +61,7 @@ fn terminal_url(server_url: &str, terminal_id: &TerminalId) -> Result<reqwest::U
 
 /// Connects one dedicated websocket and owns the PTY until all descendants are torn down.
 pub(crate) async fn connect_and_run(
-    server_url: &str,
+    connection: &AgentConnection,
     terminal_id: TerminalId,
     token: String,
     size: TerminalSize,
@@ -69,13 +70,13 @@ pub(crate) async fn connect_and_run(
 ) -> Result<()> {
     size.validate()
         .map_err(|error| anyhow!(error.to_string()))?;
-    let url = terminal_url(server_url, &terminal_id)?;
+    let url = terminal_url(connection.server_url(), &terminal_id)?;
     if *cancel_receiver.borrow() {
         return Ok(());
     }
     let connection = tokio::select! {
         _ = cancel_receiver.changed() => return Ok(()),
-        result = connect_async(url.as_str()) => result,
+        result = connection.connect(url.as_str()) => result,
     };
     let (mut socket, _) = connection.context("failed to connect dedicated terminal websocket")?;
 

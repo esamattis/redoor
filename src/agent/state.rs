@@ -27,6 +27,12 @@ pub(crate) struct AgentArgs {
     /// Overrides `REDOOR_AGENT_WS` and `[agent].ws_address`.
     #[arg(env = "REDOOR_AGENT_WS")]
     pub(crate) ws_address: Option<String>,
+    /// Physical TCP endpoint used by an SSH tunnel while the URL retains TLS and HTTP identity.
+    #[arg(long, hide = true)]
+    pub(crate) connect_address: Option<String>,
+    /// Disables TLS certificate verification for an explicitly tunneled WSS connection.
+    #[arg(long, hide = true, requires = "connect_address")]
+    pub(crate) insecure_tls: bool,
     /// Registration name shown in the UI. Defaults to the computer hostname.
     /// Overrides `REDOOR_AGENT_NAME` and `[agent].name`.
     #[arg(long, env = "REDOOR_AGENT_NAME")]
@@ -319,7 +325,8 @@ impl ActiveLogStreams {
 pub(crate) struct AgentState {
     pub(crate) agent_id: AgentId,
     pub(crate) agent_name: String,
-    pub(crate) server_url: String,
+    /// Shared connection policy ensures every agent websocket uses the same tunnel and TLS identity.
+    pub(crate) connection: super::connection::AgentConnection,
     /// Immutable absolute directory used when the UI opens this agent.
     pub(crate) default_directory: String,
     /// Shared secret presented during registration so the server can reject impostors.
@@ -348,14 +355,14 @@ impl AgentState {
     pub(crate) fn new(
         agent_id: AgentId,
         agent_name: String,
-        server_url: String,
+        connection: super::connection::AgentConnection,
         default_directory: String,
         token: String,
     ) -> Self {
         Self {
             agent_id,
             agent_name,
-            server_url,
+            connection,
             default_directory,
             token,
             ws_control_tx: None,
@@ -436,7 +443,12 @@ mod tests {
         let mut state = AgentState::new(
             AgentId::from("test-agent"),
             "test-agent".to_string(),
-            "ws://localhost/ws".to_string(),
+            super::super::connection::AgentConnection::new(
+                "ws://localhost/ws".to_string(),
+                None,
+                false,
+            )
+            .unwrap(),
             "/tmp".to_string(),
             "token".to_string(),
         );

@@ -522,4 +522,38 @@ mod tests {
             "the relay command must reject invocations without a route"
         );
     }
+
+    /// Prevents certificate verification from being disabled accidentally on a plain route.
+    #[test]
+    fn ssh_insecure_requires_wss() {
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "ssh",
+                "--route",
+                "redoor.example:443",
+                "--wss",
+                "--insecure",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_ok(),
+            "insecure mode must remain available for explicitly selected WSS routes"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "ssh",
+                "--route",
+                "redoor.example:443",
+                "--insecure",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_err(),
+            "plain WebSocket routes must reject the TLS-only insecure switch"
+        );
+    }
 }

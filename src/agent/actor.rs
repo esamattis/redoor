@@ -1,5 +1,7 @@
 use super::{
-    AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState, notification,
+    AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState,
+    connection::AgentConnection,
+    notification,
     transfer::{begin_transfer_connection, schedule_transfer_reconnect},
     ws::{spawn_read_task, spawn_stdin_task},
 };
@@ -10,7 +12,7 @@ use redoor::{
 };
 use sysinfo::System;
 use tokio::sync::mpsc::{self, Receiver};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Number of quick reconnect attempts allowed before switching to the slower window.
 const QUICK_RECONNECT_ATTEMPTS: u32 = 10;
@@ -38,13 +40,13 @@ impl AgentRuntime {
     pub(crate) fn new(
         agent_id: AgentId,
         agent_name: String,
-        server_url: String,
+        connection: AgentConnection,
         default_directory: String,
         token: String,
         startup_notification_delay: Option<tokio::time::Duration>,
     ) -> Self {
         Self {
-            state: AgentState::new(agent_id, agent_name, server_url, default_directory, token),
+            state: AgentState::new(agent_id, agent_name, connection, default_directory, token),
             desktop_environment: notification::detect_desktop_environment(),
             startup_notification_delay,
             startup_notification_generation: None,
@@ -331,20 +333,29 @@ impl AgentRuntime {
         log!(
             Level::Info,
             "Attempting to connect to {} as agent '{}'",
-            self.state.server_url,
+            self.state.connection.server_url(),
             self.state.agent_name
         );
 
-        match connect_async(&self.state.server_url).await {
+        match self
+            .state
+            .connection
+            .connect(self.state.connection.server_url())
+            .await
+        {
             Ok((ws_stream, _response)) => {
                 self.reconnect_attempts = 0;
-                log!(Level::Info, "Connected to {}", self.state.server_url);
+                log!(
+                    Level::Info,
+                    "Connected to {}",
+                    self.state.connection.server_url()
+                );
                 log!(
                     Level::Info,
                     "Agent connected: agent_id={}, agent_name={}, server={}",
                     self.state.agent_id,
                     self.state.agent_name,
-                    self.state.server_url
+                    self.state.connection.server_url()
                 );
 
                 let (write, read) = ws_stream.split();
@@ -441,7 +452,7 @@ impl AgentRuntime {
             }
             Err(error) => {
                 let _ = handle.try_send(AgentMsg::ScheduleReconnect {
-                    error: error.to_string(),
+                    error: format!("{error:#}"),
                 });
             }
         }
@@ -491,7 +502,7 @@ mod tests {
         let mut runtime = AgentRuntime::new(
             AgentId::from("agent"),
             "agent".to_string(),
-            "ws://localhost".to_string(),
+            AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             "/tmp".to_string(),
             "test-token".to_string(),
             None,
@@ -531,7 +542,7 @@ mod tests {
         let mut runtime = AgentRuntime::new(
             AgentId::from("agent"),
             "agent".to_string(),
-            "ws://localhost".to_string(),
+            AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             "/tmp".to_string(),
             "test-token".to_string(),
             None,

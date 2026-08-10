@@ -1,4 +1,7 @@
-use super::{ActiveUploads, AgentHandle, AgentMsg, AgentState, protocol::route_upload_chunk};
+use super::{
+    ActiveUploads, AgentHandle, AgentMsg, AgentState, connection::AgentConnection,
+    protocol::route_upload_chunk,
+};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use redoor::{
@@ -9,7 +12,7 @@ use redoor::{
     types::AgentId,
 };
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Derives the payload endpoint while preserving the configured authority and WebSocket scheme.
 pub(crate) fn transfer_url(server_url: &str) -> Result<reqwest::Url> {
@@ -42,7 +45,7 @@ pub(crate) fn begin_transfer_connection(
 
 /// Captures immutable connection inputs so setup never blocks the agent actor.
 pub(crate) struct TransferConnectContext {
-    server_url: String,
+    connection: AgentConnection,
     agent_id: AgentId,
     token: String,
     control_generation: u64,
@@ -61,7 +64,7 @@ impl TransferConnectContext {
         transfer_generation: u64,
     ) -> Self {
         Self {
-            server_url: state.server_url.clone(),
+            connection: state.connection.clone(),
             agent_id: state.agent_id.clone(),
             token,
             control_generation: state.connection_generation,
@@ -97,8 +100,10 @@ pub(crate) fn spawn_transfer_connection(context: TransferConnectContext) {
 
 /// Authenticates one payload socket and runs bounded binary ingress and egress until either side ends.
 async fn run_transfer_connection(context: &TransferConnectContext) -> Result<()> {
-    let url = transfer_url(&context.server_url)?;
-    let (mut socket, _) = connect_async(url.as_str())
+    let url = transfer_url(context.connection.server_url())?;
+    let (mut socket, _) = context
+        .connection
+        .connect(url.as_str())
         .await
         .context("failed to connect transfer socket")?;
 

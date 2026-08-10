@@ -1,4 +1,5 @@
 mod actor;
+mod connection;
 mod logs;
 mod messages;
 mod notification;
@@ -139,7 +140,11 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         .into_string()
         .map_err(|_| "Agent default directory is not valid UTF-8")?;
 
-    let server_url = resolved.ws_address;
+    let connection = connection::AgentConnection::new(
+        resolved.ws_address,
+        resolved.connect_address,
+        resolved.insecure_tls,
+    )?;
     let agent_name = resolved.name;
     let log_file = resolved.log;
     let token = resolved.token;
@@ -176,7 +181,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         Level::Info,
         "Starting agent '{}': ws={}, dir={}",
         agent_name,
-        server_url,
+        connection.server_url(),
         default_directory
     );
 
@@ -185,7 +190,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let runtime = AgentRuntime::new(
         agent_id,
         agent_name,
-        server_url,
+        connection,
         default_directory,
         token,
         notification_delay,
@@ -229,6 +234,10 @@ pub(crate) async fn prepare_daemon_config(args: &AgentArgs) -> anyhow::Result<()
 /// Fully resolved agent launch settings after applying source precedence.
 struct ResolvedAgentSettings {
     ws_address: String,
+    /// Optional physical TCP endpoint used when a tunnel differs from the logical server URL.
+    connect_address: Option<String>,
+    /// Disables certificate verification only for explicitly tunneled WSS connections.
+    insecure_tls: bool,
     name: String,
     token: String,
     dir: Option<String>,
@@ -334,6 +343,8 @@ fn resolve_agent_settings_from_sources(
 
     Ok(ResolvedAgentSettings {
         ws_address,
+        connect_address: args.connect_address,
+        insecure_tls: args.insecure_tls,
         name,
         token,
         dir,

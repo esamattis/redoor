@@ -294,10 +294,10 @@ impl AgentActor {
                         return;
                     }
 
-                    let server_url = state.server_url.clone();
+                    let connection = state.connection.clone();
                     tokio::spawn(async move {
                         if let Err(error) = logs::connect_and_run(
-                            &server_url,
+                            &connection,
                             log_stream_id.clone(),
                             token,
                             cancel_receiver,
@@ -344,10 +344,10 @@ impl AgentActor {
                         return;
                     }
 
-                    let server_url = state.server_url.clone();
+                    let connection = state.connection.clone();
                     tokio::spawn(async move {
                         if let Err(error) = terminal::connect_and_run(
-                            &server_url,
+                            &connection,
                             terminal_id.clone(),
                             token,
                             size,
