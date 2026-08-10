@@ -60,6 +60,30 @@ pub(super) struct SshRunOptions {
     pipe_stderr: bool,
 }
 
+/// Selects who owns SSH stderr so forwarding diagnostics remain observable even
+/// when ordinary remote output is persisted to a log file.
+#[derive(Debug, PartialEq, Eq)]
+enum StderrRoute {
+    /// The relay monitor drains stderr, detects bind failures, and tees it to the log.
+    Monitor,
+    /// The SSH child appends stderr directly to the configured log file.
+    LogFile,
+    /// The SSH child writes stderr directly to the invoking terminal.
+    Inherit,
+}
+
+/// Gives active forwarding monitoring precedence over direct log redirection;
+/// otherwise the child would have no stderr pipe for detecting bind failures.
+fn stderr_route(options: &SshRunOptions) -> StderrRoute {
+    if options.pipe_stderr {
+        StderrRoute::Monitor
+    } else if options.log_file.is_some() {
+        StderrRoute::LogFile
+    } else {
+        StderrRoute::Inherit
+    }
+}
+
 impl SshRunOptions {
     /// Adds a reverse forward from `remote_port` on the SSH target to a
     /// destination reached by the local SSH client.
@@ -105,6 +129,12 @@ impl SshRunOptions {
     pub(super) fn with_piped_stderr(mut self) -> Self {
         self.pipe_stderr = true;
         self
+    }
+
+    /// Exposes the configured log sink so a piped-stderr monitor can tee the
+    /// stream that the SSH child can no longer write there directly.
+    pub(super) fn log_file(&self) -> Option<&String> {
+        self.log_file.as_ref()
     }
 }
 
@@ -434,22 +464,34 @@ async fn build_ssh_command(
                     "Failed to open agent log file '{log_path}': {error}"
                 ))
             })?;
-        // Clone the handle so stdout and stderr can both write to the same file.
-        let file_for_stderr = file.try_clone().await.map_err(|error| {
-            std::io::Error::other(format!(
-                "Failed to clone agent log file handle '{log_path}': {error}"
-            ))
-        })?;
-        let stdout_file = file.into_std().await;
-        let stderr_file = file_for_stderr.into_std().await;
-        ssh.stdout(Stdio::from(stdout_file));
-        ssh.stderr(Stdio::from(stderr_file));
-    } else {
-        ssh.stdout(Stdio::inherit());
-        if options.pipe_stderr {
+        if stderr_route(options) == StderrRoute::Monitor {
+            // Standalone relays must inspect OpenSSH stderr for bind failures;
+            // their monitor tees that stream back into this same log path.
+            ssh.stdout(Stdio::from(file.into_std().await));
             ssh.stderr(Stdio::piped());
         } else {
-            ssh.stderr(Stdio::inherit());
+            // Managed agents do not inspect stderr, so let the child append both
+            // output streams directly without an intermediate forwarding task.
+            let file_for_stderr = file.try_clone().await.map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to clone agent log file handle '{log_path}': {error}"
+                ))
+            })?;
+            ssh.stdout(Stdio::from(file.into_std().await));
+            ssh.stderr(Stdio::from(file_for_stderr.into_std().await));
+        }
+    } else {
+        ssh.stdout(Stdio::inherit());
+        match stderr_route(options) {
+            StderrRoute::Monitor => {
+                ssh.stderr(Stdio::piped());
+            }
+            StderrRoute::Inherit => {
+                ssh.stderr(Stdio::inherit());
+            }
+            StderrRoute::LogFile => {
+                unreachable!("a log-file stderr route requires a configured log path")
+            }
         }
     }
 
@@ -458,6 +500,23 @@ async fn build_ssh_command(
 
 #[cfg(test)]
 mod tests {
+    /// Protects standalone forwarding monitoring when relay output also has a
+    /// persistent log sink, which previously redirected stderr away from the monitor.
+    #[test]
+    fn forwarding_monitor_takes_precedence_over_log_redirection() {
+        let options = super::SshRunOptions::default()
+            .with_log_file("/tmp/redoor-relay-test.log")
+            .with_piped_stderr();
+
+        // The monitor must own stderr or relay startup fails before waiting on SSH.
+        assert_eq!(super::stderr_route(&options), super::StderrRoute::Monitor);
+        // The log remains available so the monitor can tee remote diagnostics into it.
+        assert_eq!(
+            options.log_file().map(String::as_str),
+            Some("/tmp/redoor-relay-test.log")
+        );
+    }
+
     /// Verifies the secret value is delivered through stdin and never embedded
     /// in the local ssh process arguments or remote command arguments.
     #[tokio::test]

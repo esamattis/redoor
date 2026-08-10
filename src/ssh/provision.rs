@@ -306,6 +306,58 @@ pub(super) async fn ensure_remote_binary(
     Ok(remote_bin)
 }
 
+/// Unconditionally streams an operator-selected binary to the remote install
+/// path and verifies that the resulting executable contains the same bytes.
+/// This intentionally bypasses version/cache selection so local development or
+/// cross-compiled artifacts can replace an otherwise matching remote release.
+pub(super) async fn force_upload_binary(
+    host: &SshHost,
+    local_path: &Path,
+    remote_bin: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = tokio::fs::metadata(local_path).await.map_err(|error| {
+        std::io::Error::other(format!(
+            "failed to access binary source '{}': {error}",
+            local_path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "binary source '{}' is not a regular file",
+            local_path.display()
+        )
+        .into());
+    }
+
+    let local_sha1 = file_sha1sum(local_path).await?;
+    upload_binary(host, local_path, remote_bin).await?;
+    let uploaded = sniff_remote(host, remote_bin).await?;
+    if uploaded.version_output.is_empty() {
+        return Err(format!(
+            "uploaded binary at {} did not execute successfully with --version",
+            remote_bin
+        )
+        .into());
+    }
+    if !uploaded.sha1sum.is_empty() && uploaded.sha1sum != local_sha1 {
+        return Err(format!(
+            "remote binary at {} sha1sum mismatch after forced upload: got '{}', want '{}'",
+            remote_bin, uploaded.sha1sum, local_sha1
+        )
+        .into());
+    }
+
+    log!(
+        Level::Info,
+        "Forced binary upload verified: binary_source={}, remote_bin={}, version='{}', sha1sum='{}'",
+        local_path.display(),
+        remote_bin,
+        uploaded.version_output,
+        uploaded.sha1sum
+    );
+    Ok(())
+}
+
 /// Returns the workspace debug binary path when the running server was built
 /// in debug mode and its platform matches the remote host. Keeping platform
 /// checks here prevents accidentally uploading a locally runnable binary that

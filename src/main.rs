@@ -54,10 +54,7 @@ impl ServiceRole {
     /// Returns the stable CLI and generated-service suffix for this role.
     /// systemd/launchd helpers are OS-gated, so Android agent builds keep the
     /// shared role enum without calling this helper.
-    #[cfg_attr(
-        not(any(target_os = "linux", target_os = "macos")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub(crate) fn cli_name(self) -> &'static str {
         match self {
             Self::Agent => "agent",
@@ -131,7 +128,7 @@ enum AgentCommand {
     /// Install or manage the agent as a macOS LaunchAgent.
     Launchd(launchd::LaunchdArgs),
     /// Start an agent on an SSH host and relay it through this machine to a redoor server.
-    Relay(RelayCommandArgs),
+    Relay(Box<RelayCommandArgs>),
 }
 
 /// Preserves flat relay startup flags while exposing `agent relay stop|status|logs`.
@@ -639,6 +636,31 @@ mod tests {
         };
         // An explicit CLI port must still override the alias configuration.
         assert_eq!(override_relay.run.ssh_port, Some(2200));
+
+        let binary_source_cli = Cli::try_parse_from([
+            "redoor",
+            "agent",
+            "relay",
+            "--server",
+            "http://redoor.example:3000",
+            "--token",
+            "secret",
+            "--binary-source",
+            "/tmp/redoor-aarch64",
+            "configured-alias",
+        ])
+        .unwrap();
+        let Commands::Agent(binary_source_agent) = binary_source_cli.command else {
+            panic!("agent relay should parse into the agent command");
+        };
+        let Some(AgentCommand::Relay(binary_source_relay)) = binary_source_agent.command else {
+            panic!("agent relay should preserve its relay arguments");
+        };
+        // The exact local path must reach provisioning without being interpreted as the SSH target.
+        assert_eq!(
+            binary_source_relay.run.binary_source.as_deref(),
+            Some(std::path::Path::new("/tmp/redoor-aarch64"))
+        );
         assert!(
             matches!(
                 Cli::try_parse_from([

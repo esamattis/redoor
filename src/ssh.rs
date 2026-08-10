@@ -34,6 +34,8 @@
 mod provision;
 mod transport;
 
+use std::path::PathBuf;
+
 use clap::Args;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
@@ -90,6 +92,11 @@ pub(crate) struct RelayArgs {
     /// XDG data layout (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN")]
     pub(crate) remote_bin: Option<String>,
+    /// Local redoor binary to upload unconditionally before starting the remote agent.
+    /// This bypasses release/debug binary selection while still using `--remote-bin`
+    /// as the destination when one is provided.
+    #[arg(long)]
+    pub(crate) binary_source: Option<PathBuf>,
     /// Default directory the remote agent publishes for UI tab navigation.
     #[arg(short = 'd', long)]
     pub(crate) dir: Option<String>,
@@ -189,7 +196,7 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
         // SSH stdout/stderr carry remote agent logs; append them beside local diagnostics.
         log: Some(log),
     };
-    start_relay(config, server, &token, args.insecure).await
+    start_relay(config, server, &token, args.insecure, args.binary_source).await
 }
 
 /// Remembers the last random remote port so every retry necessarily chooses a
@@ -351,6 +358,7 @@ pub(crate) async fn prepare_ssh_backed_agent(
         agent_token,
         false,
         None,
+        None,
     )
     .await
 }
@@ -364,6 +372,7 @@ async fn prepare_ssh_backed_agent_for_destination(
     agent_token: &str,
     monitor_forward_failure: bool,
     secure_server: Option<SecureRelayServer>,
+    binary_source: Option<&std::path::Path>,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
@@ -386,7 +395,17 @@ async fn prepare_ssh_backed_agent_for_destination(
     // probing and (re)installing would clobber a binary the operator
     // intentionally placed at that path. Auto-install may redirect debug
     // uploads to the dedicated `debug` path instead of the versioned default.
-    let remote_bin = if config.remote_bin.is_none() {
+    let remote_bin = if let Some(binary_source) = binary_source {
+        log!(
+            Level::Info,
+            "Force-uploading operator-provided binary before relay: target={}, binary_source={}, remote_bin={}",
+            config.target,
+            binary_source.display(),
+            remote_bin
+        );
+        provision::force_upload_binary(&host, binary_source, &remote_bin).await?;
+        remote_bin
+    } else if config.remote_bin.is_none() {
         log!(
             Level::Info,
             "Sniffing SSH target before relay: target={}, ssh_server_port={}, remote_bin={}",
@@ -479,7 +498,10 @@ impl ForwardFailureDetector {
 
 /// Copies piped SSH stderr to the standalone command's terminal while sending
 /// whether OpenSSH reported that its random remote listener could not bind.
-fn monitor_forward_failure<R>(mut input: R) -> tokio::sync::oneshot::Receiver<bool>
+fn monitor_forward_failure<R>(
+    mut input: R,
+    log_path: Option<String>,
+) -> tokio::sync::oneshot::Receiver<bool>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -488,6 +510,15 @@ where
         let mut sender = Some(sender);
         let mut detector = ForwardFailureDetector::default();
         let mut output = tokio::io::stderr();
+        let mut log_file = match log_path {
+            Some(path) => tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await
+                .ok(),
+            None => None,
+        };
         let mut buffer = [0_u8; 8 * 1024];
         loop {
             match input.read(&mut buffer).await {
@@ -495,6 +526,9 @@ where
                 Ok(read) => {
                     let chunk = &buffer[..read];
                     let _ = output.write_all(chunk).await;
+                    if let Some(log_file) = &mut log_file {
+                        let _ = log_file.write_all(chunk).await;
+                    }
                     if sender.is_some() && detector.observe(chunk) {
                         let _ = sender.take().expect("sender checked above").send(true);
                     }
@@ -518,7 +552,9 @@ async fn run_relay_attempt(
     let stderr = child.stderr.take().ok_or_else(|| {
         std::io::Error::other("standalone SSH stderr was not piped for forward monitoring")
     })?;
-    let forward_failed = monitor_forward_failure(stderr).await.unwrap_or(false);
+    let forward_failed = monitor_forward_failure(stderr, prepared.options.log_file().cloned())
+        .await
+        .unwrap_or(false);
     let status = child.wait().await?;
     Ok((remote_port, status, forward_failed))
 }
@@ -576,6 +612,7 @@ pub(crate) async fn start_relay(
     server: ServerAddress,
     agent_token: &str,
     insecure: bool,
+    binary_source: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let secure_server = server.is_secure().then(|| SecureRelayServer {
         authority: server.authority(),
@@ -588,6 +625,7 @@ pub(crate) async fn start_relay(
         agent_token,
         true,
         secure_server,
+        binary_source.as_deref(),
     )
     .await?;
     run_relay_random(&prepared).await
