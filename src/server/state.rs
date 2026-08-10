@@ -66,7 +66,7 @@ pub(crate) struct CoordinatorArgs {
     /// `/etc/<app-name>/config.toml` as root, otherwise `~/.config/<app-name>/config.toml`.
     /// Top-level `agent_token` is required; `[server]` holds listener/auth
     /// settings (browser `username`/`password` may be omitted together on Linux
-    /// for PAM). Optional `[[agents]]` entries are either ssh-backed (`target`)
+    /// for PAM). Optional `[[agents]]` entries are either SSH-backed (`target`)
     /// or local (`local = true`) and start lazily from the UI or management API.
     #[arg(long)]
     pub(crate) config: Option<String>,

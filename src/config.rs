@@ -3,7 +3,7 @@
 //! Top-level `agent_token` is the shared registration secret. Optional
 //! `[server]` holds listener and browser-auth settings; optional `[agent]`
 //! holds standalone agent connection settings; optional `[[agents]]` lists
-//! server-managed local/SSH agents. Server mode requires `[server]`; agent
+//! server-managed local/SSH-backed agents. Server mode requires `[server]`; agent
 //! mode resolves required fields from CLI > env > config > default.
 
 mod bootstrap;
@@ -30,11 +30,11 @@ pub(crate) use local_agent::spawn_local_agent;
 /// so we don't have to spell out the generic parameter on every function.
 type ParsedDocument<'a> = Document<&'a String>;
 
-use crate::ssh::SshAgentConfig;
+use crate::ssh::SshBackedAgentConfig;
 
 /// Configuration for one local agent, parsed from the agents toml.
 ///
-/// Mirrors the subset of [`crate::ssh::SshAgentConfig`] fields that make
+/// Mirrors the subset of [`crate::ssh::SshBackedAgentConfig`] fields that make
 /// sense for an in-process agent: a display name, an optional UI default
 /// directory, and an optional log file. The server reuses its own binary
 /// (via `std::env::current_exe`) to start the agent, so no binary path
@@ -55,12 +55,12 @@ pub(crate) struct LocalAgentConfig {
 }
 
 /// One configured agent entry from the agents toml. The variant decides
-/// whether the server can start an ssh-wrapped agent or a plain local one,
+/// whether the server can start an SSH-backed agent or a plain local one,
 /// so the dispatcher in `register_agents` can pick the right transport
 /// without inspecting the per-variant fields itself.
 #[derive(Debug, Clone)]
 pub(crate) enum AgentConfig {
-    Ssh(SshAgentConfig),
+    SshBacked(SshBackedAgentConfig),
     Local(LocalAgentConfig),
 }
 
@@ -103,7 +103,7 @@ pub(crate) struct RedoorConfig {
     pub(crate) server: Option<ServerSection>,
     /// Present when the file configures a standalone agent process.
     pub(crate) agent: Option<AgentSection>,
-    /// Server-managed local/SSH agents (server mode only).
+    /// Server-managed local/SSH-backed agents (server mode only).
     pub(crate) agents: Vec<AgentConfig>,
 }
 
@@ -360,7 +360,9 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, _path: &str) -> Result<Vec<Agent
         if local {
             configs.push(parse_local_entry(index, entry)?);
         } else {
-            configs.push(AgentConfig::Ssh(parse_ssh_entry(index, entry)?));
+            configs.push(AgentConfig::SshBacked(parse_ssh_backed_entry(
+                index, entry,
+            )?));
         }
     }
     Ok(configs)
@@ -373,7 +375,7 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, _path: &str) -> Result<Vec<Agent
 /// default the operator may not have intended. `dir` is shared with the
 /// local variant so an operator can mirror a UI default directory across both
 /// kinds of agents without duplicating logic.
-fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentConfig> {
+fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshBackedAgentConfig> {
     let target = entry
         .get("target")
         .and_then(|item| item.as_str())
@@ -420,7 +422,7 @@ fn parse_ssh_entry(index: usize, entry: &toml_edit::Table) -> Result<SshAgentCon
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
-    Ok(SshAgentConfig {
+    Ok(SshBackedAgentConfig {
         username,
         ssh_port,
         name,
@@ -452,14 +454,14 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
         .is_some()
     {
         bail!(
-            "agents entry #{} has 'username' which only applies to ssh agents (local = true); \
+            "agents entry #{} has 'username' which only applies to SSH-backed agents (local = true); \
              remove 'username'",
             index
         );
     }
     if entry.get("ssh_port").is_some() {
         bail!(
-            "agents entry #{} has 'ssh_port' which only applies to ssh agents (local = true); \
+            "agents entry #{} has 'ssh_port' which only applies to SSH-backed agents (local = true); \
              remove 'ssh_port'",
             index
         );
@@ -470,7 +472,7 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
         .is_some()
     {
         bail!(
-            "agents entry #{} has 'remote_bin' which only applies to ssh agents (local = true); \
+            "agents entry #{} has 'remote_bin' which only applies to SSH-backed agents (local = true); \
              remove 'remote_bin'",
             index
         );
@@ -548,8 +550,8 @@ target = "user@example.com"
             "exactly one agent entry should be parsed"
         );
         let agent = match &config.agents[0] {
-            AgentConfig::Ssh(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(agent.target, "user@example.com");
         // ssh_port defaults to 22 when not specified, matching `redoor agent relay`.
@@ -595,8 +597,8 @@ target = "web-1"
 
         assert_eq!(config.agents.len(), 2, "both entries should be parsed");
         let first = match &config.agents[0] {
-            AgentConfig::Ssh(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(first.target, "prod-db");
         assert_eq!(first.username.as_deref(), Some("deploy"));
@@ -609,8 +611,8 @@ target = "web-1"
         // The second entry only has a target, confirming ssh_port defaults to 22
         // when omitted while the first entry overrides it explicitly.
         let second = match &config.agents[1] {
-            AgentConfig::Ssh(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(second.target, "web-1");
         assert_eq!(second.ssh_port, 22);
@@ -753,7 +755,7 @@ local = true
         );
         let agent = match &config.agents[0] {
             AgentConfig::Local(config) => config,
-            AgentConfig::Ssh(_) => panic!("entry with `local = true` should be local"),
+            AgentConfig::SshBacked(_) => panic!("entry with `local = true` should be local"),
         };
         assert!(
             agent.name.is_none(),
@@ -793,7 +795,7 @@ log = "/var/log/my-local.log"
         );
         let agent = match &config.agents[0] {
             AgentConfig::Local(config) => config,
-            AgentConfig::Ssh(_) => panic!("entry with `local = true` should be local"),
+            AgentConfig::SshBacked(_) => panic!("entry with `local = true` should be local"),
         };
         assert_eq!(agent.name.as_deref(), Some("my-local"));
         assert_eq!(agent.dir.as_deref(), Some("/var/work"));
@@ -832,19 +834,19 @@ name = "web-agent"
         assert_eq!(config.agents.len(), 3, "all three entries should be parsed");
 
         let first = match &config.agents[0] {
-            AgentConfig::Ssh(config) => config,
+            AgentConfig::SshBacked(config) => config,
             AgentConfig::Local(_) => panic!("first entry has no `local = true`"),
         };
         assert_eq!(first.target, "remote-1");
 
         let second = match &config.agents[1] {
             AgentConfig::Local(config) => config,
-            AgentConfig::Ssh(_) => panic!("second entry has `local = true`"),
+            AgentConfig::SshBacked(_) => panic!("second entry has `local = true`"),
         };
         assert_eq!(second.name.as_deref(), Some("local-1"));
 
         let third = match &config.agents[2] {
-            AgentConfig::Ssh(config) => config,
+            AgentConfig::SshBacked(config) => config,
             AgentConfig::Local(_) => panic!("third entry has no `local = true`"),
         };
         assert_eq!(third.target, "remote-2");
@@ -925,7 +927,7 @@ local = true
     }
 
     /// Verifies that a `dir` on an ssh entry is accepted and forwarded into
-    /// the [`SshAgentConfig`] so an operator can pin a remote agent's cwd to
+    /// the [`SshBackedAgentConfig`] so an operator can pin a remote agent's cwd to
     /// a project tree, mirroring the same option on local agents.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_dir() {
@@ -952,8 +954,8 @@ dir = "/var/www/app"
             "exactly one agent entry should be parsed"
         );
         let agent = match &config.agents[0] {
-            AgentConfig::Ssh(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(
             agent.dir.as_deref(),
@@ -963,7 +965,7 @@ dir = "/var/www/app"
     }
 
     /// Verifies that a `log` on an ssh entry is accepted and forwarded into
-    /// the SshAgentConfig so the operator can capture a remote agent's
+    /// the SshBackedAgentConfig so the operator can capture a remote agent's
     /// forwarded stdout/stderr into a local log file.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_log() {
@@ -986,8 +988,8 @@ log = "log/prod-db.log"
 
         assert_eq!(config.agents.len(), 1);
         let agent = match &config.agents[0] {
-            AgentConfig::Ssh(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(
             agent.log.as_deref(),
@@ -1241,7 +1243,7 @@ target = "host"
         );
         let local_agent = config.agents.iter().find_map(|entry| match entry {
             AgentConfig::Local(config) => Some(config),
-            AgentConfig::Ssh(_) => None,
+            AgentConfig::SshBacked(_) => None,
         });
         let local_agent =
             local_agent.expect("starter config must include a managed local [[agents]] entry");

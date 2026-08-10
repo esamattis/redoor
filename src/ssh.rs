@@ -1,7 +1,7 @@
 //! Starts redoor agents on remote hosts and connects them back to the local
 //! server through SSH reverse forwarding.
 //!
-//! # How SSH agent spawning works
+//! # How SSH-backed agent spawning works
 //!
 //! Preparation and spawning are separate so TOML-managed agents can restart
 //! cheaply. Preparation probes the remote operating system and architecture,
@@ -76,7 +76,7 @@ pub(crate) struct RelayArgs {
     #[arg(long, requires = "wss")]
     pub(crate) insecure: bool,
     /// Name the remote agent registers with on the server. Defaults to the
-    /// host portion of the ssh target so multiple ssh agents are naturally
+    /// host portion of the ssh target so multiple SSH-backed agents are naturally
     /// distinguishable without requiring an explicit name.
     #[arg(long)]
     pub(crate) name: Option<String>,
@@ -176,7 +176,7 @@ pub(crate) fn default_agent_name(target: &str) -> String {
     target.rsplit('@').next().unwrap_or(target).to_string()
 }
 
-/// Configuration for one ssh-backed agent, independent of any specific CLI
+/// Configuration for one SSH-backed agent, independent of any specific CLI
 /// surface so both `redoor agent relay` and `redoor server --agents` can construct it
 /// without depending on clap.
 ///
@@ -185,7 +185,7 @@ pub(crate) fn default_agent_name(target: &str) -> String {
 /// don't have to compute it themselves;
 /// `start_relay` fills it in when `None`.
 #[derive(Debug, Clone)]
-pub(crate) struct SshAgentConfig {
+pub(crate) struct SshBackedAgentConfig {
     /// SSH login username. Forwarded to ssh via `-l`. When `None`, ssh config
     /// or the `user@host` target syntax supplies the username.
     pub(crate) username: Option<String>,
@@ -223,7 +223,7 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
             "WARNING: --insecure disables TLS certificate verification for the routed server"
         );
     }
-    let config = SshAgentConfig {
+    let config = SshBackedAgentConfig {
         username: args.username,
         ssh_port: args.ssh_port,
         name: args.name,
@@ -264,11 +264,11 @@ impl RandomRemotePort {
     }
 }
 
-/// Resolved values for one ssh-backed agent: the prepared host and the
+/// Resolved values for one SSH-backed agent: the prepared host and the
 /// ssh argv to run. Launchers use the shared random spawn method to start a
 /// fresh child without re-sniffing the host or re-uploading the binary.
 #[derive(Clone)]
-pub(crate) struct PreparedSshAgent {
+pub(crate) struct PreparedSshBackedAgent {
     host: SshHost,
     /// Agent registration name; used to kill orphaned remote processes that
     /// would otherwise reconnect through a new reverse tunnel and steal this
@@ -285,11 +285,11 @@ pub(crate) struct PreparedSshAgent {
     options: SshRunOptions,
     /// Shares random-port selection between standalone and managed launches.
     random_remote_port: RandomRemotePort,
-    /// Relay WSS identity; absent for plain and server-managed SSH agents.
+    /// Relay WSS identity; absent for plain and server-managed SSH-backed agents.
     secure_server: Option<SecureRelayServer>,
 }
 
-impl PreparedSshAgent {
+impl PreparedSshBackedAgent {
     /// Spawns the long-running ssh child for this agent. The returned
     /// `Child` is owned by the caller (the supervisor) so it can wait
     /// for normal exit or kill it when the WebSocket goes stale.
@@ -372,18 +372,18 @@ fn random_remote_port(previous: u16) -> u16 {
     }
 }
 
-/// One-time setup for an ssh-backed agent: resolves the remote binary
+/// One-time setup for an SSH-backed agent: resolves the remote binary
 /// path, sniffs the host, installs the binary if missing, and computes
 /// the run-time options. After this returns successfully, the binary is
 /// in place and the host is ready to run the agent. The supervisor
-/// loops [`PreparedSshAgent::spawn`] calls against the returned struct
+/// loops [`PreparedSshBackedAgent::spawn`] calls against the returned struct
 /// so it doesn't re-sniff / re-upload on every restart.
-pub(crate) async fn prepare_ssh_agent(
-    config: &SshAgentConfig,
+pub(crate) async fn prepare_ssh_backed_agent(
+    config: &SshBackedAgentConfig,
     redoor_port: u16,
     agent_token: &str,
-) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
-    prepare_ssh_agent_for_destination(
+) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
+    prepare_ssh_backed_agent_for_destination(
         config,
         "localhost".to_string(),
         redoor_port,
@@ -394,16 +394,16 @@ pub(crate) async fn prepare_ssh_agent(
     .await
 }
 
-/// Prepares an SSH agent whose reverse tunnel terminates at a destination
+/// Prepares an SSH-backed agent whose reverse tunnel terminates at a destination
 /// reached from the local SSH client rather than necessarily at localhost.
-async fn prepare_ssh_agent_for_destination(
-    config: &SshAgentConfig,
+async fn prepare_ssh_backed_agent_for_destination(
+    config: &SshBackedAgentConfig,
     destination_host: String,
     destination_port: u16,
     agent_token: &str,
     monitor_forward_failure: bool,
     secure_server: Option<SecureRelayServer>,
-) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
+) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
         None => default_remote_bin()?,
@@ -451,7 +451,7 @@ async fn prepare_ssh_agent_for_destination(
         config.log,
     );
 
-    Ok(PreparedSshAgent {
+    Ok(PreparedSshBackedAgent {
         host,
         agent_name,
         app_name: crate::app_name::app_name()?,
@@ -538,7 +538,7 @@ where
 /// Runs one standalone random-port attempt to completion and distinguishes an
 /// initial OpenSSH bind failure from the eventual exit of a started agent.
 async fn run_relay_attempt(
-    prepared: &PreparedSshAgent,
+    prepared: &PreparedSshBackedAgent,
 ) -> Result<(u16, std::process::ExitStatus, bool), Box<dyn std::error::Error>> {
     let (remote_port, mut child) = prepared.spawn_random().await?;
     let stderr = child.stderr.take().ok_or_else(|| {
@@ -551,7 +551,9 @@ async fn run_relay_attempt(
 
 /// Retries only random remote-listener collisions; once SSH starts without
 /// that error, its eventual exit is returned directly instead of being watched.
-async fn run_relay_random(prepared: &PreparedSshAgent) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_relay_random(
+    prepared: &PreparedSshBackedAgent,
+) -> Result<(), Box<dyn std::error::Error>> {
     for attempt in 1..=STANDALONE_FORWARD_BIND_ATTEMPTS {
         let (remote_port, status, forward_failed) = run_relay_attempt(prepared).await?;
         if !forward_failed {
@@ -580,7 +582,7 @@ async fn run_relay_random(prepared: &PreparedSshAgent) -> Result<(), Box<dyn std
 fn ssh_exit_result(status: std::process::ExitStatus) -> Result<(), Box<dyn std::error::Error>> {
     if !status.success() {
         return Err(format!(
-            "ssh agent exited with status {}",
+            "SSH-backed agent session exited with status {}",
             status.code().unwrap_or(-1)
         )
         .into());
@@ -596,7 +598,7 @@ fn ssh_exit_result(status: std::process::ExitStatus) -> Result<(), Box<dyn std::
 /// Returns an error rather than exiting directly so the CLI boundary remains
 /// responsible for presenting the failure and choosing the process status.
 pub(crate) async fn start_relay(
-    config: SshAgentConfig,
+    config: SshBackedAgentConfig,
     server: RelayServer,
     agent_token: &str,
     wss: bool,
@@ -606,7 +608,7 @@ pub(crate) async fn start_relay(
         authority: server.authority(),
         insecure,
     });
-    let prepared = prepare_ssh_agent_for_destination(
+    let prepared = prepare_ssh_backed_agent_for_destination(
         &config,
         server.host,
         server.port,
@@ -744,8 +746,10 @@ mod tests {
     }
 
     /// Builds prepared state without touching an SSH host so launch argv can be checked directly.
-    fn prepared_agent(secure_server: Option<super::SecureRelayServer>) -> super::PreparedSshAgent {
-        super::PreparedSshAgent {
+    fn prepared_agent(
+        secure_server: Option<super::SecureRelayServer>,
+    ) -> super::PreparedSshBackedAgent {
+        super::PreparedSshBackedAgent {
             host: super::SshHost::new("user@target".to_string()),
             agent_name: "target".to_string(),
             app_name: "redoor".to_string(),

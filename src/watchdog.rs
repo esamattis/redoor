@@ -31,7 +31,7 @@ const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bounds browser-visible subprocess output so repeated failures cannot grow API responses.
 const MAX_EXIT_DIAGNOSTIC_BYTES: u64 = 8 * 1024;
 
-/// Spawn strategy kept transport-agnostic so local and SSH agents share lifecycle code.
+/// Spawn strategy kept transport-agnostic so local and SSH-backed agents share lifecycle code.
 pub struct SpawnFn {
     inner: Arc<
         dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync,

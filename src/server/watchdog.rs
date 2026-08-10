@@ -89,19 +89,19 @@ pub(crate) async fn register_agents(
 fn configured_directory(config: &AgentConfig) -> Option<String> {
     match config {
         AgentConfig::Local(config) => config.dir.clone(),
-        AgentConfig::Ssh(config) => config.dir.clone(),
+        AgentConfig::SshBacked(config) => config.dir.clone(),
     }
 }
 
 /// Computes the key used to look up the supervisor from the session.
 /// The key must match the name the agent registers with via its
 /// `AgentRegister` message. Falls back to the system hostname for
-/// local agents and the target hostname for ssh agents when the
+/// local agents and the target hostname for SSH-backed agents when the
 /// config omits an explicit name.
 fn supervisor_key(config: &AgentConfig) -> String {
     match config {
         AgentConfig::Local(c) => c.name.clone().unwrap_or_else(default_local_agent_name),
-        AgentConfig::Ssh(c) => c
+        AgentConfig::SshBacked(c) => c
             .name
             .clone()
             .unwrap_or_else(|| crate::ssh::default_agent_name(&c.target)),
@@ -117,7 +117,7 @@ fn supervisor_key(config: &AgentConfig) -> String {
 fn make_spawn_fn(config: AgentConfig, redoor_port: u16, agent_token: String) -> SpawnFn {
     match config {
         AgentConfig::Local(c) => local_spawn_fn(c, redoor_port, agent_token),
-        AgentConfig::Ssh(c) => ssh_spawn_fn(c, redoor_port, agent_token),
+        AgentConfig::SshBacked(c) => ssh_backed_spawn_fn(c, redoor_port, agent_token),
     }
 }
 
@@ -141,33 +141,33 @@ fn local_spawn_fn(config: LocalAgentConfig, redoor_port: u16, agent_token: Strin
     }
 }
 
-/// Build a spawn closure for an ssh agent. The first invocation runs the
+/// Build a spawn closure for an SSH-backed agent. The first invocation runs the
 /// one-time prepare (sniff + download + upload) and caches the
-/// `PreparedSshAgent` for subsequent calls. Re-invocations on later
+/// `PreparedSshBackedAgent` for subsequent calls. Re-invocations on later
 /// restart cycles skip the prepare and just spawn a fresh ssh child.
 /// If the prepare fails (e.g. transient network blip), the cache stays
 /// empty and the next cycle retries the prepare; a successful prepare
 /// then switches the closure to the cached fast path. A spawn failure
 /// after a successful prepare goes through the supervisor's normal
 /// backoff loop without re-running the prepare.
-fn ssh_spawn_fn(
-    config: crate::ssh::SshAgentConfig,
+fn ssh_backed_spawn_fn(
+    config: crate::ssh::SshBackedAgentConfig,
     redoor_port: u16,
     agent_token: String,
 ) -> SpawnFn {
     use tokio::sync::Mutex;
 
-    // Cached `PreparedSshAgent`. `None` means "not yet prepared or the
-    // last prepare failed"; the closure retries `prepare_ssh_agent` and
+    // Cached `PreparedSshBackedAgent`. `None` means "not yet prepared or the
+    // last prepare failed"; the closure retries `prepare_ssh_backed_agent` and
     // stores the result on success. The supervisor calls the spawn
     // closure serially (one cycle at a time) so contention on this lock
     // is limited to the prepare call itself.
-    let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshAgent>>> =
+    let cached: std::sync::Arc<Mutex<Option<crate::ssh::PreparedSshBackedAgent>>> =
         std::sync::Arc::new(Mutex::new(None));
     let diagnostic_log = config.log.clone();
     let config = std::sync::Arc::new(config);
     let spawn = SpawnFn::new(move || {
-        ssh_spawn_once(
+        ssh_backed_spawn_once(
             cached.clone(),
             config.clone(),
             redoor_port,
@@ -180,14 +180,14 @@ fn ssh_spawn_fn(
     }
 }
 
-/// One spawn cycle for an ssh agent. Reuses a cached
-/// `PreparedSshAgent` when the one-time prepare already succeeded;
-/// otherwise runs `prepare_ssh_agent` and caches the result so later
+/// One spawn cycle for an SSH-backed agent. Reuses a cached
+/// `PreparedSshBackedAgent` when the one-time prepare already succeeded;
+/// otherwise runs `prepare_ssh_backed_agent` and caches the result so later
 /// cycles skip the prepare. A failed prepare leaves the cache empty so
 /// the next cycle retries it.
-async fn ssh_spawn_once(
-    cached: std::sync::Arc<tokio::sync::Mutex<Option<crate::ssh::PreparedSshAgent>>>,
-    config: std::sync::Arc<crate::ssh::SshAgentConfig>,
+async fn ssh_backed_spawn_once(
+    cached: std::sync::Arc<tokio::sync::Mutex<Option<crate::ssh::PreparedSshBackedAgent>>>,
+    config: std::sync::Arc<crate::ssh::SshBackedAgentConfig>,
     redoor_port: u16,
     agent_token: String,
 ) -> Result<Child, String> {
@@ -196,7 +196,7 @@ async fn ssh_spawn_once(
         if let Some(p) = guard.as_ref() {
             p.clone()
         } else {
-            match crate::ssh::prepare_ssh_agent(&config, redoor_port, &agent_token).await {
+            match crate::ssh::prepare_ssh_backed_agent(&config, redoor_port, &agent_token).await {
                 Ok(p) => {
                     *guard = Some(p.clone());
                     p
