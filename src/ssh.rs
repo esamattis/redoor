@@ -9,11 +9,13 @@
 //! and stores the settings needed for subsequent launches.
 //!
 //! Each launch starts `ssh` with a reverse forward shaped like
-//! `remote_port:localhost:server_port`. SSH listens on `remote_port` on the
-//! remote host and carries traffic back to the redoor server's local port. The
-//! remote agent is given `ws://localhost:<remote_port>/ws`, so what looks like
-//! a local WebSocket connection to the agent actually reaches the server
-//! through that tunnel.
+//! `remote_port:destination_host:destination_port`. SSH listens on
+//! `remote_port` on the remote host and asks the local SSH client to connect to
+//! the destination. Managed agents use the local redoor server, while
+//! standalone `redoor ssh --route host:port` uses a server reachable from the
+//! machine running the command. The remote agent is given
+//! `ws://localhost:<remote_port>/ws`, so what looks like a local WebSocket
+//! connection to the agent actually reaches the server through that tunnel.
 //!
 //! The agent token is not included in either process's command-line arguments.
 //! The local process writes it as the first line of SSH stdin; a small remote
@@ -21,29 +23,32 @@
 //! agent so it inherits the secret only through its environment. Remaining
 //! stdin is then forwarded normally.
 //!
-//! Standalone `redoor ssh` uses the requested redoor port on both sides of the
-//! tunnel. TOML-managed agents instead select a random dynamic remote port for
-//! every watchdog spawn attempt. `ExitOnForwardFailure=yes` makes SSH exit when
-//! that port is already occupied, allowing the watchdog to retry with a new
-//! random port while reusing the prepared host and binary.
+//! Both standalone and TOML-managed launches select a random dynamic remote
+//! port for each SSH spawn attempt. `ExitOnForwardFailure=yes` makes SSH exit
+//! when that port is already occupied. Managed agents let the watchdog retry;
+//! standalone launches detect that specific bind failure and retry locally
+//! without supervising an agent after it has started.
 
 mod provision;
 mod transport;
 
+use std::str::FromStr;
+
 use clap::Args;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use redoor::{Level, log};
 
 use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
 use transport::{SshHost, SshRunOptions};
 
-/// Arguments for `redoor ssh`.
+/// Starts a redoor agent on an SSH host that cannot reach the redoor server
+/// directly, routing its plain WebSocket connection through this machine.
 ///
-/// Mirrors the familiar `ssh` invocation (`-l user -p port user@host`) while
-/// adding a redoor port option that controls both the local server port that
-/// is forwarded and the remote tunnel port the agent connects to, so callers
-/// can override the default 3000 without repeating themselves on both sides
-/// of the tunnel.
+/// The machine running this command must be able to reach both the SSH target
+/// and `--route`. Redoor provisions the agent binary on the SSH target, opens a
+/// reverse tunnel from a random dynamic port there to `HOST:PORT` here, and
+/// keeps the SSH session attached until it exits.
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct SshArgs {
@@ -55,11 +60,12 @@ pub(crate) struct SshArgs {
     /// SSH server port. Forwarded to ssh via `-p`.
     #[arg(short = 'p', default_value_t = 22)]
     pub(crate) ssh_port: u16,
-    /// Redoor server port running on the local machine that is forwarded to
-    /// the remote host. The agent on the remote host connects to
-    /// `ws://localhost:<port>/ws` which tunnels back to the local server.
-    #[arg(long, env = "REDOOR_PORT", default_value_t = 3000)]
-    pub(crate) redoor_port: u16,
+    /// Redoor server destination reached from the machine running this command,
+    /// formatted as `HOST:PORT` or `[IPv6]:PORT`. A random dynamic port on the
+    /// SSH target forwards to this destination. Only plain WebSocket backends
+    /// are supported; do not include a `ws://` scheme.
+    #[arg(long)]
+    pub(crate) route: SshRoute,
     /// Name the remote agent registers with on the server. Defaults to the
     /// host portion of the ssh target so multiple ssh agents are naturally
     /// distinguishable without requiring an explicit name.
@@ -78,6 +84,55 @@ pub(crate) struct SshArgs {
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
     /// standard ssh CLI usage so existing muscle memory transfers.
     pub(crate) target: String,
+}
+
+/// Host and port reached from the local SSH client for a standalone route.
+/// Keeping this separate from the SSH target avoids implying that the remote
+/// Linux host must be able to resolve or connect to the redoor server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SshRoute {
+    /// Destination hostname or IP address, stored without IPv6 brackets.
+    host: String,
+    /// Destination port where the plain redoor WebSocket server is listening.
+    port: u16,
+}
+
+impl FromStr for SshRoute {
+    type Err = String;
+
+    /// Parses a route while requiring brackets around IPv6 addresses so the
+    /// final port separator remains unambiguous to both Clap and OpenSSH.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.contains("://") {
+            return Err("route must be HOST:PORT without a ws:// scheme".to_string());
+        }
+        let (host, port) = if let Some(bracketed) = value.strip_prefix('[') {
+            bracketed
+                .split_once("]:")
+                .ok_or_else(|| "IPv6 route must use [ADDRESS]:PORT".to_string())?
+        } else {
+            let (host, port) = value
+                .rsplit_once(':')
+                .ok_or_else(|| "route must use HOST:PORT".to_string())?;
+            if host.contains(':') {
+                return Err("IPv6 route must use [ADDRESS]:PORT".to_string());
+            }
+            (host, port)
+        };
+        if host.is_empty() || host.chars().any(char::is_whitespace) {
+            return Err("route host must not be empty or contain whitespace".to_string());
+        }
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| "route port must be an integer from 1 to 65535".to_string())?;
+        if port == 0 {
+            return Err("route port must be an integer from 1 to 65535".to_string());
+        }
+        Ok(Self {
+            host: host.to_string(),
+            port,
+        })
+    }
 }
 
 /// Derives a default agent name from the ssh target by stripping any
@@ -121,15 +176,13 @@ pub(crate) struct SshAgentConfig {
 /// Spawns `ssh` with reverse port forwarding and starts a redoor agent on
 /// the remote host.
 ///
-/// Reverse port forwarding (`-R`) is used because the redoor server is
-/// running on the local machine and the agent is on the remote host. `-R`
-/// makes the remote host listen on `<redoor_port>` and tunnel connections
-/// back to `localhost:<redoor_port>` on the local machine where the server
-/// is listening. The agent then connects to `ws://localhost:<redoor_port>/ws`
-/// on the remote host, which reaches the local server through the tunnel.
-/// Stdio is inherited so the user can observe agent logs and interact with
-/// the remote shell when needed.
+/// Reverse port forwarding (`-R`) makes the SSH target listen on a random
+/// dynamic port and asks the local SSH client to connect to `--route`. The
+/// agent uses `ws://localhost:<random-port>/ws` on the SSH target, so it does
+/// not need direct network access to the routed server. Stdio is inherited so
+/// the user can observe agent logs while this command owns the SSH session.
 pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let route = args.route;
     let config = SshAgentConfig {
         username: args.username,
         ssh_port: args.ssh_port,
@@ -140,13 +193,31 @@ pub(crate) async fn run(args: SshArgs) -> Result<(), Box<dyn std::error::Error>>
         target: args.target,
         log: None,
     };
-    start_ssh_agent(config, args.redoor_port, &args.token).await
+    start_ssh_agent(config, route, &args.token).await
+}
+
+/// Remembers the last random remote port so every retry necessarily chooses a
+/// different candidate while sharing the same policy across launcher types.
+#[derive(Clone, Default)]
+struct RandomRemotePort {
+    /// Atomic state keeps cloned prepared agents coordinated across spawn calls.
+    previous: std::sync::Arc<std::sync::atomic::AtomicU16>,
+}
+
+impl RandomRemotePort {
+    /// Chooses the next IANA dynamic/private port and records it for the retry.
+    fn next(&self) -> u16 {
+        let previous = self.previous.load(std::sync::atomic::Ordering::Relaxed);
+        let port = random_remote_port(previous);
+        self.previous
+            .store(port, std::sync::atomic::Ordering::Relaxed);
+        port
+    }
 }
 
 /// Resolved values for one ssh-backed agent: the prepared host and the
-/// ssh argv to run. The supervisor uses [`PreparedSshAgent::spawn`] to
-/// start a fresh ssh child for every restart cycle without re-sniffing
-/// the host or re-uploading the binary.
+/// ssh argv to run. Launchers use the shared random spawn method to start a
+/// fresh child without re-sniffing the host or re-uploading the binary.
 #[derive(Clone)]
 pub(crate) struct PreparedSshAgent {
     host: SshHost,
@@ -158,11 +229,13 @@ pub(crate) struct PreparedSshAgent {
     app_name: String,
     remote_bin: String,
     dir: Option<String>,
-    local_port: u16,
+    /// Destination host reached from the machine running the SSH client.
+    destination_host: String,
+    /// Destination server port reached from the machine running the SSH client.
+    destination_port: u16,
     options: SshRunOptions,
-    /// Remembers the previous managed tunnel port so a retry after an occupied
-    /// port cannot immediately choose the same unusable endpoint again.
-    previous_random_port: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    /// Shares random-port selection between standalone and managed launches.
+    random_remote_port: RandomRemotePort,
 }
 
 impl PreparedSshAgent {
@@ -180,23 +253,26 @@ impl PreparedSshAgent {
             .await
     }
 
-    /// Starts a TOML-managed agent through a fresh random remote port. SSH's
-    /// `ExitOnForwardFailure` makes an occupied port terminate this child; the
-    /// watchdog then invokes this method again and receives a different port.
-    pub(crate) async fn spawn_managed(&self) -> Result<tokio::process::Child, std::io::Error> {
-        let previous = self
-            .previous_random_port
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let remote_port = random_remote_port(previous);
-        self.previous_random_port
-            .store(remote_port, std::sync::atomic::Ordering::Relaxed);
+    /// Starts an agent through a fresh random remote port and returns both the
+    /// selected port and child so each launcher can apply its lifecycle policy.
+    async fn spawn_random(&self) -> Result<(u16, tokio::process::Child), std::io::Error> {
+        let remote_port = self.random_remote_port.next();
         log!(
             Level::Info,
-            "Starting managed SSH tunnel: remote_port={}, local_port={}",
+            "Starting SSH tunnel: remote_port={}, destination={}:{}",
             remote_port,
-            self.local_port
+            self.destination_host,
+            self.destination_port
         );
-        self.spawn(remote_port).await
+        let child = self.spawn(remote_port).await?;
+        Ok((remote_port, child))
+    }
+
+    /// Starts a TOML-managed agent with the shared random-port policy while
+    /// leaving retries and stale-session handling to the server watchdog.
+    pub(crate) async fn spawn_managed(&self) -> Result<tokio::process::Child, std::io::Error> {
+        let (_, child) = self.spawn_random().await?;
+        Ok(child)
     }
 
     /// Builds the matching remote agent argv and reverse-forward options so the
@@ -214,16 +290,17 @@ impl PreparedSshAgent {
             remote_argv.push("-d".to_string());
             remote_argv.push(dir.clone());
         }
-        let options = self
-            .options
-            .clone()
-            .with_reverse_forward(remote_port, self.local_port);
+        let options = self.options.clone().with_reverse_forward(
+            remote_port,
+            self.destination_host.clone(),
+            self.destination_port,
+        );
         (remote_argv, options)
     }
 }
 
 /// Chooses an IANA dynamic/private port and excludes the immediately previous
-/// choice so a managed watchdog retry always attempts a new tunnel endpoint.
+/// choice so every managed or standalone retry uses a new tunnel endpoint.
 fn random_remote_port(previous: u16) -> u16 {
     loop {
         let port = fastrand::u16(49152..=65535);
@@ -243,6 +320,25 @@ pub(crate) async fn prepare_ssh_agent(
     config: &SshAgentConfig,
     redoor_port: u16,
     agent_token: &str,
+) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
+    prepare_ssh_agent_for_destination(
+        config,
+        "localhost".to_string(),
+        redoor_port,
+        agent_token,
+        false,
+    )
+    .await
+}
+
+/// Prepares an SSH agent whose reverse tunnel terminates at a destination
+/// reached from the local SSH client rather than necessarily at localhost.
+async fn prepare_ssh_agent_for_destination(
+    config: &SshAgentConfig,
+    destination_host: String,
+    destination_port: u16,
+    agent_token: &str,
+    monitor_forward_failure: bool,
 ) -> Result<PreparedSshAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
@@ -272,11 +368,14 @@ pub(crate) async fn prepare_ssh_agent(
         remote_bin
     };
 
-    // The reverse forward is added for each spawn because TOML-managed agents
-    // choose a fresh remote port on every watchdog attempt.
+    // The reverse forward is added for each spawn because both standalone and
+    // TOML-managed launches choose a fresh remote port for every attempt.
     let mut options = SshRunOptions::default().with_secret_env("REDOOR_AGENT_TOKEN", agent_token);
     if let Some(log) = &config.log {
         options = options.with_log_file(log);
+    }
+    if monitor_forward_failure {
+        options = options.with_piped_stderr();
     }
 
     log!(
@@ -294,29 +393,128 @@ pub(crate) async fn prepare_ssh_agent(
         app_name: crate::app_name::app_name()?,
         remote_bin,
         dir: config.dir.clone(),
-        local_port: redoor_port,
+        destination_host,
+        destination_port,
         options,
-        previous_random_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
+        random_remote_port: RandomRemotePort::default(),
     })
 }
 
-/// Core implementation shared by `redoor ssh` and `redoor server --agents`:
-/// probes the remote host, installs the redoor binary if missing, then runs
-/// a redoor agent on the remote host with a reverse port forward back to
-/// `redoor_port` on the local machine. The function blocks until the ssh
-/// process exits.
-///
-/// Returns an error (rather than calling `process::exit`) so the server can
-/// log per-agent failures without taking down the whole process when one
-/// host is unreachable.
-pub(crate) async fn start_ssh_agent(
-    config: SshAgentConfig,
-    redoor_port: u16,
-    agent_token: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare_ssh_agent(&config, redoor_port, agent_token).await?;
-    let mut child = prepared.spawn(redoor_port).await?;
+/// Number of random ports a standalone launch tries before surfacing a remote
+/// bind failure instead of risking an unbounded startup loop.
+const STANDALONE_FORWARD_BIND_ATTEMPTS: usize = 10;
+
+/// Stable fragment emitted by OpenSSH when `ExitOnForwardFailure` rejects a
+/// remote listener, independent of the particular port that was occupied.
+const REMOTE_FORWARD_FAILURE_MESSAGE: &[u8] = b"remote port forwarding failed for listen port";
+
+/// Incrementally detects OpenSSH's forwarding failure across fixed-size stderr
+/// chunks without retaining an unbounded agent log line in memory.
+#[derive(Default)]
+struct ForwardFailureDetector {
+    /// Keeps only enough bytes to detect a message split between two chunks.
+    tail: Vec<u8>,
+}
+
+impl ForwardFailureDetector {
+    /// Observes one stderr chunk and reports whether it completes the known
+    /// OpenSSH failure phrase, comparing ASCII output case-insensitively.
+    fn observe(&mut self, chunk: &[u8]) -> bool {
+        let mut searchable = Vec::with_capacity(self.tail.len() + chunk.len());
+        searchable.extend_from_slice(&self.tail);
+        searchable.extend_from_slice(chunk);
+        searchable.make_ascii_lowercase();
+        let found = searchable
+            .windows(REMOTE_FORWARD_FAILURE_MESSAGE.len())
+            .any(|window| window == REMOTE_FORWARD_FAILURE_MESSAGE);
+        let retained = REMOTE_FORWARD_FAILURE_MESSAGE
+            .len()
+            .saturating_sub(1)
+            .min(searchable.len());
+        self.tail.clear();
+        self.tail
+            .extend_from_slice(&searchable[searchable.len() - retained..]);
+        found
+    }
+}
+
+/// Copies piped SSH stderr to the standalone command's terminal while sending
+/// whether OpenSSH reported that its random remote listener could not bind.
+fn monitor_forward_failure<R>(mut input: R) -> tokio::sync::oneshot::Receiver<bool>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let mut sender = Some(sender);
+        let mut detector = ForwardFailureDetector::default();
+        let mut output = tokio::io::stderr();
+        let mut buffer = [0_u8; 8 * 1024];
+        loop {
+            match input.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => {
+                    let chunk = &buffer[..read];
+                    let _ = output.write_all(chunk).await;
+                    if sender.is_some() && detector.observe(chunk) {
+                        let _ = sender.take().expect("sender checked above").send(true);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if let Some(sender) = sender {
+            let _ = sender.send(false);
+        }
+    });
+    receiver
+}
+
+/// Runs one standalone random-port attempt to completion and distinguishes an
+/// initial OpenSSH bind failure from the eventual exit of a started agent.
+async fn run_standalone_attempt(
+    prepared: &PreparedSshAgent,
+) -> Result<(u16, std::process::ExitStatus, bool), Box<dyn std::error::Error>> {
+    let (remote_port, mut child) = prepared.spawn_random().await?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        std::io::Error::other("standalone SSH stderr was not piped for forward monitoring")
+    })?;
+    let forward_failed = monitor_forward_failure(stderr).await.unwrap_or(false);
     let status = child.wait().await?;
+    Ok((remote_port, status, forward_failed))
+}
+
+/// Retries only random remote-listener collisions; once SSH starts without
+/// that error, its eventual exit is returned directly instead of being watched.
+async fn run_standalone_random(
+    prepared: &PreparedSshAgent,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for attempt in 1..=STANDALONE_FORWARD_BIND_ATTEMPTS {
+        let (remote_port, status, forward_failed) = run_standalone_attempt(prepared).await?;
+        if !forward_failed {
+            return ssh_exit_result(status);
+        }
+        if attempt == STANDALONE_FORWARD_BIND_ATTEMPTS {
+            return Err(format!(
+                "ssh could not bind a random remote port after {} attempts; last port was {}",
+                STANDALONE_FORWARD_BIND_ATTEMPTS, remote_port
+            )
+            .into());
+        }
+        log!(
+            Level::Warning,
+            "SSH remote port was occupied, retrying: remote_port={}, attempt={}/{}",
+            remote_port,
+            attempt,
+            STANDALONE_FORWARD_BIND_ATTEMPTS
+        );
+    }
+    unreachable!("standalone SSH retry loop always returns");
+}
+
+/// Converts the final SSH status into the command's existing success/error
+/// contract without applying any restart behavior after a successful bind.
+fn ssh_exit_result(status: std::process::ExitStatus) -> Result<(), Box<dyn std::error::Error>> {
     if !status.success() {
         return Err(format!(
             "ssh agent exited with status {}",
@@ -327,9 +525,106 @@ pub(crate) async fn start_ssh_agent(
     Ok(())
 }
 
+/// Standalone implementation for `redoor ssh`: probes the remote host,
+/// installs the redoor binary if missing, then runs an agent through a reverse
+/// forward to the requested destination. It retries occupied random listener
+/// ports but intentionally does not supervise or restart a started agent.
+///
+/// Returns an error rather than exiting directly so the CLI boundary remains
+/// responsible for presenting the failure and choosing the process status.
+pub(crate) async fn start_ssh_agent(
+    config: SshAgentConfig,
+    route: SshRoute,
+    agent_token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared =
+        prepare_ssh_agent_for_destination(&config, route.host, route.port, agent_token, true)
+            .await?;
+    run_standalone_random(&prepared).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::random_remote_port;
+
+    /// Verifies forwarding failures are recognized even when the fixed-size
+    /// stderr reader splits OpenSSH's message across chunks.
+    #[test]
+    fn detects_split_remote_forward_failure() {
+        let mut detector = super::ForwardFailureDetector::default();
+
+        // A partial phrase must not trigger a retry before OpenSSH reports the failure.
+        assert!(!detector.observe(b"Warning: remote port forward"));
+        // Completing the phrase across the next chunk must identify the occupied port.
+        assert!(detector.observe(b"ing failed for listen port 52000\n"));
+    }
+
+    /// Verifies cloned prepared-agent state cannot immediately reuse the port
+    /// selected by another launcher attempt.
+    #[test]
+    fn random_port_state_is_shared_across_clones() {
+        let ports = super::RandomRemotePort::default();
+        let cloned = ports.clone();
+        let first = ports.next();
+        let second = cloned.next();
+
+        // Shared retry state must force the next attempt onto a different endpoint.
+        assert_ne!(first, second);
+        // Both launcher types must stay inside the IANA dynamic/private range.
+        assert!((49152..=65535).contains(&second));
+    }
+
+    /// Verifies DNS routes preserve the destination independently of the port
+    /// exposed to the agent on the SSH target.
+    #[test]
+    fn parses_hostname_route() {
+        let route = "redoor.example:4000"
+            .parse::<super::SshRoute>()
+            .expect("hostname route should parse");
+
+        // The SSH client must resolve the exact host supplied by the operator.
+        assert_eq!(route.host, "redoor.example");
+        // The destination port may differ from the remote listener port.
+        assert_eq!(route.port, 4000);
+    }
+
+    /// Verifies bracketed IPv6 routes are accepted without retaining syntax
+    /// brackets in the destination model.
+    #[test]
+    fn parses_bracketed_ipv6_route() {
+        let route = "[2001:db8::10]:4000"
+            .parse::<super::SshRoute>()
+            .expect("bracketed IPv6 route should parse");
+
+        // Transport formatting adds brackets itself, so the model stores only the address.
+        assert_eq!(route.host, "2001:db8::10");
+        // IPv6 routes use the same validated destination-port representation.
+        assert_eq!(route.port, 4000);
+    }
+
+    /// Verifies routes reject URL syntax because this mode deliberately
+    /// supports only a plain WebSocket destination rather than WSS URLs.
+    #[test]
+    fn rejects_route_with_websocket_scheme() {
+        let error = "ws://redoor.example:4000"
+            .parse::<super::SshRoute>()
+            .expect_err("route URL should be rejected");
+
+        // A focused error keeps users from assuming URL schemes are supported.
+        assert!(error.contains("without a ws:// scheme"));
+    }
+
+    /// Verifies raw IPv6 is rejected so the destination port cannot be parsed
+    /// ambiguously from an address containing multiple colons.
+    #[test]
+    fn rejects_unbracketed_ipv6_route() {
+        let error = "2001:db8::10:4000"
+            .parse::<super::SshRoute>()
+            .expect_err("unbracketed IPv6 route should be rejected");
+
+        // The correction tells operators exactly how to make the route unambiguous.
+        assert!(error.contains("[ADDRESS]:PORT"));
+    }
 
     /// Verifies managed tunnel ports stay in the dynamic/private range and a
     /// retry cannot repeat the port that just failed to bind.

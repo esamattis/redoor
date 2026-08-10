@@ -7,14 +7,34 @@ use redoor::{Level, log};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-/// One end of a reverse port forward: ssh listens on `remote_port` at the
-/// remote host and tunnels connections to `local_port` on the machine that
-/// started ssh. Both ports are usually the same redoor port, but they are
-/// kept separate so callers can map onto a different local port if needed.
-#[derive(Clone, Copy)]
+/// One reverse forward: SSH listens on `remote_port` at the remote host and
+/// asks the local SSH client to connect to `destination_host:destination_port`.
+/// Keeping the destination explicit lets a relay machine route agent traffic
+/// to a redoor server that the SSH target cannot reach directly.
+#[derive(Clone)]
 struct ReverseForward {
+    /// Port exposed on the SSH target for the remotely launched agent.
     remote_port: u16,
-    local_port: u16,
+    /// Host reached from the machine running the local SSH client.
+    destination_host: String,
+    /// Port reached from the machine running the local SSH client.
+    destination_port: u16,
+}
+
+impl ReverseForward {
+    /// Formats this forward as an `ssh -R` argument, bracketing IPv6 destinations
+    /// so OpenSSH does not confuse address colons with the port separator.
+    fn to_ssh_spec(&self) -> String {
+        let destination_host = if self.destination_host.contains(':') {
+            format!("[{}]", self.destination_host)
+        } else {
+            self.destination_host.clone()
+        };
+        format!(
+            "{}:{}:{}",
+            self.remote_port, destination_host, self.destination_port
+        )
+    }
 }
 
 /// Options for [`SshHost::run`] that are orthogonal to the remote command,
@@ -35,15 +55,24 @@ pub(super) struct SshRunOptions {
     /// mode) to this local file path. Used only for the long-running
     /// agent run so sniff/upload diagnostics still go to the terminal.
     log_file: Option<String>,
+    /// Pipes stderr so a standalone launcher can detect an initial reverse
+    /// forwarding bind failure while still copying agent logs to its terminal.
+    pipe_stderr: bool,
 }
 
 impl SshRunOptions {
-    /// Adds a reverse forward mapping `remote_port` on the ssh host to
-    /// `local_port` on this machine.
-    pub(super) fn with_reverse_forward(mut self, remote_port: u16, local_port: u16) -> Self {
+    /// Adds a reverse forward from `remote_port` on the SSH target to a
+    /// destination reached by the local SSH client.
+    pub(super) fn with_reverse_forward(
+        mut self,
+        remote_port: u16,
+        destination_host: impl Into<String>,
+        destination_port: u16,
+    ) -> Self {
         self.reverse_forwards.push(ReverseForward {
             remote_port,
-            local_port,
+            destination_host: destination_host.into(),
+            destination_port,
         });
         self
     }
@@ -68,6 +97,13 @@ impl SshRunOptions {
     /// Sets a local log file to redirect the ssh process's stdout/stderr into.
     pub(super) fn with_log_file(mut self, path: impl Into<String>) -> Self {
         self.log_file = Some(path.into());
+        self
+    }
+
+    /// Pipes SSH stderr so the caller can distinguish a remote forwarding bind
+    /// failure from the later lifecycle of a successfully started agent.
+    pub(super) fn with_piped_stderr(mut self) -> Self {
+        self.pipe_stderr = true;
         self
     }
 }
@@ -193,8 +229,7 @@ impl SshHost {
         ssh.arg("-o").arg("ExitOnForwardFailure=yes");
 
         for forward in &options.reverse_forwards {
-            let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
-            ssh.arg("-R").arg(spec);
+            ssh.arg("-R").arg(forward.to_ssh_spec());
         }
 
         ssh.arg(&self.target);
@@ -343,8 +378,7 @@ async fn build_ssh_command(
     ssh.arg("-o").arg("ExitOnForwardFailure=yes");
 
     for forward in &options.reverse_forwards {
-        let spec = format!("{}:localhost:{}", forward.remote_port, forward.local_port);
-        ssh.arg("-R").arg(spec);
+        ssh.arg("-R").arg(forward.to_ssh_spec());
     }
 
     ssh.arg(&host.target);
@@ -404,7 +438,11 @@ async fn build_ssh_command(
         ssh.stderr(Stdio::from(stderr_file));
     } else {
         ssh.stdout(Stdio::inherit());
-        ssh.stderr(Stdio::inherit());
+        if options.pipe_stderr {
+            ssh.stderr(Stdio::piped());
+        } else {
+            ssh.stderr(Stdio::inherit());
+        }
     }
 
     Ok(ssh)
@@ -435,5 +473,39 @@ mod tests {
         assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
         // The remote agent command must still be present after the environment preamble.
         assert!(debug_command.contains("/opt/redoor"));
+    }
+
+    /// Verifies a reverse route targets the host reachable from the local SSH
+    /// client instead of always falling back to that client's localhost.
+    #[tokio::test]
+    async fn reverse_forward_uses_custom_destination() {
+        let host = super::SshHost::new("linux.test".to_string());
+        let options =
+            super::SshRunOptions::default().with_reverse_forward(3000, "redoor.test", 4000);
+        let command = super::build_ssh_command(
+            &host,
+            "/opt/redoor",
+            &["agent", "ws://localhost:3000/ws"],
+            &options,
+        )
+        .await
+        .unwrap();
+        let debug_command = format!("{command:?}");
+
+        // The Linux listener must route to the destination reached from this machine.
+        assert!(debug_command.contains("3000:redoor.test:4000"));
+    }
+
+    /// Verifies IPv6 destinations retain unambiguous OpenSSH `-R` syntax.
+    #[test]
+    fn reverse_forward_brackets_ipv6_destination() {
+        let forward = super::ReverseForward {
+            remote_port: 3000,
+            destination_host: "2001:db8::10".to_string(),
+            destination_port: 4000,
+        };
+
+        // Brackets prevent IPv6 colons from being parsed as SSH field separators.
+        assert_eq!(forward.to_ssh_spec(), "3000:[2001:db8::10]:4000");
     }
 }

@@ -96,7 +96,9 @@ pub(super) async fn execute_with_cancellation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt, os::unix::fs::PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(not(target_os = "macos"))]
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
     /// Creates an isolated path without requiring a shared fixture or an additional test dependency.
     fn test_root(suffix: &str) -> std::path::PathBuf {
@@ -172,6 +174,8 @@ mod tests {
     }
 
     /// Verifies Unix paths with arbitrary bytes remain searchable through their lossy API form.
+    /// macOS filesystems reject invalid UTF-8 path components before traversal can exercise this behavior.
+    #[cfg(not(target_os = "macos"))]
     #[tokio::test]
     async fn non_utf8_path_is_searchable() {
         let root = test_root("non-utf8-path");

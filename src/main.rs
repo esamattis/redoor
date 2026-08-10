@@ -38,6 +38,11 @@ enum Commands {
     Server(ServerArgs),
     /// Run the agent or use its role-specific utilities.
     Agent(AgentCommandArgs),
+    /// Start an agent on an SSH host and route it through this machine to a redoor server.
+    ///
+    /// Use this when the SSH host and redoor server cannot connect to each other,
+    /// but this machine can reach both. The command provisions the remote agent,
+    /// opens a reverse SSH tunnel to `--route`, and runs until SSH exits.
     Ssh(ssh::SshArgs),
 }
 
@@ -491,6 +496,30 @@ mod tests {
             Cli::try_parse_from(["redoor", "agent", "launchd", "status", "--mode", "agent",])
                 .is_err(),
             "role-scoped service commands must reject the removed mode flag"
+        );
+    }
+
+    /// Keeps the SSH relay command focused on the topology where this machine
+    /// bridges an otherwise disconnected target and redoor server.
+    #[test]
+    fn ssh_command_requires_route() {
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "ssh",
+                "--route",
+                "redoor.example:3000",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_ok(),
+            "a route and SSH target should be sufficient for the relay command"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "ssh", "--token", "secret", "user@linux.example",])
+                .is_err(),
+            "the relay command must reject invocations without a route"
         );
     }
 }
