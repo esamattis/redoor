@@ -1,4 +1,5 @@
 use redoor::commands::CopyExistingMode;
+use redoor::{Level, log};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -17,6 +18,8 @@ pub(crate) enum DestinationPlaceError {
         source_kind: &'static str,
         dest_kind: &'static str,
     },
+    #[error("Cannot merge onto symlink destination: {0}")]
+    SymlinkDestination(String),
     #[error("Failed to remove existing destination: {0}")]
     RemoveExistingDestination(#[source] std::io::Error),
     #[error("Failed to create destination directory: {0}")]
@@ -25,6 +28,8 @@ pub(crate) enum DestinationPlaceError {
     MergeEntry { from: String, to: String },
     #[error("Failed to place destination from {from} to {to}")]
     PlaceDestination { from: String, to: String },
+    #[error("Failed to move existing destination aside before override: {0}")]
+    BackupExistingDestination(#[source] std::io::Error),
     #[error("Failed to read merge source directory: {0}")]
     ReadMergeSourceDirectory(String),
     #[error("Failed to read merge source entry: {0}")]
@@ -39,11 +44,14 @@ impl DestinationPlaceError {
         match self {
             Self::CheckDestinationPath(error)
             | Self::InspectDestinationPath(error)
-            | Self::RemoveExistingDestination(error) => {
+            | Self::RemoveExistingDestination(error)
+            | Self::BackupExistingDestination(error) => {
                 redoor::commands::CommandErrorKind::from_io_error(error)
             }
             Self::AlreadyExists(_) => redoor::commands::CommandErrorKind::AlreadyExists,
-            Self::TypeMismatch { .. } | Self::UnsupportedMergeEntryType(_) => {
+            Self::TypeMismatch { .. }
+            | Self::SymlinkDestination(_)
+            | Self::UnsupportedMergeEntryType(_) => {
                 redoor::commands::CommandErrorKind::InvalidInput
             }
             Self::CreateDestinationDirectory(_)
@@ -76,14 +84,22 @@ pub(crate) async fn check_existing_destination(
     }
 }
 
-/// Ensures merge only runs when source and destination share the same entry kind.
+/// Ensures merge only runs when source and destination share the same non-symlink entry kind.
+///
+/// Symlink destinations are rejected so merge never writes through a user-controlled link.
 async fn ensure_merge_types_compatible(
     path: &Path,
     source_is_directory: bool,
 ) -> Result<(), DestinationPlaceError> {
-    let metadata = tokio::fs::metadata(path)
+    let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(DestinationPlaceError::InspectDestinationPath)?;
+    if metadata.is_symlink() {
+        return Err(DestinationPlaceError::SymlinkDestination(
+            path.display().to_string(),
+        ));
+    }
+
     let dest_is_directory = metadata.is_dir();
     if source_is_directory == dest_is_directory {
         return Ok(());
@@ -104,11 +120,13 @@ async fn ensure_merge_types_compatible(
     })
 }
 
-/// Removes one existing file or directory so override can publish a replacement path.
+/// Removes one existing file, symlink, or directory so placement can publish a replacement path.
 async fn remove_existing_path(path: &Path) -> Result<(), DestinationPlaceError> {
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(DestinationPlaceError::InspectDestinationPath)?;
+    // Symlinks report as non-directories even when they point at directories, so remove_file
+    // drops the link itself instead of deleting the link target tree.
     if metadata.is_dir() {
         tokio::fs::remove_dir_all(path)
             .await
@@ -117,6 +135,62 @@ async fn remove_existing_path(path: &Path) -> Result<(), DestinationPlaceError> 
         tokio::fs::remove_file(path)
             .await
             .map_err(DestinationPlaceError::RemoveExistingDestination)
+    }
+}
+
+/// Builds a uniquely named sibling path used to hold the previous destination during override.
+fn backup_path_for_destination(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("destination");
+    let backup_name = format!(".{file_name}.redoor-override-backup-{}", fastrand::u64(..));
+    match path.parent() {
+        Some(parent) => parent.join(backup_name),
+        None => PathBuf::from(backup_name),
+    }
+}
+
+/// Publishes temp content by moving the old destination aside first so a failed rename can restore it.
+async fn publish_over_existing_with_backup(
+    temp_path: &Path,
+    final_path: &Path,
+) -> Result<(), DestinationPlaceError> {
+    let backup_path = backup_path_for_destination(final_path);
+
+    tokio::fs::rename(final_path, &backup_path)
+        .await
+        .map_err(DestinationPlaceError::BackupExistingDestination)?;
+
+    match tokio::fs::rename(temp_path, final_path).await {
+        Ok(()) => {
+            if let Err(error) = remove_existing_path(&backup_path).await {
+                // The new destination is already published; keep the successful result and surface cleanup loss in logs.
+                log!(
+                    Level::Error,
+                    "Failed to remove destination backup after override: backup={}, error={}",
+                    backup_path.display(),
+                    error
+                );
+            }
+            Ok(())
+        }
+        Err(_) => {
+            if let Err(error) = tokio::fs::rename(&backup_path, final_path).await {
+                // Both publish and restore failed; the prior content may only exist at the backup path.
+                log!(
+                    Level::Error,
+                    "Failed to restore destination backup after override publish failure: backup={}, destination={}, error={}",
+                    backup_path.display(),
+                    final_path.display(),
+                    error
+                );
+            }
+            Err(DestinationPlaceError::PlaceDestination {
+                from: temp_path.display().to_string(),
+                to: final_path.display().to_string(),
+            })
+        }
     }
 }
 
@@ -146,13 +220,7 @@ pub(crate) async fn place_temp_at_destination(
             final_path.display().to_string(),
         )),
         CopyExistingMode::Override => {
-            remove_existing_path(final_path).await?;
-            tokio::fs::rename(temp_path, final_path).await.map_err(|_| {
-                DestinationPlaceError::PlaceDestination {
-                    from: temp_path.display().to_string(),
-                    to: final_path.display().to_string(),
-                }
-            })
+            publish_over_existing_with_backup(temp_path, final_path).await
         }
         CopyExistingMode::Merge => {
             ensure_merge_types_compatible(final_path, content_is_directory).await?;
@@ -173,20 +241,69 @@ pub(crate) async fn place_temp_at_destination(
     }
 }
 
+/// Ensures one merge destination directory exists as a real directory, never through a symlink.
+async fn prepare_merge_directory(dest_dir: &Path) -> Result<(), DestinationPlaceError> {
+    match tokio::fs::symlink_metadata(dest_dir).await {
+        Ok(metadata) => {
+            if metadata.is_symlink() || !metadata.is_dir() {
+                // Drop links and non-directories so later writes cannot escape through the old entry.
+                remove_existing_path(dest_dir).await?;
+                tokio::fs::create_dir(dest_dir).await.map_err(|_| {
+                    DestinationPlaceError::CreateDestinationDirectory(
+                        dest_dir.display().to_string(),
+                    )
+                })?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(dest_dir).await.map_err(|_| {
+                DestinationPlaceError::CreateDestinationDirectory(dest_dir.display().to_string())
+            })?;
+            // create_dir_all can recreate a path that races into a symlink; reject that outcome.
+            let metadata = tokio::fs::symlink_metadata(dest_dir)
+                .await
+                .map_err(DestinationPlaceError::InspectDestinationPath)?;
+            if metadata.is_symlink() || !metadata.is_dir() {
+                return Err(DestinationPlaceError::SymlinkDestination(
+                    dest_dir.display().to_string(),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(DestinationPlaceError::InspectDestinationPath(error)),
+    }
+}
+
+/// Removes symlink or directory conflicts at a file destination so copy never writes through a link.
+async fn prepare_merge_file_destination(dest_path: &Path) -> Result<(), DestinationPlaceError> {
+    match tokio::fs::symlink_metadata(dest_path).await {
+        Ok(metadata) => {
+            if metadata.is_symlink() || metadata.is_dir() {
+                remove_existing_path(dest_path).await?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DestinationPlaceError::InspectDestinationPath(error)),
+    }
+}
+
 /// Copies one finished temp tree into an existing destination directory without deleting dest-only paths.
 async fn merge_directory_tree(
     source_root: &Path,
     dest_root: &Path,
 ) -> Result<(), DestinationPlaceError> {
+    // Re-check the root so placement never merges through a destination symlink.
+    ensure_merge_types_compatible(dest_root, true).await?;
+
     let mut pending = vec![PathBuf::new()];
 
     while let Some(relative_dir) = pending.pop() {
         let source_dir = source_root.join(&relative_dir);
         let dest_dir = dest_root.join(&relative_dir);
 
-        tokio::fs::create_dir_all(&dest_dir).await.map_err(|_| {
-            DestinationPlaceError::CreateDestinationDirectory(dest_dir.display().to_string())
-        })?;
+        prepare_merge_directory(&dest_dir).await?;
 
         let mut entries = tokio::fs::read_dir(&source_dir).await.map_err(|_| {
             DestinationPlaceError::ReadMergeSourceDirectory(source_dir.display().to_string())
@@ -204,17 +321,7 @@ async fn merge_directory_tree(
             })?;
 
             if metadata.is_dir() {
-                if tokio::fs::try_exists(&dest_path)
-                    .await
-                    .map_err(DestinationPlaceError::CheckDestinationPath)?
-                {
-                    let dest_metadata = tokio::fs::symlink_metadata(&dest_path)
-                        .await
-                        .map_err(DestinationPlaceError::InspectDestinationPath)?;
-                    if !dest_metadata.is_dir() {
-                        remove_existing_path(&dest_path).await?;
-                    }
-                }
+                // Child preparation happens when the directory is visited so nested symlinks are replaced first.
                 pending.push(relative_path);
                 continue;
             }
@@ -225,23 +332,7 @@ async fn merge_directory_tree(
                 ));
             }
 
-            if tokio::fs::try_exists(&dest_path)
-                .await
-                .map_err(DestinationPlaceError::CheckDestinationPath)?
-            {
-                let dest_metadata = tokio::fs::symlink_metadata(&dest_path)
-                    .await
-                    .map_err(DestinationPlaceError::InspectDestinationPath)?;
-                if dest_metadata.is_dir() {
-                    remove_existing_path(&dest_path).await?;
-                }
-            }
-
-            if let Some(parent) = dest_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|_| {
-                    DestinationPlaceError::CreateDestinationDirectory(parent.display().to_string())
-                })?;
-            }
+            prepare_merge_file_destination(&dest_path).await?;
 
             tokio::fs::copy(&source_path, &dest_path)
                 .await
@@ -253,4 +344,329 @@ async fn merge_directory_tree(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn unique_test_path(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    std::env::temp_dir().join(format!(
+        "redoor-dest-{prefix}-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redoor::commands::CommandErrorKind;
+
+    #[tokio::test]
+    async fn merge_rejects_symlink_destination_root() {
+        let external = unique_test_path("merge-symlink-root-external");
+        let dest_link = unique_test_path("merge-symlink-root-dest");
+        let temp_root = unique_test_path("merge-symlink-root-temp");
+
+        tokio::fs::create_dir_all(&external)
+            .await
+            .expect("external directory should be created");
+        tokio::fs::write(external.join("secret.txt"), "external-secret")
+            .await
+            .expect("external file should be created");
+        tokio::fs::symlink(&external, &dest_link)
+            .await
+            .expect("destination symlink should be created");
+
+        tokio::fs::create_dir_all(&temp_root)
+            .await
+            .expect("temp root should be created");
+        tokio::fs::write(temp_root.join("from-source.txt"), "source-payload")
+            .await
+            .expect("temp source file should be created");
+
+        let error =
+            place_temp_at_destination(&temp_root, &dest_link, CopyExistingMode::Merge, true)
+                .await
+                .expect_err("merge must reject a destination root symlink");
+
+        assert!(
+            matches!(error, DestinationPlaceError::SymlinkDestination(_)),
+            "symlink destinations should map to a dedicated invalid-input failure"
+        );
+        assert_eq!(
+            error.kind(),
+            CommandErrorKind::InvalidInput,
+            "callers should see InvalidInput for symlink merge destinations"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(external.join("secret.txt"))
+                .await
+                .expect("external content should remain readable"),
+            "external-secret",
+            "rejected merge must not write into the symlink target"
+        );
+        assert!(
+            !tokio::fs::try_exists(external.join("from-source.txt"))
+                .await
+                .expect("external path should stay inspectable"),
+            "source files must not appear outside the requested destination"
+        );
+
+        let _ = tokio::fs::remove_file(&dest_link).await;
+        let _ = tokio::fs::remove_dir_all(&external).await;
+        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+    }
+
+    #[tokio::test]
+    async fn merge_replaces_nested_destination_symlink_instead_of_following_it() {
+        let external = unique_test_path("merge-nested-symlink-external");
+        let dest_root = unique_test_path("merge-nested-symlink-dest");
+        let temp_root = unique_test_path("merge-nested-symlink-temp");
+
+        tokio::fs::create_dir_all(&external)
+            .await
+            .expect("external directory should be created");
+        tokio::fs::write(external.join("secret.txt"), "external-secret")
+            .await
+            .expect("external file should be created");
+
+        tokio::fs::create_dir_all(&dest_root)
+            .await
+            .expect("destination root should be created");
+        tokio::fs::symlink(&external, dest_root.join("linked"))
+            .await
+            .expect("nested destination symlink should be created");
+        tokio::fs::write(dest_root.join("dest-only.txt"), "dest-only")
+            .await
+            .expect("dest-only file should be created");
+
+        tokio::fs::create_dir_all(temp_root.join("linked"))
+            .await
+            .expect("temp linked directory should be created");
+        tokio::fs::write(temp_root.join("linked").join("file.txt"), "from-source")
+            .await
+            .expect("temp nested file should be created");
+
+        place_temp_at_destination(&temp_root, &dest_root, CopyExistingMode::Merge, true)
+            .await
+            .expect("merge should succeed by replacing nested symlinks");
+
+        let linked_meta = tokio::fs::symlink_metadata(dest_root.join("linked"))
+            .await
+            .expect("merged linked path should exist");
+        assert!(
+            linked_meta.is_dir() && !linked_meta.is_symlink(),
+            "merge must replace the nested symlink with a real directory"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest_root.join("linked").join("file.txt"))
+                .await
+                .expect("merged nested file should be readable"),
+            "from-source",
+            "source content should land inside the destination tree"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest_root.join("dest-only.txt"))
+                .await
+                .expect("dest-only file should survive merge"),
+            "dest-only",
+            "merge must keep destination-only entries"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(external.join("secret.txt"))
+                .await
+                .expect("external content should remain readable"),
+            "external-secret",
+            "merge must not write through the former nested symlink"
+        );
+        assert!(
+            !tokio::fs::try_exists(external.join("file.txt"))
+                .await
+                .expect("external path should stay inspectable"),
+            "source files must not escape into the old symlink target"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dest_root).await;
+        let _ = tokio::fs::remove_dir_all(&external).await;
+        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+    }
+
+    #[tokio::test]
+    async fn merge_replaces_nested_file_symlink_instead_of_writing_through_it() {
+        let external_file = unique_test_path("merge-file-symlink-external");
+        let dest_root = unique_test_path("merge-file-symlink-dest");
+        let temp_root = unique_test_path("merge-file-symlink-temp");
+
+        tokio::fs::write(&external_file, "external-secret")
+            .await
+            .expect("external file should be created");
+        tokio::fs::create_dir_all(&dest_root)
+            .await
+            .expect("destination root should be created");
+        tokio::fs::symlink(&external_file, dest_root.join("linked.txt"))
+            .await
+            .expect("nested file symlink should be created");
+
+        tokio::fs::create_dir_all(&temp_root)
+            .await
+            .expect("temp root should be created");
+        tokio::fs::write(temp_root.join("linked.txt"), "from-source")
+            .await
+            .expect("temp file should be created");
+
+        place_temp_at_destination(&temp_root, &dest_root, CopyExistingMode::Merge, true)
+            .await
+            .expect("merge should replace nested file symlinks");
+
+        let linked_meta = tokio::fs::symlink_metadata(dest_root.join("linked.txt"))
+            .await
+            .expect("merged file path should exist");
+        assert!(
+            linked_meta.is_file() && !linked_meta.is_symlink(),
+            "merge must replace the file symlink with a regular file"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest_root.join("linked.txt"))
+                .await
+                .expect("merged file should be readable"),
+            "from-source"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&external_file)
+                .await
+                .expect("external file should remain readable"),
+            "external-secret",
+            "merge must not truncate or overwrite the old symlink target"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dest_root).await;
+        let _ = tokio::fs::remove_file(&external_file).await;
+        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+    }
+
+    #[tokio::test]
+    async fn override_restores_destination_when_publish_fails() {
+        let dest = unique_test_path("override-restore-dest");
+        let missing_temp = unique_test_path("override-restore-missing-temp");
+
+        tokio::fs::write(&dest, "original-contents")
+            .await
+            .expect("destination file should be created");
+
+        let error =
+            place_temp_at_destination(&missing_temp, &dest, CopyExistingMode::Override, false)
+                .await
+                .expect_err("override must fail when the temp path cannot be published");
+
+        assert!(
+            matches!(error, DestinationPlaceError::PlaceDestination { .. }),
+            "a failed temp publish should surface as a placement error"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("destination should be restored after failed override"),
+            "original-contents",
+            "failed override must restore the previous destination from its backup"
+        );
+
+        let parent = dest
+            .parent()
+            .expect("temp destination should have a parent");
+        let file_name = dest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp destination name should stay utf-8");
+        let mut entries = tokio::fs::read_dir(parent)
+            .await
+            .expect("temp parent should stay readable");
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .expect("temp directory iteration should succeed")
+        {
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !entry_name.contains(&format!(".{file_name}.redoor-override-backup-")),
+                "successful restore should not leave override backup siblings behind"
+            );
+        }
+
+        let _ = tokio::fs::remove_file(&dest).await;
+    }
+
+    #[tokio::test]
+    async fn override_replaces_destination_and_removes_backup() {
+        let dest = unique_test_path("override-success-dest");
+        let temp = unique_test_path("override-success-temp");
+
+        tokio::fs::write(&dest, "old-contents")
+            .await
+            .expect("destination file should be created");
+        tokio::fs::write(&temp, "new-contents")
+            .await
+            .expect("temp file should be created");
+
+        place_temp_at_destination(&temp, &dest, CopyExistingMode::Override, false)
+            .await
+            .expect("override should publish the temp file");
+
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("new destination contents should be readable"),
+            "new-contents"
+        );
+
+        let parent = dest
+            .parent()
+            .expect("temp destination should have a parent");
+        let file_name = dest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp destination name should stay utf-8");
+        let mut entries = tokio::fs::read_dir(parent)
+            .await
+            .expect("temp parent should stay readable");
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .expect("temp directory iteration should succeed")
+        {
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !entry_name.contains(&format!(".{file_name}.redoor-override-backup-")),
+                "successful override should delete the temporary backup sibling"
+            );
+        }
+
+        let _ = tokio::fs::remove_file(&dest).await;
+    }
+
+    #[tokio::test]
+    async fn check_existing_destination_rejects_merge_onto_symlink() {
+        let external = unique_test_path("check-merge-symlink-external");
+        let dest_link = unique_test_path("check-merge-symlink-dest");
+
+        tokio::fs::create_dir_all(&external)
+            .await
+            .expect("external directory should be created");
+        tokio::fs::symlink(&external, &dest_link)
+            .await
+            .expect("destination symlink should be created");
+
+        let error = check_existing_destination(&dest_link, CopyExistingMode::Merge, true)
+            .await
+            .expect_err("preflight merge checks should reject symlink destinations");
+
+        assert!(
+            matches!(error, DestinationPlaceError::SymlinkDestination(_)),
+            "preflight should use the symlink-destination error"
+        );
+
+        let _ = tokio::fs::remove_file(&dest_link).await;
+        let _ = tokio::fs::remove_dir_all(&external).await;
+    }
 }

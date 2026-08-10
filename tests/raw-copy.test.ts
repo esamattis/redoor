@@ -701,6 +701,136 @@ describe("Raw Copy API", () => {
                 await fs.readFile(path.join(destRoot, "dest-only.txt"), "utf-8"),
             ).toBe("dest-only");
         });
+
+        it("should reject merge when the destination root is a symlink", async () => {
+            const sourceRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-symlink-root-source-${scope}`,
+            });
+            const externalRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-symlink-root-external-${scope}`,
+            });
+            const destRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-symlink-root-dest-${scope}`,
+            });
+
+            await fs.mkdir(sourceRoot, { recursive: true });
+            await fs.mkdir(externalRoot, { recursive: true });
+            await fs.writeFile(
+                path.join(sourceRoot, "from-source.txt"),
+                "source-payload",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(externalRoot, "secret.txt"),
+                "external-secret",
+                "utf-8",
+            );
+            await fs.symlink(externalRoot, destRoot);
+
+            const response = await testAgent.copyTo(
+                { agent: destAgentId, path: destRoot },
+                sourceRoot,
+                { on_existing: "merge" },
+            );
+
+            const erroredTransfer = await waitForValue({
+                description: `${scope} errored merge onto destination root symlink`,
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "errored",
+                    );
+                },
+            });
+
+            // Destination agent identity proves the rejection ran on the scoped copy path.
+            expect(erroredTransfer.dest?.agent).toBe(destAgentId);
+            // External content must stay untouched so merge never follows the destination root link.
+            expect(
+                await fs.readFile(path.join(externalRoot, "secret.txt"), "utf-8"),
+            ).toBe("external-secret");
+            // Source files must not appear outside the requested destination via the symlink target.
+            await expect(
+                fs.stat(path.join(externalRoot, "from-source.txt")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+        });
+
+        it("should replace nested destination symlinks during merge instead of following them", async () => {
+            const sourceRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-nested-symlink-source-${scope}`,
+            });
+            const externalRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-nested-symlink-external-${scope}`,
+            });
+            const destRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-nested-symlink-dest-${scope}`,
+            });
+
+            await fs.mkdir(path.join(sourceRoot, "linked"), { recursive: true });
+            await fs.mkdir(destRoot, { recursive: true });
+            await fs.mkdir(externalRoot, { recursive: true });
+            await fs.writeFile(
+                path.join(sourceRoot, "linked", "file.txt"),
+                "from-source",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(externalRoot, "secret.txt"),
+                "external-secret",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "dest-only.txt"),
+                "dest-only",
+                "utf-8",
+            );
+            await fs.symlink(externalRoot, path.join(destRoot, "linked"));
+
+            const response = await testAgent.copyTo(
+                { agent: destAgentId, path: destRoot },
+                sourceRoot,
+                { on_existing: "merge" },
+            );
+
+            const completedTransfer = await waitForValue({
+                description: `${scope} completed merge that replaces nested symlinks`,
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "completed",
+                    );
+                },
+            });
+
+            // Destination agent identity proves nested-symlink merge ran on the scoped copy path.
+            expect(completedTransfer.dest?.agent).toBe(destAgentId);
+            // Nested symlink targets must become real directories under the destination root.
+            const linkedStat = await fs.lstat(path.join(destRoot, "linked"));
+            expect(linkedStat.isDirectory()).toBe(true);
+            expect(linkedStat.isSymbolicLink()).toBe(false);
+            // Source content must land inside the destination tree, not the old link target.
+            expect(
+                await fs.readFile(
+                    path.join(destRoot, "linked", "file.txt"),
+                    "utf-8",
+                ),
+            ).toBe("from-source");
+            // Dest-only files must survive merge beside the replaced symlink path.
+            expect(
+                await fs.readFile(path.join(destRoot, "dest-only.txt"), "utf-8"),
+            ).toBe("dest-only");
+            // The previous symlink target must remain untouched outside the destination tree.
+            expect(
+                await fs.readFile(path.join(externalRoot, "secret.txt"), "utf-8"),
+            ).toBe("external-secret");
+            await expect(
+                fs.stat(path.join(externalRoot, "file.txt")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+        });
     });
 
     it("should return quickly while a large copy is still in progress", async () => {
