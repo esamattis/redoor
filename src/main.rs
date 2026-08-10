@@ -52,6 +52,12 @@ pub(crate) enum ServiceRole {
 
 impl ServiceRole {
     /// Returns the stable CLI and generated-service suffix for this role.
+    /// systemd/launchd helpers are OS-gated, so Android agent builds keep the
+    /// shared role enum without calling this helper.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(dead_code)
+    )]
     pub(crate) fn cli_name(self) -> &'static str {
         match self {
             Self::Agent => "agent",
