@@ -9,6 +9,7 @@ import {
     TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_SERVER_HOME,
+    TEST_APP_NAME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     waitForPort,
@@ -75,7 +76,9 @@ describe("HTTP authentication", () => {
         const sessionId = sessionIdFromCookie(cookie);
         const sessionPath = join(
             TEST_SERVER_HOME,
-            ".local/share/redoor/sessions",
+            ".local/share",
+            TEST_APP_NAME,
+            "sessions",
             `session_${sessionId}.json`,
         );
         // A successful login must have one durable server-side file as its source of truth.
@@ -87,7 +90,7 @@ describe("HTTP authentication", () => {
 
         const serverInfo = await api.getServerInfo();
         // The home page must identify which isolated application namespace is active.
-        expect(serverInfo.app_name).toBe("redoor");
+        expect(serverInfo.app_name).toBe(TEST_APP_NAME);
         // The authenticated home page must receive the real secret for its copyable agent config.
         expect(serverInfo.agent_token).toBe(TEST_AGENT_TOKEN);
         // Home UI needs an absolute config path so operators can find the file they edited.

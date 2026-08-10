@@ -200,6 +200,7 @@ export const TEST_SERVER_HOME = join(
     tmpdir(),
     `redoor-vitest-home-${VITEST_SERVER_PORT}`,
 );
+export const TEST_APP_NAME = `redoor-vitest-${VITEST_SERVER_PORT}`;
 
 export type SpawnAgentArgs = {
     wsAddress: string;
@@ -225,12 +226,10 @@ type SpawnOptions = {
 export class ProcessManager {
     private processes: Map<number, ChildProcess> = new Map();
     private stdoutBuffers: Map<number, OutputBuffer> = new Map();
+    private agentAppNames: Map<number, string> = new Map();
+    private agentNamespace = 0;
 
-    spawn(
-        command: string,
-        args: string[],
-        options: SpawnOptions = {},
-    ): number {
+    spawn(command: string, args: string[], options: SpawnOptions = {}): number {
         const proc = spawn(command, args, {
             detached: true,
             stdio: ["ignore", "pipe", "inherit"],
@@ -289,9 +288,15 @@ export class ProcessManager {
             cliArgs.push("--log", logPath);
         }
 
-        return this.spawn(args.executablePath ?? AGENT_PATH, cliArgs, {
+        const appName = `${TEST_APP_NAME}-agent-${this.agentNamespace++}`;
+        const pid = this.spawn(args.executablePath ?? AGENT_PATH, cliArgs, {
             cwd: args.cwd,
+            env: {
+                REDOOR_APP_NAME: appName,
+            },
         });
+        this.agentAppNames.set(pid, appName);
+        return pid;
     }
 
     spawnServer(args: SpawnServerArgs): number {
@@ -320,7 +325,7 @@ password = "${TEST_PASSWORD}"
             cwd: PROJECT_ROOT,
             env: {
                 HOME: TEST_SERVER_HOME,
-                REDOOR_APP_NAME: "redoor",
+                REDOOR_APP_NAME: TEST_APP_NAME,
             },
         });
     }
@@ -337,6 +342,15 @@ password = "${TEST_PASSWORD}"
         }
         this.processes.delete(pid);
         this.stdoutBuffers.delete(pid);
+        const appName = this.agentAppNames.get(pid);
+        const home = process.env.HOME;
+        if (appName !== undefined && home !== undefined) {
+            rmSync(join(home, ".local", "share", appName), {
+                recursive: true,
+                force: true,
+            });
+        }
+        this.agentAppNames.delete(pid);
     }
 
     killAll(): void {

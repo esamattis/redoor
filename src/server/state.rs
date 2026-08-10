@@ -46,6 +46,9 @@ pub(crate) struct ServerState {
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct CoordinatorArgs {
+    /// Detach the server from the terminal and continue running in the background.
+    #[arg(long)]
+    pub(crate) daemon: bool,
     /// Port to listen on. Overrides `REDOOR_PORT` and `[server].port`.
     /// Defaults to 3000 when not set anywhere.
     #[arg(long, env = "REDOOR_PORT")]

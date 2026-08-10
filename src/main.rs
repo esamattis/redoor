@@ -2,6 +2,7 @@ mod agent;
 mod app_name;
 mod binaries;
 mod launchd;
+mod process_control;
 mod process_logs;
 mod server;
 mod ssh;
@@ -50,7 +51,6 @@ pub(crate) enum ServiceRole {
 
 impl ServiceRole {
     /// Returns the stable CLI and generated-service suffix for this role.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn cli_name(self) -> &'static str {
         match self {
             Self::Agent => "agent",
@@ -73,6 +73,8 @@ struct ServerArgs {
 /// Server-specific utility commands.
 #[derive(Subcommand)]
 enum ServerCommand {
+    /// Stop the server recorded in the application PID file.
+    Stop,
     /// Print the configured server file log.
     Logs(ServerLogsArgs),
     /// Install or manage the server as a systemd service.
@@ -109,6 +111,8 @@ struct AgentCommandArgs {
 /// Agent-specific utility commands.
 #[derive(Subcommand)]
 enum AgentCommand {
+    /// Stop the standalone agent recorded in the application PID file.
+    Stop,
     /// Print the configured standalone-agent file log.
     Logs(AgentLogsArgs),
     /// Install or manage the agent as a systemd service.
@@ -146,13 +150,21 @@ async fn main() {
                 ))
                 .await;
             }
+            Some(ServerCommand::Stop) => {
+                run_utility(process_control::stop(ServiceRole::Server)).await;
+            }
             Some(ServerCommand::Systemd(systemd)) => {
                 run_utility(systemd::run(systemd, ServiceRole::Server)).await;
             }
             Some(ServerCommand::Launchd(launchd)) => {
                 run_utility(launchd::run(launchd, ServiceRole::Server)).await;
             }
-            None => run_server(args.run).await,
+            None => {
+                run_role(ServiceRole::Server, args.run.daemon, || {
+                    run_server(args.run)
+                })
+                .await
+            }
         },
         Commands::Agent(args) => match args.command {
             Some(AgentCommand::Logs(logs)) => {
@@ -164,6 +176,9 @@ async fn main() {
                 ))
                 .await;
             }
+            Some(AgentCommand::Stop) => {
+                run_utility(process_control::stop(ServiceRole::Agent)).await;
+            }
             Some(AgentCommand::Systemd(systemd)) => {
                 run_utility(systemd::run(systemd, ServiceRole::Agent)).await;
             }
@@ -171,10 +186,13 @@ async fn main() {
                 run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
             }
             None => {
-                if let Err(error) = agent::run(args.run).await {
-                    eprintln!("{error}");
-                    std::process::exit(1);
-                }
+                let daemon = args.run.daemon;
+                run_role(ServiceRole::Agent, daemon, || async move {
+                    agent::run(args.run)
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))
+                })
+                .await;
             }
         },
         Commands::Ssh(args) => {
@@ -190,6 +208,35 @@ async fn main() {
     }
 }
 
+/// Applies daemon and PID-file behavior consistently around a long-lived role.
+async fn run_role<F, Fut>(role: ServiceRole, daemon: bool, run: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    if daemon {
+        run_utility(process_control::spawn_daemon(role)).await;
+        return;
+    }
+    let pid_file = match process_control::acquire(role).await {
+        Ok(pid_file) => pid_file,
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = run().await {
+        eprintln!("{error}");
+        if let Some(pid_file) = pid_file {
+            pid_file.remove().await;
+        }
+        std::process::exit(1);
+    }
+    if let Some(pid_file) = pid_file {
+        pid_file.remove().await;
+    }
+}
+
 /// Reports a finite utility command failure consistently with other CLI branches.
 async fn run_utility(future: impl std::future::Future<Output = anyhow::Result<()>>) {
     if let Err(error) = future.await {
@@ -199,7 +246,7 @@ async fn run_utility(future: impl std::future::Future<Output = anyhow::Result<()
 }
 
 /// Starts the long-lived server using the established flat startup arguments.
-async fn run_server(args: server::CoordinatorArgs) {
+async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
     let app_name = app_name::app_name().expect("Clap validated the application name");
     // Explicit paths remain strict, while the conventional path bootstraps a
     // documented starter config so first startup does not require manual setup.

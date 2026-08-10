@@ -20,6 +20,9 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct AgentArgs {
+    /// Detach the agent from the terminal and continue running in the background.
+    #[arg(long)]
+    pub(crate) daemon: bool,
     /// WebSocket URL of the server (e.g. `ws://127.0.0.1:3000/ws`).
     /// Overrides `REDOOR_AGENT_WS` and `[agent].ws_address`.
     #[arg(env = "REDOOR_AGENT_WS")]
