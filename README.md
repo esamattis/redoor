@@ -4,7 +4,7 @@ Manual computer management using server-agent architecture.
 
 Agents connect directly to the server via HTTP/WebSocket, or the server can provision and spawn agents using SSH. When direct connection is not possible in either direction, agents can connect via a relay agent that can reach both the server and the agent.
 
-The server provides an unified web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
+The server provides an unified Web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
 
 
 
@@ -29,21 +29,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/he
 
 This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent. Or just manually download static pre-build binary from [releases](https://github.com/esamattis/redoor/releases).
 
-To configure background services do
-
-```bash
-redoor server systemd setup
-redoor agent systemd setup
-```
-
-or for macOS
-
-```bash
-redoor server launchd setup
-redoor agent launchd setup
-```
-
-See `redoor --help` for more
+See `$HOME/.local/bin/redoor --help`
 
 ## Configuration
 
