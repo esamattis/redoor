@@ -196,6 +196,36 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// Imports a missing daemon config before detaching closes the invoking terminal's stdin.
+pub(crate) async fn prepare_daemon_config(args: &AgentArgs) -> anyhow::Result<()> {
+    let required_settings_provided = args
+        .ws_address
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        && args.token.as_deref().is_some_and(|value| !value.is_empty());
+    if required_settings_provided {
+        return Ok(());
+    }
+
+    let config_path = match args.config.as_ref() {
+        Some(path) => PathBuf::from(path),
+        None => match crate::config::default_config_path() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        },
+    };
+    let exists = tokio::fs::try_exists(&config_path).await.map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to inspect config file '{}': {error}",
+            config_path.display()
+        )
+    })?;
+    if !exists {
+        crate::config::import_agent_config_from_stdin(&config_path).await?;
+    }
+    Ok(())
+}
+
 /// Fully resolved agent launch settings after applying source precedence.
 struct ResolvedAgentSettings {
     ws_address: String,
@@ -217,35 +247,56 @@ async fn resolve_agent_settings(
     args: AgentArgs,
 ) -> Result<ResolvedAgentSettings, Box<dyn std::error::Error>> {
     let explicit_config = args.config.is_some();
-    let config_path = match args.config {
+    let required_settings_provided = args
+        .ws_address
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        && args.token.as_deref().is_some_and(|value| !value.is_empty());
+    let config_path = match args.config.clone() {
         Some(path) => Some(PathBuf::from(path)),
         // Conventional path is optional for agents so fully CLI/env-configured
         // runs still work when HOME is unset or the file is missing.
-        None => crate::server::default_config_path().ok(),
+        None => crate::config::default_config_path().ok(),
     };
 
     let (file_config, loaded_config_path) = match config_path {
-        Some(path) => {
+        Some(mut path) => {
             // Explicit --config must exist; the conventional path is optional so
             // fully CLI/env-configured agents do not require a file.
-            let exists = tokio::fs::try_exists(&path).await.unwrap_or(false);
+            let exists = tokio::fs::try_exists(&path).await.map_err(|error| {
+                format!(
+                    "Failed to inspect config file '{}': {error}",
+                    path.display()
+                )
+            })?;
             if !exists {
-                if explicit_config {
+                if !required_settings_provided {
+                    path = crate::config::import_agent_config_from_stdin(&path).await?;
+                } else if explicit_config {
                     return Err(format!("Failed to read config file '{}'", path.display()).into());
+                } else {
+                    return resolve_agent_settings_from_sources(args, None, None);
                 }
-                (None, None)
-            } else {
-                let parsed = crate::server::parse_config_file(&path.to_string_lossy())
-                    .await
-                    .map_err(|error| {
-                        format!("Failed to parse config file '{}': {error}", path.display())
-                    })?;
-                (Some(parsed), Some(path))
             }
+            let parsed = crate::config::parse_config_file(&path.to_string_lossy())
+                .await
+                .map_err(|error| {
+                    format!("Failed to parse config file '{}': {error}", path.display())
+                })?;
+            (Some(parsed), Some(path))
         }
-        None => (None, None),
+        None => return resolve_agent_settings_from_sources(args, None, None),
     };
 
+    resolve_agent_settings_from_sources(args, file_config, loaded_config_path)
+}
+
+/// Applies source precedence after optional config discovery or import has completed.
+fn resolve_agent_settings_from_sources(
+    args: AgentArgs,
+    file_config: Option<crate::config::RedoorConfig>,
+    loaded_config_path: Option<PathBuf>,
+) -> Result<ResolvedAgentSettings, Box<dyn std::error::Error>> {
     let agent_section = file_config
         .as_ref()
         .and_then(|config| config.agent.clone())
@@ -278,7 +329,7 @@ async fn resolve_agent_settings(
         };
     let log = Some(match first_non_empty([args.log, agent_section.log]) {
         Some(path) => path,
-        None => crate::server::default_agent_log_path()?,
+        None => crate::config::default_agent_log_path()?,
     });
 
     Ok(ResolvedAgentSettings {

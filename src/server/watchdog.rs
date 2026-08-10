@@ -16,7 +16,7 @@ use redoor::watchdog::{SnapshotCallback, SpawnFn, WatchdogRegistry, spawn_superv
 use redoor::{Level, log};
 use tokio::process::Child;
 
-use super::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spawn_local_agent};
+use crate::config::{AgentConfig, LocalAgentConfig, default_local_agent_name, spawn_local_agent};
 
 /// Registers configured inventory and dormant supervisors without starting subprocesses.
 ///

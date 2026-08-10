@@ -250,7 +250,7 @@ fn validate_unit_load_state(
 #[cfg(target_os = "linux")]
 async fn run_user(mode: ServiceRole, unit_name: &str) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
-    let config_path = crate::server::default_config_path()?;
+    let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
 
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
@@ -287,7 +287,7 @@ async fn run_user(mode: ServiceRole, unit_name: &str) -> Result<()> {
 #[cfg(target_os = "linux")]
 async fn run_system(mode: ServiceRole, unit_name: &str) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
-    let config_path = crate::server::default_config_path()?;
+    let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
 
     if mode == ServiceRole::Server {
@@ -357,7 +357,7 @@ async fn activate_unit(service: &str, user: bool) -> Result<()> {
 /// Creates the selected `/var/log/<app-name>` and hands ownership to `redoor` when available.
 #[cfg(target_os = "linux")]
 async fn ensure_system_log_directory() -> Result<()> {
-    let log_directory = crate::server::default_log_directory()?;
+    let log_directory = crate::config::default_log_directory()?;
     tokio::fs::create_dir_all(&log_directory)
         .await
         .with_context(|| {
@@ -433,8 +433,7 @@ fn home_directory() -> Result<PathBuf> {
 
 /// Ensures setup has the shared config. Returns whether a new starter file was written.
 ///
-/// Agent and server modes create the same TOML so either role can share one file.
-/// Nothing is prompted; secrets are generated and printed once when the file is new.
+/// Server setup generates a starter file, while agent setup imports the server's config.
 #[cfg(target_os = "linux")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
@@ -445,7 +444,13 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    let created = crate::server::create_default_config_if_missing(config_path).await?;
+    if mode == ServiceRole::Agent {
+        let imported_path = crate::config::import_agent_config_from_stdin(config_path).await?;
+        validate_existing_config(mode, &imported_path).await?;
+        return Ok(false);
+    }
+
+    let created = crate::config::create_default_config_if_missing(config_path).await?;
 
     if let Some(created) = created {
         if let Some(password) = created.password {
@@ -473,12 +478,12 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
 /// Rejects incomplete configs before writing a unit that assumes the TOML is enough.
 #[cfg(target_os = "linux")]
 async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
-    let config = crate::server::parse_config_file(&config_path.to_string_lossy())
+    let config = crate::config::parse_config_file(&config_path.to_string_lossy())
         .await
         .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
     match mode {
         ServiceRole::Agent => {
-            if !crate::server::standalone_agent_is_fully_configured(&config) {
+            if !crate::config::standalone_agent_is_fully_configured(&config) {
                 bail!(
                     "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address so the service can start without CLI flags",
                     config_path.display()
@@ -486,7 +491,7 @@ async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Resu
             }
         }
         ServiceRole::Server => {
-            crate::server::require_server_section(&config)?;
+            crate::config::require_server_section(&config)?;
         }
     }
     Ok(())

@@ -140,7 +140,7 @@ fn resolve_service_name(mode: ServiceRole, service_name: Option<String>) -> Resu
 #[cfg(target_os = "macos")]
 async fn setup(args: ServiceArgs, role: ServiceRole) -> Result<()> {
     let service = resolve_service_name(role, args.service_name)?;
-    let config_path = crate::server::default_config_path()?;
+    let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(role, &config_path).await?;
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
@@ -283,8 +283,8 @@ async fn ensure_plist_exists(path: &Path, service: &str, mode: ServiceRole) -> R
 /// Follows the role's configured or conventional file log without buffering it.
 #[cfg(target_os = "macos")]
 async fn show_log(mode: ServiceRole, follow: bool) -> Result<()> {
-    let config_path = crate::server::default_config_path()?;
-    let config = crate::server::parse_config_file(&config_path.to_string_lossy())
+    let config_path = crate::config::default_config_path()?;
+    let config = crate::config::parse_config_file(&config_path.to_string_lossy())
         .await
         .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
     let configured = match mode {
@@ -294,8 +294,8 @@ async fn show_log(mode: ServiceRole, follow: bool) -> Result<()> {
     let log_path = match configured.filter(|path| !path.trim().is_empty()) {
         Some(path) => path,
         None => match mode {
-            ServiceRole::Agent => crate::server::default_agent_log_path()?,
-            ServiceRole::Server => crate::server::default_server_log_path()?,
+            ServiceRole::Agent => crate::config::default_agent_log_path()?,
+            ServiceRole::Server => crate::config::default_server_log_path()?,
         },
     };
     if follow {
@@ -324,7 +324,13 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    match crate::server::create_default_config_if_missing(config_path).await? {
+    if mode == ServiceRole::Agent {
+        let imported_path = crate::config::import_agent_config_from_stdin(config_path).await?;
+        validate_existing_config(mode, &imported_path).await?;
+        return Ok(false);
+    }
+
+    match crate::config::create_default_config_if_missing(config_path).await? {
         Some(created) => {
             if let Some(password) = created.password {
                 println!(
@@ -358,12 +364,12 @@ Store this secret securely; it will not be shown again.",
 /// Rejects configs that cannot run the selected role without extra CLI flags.
 #[cfg(target_os = "macos")]
 async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
-    let config = crate::server::parse_config_file(&config_path.to_string_lossy())
+    let config = crate::config::parse_config_file(&config_path.to_string_lossy())
         .await
         .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
     match mode {
         ServiceRole::Agent => {
-            if !crate::server::standalone_agent_is_fully_configured(&config) {
+            if !crate::config::standalone_agent_is_fully_configured(&config) {
                 bail!(
                     "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address so the service can start without CLI flags",
                     config_path.display()
@@ -371,7 +377,7 @@ async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Resu
             }
         }
         ServiceRole::Server => {
-            crate::server::require_server_section(&config)?;
+            crate::config::require_server_section(&config)?;
         }
     }
     Ok(())

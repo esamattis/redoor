@@ -44,9 +44,9 @@ pub(crate) async fn run(
 async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<String> {
     let config_path = match config {
         Some(path) => PathBuf::from(path),
-        None => crate::server::default_config_path()?,
+        None => crate::config::default_config_path()?,
     };
-    let parsed = crate::server::parse_config_file(&config_path.to_string_lossy())
+    let parsed = crate::config::parse_config_file(&config_path.to_string_lossy())
         .await
         .with_context(|| format!("Failed to parse config file '{}'", config_path.display()))?;
     let configured = match role {
@@ -56,8 +56,8 @@ async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<St
     match configured {
         Some(path) if !path.trim().is_empty() => Ok(path),
         _ => match role {
-            LogRole::Server => crate::server::default_server_log_path(),
-            LogRole::Agent => crate::server::default_agent_log_path(),
+            LogRole::Server => crate::config::default_server_log_path(),
+            LogRole::Agent => crate::config::default_agent_log_path(),
         },
     }
 }

@@ -1,6 +1,7 @@
 mod agent;
 mod app_name;
 mod binaries;
+mod config;
 mod launchd;
 mod process_control;
 mod process_logs;
@@ -187,6 +188,9 @@ async fn main() {
             }
             None => {
                 let daemon = args.run.daemon;
+                if daemon {
+                    run_utility(agent::prepare_daemon_config(&args.run)).await;
+                }
                 run_role(ServiceRole::Agent, daemon, || async move {
                     agent::run(args.run)
                         .await
@@ -253,14 +257,14 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
     let config_path = match args.config.clone() {
         Some(path) => PathBuf::from(path),
         None => {
-            let path = match server::default_config_path() {
+            let path = match config::default_config_path() {
                 Ok(path) => path,
                 Err(error) => {
                     eprintln!("{error:#}");
                     std::process::exit(1);
                 }
             };
-            match server::create_default_config_if_missing(&path).await {
+            match config::create_default_config_if_missing(&path).await {
                 Ok(Some(created)) => {
                     if let Some(password) = created.password {
                         eprintln!(
@@ -298,7 +302,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
             );
             std::process::exit(1);
         });
-    let config = match server::parse_config_file(&config_path.to_string_lossy()).await {
+    let config = match config::parse_config_file(&config_path.to_string_lossy()).await {
         Ok(config) => config,
         Err(error) => {
             eprintln!(
@@ -308,7 +312,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
-    let server_section = match server::require_server_section(&config) {
+    let server_section = match config::require_server_section(&config) {
         Ok(section) => section.clone(),
         Err(error) => {
             eprintln!(
@@ -331,7 +335,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
 
     let log = match args.log.clone().or_else(|| server_section.log.clone()) {
         Some(path) => Some(path),
-        None => match server::default_server_log_path() {
+        None => match config::default_server_log_path() {
             Ok(path) => Some(path),
             Err(error) => {
                 eprintln!("{error:#}");

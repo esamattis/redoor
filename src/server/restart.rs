@@ -1,10 +1,8 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use redoor::commands::{ErrorResponse, RestartResponse};
 
-use super::{
-    config::{parse_config_file, require_server_section},
-    state::ServerState,
-};
+use super::state::ServerState;
+use crate::config::{parse_config_file, require_server_section};
 
 /// Validates config.toml then asks the process to restart so startup
 /// applies the file from scratch (agents, auth, bind/port/log).

@@ -1,4 +1,4 @@
-//! Shared TOML config used by both the server and the standalone agent.
+//! Shared TOML config used by the server, standalone agent, and service installers.
 //!
 //! Top-level `agent_token` is the shared registration secret. Optional
 //! `[server]` holds listener and browser-auth settings; optional `[agent]`
@@ -7,6 +7,7 @@
 //! mode resolves required fields from CLI > env > config > default.
 
 mod bootstrap;
+mod import;
 mod local_agent;
 
 use anyhow::{Context, Result, bail};
@@ -18,6 +19,7 @@ pub(crate) use bootstrap::{
     create_default_config_if_missing, default_agent_log_path, default_config_path,
     default_local_agent_name, default_server_log_path,
 };
+pub(crate) use import::import_agent_config_from_stdin;
 // Preserve test/setup-facing config paths even though the production binary does not call them.
 #[allow(unused_imports)]
 pub(crate) use bootstrap::{CreatedDefaultConfig, create_default_config_if_missing_with_token};
