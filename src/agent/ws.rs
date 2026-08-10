@@ -1,5 +1,6 @@
 use super::{AgentHandle, AgentMsg};
 use futures_util::StreamExt;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, tungstenite::protocol::Message as WsMessage,
 };
@@ -72,28 +73,72 @@ pub(super) async fn spawn_read_task(
     });
 }
 
-/// Spawns stdin forwarding so manual input can still inject websocket text frames.
-pub(super) async fn spawn_stdin_task(agent_ref: AgentHandle) {
-    let agent_ref_clone = agent_ref.clone();
-    tokio::spawn(async move {
-        let mut line = String::new();
-        while tokio::io::AsyncBufReadExt::read_line(
-            &mut tokio::io::BufReader::new(tokio::io::stdin()),
-            &mut line,
-        )
-        .await
-        .unwrap()
-            > 0
-        {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                let _ = agent_ref_clone
-                    .send(AgentMsg::SendWebSocketMessage {
-                        msg: WsMessage::text(trimmed.to_string()),
-                    })
-                    .await;
+/// Spawns stdin forwarding and optionally treats EOF as loss of the owning SSH relay.
+pub(super) async fn spawn_stdin_task(agent_ref: AgentHandle, exit_on_eof: bool) {
+    tokio::spawn(forward_stdin(
+        BufReader::new(tokio::io::stdin()),
+        agent_ref,
+        exit_on_eof,
+    ));
+}
+
+/// Forwards complete input lines while keeping relay-only EOF shutdown independently testable.
+async fn forward_stdin<R>(mut input: R, agent_ref: AgentHandle, exit_on_eof: bool)
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        match input.read_line(&mut line).await {
+            Ok(0) => {
+                if exit_on_eof {
+                    let _ = agent_ref.send(AgentMsg::Shutdown).await;
+                }
+                break;
             }
-            line.clear();
+            Ok(_) => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = agent_ref
+                        .send(AgentMsg::SendWebSocketMessage {
+                            msg: WsMessage::text(trimmed.to_string()),
+                        })
+                        .await;
+                }
+                line.clear();
+            }
+            Err(_) => break,
         }
-    });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    /// Verifies only SSH-owned agents stop when their input channel disappears.
+    #[tokio::test]
+    async fn relay_stdin_eof_requests_clean_shutdown() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        forward_stdin(BufReader::new(&b""[..]), handle, true).await;
+
+        // EOF from a disconnected SSH channel must release the remote agent PID lock.
+        assert!(matches!(receiver.recv().await, Some(AgentMsg::Shutdown)));
+    }
+
+    /// Verifies ordinary agents retain the existing behavior when terminal stdin closes.
+    #[tokio::test]
+    async fn regular_stdin_eof_does_not_stop_agent() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let handle = AgentHandle { sender };
+
+        forward_stdin(BufReader::new(&b""[..]), handle, false).await;
+
+        // A service or detached regular agent commonly has closed stdin and must keep running.
+        assert!(receiver.try_recv().is_err());
+    }
 }

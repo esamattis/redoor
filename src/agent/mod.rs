@@ -114,6 +114,7 @@ pub(crate) struct AgentRuntime {
 
 /// Runs an agent after resolving settings with CLI > env > config file > default.
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let exit_on_stdin_eof = args.exit_on_stdin_eof;
     let resolved = resolve_agent_settings(args).await?;
     let launch_directory = std::env::current_dir()?;
     let configured_directory = resolved
@@ -196,7 +197,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         notification_delay,
     );
 
-    runtime.run(receiver, handle).await;
+    runtime.run(receiver, handle, exit_on_stdin_eof).await;
 
     Ok(())
 }

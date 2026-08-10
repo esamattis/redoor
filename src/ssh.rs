@@ -269,6 +269,7 @@ impl PreparedSshBackedAgent {
             self.app_name.clone(),
             "agent".to_string(),
             server_url,
+            "--exit-on-stdin-eof".to_string(),
             "--name".to_string(),
             self.agent_name.clone(),
         ];
@@ -688,6 +689,8 @@ mod tests {
 
         // Plain routing must retain its existing URL and avoid hidden TLS routing flags.
         assert!(argv.iter().any(|value| value == "ws://localhost:52123/ws"));
+        // SSH channel EOF must stop the remote process instead of leaving its PID lock held.
+        assert!(argv.iter().any(|value| value == "--exit-on-stdin-eof"));
         assert!(!argv.iter().any(|value| value == "--connect-address"));
         assert!(!argv.iter().any(|value| value == "--insecure-tls"));
     }

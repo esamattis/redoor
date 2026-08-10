@@ -32,6 +32,9 @@ pub(crate) struct AgentArgs {
     /// Disables TLS certificate verification for an explicitly tunneled WSS connection.
     #[arg(long, hide = true, requires = "connect_address")]
     pub(crate) insecure_tls: bool,
+    /// Ties an SSH-launched agent to its relay session so a lost channel cannot orphan it.
+    #[arg(long, hide = true)]
+    pub(crate) exit_on_stdin_eof: bool,
     /// Registration name shown in the UI. Defaults to the computer hostname.
     /// Overrides `REDOOR_AGENT_NAME` and `[agent].name`.
     #[arg(long, env = "REDOOR_AGENT_NAME")]

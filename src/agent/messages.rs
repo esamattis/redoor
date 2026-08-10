@@ -50,5 +50,7 @@ pub(crate) enum AgentMsg {
     LogStreamFinished {
         log_stream_id: LogStreamId,
     },
+    /// Stops the runtime cleanly when its owning transport has ended.
+    Shutdown,
     ExitWithError,
 }

@@ -56,8 +56,13 @@ impl AgentRuntime {
     }
 
     /// Runs the agent event loop until shutdown or fatal error.
-    pub(crate) async fn run(mut self, mut receiver: Receiver<AgentMsg>, handle: AgentHandle) {
-        spawn_stdin_task(handle.clone()).await;
+    pub(crate) async fn run(
+        mut self,
+        mut receiver: Receiver<AgentMsg>,
+        handle: AgentHandle,
+        exit_on_stdin_eof: bool,
+    ) {
+        spawn_stdin_task(handle.clone(), exit_on_stdin_eof).await;
         let _ = handle.try_send(AgentMsg::Connect);
 
         log!(
@@ -241,6 +246,7 @@ impl AgentRuntime {
             AgentMsg::LogStreamFinished { log_stream_id } => {
                 self.state.active_log_streams.remove(&log_stream_id);
             }
+            AgentMsg::Shutdown => return false,
             AgentMsg::ExitWithError => {
                 log!(Level::Error, "Exiting agent due to error");
                 std::process::exit(1);
