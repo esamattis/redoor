@@ -62,7 +62,7 @@ fn remote_sniff_script(remote_bin: &str) -> String {
         sha1="$(shasum -a 1 "$bin" 2>/dev/null | awk '{{print $1}}')"
     fi
 
-    printf '%s,%s,%s,%s\n' "$os" "$arch" "$version" "$sha1"
+    printf '%s,%s,%s,%s,%s\n' "$os" "$arch" "$version" "$sha1" "$bin"
 }}
 "#,
         bin = remote_bin
@@ -91,9 +91,9 @@ pub(super) async fn sniff_remote(
     let output = host.run_script_captured(&script, &options).await?;
     let trimmed = output.trim();
     let parts: Vec<&str> = trimmed.split(',').collect();
-    if parts.len() != 4 {
+    if parts.len() != 5 {
         return Err(format!(
-            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<version>,<sha1sum>'",
+            "unexpected ssh sniff output '{}': expected '<os>,<arch>,<version>,<sha1sum>,<remote_bin>'",
             trimmed
         )
         .into());
@@ -114,10 +114,11 @@ pub(super) async fn sniff_remote(
     };
     let version_output = parts[2].trim().to_string();
     let sha1sum = parts[3].trim().to_string();
+    let resolved_remote_bin = parts[4].trim();
     log!(
         Level::Info,
         "Remote sniff complete: remote_bin={}, os={}, arch={}, version_output='{}', sha1sum='{}'",
-        remote_bin,
+        resolved_remote_bin,
         os,
         arch,
         version_output,
@@ -491,7 +492,8 @@ mod tests {
     /// the multiline script remains executable without login-shell features.
     #[tokio::test]
     async fn remote_sniff_script_executes_successfully() {
-        let script = remote_sniff_script("/redoor-test-missing-binary");
+        let script =
+            remote_sniff_script("${XDG_DATA_HOME:-$HOME/.local/share}/redoor-test-missing-binary");
         // The outer group prevents any probe command from running before the full script arrives.
         assert!(
             script.starts_with("{\n") && script.ends_with("}\n"),
@@ -500,6 +502,8 @@ mod tests {
 
         let mut child = tokio::process::Command::new("/bin/sh")
             .arg("-s")
+            .env_remove("XDG_DATA_HOME")
+            .env("HOME", "/remote-home")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -516,14 +520,18 @@ mod tests {
             "probe failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        // Four fields are required by `sniff_remote`, even when `--version` is empty.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let fields: Vec<&str> = stdout.trim().split(',').collect();
+        // Five fields are required by `sniff_remote`, even when `--version` is empty.
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .split(',')
-                .count(),
-            4,
+            fields.len(),
+            5,
             "the probe should preserve the parser's expected output shape"
+        );
+        // Returning the shell-expanded path lets logs identify the actual remote file.
+        assert_eq!(
+            fields[4], "/remote-home/.local/share/redoor-test-missing-binary",
+            "the probe should resolve the default data path on the remote host"
         );
     }
 
