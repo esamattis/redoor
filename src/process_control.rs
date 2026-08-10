@@ -83,6 +83,11 @@ pub(crate) async fn acquire(slot: ProcessSlot) -> Result<Option<PidFile>> {
             .with_context(|| format!("Failed to create PID directory '{}'", parent.display()))?;
     }
 
+    claim_pid_file(slot, path).await.map(Some)
+}
+
+/// Claims an explicit PID path so every process role uses the same duplicate-start check.
+async fn claim_pid_file(slot: ProcessSlot, path: PathBuf) -> Result<PidFile> {
     let own_pid = std::process::id();
     let mut file = open_pid_file(&path).await?;
     if !try_lock(&file)? {
@@ -97,11 +102,11 @@ pub(crate) async fn acquire(slot: ProcessSlot) -> Result<Option<PidFile>> {
     file.write_all(own_pid.to_string().as_bytes()).await?;
     file.write_all(b"\n").await?;
     file.flush().await?;
-    Ok(Some(PidFile {
+    Ok(PidFile {
         path,
         pid: own_pid,
         file,
-    }))
+    })
 }
 
 /// Reports whether the lock owner is alive without changing process state.
@@ -251,5 +256,44 @@ fn try_lock(file: &fs::File) -> Result<bool> {
         Ok(_) => Ok(true),
         Err(Errno::EWOULDBLOCK) => Ok(false),
         Err(error) => Err(error).context("Failed to lock PID file"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Protects standalone relays from a second start while the first PID owns the lock.
+    #[tokio::test]
+    async fn relay_rejects_a_second_pid_claim() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-relay-double-start-{}.pid",
+            std::process::id()
+        ));
+        let first = claim_pid_file(ProcessSlot::Relay, path.clone())
+            .await
+            .expect("the first relay should claim its PID file");
+
+        let error = match claim_pid_file(ProcessSlot::Relay, path).await {
+            Ok(_) => panic!("a second relay must not claim the active PID file"),
+            Err(error) => error,
+        };
+        // The PID identifies the process operators need to inspect or stop.
+        assert!(
+            error.to_string().contains(&format!(
+                "relay is already running with PID {}",
+                std::process::id()
+            )),
+            "duplicate relay startup should report the PID-file owner: {error:#}"
+        );
+        // Relay-specific stop guidance must not point at the standalone agent slot.
+        assert!(
+            error
+                .to_string()
+                .contains("run `redoor agent relay stop` to stop it"),
+            "duplicate relay startup should provide the relay stop command: {error:#}"
+        );
+
+        first.remove().await;
     }
 }

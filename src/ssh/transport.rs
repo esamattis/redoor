@@ -192,8 +192,8 @@ impl SshHost {
 
     /// Spawns `ssh` to execute `command` with `args` on the remote host,
     /// applying the forwards and forwarding-failure behavior described by
-    /// `options`. Stdio is inherited so the user can observe remote output
-    /// and interact with the process when needed.
+    /// `options`. Output remains observable while secret-bearing agent sessions
+    /// retain their stdin pipe until the SSH child exits.
     ///
     /// Returns the spawned child. Callers (the supervisor) own the child
     /// so they can wait for it or kill it when the WebSocket goes stale.
@@ -215,16 +215,7 @@ impl SshHost {
         ssh.kill_on_drop(true);
         let mut child = ssh.spawn()?;
         if let Some((_, value)) = &options.secret_env {
-            let mut child_stdin = child
-                .stdin
-                .take()
-                .expect("secret environment requires piped ssh stdin");
-            child_stdin.write_all(value.as_bytes()).await?;
-            child_stdin.write_all(b"\n").await?;
-            tokio::spawn(async move {
-                let mut stdin = tokio::io::stdin();
-                let _ = tokio::io::copy(&mut stdin, &mut child_stdin).await;
-            });
+            write_secret_and_retain_stdin(&mut child, value).await?;
         }
         Ok(child)
     }
@@ -388,6 +379,24 @@ impl SshHost {
     }
 }
 
+/// Sends a secret first line while retaining the pipe so detached stdin cannot stop the agent.
+async fn write_secret_and_retain_stdin(
+    child: &mut tokio::process::Child,
+    value: &str,
+) -> Result<(), std::io::Error> {
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .expect("secret environment requires piped ssh stdin");
+    child_stdin.write_all(value.as_bytes()).await?;
+    child_stdin.write_all(b"\n").await?;
+    // The remote agent uses EOF to detect a lost SSH channel. Keeping this writer
+    // with the child prevents `/dev/null` in daemon and service contexts from
+    // looking like a disconnect immediately after the token preamble is consumed.
+    child.stdin = Some(child_stdin);
+    Ok(())
+}
+
 /// Builds the [`Command`] used by both [`SshHost::run`] and
 /// [`SshHost::spawn`]. Centralizing the arg/stdio wiring keeps the two
 /// spawn paths from drifting out of sync as flags are added.
@@ -515,6 +524,40 @@ mod tests {
             options.log_file().map(String::as_str),
             Some("/tmp/redoor-relay-test.log")
         );
+    }
+
+    /// Keeps the secret-bearing channel open after its first line so daemon stdin EOF is not forwarded.
+    #[tokio::test]
+    async fn secret_stdin_stays_open_for_the_ssh_child_lifetime() {
+        use tokio::io::AsyncWriteExt;
+
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read token; read lifecycle")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("the stdin lifecycle test shell should start");
+
+        super::write_secret_and_retain_stdin(&mut child, "test-token")
+            .await
+            .expect("the secret line should be written");
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("the SSH child must retain stdin after receiving its secret");
+        // A second write proves daemon `/dev/null` was not copied into and allowed to close this pipe.
+        stdin
+            .write_all(b"channel-still-open\n")
+            .await
+            .expect("the retained channel should accept lifecycle input");
+        drop(stdin);
+
+        let status = child
+            .wait()
+            .await
+            .expect("the stdin lifecycle test shell should exit");
+        // Successful reads prove both the secret and retained channel reached the child.
+        assert!(status.success(), "the child should read both stdin lines");
     }
 
     /// Verifies the secret value is delivered through stdin and never embedded
