@@ -23,8 +23,7 @@ pub(crate) struct AgentArgs {
     /// Detach the agent from the terminal and continue running in the background.
     #[arg(long)]
     pub(crate) daemon: bool,
-    /// Redoor server URL (`http(s)://` or `ws(s)://`). Path is optional and forced to `/ws`.
-    /// Overrides `REDOOR_AGENT_WS` and `[agent].server` (or legacy `[agent].ws_address`).
+    /// Redoor server URL (`http(s)://` or `ws(s)://`) without pathnname
     #[arg(env = "REDOOR_AGENT_WS")]
     pub(crate) server: Option<String>,
     /// Physical TCP endpoint used by an SSH tunnel while the URL retains TLS and HTTP identity.

@@ -143,6 +143,18 @@ impl SshHost {
         self
     }
 
+    /// Exposes the SSH destination for lifecycle logs without duplicating it in
+    /// higher-level prepared-agent state.
+    pub(super) fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Exposes the configured SSH server port so launch logs distinguish it
+    /// from the random remote reverse-forward port.
+    pub(super) fn server_port(&self) -> u16 {
+        self.ssh_port
+    }
+
     /// Spawns `ssh` to execute `command` with `args` on the remote host,
     /// applying the forwards and forwarding-failure behavior described by
     /// `options`. Stdio is inherited so the user can observe remote output
@@ -202,53 +214,40 @@ impl SshHost {
         ssh.status().await
     }
 
-    /// Runs a single shell command on the remote host and captures its
-    /// stdout. Used for one-shot "sniff" commands whose output we need to
-    /// parse locally rather than stream to the user. Stderr is still
-    /// inherited so authentication errors and similar diagnostics stay
-    /// visible.
-    pub(super) async fn run_captured(
+    /// Streams a script to `sh -s` on the remote host and captures stdout.
+    /// Sending the script through stdin keeps multiline probes readable and
+    /// avoids embedding shell syntax in the SSH command argument. Stderr stays
+    /// inherited so authentication and remote-shell diagnostics remain visible.
+    pub(super) async fn run_script_captured(
         &self,
-        shell_command: &str,
+        script: &str,
         options: &SshRunOptions,
     ) -> Result<String, std::io::Error> {
-        let mut ssh = Command::new("ssh");
-
-        if let Some(ref username) = self.username {
-            ssh.arg("-l").arg(username);
-        }
-        ssh.arg("-p").arg(self.ssh_port.to_string());
-
-        if options.compressed {
-            ssh.arg("-C");
-        }
-
-        // Always fail fast if a requested reverse forward cannot be bound.
-        // Without this, ssh keeps running and the remote command executes
-        // against a tunnel that will never come up.
-        ssh.arg("-o").arg("ExitOnForwardFailure=yes");
-
-        for forward in &options.reverse_forwards {
-            ssh.arg("-R").arg(forward.to_ssh_spec());
-        }
-
-        ssh.arg(&self.target);
-        ssh.arg(shell_command);
-
-        ssh.stdin(Stdio::null());
+        let mut ssh = build_ssh_command(self, "sh", &["-s"], options).await?;
+        ssh.stdin(Stdio::piped());
         ssh.stdout(Stdio::piped());
         ssh.stderr(Stdio::inherit());
 
-        log!(Level::Debug, "Running ssh command: {:?}", ssh);
+        log!(Level::Debug, "Running ssh script through {:?}", ssh);
 
-        let output = ssh.output().await?;
+        let mut child = ssh.spawn()?;
+        let mut stdin = child.stdin.take().expect("script requires piped ssh stdin");
+        let write_result = stdin.write_all(script.as_bytes()).await;
+        // Closing stdin tells the remote shell that the complete script has arrived.
+        drop(stdin);
+
+        let output = child.wait_with_output().await?;
         if !output.status.success() {
             return Err(std::io::Error::other(format!(
-                "ssh exited with status {} while running: {}",
-                output.status.code().unwrap_or(-1),
-                shell_command
+                "ssh exited with status {} while running remote script",
+                output.status.code().unwrap_or(-1)
             )));
         }
+        write_result.map_err(|error| {
+            std::io::Error::other(format!(
+                "failed to stream script through ssh stdin: {error}"
+            ))
+        })?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 

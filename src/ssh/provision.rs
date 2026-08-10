@@ -43,6 +43,32 @@ pub(super) struct RemoteSniff {
     sha1sum: String,
 }
 
+/// Builds the shell script used to inspect a remote binary in one SSH
+/// round-trip. The outer brace group must be parsed in full before execution,
+/// so a truncated SSH stdin stream cannot run a partially received probe.
+fn remote_sniff_script(remote_bin: &str) -> String {
+    // Keep this script as portable as possible because remote hosts may provide
+    // only a minimal POSIX `sh` and their platform-specific checksum utility.
+    format!(
+        r#"{{
+    bin="{bin}"
+    os="$(uname)"
+    arch="$(uname -m)"
+    version="$("$bin" --version 2>/dev/null)"
+
+    if command -v sha1sum >/dev/null 2>&1; then
+        sha1="$(sha1sum "$bin" 2>/dev/null | awk '{{print $1}}')"
+    else
+        sha1="$(shasum -a 1 "$bin" 2>/dev/null | awk '{{print $1}}')"
+    fi
+
+    printf '%s,%s,%s,%s\n' "$os" "$arch" "$version" "$sha1"
+}}
+"#,
+        bin = remote_bin
+    )
+}
+
 /// Probes the remote host with a single ssh command that reports its OS,
 /// CPU architecture, the `--version` output of the configured redoor binary,
 /// and that binary's SHA-1. Batching into one round-trip avoids paying ssh
@@ -52,7 +78,7 @@ pub(super) async fn sniff_remote(
     host: &SshHost,
     remote_bin: &str,
 ) -> Result<RemoteSniff, Box<dyn std::error::Error>> {
-    // The whole probe is one shell command so we only authenticate once.
+    // The whole probe is one shell script so we only authenticate once.
     // We probe with `--version` instead of `test -x` so a binary that
     // exists at the path but is broken, the wrong program, or a stale
     // version still gets reinstalled -- we trust the remote report only
@@ -60,12 +86,9 @@ pub(super) async fn sniff_remote(
     // SHA-1 is collected in the same pass so debug deploys can skip upload
     // when the remote file already matches the local bytes. Prefer
     // `sha1sum` (Linux) and fall back to `shasum` (macOS).
-    let shell_command = format!(
-        "echo \"$(uname),$(uname -m),$({bin} --version 2>/dev/null),$((sha1sum {bin} 2>/dev/null || shasum -a 1 {bin} 2>/dev/null) | awk '{{print $1}}')\"",
-        bin = remote_bin
-    );
+    let script = remote_sniff_script(remote_bin);
     let options = SshRunOptions::default().compressed();
-    let output = host.run_captured(&shell_command, &options).await?;
+    let output = host.run_script_captured(&script, &options).await?;
     let trimmed = output.trim();
     let parts: Vec<&str> = trimmed.split(',').collect();
     if parts.len() != 4 {
@@ -93,7 +116,8 @@ pub(super) async fn sniff_remote(
     let sha1sum = parts[3].trim().to_string();
     log!(
         Level::Info,
-        "Remote sniff: os={}, arch={}, version_output='{}', sha1sum='{}'",
+        "Remote sniff complete: remote_bin={}, os={}, arch={}, version_output='{}', sha1sum='{}'",
+        remote_bin,
         os,
         arch,
         version_output,
@@ -123,6 +147,22 @@ async fn file_sha1sum(path: &Path) -> Result<String, std::io::Error> {
         hasher.update(&buf[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Decides whether a remote binary can be reused without an upload. A digest
+/// proves byte equality when available; minimal remote systems without either
+/// checksum utility fall back to the binary's expected version report.
+fn remote_binary_matches(
+    remote_version: &str,
+    remote_sha1: &str,
+    expected_version: &str,
+    local_sha1: &str,
+) -> bool {
+    if remote_sha1.is_empty() {
+        remote_version == expected_version
+    } else {
+        remote_sha1 == local_sha1
+    }
 }
 
 /// Ensures the remote host has the appropriate redoor binary and returns the
@@ -159,6 +199,12 @@ pub(super) async fn ensure_remote_binary(
         (debug_binary, remote_bin)
     } else {
         if sniff.version_output == expected {
+            log!(
+                Level::Info,
+                "Remote binary version already matches; no download or upload needed: remote_bin={}, version='{}'",
+                versioned_remote_bin,
+                sniff.version_output
+            );
             return Ok(versioned_remote_bin.to_string());
         }
         log!(
@@ -167,28 +213,50 @@ pub(super) async fn ensure_remote_binary(
             sniff.version_output,
             expected
         );
+        log!(
+            Level::Info,
+            "Resolving relay binary from local cache or release download: version={}, os={}, arch={}",
+            env!("CARGO_PKG_VERSION"),
+            sniff.os,
+            sniff.arch
+        );
         let local_path =
             crate::binaries::ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch)
                 .await?;
+        log!(
+            Level::Info,
+            "Relay binary available in local cache: path={}",
+            local_path.display()
+        );
         (local_path, versioned_remote_bin.to_string())
     };
 
     let local_sha1 = file_sha1sum(&local_path).await?;
     // Initial sniff targets the versioned path; debug installs live elsewhere
     // and need their own SHA-1 before we can decide whether to upload.
-    let remote_sha1 = if remote_bin == versioned_remote_bin {
-        sniff.sha1sum.clone()
+    let (remote_version, remote_sha1) = if remote_bin == versioned_remote_bin {
+        (sniff.version_output.clone(), sniff.sha1sum.clone())
     } else {
-        sniff_remote(host, &remote_bin).await?.sha1sum
+        let debug_sniff = sniff_remote(host, &remote_bin).await?;
+        (debug_sniff.version_output, debug_sniff.sha1sum)
     };
 
-    if !remote_sha1.is_empty() && remote_sha1 == local_sha1 {
-        log!(
-            Level::Info,
-            "Remote binary already matches local sha1sum, skipping upload: remote_bin={}, sha1sum={}",
-            remote_bin,
-            local_sha1
-        );
+    if remote_binary_matches(&remote_version, &remote_sha1, &expected, &local_sha1) {
+        if remote_sha1.is_empty() {
+            log!(
+                Level::Info,
+                "Remote checksum unavailable but version matches, skipping upload: remote_bin={}, version='{}'",
+                remote_bin,
+                remote_version
+            );
+        } else {
+            log!(
+                Level::Info,
+                "Remote binary already matches local sha1sum, skipping upload: remote_bin={}, sha1sum={}",
+                remote_bin,
+                local_sha1
+            );
+        }
         return Ok(remote_bin);
     }
 
@@ -202,9 +270,19 @@ pub(super) async fn ensure_remote_binary(
 
     upload_binary(host, &local_path, &remote_bin).await?;
     let post_upload = sniff_remote(host, &remote_bin).await?;
-    // Prefer SHA-1 over `--version` for integrity: debug builds keep the same
-    // version string across rebuilds, so only the digest proves the bytes landed.
-    if post_upload.sha1sum != local_sha1 {
+    // Prefer SHA-1 over `--version` for integrity when the remote host can
+    // calculate it. Minimal hosts without a checksum utility fall back to the
+    // expected version so a successful upload can still be accepted.
+    if post_upload.sha1sum.is_empty() {
+        if post_upload.version_output == expected {
+            log!(
+                Level::Info,
+                "Remote checksum unavailable after upload; accepting matching version: remote_bin={}, version='{}'",
+                remote_bin,
+                post_upload.version_output
+            );
+        }
+    } else if post_upload.sha1sum != local_sha1 {
         return Err(format!(
             "remote binary at {} sha1sum mismatch after upload: got '{}', want '{}'",
             remote_bin, post_upload.sha1sum, local_sha1
@@ -388,9 +466,10 @@ async fn upload_binary(
 mod tests {
     use super::{
         debug_binary_candidate, debug_remote_bin, default_remote_bin, file_sha1sum,
-        remote_upload_tmp_path,
+        remote_binary_matches, remote_sniff_script, remote_upload_tmp_path,
     };
     use std::path::{Path, PathBuf};
+    use tokio::io::AsyncWriteExt;
 
     /// Verifies local SHA-1 matches the well-known digest for a fixed payload so
     /// remote `sha1sum` comparisons cannot drift from a buggy hasher.
@@ -406,6 +485,73 @@ mod tests {
         assert_eq!(digest, "5cd57297d6ccaa26976cb250ba018adbc98d5907");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Streams the generated probe to a POSIX shell just as SSH does, proving
+    /// the multiline script remains executable without login-shell features.
+    #[tokio::test]
+    async fn remote_sniff_script_executes_successfully() {
+        let script = remote_sniff_script("/redoor-test-missing-binary");
+        // The outer group prevents any probe command from running before the full script arrives.
+        assert!(
+            script.starts_with("{\n") && script.ends_with("}\n"),
+            "the complete probe should be protected by one brace group"
+        );
+
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(script.as_bytes()).await.unwrap();
+        drop(stdin);
+        let output = child.wait_with_output().await.unwrap();
+
+        // Success proves the streamed script uses syntax supported by the local POSIX shell.
+        assert!(
+            output.status.success(),
+            "probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Four fields are required by `sniff_remote`, even when `--version` is empty.
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .split(',')
+                .count(),
+            4,
+            "the probe should preserve the parser's expected output shape"
+        );
+    }
+
+    /// Verifies checksum-less hosts can reuse a binary only when its executable
+    /// still reports the exact expected version.
+    #[test]
+    fn remote_binary_match_falls_back_to_version_without_sha1() {
+        // A matching version is the only available identity signal on a minimal host.
+        assert!(remote_binary_matches(
+            "redoor 0.1.3",
+            "",
+            "redoor 0.1.3",
+            "local-digest"
+        ));
+        // A stale version must still trigger an upload when no digest can be calculated.
+        assert!(!remote_binary_matches(
+            "redoor 0.1.2",
+            "",
+            "redoor 0.1.3",
+            "local-digest"
+        ));
+        // A present digest remains authoritative even if the version text matches.
+        assert!(!remote_binary_matches(
+            "redoor 0.1.3",
+            "different-digest",
+            "redoor 0.1.3",
+            "local-digest"
+        ));
     }
 
     /// Ensures the upload temp path stays beside the final binary so remote

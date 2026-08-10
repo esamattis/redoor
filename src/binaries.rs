@@ -153,7 +153,8 @@ async fn download_binary(
     let extract_dir = work_dir.join("extract");
     log!(
         Level::Info,
-        "Downloading redoor binary: version={version}, os={os}, arch={arch}"
+        "Redoor binary cache miss; downloading release: version={version}, os={os}, arch={arch}, url={url}, cache_path={}",
+        final_path.display()
     );
     let result = async {
         tokio::fs::create_dir_all(&extract_dir)

@@ -235,7 +235,11 @@ impl PreparedSshBackedAgent {
         let remote_port = self.random_remote_port.next();
         log!(
             Level::Info,
-            "Starting SSH tunnel: remote_port={}, destination={}:{}",
+            "Spawning SSH-backed redoor agent: target={}, ssh_server_port={}, name={}, remote_bin={}, random_remote_port={}, destination={}:{}",
+            self.host.target(),
+            self.host.server_port(),
+            self.agent_name,
+            self.remote_bin,
             remote_port,
             self.destination_host,
             self.destination_port
@@ -351,9 +355,22 @@ async fn prepare_ssh_backed_agent_for_destination(
     // intentionally placed at that path. Auto-install may redirect debug
     // uploads to the dedicated `debug` path instead of the versioned default.
     let remote_bin = if config.remote_bin.is_none() {
+        log!(
+            Level::Info,
+            "Sniffing SSH target before relay: target={}, ssh_server_port={}, remote_bin={}",
+            config.target,
+            config.ssh_port,
+            remote_bin
+        );
         let sniff = sniff_remote(&host, &remote_bin).await?;
         ensure_remote_binary(&host, &remote_bin, &sniff).await?
     } else {
+        log!(
+            Level::Info,
+            "Using operator-provided remote binary without sniffing or provisioning: target={}, remote_bin={}",
+            config.target,
+            remote_bin
+        );
         remote_bin
     };
 
