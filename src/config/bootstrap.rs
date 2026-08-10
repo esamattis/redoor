@@ -31,20 +31,29 @@ pub(crate) fn default_log_directory() -> Result<PathBuf> {
     crate::app_name::user_data_directory()
 }
 
-/// Default persistent server log used when no CLI, environment, or TOML path is set.
-pub(crate) fn default_server_log_path() -> Result<String> {
+/// Default persistent log for a process slot when no CLI, environment, or TOML path is set.
+pub(crate) fn default_process_log_path(
+    slot: crate::process_control::ProcessSlot,
+) -> Result<String> {
     Ok(default_log_directory()?
-        .join("server.log")
+        .join(format!("{}.log", slot.file_stem()))
         .display()
         .to_string())
 }
 
+/// Default persistent server log used when no CLI, environment, or TOML path is set.
+pub(crate) fn default_server_log_path() -> Result<String> {
+    default_process_log_path(crate::process_control::ProcessSlot::Server)
+}
+
 /// Default persistent standalone-agent log used when no explicit path is set.
 pub(crate) fn default_agent_log_path() -> Result<String> {
-    Ok(default_log_directory()?
-        .join("agent.log")
-        .display()
-        .to_string())
+    default_process_log_path(crate::process_control::ProcessSlot::Agent)
+}
+
+/// Default persistent SSH-relay log used when no explicit path is set.
+pub(crate) fn default_relay_log_path() -> Result<String> {
+    default_process_log_path(crate::process_control::ProcessSlot::Relay)
 }
 
 /// Default UI/workdir for a local agent: home for normal users, filesystem root for root.

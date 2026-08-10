@@ -63,6 +63,15 @@ For a self-signed, privately issued, expired, or hostname-mismatched certificate
 REDOOR_AGENT_TOKEN=secret redoor agent relay --server https://redoor.internal.example --insecure user@linux-server
 ```
 
+Daemonize the local relay (PID/log under `~/.local/share/redoor/` as `relay.pid` / `relay.log`) the same way as agent/server:
+
+```bash
+REDOOR_AGENT_TOKEN=secret redoor agent relay --daemon --server http://redoor.internal.example:3000 user@linux-server
+redoor agent relay status
+redoor agent relay logs
+redoor agent relay stop
+```
+
 ## Configuration
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).

@@ -1,9 +1,11 @@
-//! Prints configured server and standalone-agent log files without buffering them.
+//! Prints configured server, standalone-agent, and relay log files without buffering them.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
+
+use crate::process_control::ProcessSlot;
 
 /// Process role whose configured file log should be displayed.
 #[derive(Clone, Copy)]
@@ -12,6 +14,19 @@ pub(crate) enum LogRole {
     Server,
     /// Resolve the log from `REDOOR_AGENT_LOG` or `[agent].log`.
     Agent,
+    /// Resolve the log from `REDOOR_RELAY_LOG` or the conventional relay path.
+    Relay,
+}
+
+impl LogRole {
+    /// Maps log display to the shared process-slot identity for default paths.
+    fn process_slot(self) -> ProcessSlot {
+        match self {
+            Self::Server => ProcessSlot::Server,
+            Self::Agent => ProcessSlot::Agent,
+            Self::Relay => ProcessSlot::Relay,
+        }
+    }
 }
 
 /// Resolves the configured path and streams its last lines through the platform `tail` tool.
@@ -42,6 +57,11 @@ pub(crate) async fn run(
 
 /// Loads the conventional or explicit TOML and returns the selected role's log path.
 async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<String> {
+    // Relay has no TOML section; only an explicit override or the conventional default.
+    if matches!(role, LogRole::Relay) {
+        return crate::config::default_process_log_path(role.process_slot());
+    }
+
     let config_path = match config {
         Some(path) => PathBuf::from(path),
         None => crate::config::default_config_path()?,
@@ -52,12 +72,10 @@ async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<St
     let configured = match role {
         LogRole::Server => parsed.server.and_then(|section| section.log),
         LogRole::Agent => parsed.agent.and_then(|section| section.log),
+        LogRole::Relay => None,
     };
     match configured {
         Some(path) if !path.trim().is_empty() => Ok(path),
-        _ => match role {
-            LogRole::Server => crate::config::default_server_log_path(),
-            LogRole::Agent => crate::config::default_agent_log_path(),
-        },
+        _ => crate::config::default_process_log_path(role.process_slot()),
     }
 }

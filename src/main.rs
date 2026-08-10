@@ -76,6 +76,8 @@ struct ServerArgs {
 enum ServerCommand {
     /// Stop the server recorded in the application PID file.
     Stop,
+    /// Report whether the server PID file lock is held.
+    Status,
     /// Print the configured server file log.
     Logs(ServerLogsArgs),
     /// Install or manage the server as a systemd service.
@@ -114,6 +116,8 @@ struct AgentCommandArgs {
 enum AgentCommand {
     /// Stop the standalone agent recorded in the application PID file.
     Stop,
+    /// Report whether the standalone agent PID file lock is held.
+    Status,
     /// Print the configured standalone-agent file log.
     Logs(AgentLogsArgs),
     /// Install or manage the agent as a systemd service.
@@ -121,7 +125,41 @@ enum AgentCommand {
     /// Install or manage the agent as a macOS LaunchAgent.
     Launchd(launchd::LaunchdArgs),
     /// Start an agent on an SSH host and relay it through this machine to a redoor server.
-    Relay(ssh::RelayArgs),
+    Relay(RelayCommandArgs),
+}
+
+/// Preserves flat relay startup flags while exposing `agent relay stop|status|logs`.
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct RelayCommandArgs {
+    /// Selects a utility action instead of starting the relay.
+    #[command(subcommand)]
+    command: Option<RelayCommand>,
+    /// Existing relay startup settings remain accepted directly after `relay`.
+    #[command(flatten)]
+    run: ssh::RelayArgs,
+}
+
+/// Relay-specific utility commands sharing `relay.pid` / `relay.log`.
+#[derive(Subcommand)]
+enum RelayCommand {
+    /// Stop the relay recorded in the application PID file.
+    Stop,
+    /// Report whether the relay PID file lock is held.
+    Status,
+    /// Print the configured relay file log.
+    Logs(RelayLogsArgs),
+}
+
+/// Options used to locate and limit relay file logs.
+#[derive(Args)]
+struct RelayLogsArgs {
+    /// Number of trailing lines to print.
+    #[arg(short = 'n', default_value_t = 500)]
+    lines: usize,
+    /// Override `REDOOR_RELAY_LOG` and the conventional relay log path.
+    #[arg(long, env = "REDOOR_RELAY_LOG")]
+    log: Option<String>,
 }
 
 /// Options used to locate and limit standalone-agent file logs.
@@ -154,7 +192,13 @@ async fn main() {
                 .await;
             }
             Some(ServerCommand::Stop) => {
-                run_utility(process_control::stop(ServiceRole::Server)).await;
+                run_utility(process_control::stop(process_control::ProcessSlot::Server)).await;
+            }
+            Some(ServerCommand::Status) => {
+                run_utility(process_control::status(
+                    process_control::ProcessSlot::Server,
+                ))
+                .await;
             }
             Some(ServerCommand::Systemd(systemd)) => {
                 run_utility(systemd::run(systemd, ServiceRole::Server)).await;
@@ -163,9 +207,11 @@ async fn main() {
                 run_utility(launchd::run(launchd, ServiceRole::Server)).await;
             }
             None => {
-                run_role(ServiceRole::Server, args.run.daemon, || {
-                    run_server(args.run)
-                })
+                run_role(
+                    process_control::ProcessSlot::Server,
+                    args.run.daemon,
+                    || run_server(args.run),
+                )
                 .await
             }
         },
@@ -180,7 +226,10 @@ async fn main() {
                 .await;
             }
             Some(AgentCommand::Stop) => {
-                run_utility(process_control::stop(ServiceRole::Agent)).await;
+                run_utility(process_control::stop(process_control::ProcessSlot::Agent)).await;
+            }
+            Some(AgentCommand::Status) => {
+                run_utility(process_control::status(process_control::ProcessSlot::Agent)).await;
             }
             Some(AgentCommand::Systemd(systemd)) => {
                 run_utility(systemd::run(systemd, ServiceRole::Agent)).await;
@@ -188,22 +237,38 @@ async fn main() {
             Some(AgentCommand::Launchd(launchd)) => {
                 run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
             }
-            Some(AgentCommand::Relay(relay)) => {
-                if let Err(error) = logging::init(None).await {
-                    eprintln!("{error:#}");
-                    std::process::exit(1);
+            Some(AgentCommand::Relay(relay)) => match relay.command {
+                Some(RelayCommand::Stop) => {
+                    run_utility(process_control::stop(process_control::ProcessSlot::Relay)).await;
                 }
-                if let Err(error) = ssh::run_relay(relay).await {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                Some(RelayCommand::Status) => {
+                    run_utility(process_control::status(process_control::ProcessSlot::Relay)).await;
                 }
-            }
+                Some(RelayCommand::Logs(logs)) => {
+                    run_utility(process_logs::run(
+                        process_logs::LogRole::Relay,
+                        None,
+                        logs.log,
+                        logs.lines,
+                    ))
+                    .await;
+                }
+                None => {
+                    let daemon = relay.run.daemon;
+                    run_role(process_control::ProcessSlot::Relay, daemon, || async move {
+                        ssh::run_relay(relay.run)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{error}"))
+                    })
+                    .await;
+                }
+            },
             None => {
                 let daemon = args.run.daemon;
                 if daemon {
                     run_utility(agent::prepare_daemon_config(&args.run)).await;
                 }
-                run_role(ServiceRole::Agent, daemon, || async move {
+                run_role(process_control::ProcessSlot::Agent, daemon, || async move {
                     agent::run(args.run)
                         .await
                         .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -215,16 +280,16 @@ async fn main() {
 }
 
 /// Applies daemon and PID-file behavior consistently around a long-lived role.
-async fn run_role<F, Fut>(role: ServiceRole, daemon: bool, run: F)
+async fn run_role<F, Fut>(slot: process_control::ProcessSlot, daemon: bool, run: F)
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     if daemon {
-        run_utility(process_control::spawn_daemon(role)).await;
+        run_utility(process_control::spawn_daemon(slot)).await;
         return;
     }
-    let pid_file = match process_control::acquire(role).await {
+    let pid_file = match process_control::acquire(slot).await {
         Ok(pid_file) => pid_file,
         Err(error) => {
             eprintln!("{error:#}");
@@ -472,7 +537,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
 mod tests {
     use clap::Parser;
 
-    use super::{AgentCommand, Cli, Commands};
+    use super::{AgentCommand, Cli, Commands, RelayCommand};
 
     /// Keeps service-manager commands nested under their selected process role.
     #[test]
@@ -493,6 +558,31 @@ mod tests {
             Cli::try_parse_from(["redoor", "agent", "launchd", "status", "--mode", "agent",])
                 .is_err(),
             "role-scoped service commands must reject the removed mode flag"
+        );
+    }
+
+    /// Keeps process status nested under each long-lived role, including relay.
+    #[test]
+    fn parses_process_status_commands() {
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "status"]).is_ok(),
+            "standalone agent status should parse without startup flags"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "server", "status"]).is_ok(),
+            "server status should parse without startup flags"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "relay", "status"]).is_ok(),
+            "relay status should parse without SSH startup flags"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "relay", "stop"]).is_ok(),
+            "relay stop should parse without SSH startup flags"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "relay", "logs"]).is_ok(),
+            "relay logs should parse without SSH startup flags"
         );
     }
 
@@ -517,8 +607,10 @@ mod tests {
         let Some(AgentCommand::Relay(default_relay)) = default_agent.command else {
             panic!("agent relay should preserve its relay arguments");
         };
+        // Utility subcommands stay absent when the operator is starting a relay.
+        assert!(default_relay.command.is_none());
         // `None` prevents the transport from emitting `-p 22` over an SSH alias.
-        assert_eq!(default_relay.ssh_port, None);
+        assert_eq!(default_relay.run.ssh_port, None);
 
         let override_cli = Cli::try_parse_from([
             "redoor",
@@ -540,7 +632,30 @@ mod tests {
             panic!("agent relay should preserve its relay arguments");
         };
         // An explicit CLI port must still override the alias configuration.
-        assert_eq!(override_relay.ssh_port, Some(2200));
+        assert_eq!(override_relay.run.ssh_port, Some(2200));
+        assert!(
+            matches!(
+                Cli::try_parse_from([
+                    "redoor",
+                    "agent",
+                    "relay",
+                    "status",
+                    "--server",
+                    "http://redoor.example:3000",
+                ])
+                .err(),
+                Some(_)
+            ),
+            "utility subcommands must reject startup flags that would fight args_conflicts_with_subcommands"
+        );
+        let stop_cli = Cli::try_parse_from(["redoor", "agent", "relay", "stop"]).unwrap();
+        let Commands::Agent(stop_agent) = stop_cli.command else {
+            panic!("agent relay stop should parse into the agent command");
+        };
+        let Some(AgentCommand::Relay(stop_relay)) = stop_agent.command else {
+            panic!("agent relay stop should preserve its relay command wrapper");
+        };
+        assert!(matches!(stop_relay.command, Some(RelayCommand::Stop)));
     }
 
     /// Keeps the SSH relay command focused on the topology where this machine
@@ -561,17 +676,26 @@ mod tests {
             .is_ok(),
             "a server URL and SSH target should be sufficient for the relay command"
         );
+        // Missing --server still parses so utility subcommands can share RelayArgs;
+        // run_relay rejects the incomplete start at runtime.
+        let missing_server = Cli::try_parse_from([
+            "redoor",
+            "agent",
+            "relay",
+            "--token",
+            "secret",
+            "user@linux.example",
+        ])
+        .unwrap();
+        let Commands::Agent(missing_server_agent) = missing_server.command else {
+            panic!("agent relay should parse into the agent command");
+        };
+        let Some(AgentCommand::Relay(missing_server_relay)) = missing_server_agent.command else {
+            panic!("agent relay should preserve its relay arguments");
+        };
         assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_err(),
-            "the relay command must reject invocations without a server"
+            missing_server_relay.run.server.is_none(),
+            "omitting --server must leave the start payload incomplete for runtime validation"
         );
         assert!(
             Cli::try_parse_from([

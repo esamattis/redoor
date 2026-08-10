@@ -15,7 +15,7 @@ import { getAvailablePort, SERVER_PATH } from "./test-utils";
 const execFileAsync = promisify(execFile);
 
 /** Creates an isolated application namespace and guarantees daemon cleanup after a test. */
-function isolatedProcess(role: "agent" | "server") {
+function isolatedProcess(role: "agent" | "server" | "relay") {
     const home = mkdtempSync(join(tmpdir(), `redoor-${role}-lifecycle-`));
     const appName = `redoor-${role}-${process.pid}-${Date.now()}`;
     const env = {
@@ -25,17 +25,19 @@ function isolatedProcess(role: "agent" | "server") {
         REDOOR_AGENT_NOTIFICATION: "off",
     };
     const pidFile = join(home, ".local", "share", appName, `${role}.pid`);
+    const stopArgs =
+        role === "relay" ? ["agent", "relay", "stop"] : [role, "stop"];
 
     onTestFinished(async () => {
         try {
-            await execFileAsync(SERVER_PATH, [role, "stop"], { env });
+            await execFileAsync(SERVER_PATH, stopArgs, { env });
         } catch {
             // The tested stop command may already have removed the process.
         }
         rmSync(home, { recursive: true, force: true });
     });
 
-    return { env, pidFile };
+    return { env, pidFile, stopArgs };
 }
 
 /** Waits for a daemon to atomically publish its numeric PID without relying on fixed delays. */
@@ -88,6 +90,12 @@ port = ${port}
         // An unlocked stale file must not make an unrelated live PID look like the server.
         expect(pid).not.toBe(process.pid);
 
+        const status = await execFileAsync(SERVER_PATH, ["server", "status"], {
+            env: isolated.env,
+        });
+        // Status must report the lock owner rather than only checking file presence.
+        expect(status.stdout).toContain(`server is running with PID ${pid}`);
+
         await expect(
             execFileAsync(SERVER_PATH, ["server", "--config", configPath], {
                 env: isolated.env,
@@ -106,6 +114,15 @@ port = ${port}
         await vi.waitFor(() => {
             // Signal 0 failing proves stop waited for process termination rather than only deleting the file.
             expect(() => process.kill(pid, 0)).toThrow();
+        });
+
+        await expect(
+            execFileAsync(SERVER_PATH, ["server", "status"], {
+                env: isolated.env,
+            }),
+        ).rejects.toMatchObject({
+            // After stop, status must not claim a process from a leftover unlocked file.
+            stderr: expect.stringContaining("server is not running"),
         });
     });
 
@@ -126,6 +143,12 @@ port = ${port}
         });
         const pid = await waitForPid(isolated.pidFile);
 
+        const status = await execFileAsync(SERVER_PATH, ["agent", "status"], {
+            env: isolated.env,
+        });
+        // Status shares the same lock truth as stop/duplicate-start rejection.
+        expect(status.stdout).toContain(`agent is running with PID ${pid}`);
+
         await expect(
             execFileAsync(SERVER_PATH, agentArgs, { env: isolated.env }),
         ).rejects.toMatchObject({
@@ -142,6 +165,28 @@ port = ${port}
         await vi.waitFor(() => {
             // The agent must be gone even though its WebSocket reconnect loop was active.
             expect(() => process.kill(pid, 0)).toThrow();
+        });
+    });
+
+    test("relay status and stop share the relay PID slot without startup flags", async () => {
+        const isolated = isolatedProcess("relay");
+
+        await expect(
+            execFileAsync(SERVER_PATH, ["agent", "relay", "status"], {
+                env: isolated.env,
+            }),
+        ).rejects.toMatchObject({
+            // Empty namespaces must report not-running instead of requiring SSH flags.
+            stderr: expect.stringContaining("relay is not running"),
+        });
+
+        await expect(
+            execFileAsync(SERVER_PATH, ["agent", "relay", "stop"], {
+                env: isolated.env,
+            }),
+        ).rejects.toMatchObject({
+            // Stop guidance for a missing relay must stay free of agent/server confusion.
+            stderr: expect.stringContaining("relay is not running"),
         });
     });
 });

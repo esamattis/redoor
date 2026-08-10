@@ -53,6 +53,9 @@ use transport::{SshHost, SshRunOptions};
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct RelayArgs {
+    /// Detach the relay from the terminal and continue running in the background.
+    #[arg(long)]
+    pub(crate) daemon: bool,
     /// SSH login username. Forwarded to ssh via `-l`. Optional so that
     /// ssh config (`~/.ssh/config`) or the `user@host` target syntax can
     /// supply the username instead.
@@ -66,8 +69,9 @@ pub(crate) struct RelayArgs {
     /// (`http(s)://` or `ws(s)://`). A random dynamic port on the SSH target
     /// forwards to this host/port. `https`/`wss` enable TLS; the hostname is
     /// retained for SNI and WebSocket HTTP authority. Path is optional and forced to `/ws`.
+    /// Optional at the clap layer so `agent relay stop|status|logs` can parse without it.
     #[arg(long)]
-    pub(crate) server: ServerAddress,
+    pub(crate) server: Option<ServerAddress>,
     /// Disable TLS certificate verification. This permits untrusted, expired,
     /// or hostname-mismatched certificates and should be used only when necessary.
     /// Requires an `https://` or `wss://` server URL.
@@ -79,8 +83,9 @@ pub(crate) struct RelayArgs {
     #[arg(long)]
     pub(crate) name: Option<String>,
     /// Shared secret from top-level `agent_token` so the remote agent can register.
+    /// Optional at the clap layer so utility subcommands do not require a token.
     #[arg(long, env = "REDOOR_AGENT_TOKEN")]
-    pub(crate) token: String,
+    pub(crate) token: Option<String>,
     /// Path to the redoor binary on the remote host. Defaults to the
     /// XDG data layout (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`).
     #[arg(long, env = "REDOOR_REMOTE_BIN")]
@@ -88,9 +93,15 @@ pub(crate) struct RelayArgs {
     /// Default directory the remote agent publishes for UI tab navigation.
     #[arg(short = 'd', long)]
     pub(crate) dir: Option<String>,
+    /// Local log file for relay diagnostics and SSH-forwarded remote agent output.
+    /// Overrides `REDOOR_RELAY_LOG`. Defaults to `~/.local/share/<app-name>/relay.log`
+    /// for non-root users.
+    #[arg(long, env = "REDOOR_RELAY_LOG")]
+    pub(crate) log: Option<String>,
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
     /// standard ssh CLI usage so existing muscle memory transfers.
-    pub(crate) target: String,
+    /// Optional at the clap layer so utility subcommand names are not captured as targets.
+    pub(crate) target: Option<String>,
 }
 
 /// Derives a default agent name from the ssh target by stripping any
@@ -141,7 +152,18 @@ pub(crate) struct SshBackedAgentConfig {
 /// tunnel while retaining the route hostname for TLS and HTTP. Stdio is
 /// inherited so the user can observe agent logs while this command owns the SSH session.
 pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let server = args.server;
+    // Clap keeps these optional so `stop`/`status`/`logs` parse cleanly; start still requires them.
+    let server = args
+        .server
+        .ok_or("--server is required to start the relay")?;
+    let token = args
+        .token
+        .filter(|value| !value.is_empty())
+        .ok_or("--token is required to start the relay (or set REDOOR_AGENT_TOKEN)")?;
+    let target = args
+        .target
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("a remote SSH target is required to start the relay")?;
     if args.insecure && !server.is_secure() {
         return Err("--insecure requires an https:// or wss:// --server URL".into());
     }
@@ -150,6 +172,12 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
             "WARNING: --insecure disables TLS certificate verification for the routed server"
         );
     }
+    // Always pin a file path so daemonized relays and `agent relay logs` share one sink.
+    let log = match args.log.filter(|path| !path.trim().is_empty()) {
+        Some(path) => path,
+        None => crate::config::default_relay_log_path()?,
+    };
+    redoor::logging::init(Some(log.clone())).await?;
     let config = SshBackedAgentConfig {
         username: args.username,
         ssh_port: args.ssh_port,
@@ -157,10 +185,11 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
         // Keep None distinct so provisioning knows whether it may manage the default path.
         remote_bin: args.remote_bin,
         dir: args.dir,
-        target: args.target,
-        log: None,
+        target,
+        // SSH stdout/stderr carry remote agent logs; append them beside local diagnostics.
+        log: Some(log),
     };
-    start_relay(config, server, &args.token, args.insecure).await
+    start_relay(config, server, &token, args.insecure).await
 }
 
 /// Remembers the last random remote port so every retry necessarily chooses a

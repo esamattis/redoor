@@ -10,10 +10,47 @@ use nix::{
 };
 use tokio::{fs, io::AsyncWriteExt, process::Command};
 
-use crate::ServiceRole;
-
 /// Internal marker used by the server because managed agents have their own watchdog lifecycle.
 pub(crate) const MANAGED_AGENT_ENV: &str = "REDOOR_MANAGED_AGENT";
+
+/// Long-lived process that owns a PID file and optional daemon mode.
+///
+/// Distinct from service-manager roles (`ServiceRole`) so SSH relay can share
+/// PID/daemon/stop/status without implying systemd or launchd install support.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessSlot {
+    /// Standalone `redoor agent` process.
+    Agent,
+    /// `redoor server` process.
+    Server,
+    /// Local `redoor agent relay` SSH tunnel process.
+    Relay,
+}
+
+impl ProcessSlot {
+    /// Basename for PID and default log files (`agent`, `server`, `relay`).
+    pub(crate) fn file_stem(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Server => "server",
+            Self::Relay => "relay",
+        }
+    }
+
+    /// CLI path after `redoor` used in operator-facing stop guidance.
+    pub(crate) fn command_path(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Server => "server",
+            Self::Relay => "agent relay",
+        }
+    }
+
+    /// Managed local agents skip PID files so they do not fight the standalone agent lock.
+    fn skips_pid_when_managed(self) -> bool {
+        matches!(self, Self::Agent) && std::env::var_os(MANAGED_AGENT_ENV).is_some()
+    }
+}
 
 /// Owns the path claimed by a long-lived process so startup failures can clean it up.
 pub(crate) struct PidFile {
@@ -34,12 +71,12 @@ impl PidFile {
 }
 
 /// Atomically claims the role PID file, rejecting a process that is still alive.
-pub(crate) async fn acquire(role: ServiceRole) -> Result<Option<PidFile>> {
-    if role == ServiceRole::Agent && std::env::var_os(MANAGED_AGENT_ENV).is_some() {
+pub(crate) async fn acquire(slot: ProcessSlot) -> Result<Option<PidFile>> {
+    if slot.skips_pid_when_managed() {
         return Ok(None);
     }
 
-    let path = pid_path(role)?;
+    let path = pid_path(slot)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -52,8 +89,8 @@ pub(crate) async fn acquire(role: ServiceRole) -> Result<Option<PidFile>> {
         let pid = read_pid(&path).await.unwrap_or(0);
         bail!(
             "{} is already running with PID {pid}; run `redoor {} stop` to stop it",
-            role.cli_name(),
-            role.cli_name()
+            slot.file_stem(),
+            slot.command_path()
         );
     }
     file.set_len(0).await?;
@@ -67,23 +104,41 @@ pub(crate) async fn acquire(role: ServiceRole) -> Result<Option<PidFile>> {
     }))
 }
 
-/// Sends SIGTERM to the lock owner and waits until that exact process releases the PID file.
-pub(crate) async fn stop(role: ServiceRole) -> Result<()> {
-    let path = pid_path(role)?;
+/// Reports whether the lock owner is alive without changing process state.
+pub(crate) async fn status(slot: ProcessSlot) -> Result<()> {
+    let path = pid_path(slot)?;
     if !fs::try_exists(&path).await? {
-        bail!("{} is not running", role.cli_name());
+        bail!("{} is not running", slot.file_stem());
     }
     let file = open_pid_file(&path).await?;
     if try_lock(&file)? {
         let _ = fs::remove_file(&path).await;
-        bail!("{} is not running", role.cli_name());
+        bail!("{} is not running", slot.file_stem());
     }
     let Some(pid) = read_pid(&path).await else {
-        bail!("{} PID file is invalid", role.cli_name());
+        bail!("{} PID file is invalid", slot.file_stem());
+    };
+    println!("{} is running with PID {pid}", slot.file_stem());
+    Ok(())
+}
+
+/// Sends SIGTERM to the lock owner and waits until that exact process releases the PID file.
+pub(crate) async fn stop(slot: ProcessSlot) -> Result<()> {
+    let path = pid_path(slot)?;
+    if !fs::try_exists(&path).await? {
+        bail!("{} is not running", slot.file_stem());
+    }
+    let file = open_pid_file(&path).await?;
+    if try_lock(&file)? {
+        let _ = fs::remove_file(&path).await;
+        bail!("{} is not running", slot.file_stem());
+    }
+    let Some(pid) = read_pid(&path).await else {
+        bail!("{} PID file is invalid", slot.file_stem());
     };
 
     kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
-        .with_context(|| format!("Failed to stop {} process {pid}", role.cli_name()))?;
+        .with_context(|| format!("Failed to stop {} process {pid}", slot.file_stem()))?;
     let stopped = tokio::time::timeout(Duration::from_secs(10), async {
         let mut interval = tokio::time::interval(Duration::from_millis(25));
         while !try_lock(&file)? {
@@ -96,19 +151,19 @@ pub(crate) async fn stop(role: ServiceRole) -> Result<()> {
         Ok(result) => result?,
         Err(_) => bail!(
             "Timed out waiting for {} process {pid} to stop",
-            role.cli_name()
+            slot.file_stem()
         ),
     }
     if read_pid(&path).await == Some(pid) {
         let _ = fs::remove_file(path).await;
     }
-    println!("Stopped {} process {pid}", role.cli_name());
+    println!("Stopped {} process {pid}", slot.file_stem());
     Ok(())
 }
 
 /// Re-launches the current command without `--daemon` and detaches its session and stdio.
-pub(crate) async fn spawn_daemon(role: ServiceRole) -> Result<()> {
-    ensure_not_running(role).await?;
+pub(crate) async fn spawn_daemon(slot: ProcessSlot) -> Result<()> {
+    ensure_not_running(slot).await?;
     let executable = std::env::current_exe().context("Failed to locate the current executable")?;
     let arguments: Vec<OsString> = std::env::args_os()
         .skip(1)
@@ -139,17 +194,17 @@ pub(crate) async fn spawn_daemon(role: ServiceRole) -> Result<()> {
     let pid = child.id().context("Daemon process did not receive a PID")?;
     println!(
         "Started {} process {pid} in the background",
-        role.cli_name()
+        slot.file_stem()
     );
     Ok(())
 }
 
 /// Rejects daemon launch before detaching so duplicate-start guidance reaches the caller.
-async fn ensure_not_running(role: ServiceRole) -> Result<()> {
-    if role == ServiceRole::Agent && std::env::var_os(MANAGED_AGENT_ENV).is_some() {
+async fn ensure_not_running(slot: ProcessSlot) -> Result<()> {
+    if slot.skips_pid_when_managed() {
         return Ok(());
     }
-    let path = pid_path(role)?;
+    let path = pid_path(slot)?;
     if !fs::try_exists(&path).await? {
         return Ok(());
     }
@@ -158,16 +213,16 @@ async fn ensure_not_running(role: ServiceRole) -> Result<()> {
         let pid = read_pid(&path).await.unwrap_or(0);
         bail!(
             "{} is already running with PID {pid}; run `redoor {} stop` to stop it",
-            role.cli_name(),
-            role.cli_name()
+            slot.file_stem(),
+            slot.command_path()
         );
     }
     Ok(())
 }
 
 /// Resolves a role PID file inside the selected application's persistent data directory.
-fn pid_path(role: ServiceRole) -> Result<PathBuf> {
-    Ok(crate::app_name::user_data_directory()?.join(format!("{}.pid", role.cli_name())))
+fn pid_path(slot: ProcessSlot) -> Result<PathBuf> {
+    Ok(crate::app_name::user_data_directory()?.join(format!("{}.pid", slot.file_stem())))
 }
 
 /// Reads a PID defensively so malformed or partially written stale files can be replaced.
