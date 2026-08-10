@@ -15,6 +15,7 @@ import { ApiError, type Agent, type ApiClient } from "#ui/api-client";
 import {
     ProcessManager,
     SERVER_PATH,
+    TEST_APP_NAME,
     TEST_SERVER_HOME,
     TempFileManager,
     startServerAndAgent,
@@ -80,10 +81,11 @@ describe("connected external agent upgrade", () => {
         const serverInfo = await api.getServerInfo();
         const details = await agent.getDetails();
         targetVersion = serverInfo.version;
+        // Seed the namespaced XDG cache the server uses so upgrades never hit GitHub.
         const cachedBinary = join(
             TEST_SERVER_HOME,
             ".cache",
-            "redoor",
+            TEST_APP_NAME,
             "binaries",
             targetVersion,
             details.os,
