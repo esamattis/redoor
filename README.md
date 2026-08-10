@@ -6,16 +6,13 @@ Manual computer management using server-agent architecture. Agents run on comput
 
 ```mermaid
 graph TD
-    Server["Web UI
-[redoor server]"]
-    Server -->|ssh| LinuxServer["Linux server
-[redoor agent]"]
-    LinuxDesktop["Linux desktop
-[redoor agent]"] -->|http/ws| Server
-    macOS["macOS
-[redoor agent]"] -->|http/ws| Server
-    Termux["Termux on Android
-[redoor agent]"] -->|http/ws| Server
+    Server["Web UI\n$ redoor server"]
+    Server -->|ssh| LinuxServer["Linux Server 1\n$ redoor agent"]
+    LinuxDesktop["Linux desktop\n$ redoor agent"] -->|http/ws| Server
+    macOS["macOS\n$ redoor agent\n$ redoor relay"] -->|http/ws| Server
+    macOS -->|"ssh relay"| Server2["Firewalled Linux Server\n$ redoor agent"]
+    Server --x|blocked| Server2
+    Termux["Termux on Android\n$ redoor agent"] -->|http/ws| Server
 ```
 
 ## Install
