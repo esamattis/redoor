@@ -49,7 +49,7 @@ See `redoor --help` for more
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
 
-Server:
+### Server
 
 ```toml
 # Shared secret between the server and the agent
@@ -63,30 +63,29 @@ agent_token = "secret"
 # port = 3000
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
-# log = "log/server.log"
 
 ## Automatically spawn agents via SSH
 [[agents]]
 target = "user@example.com"
-# username = "deploy"
-# ssh_port = 22
-# name = "prod-server"
-# dir = "/srv/app"
-# log = "/var/log/redoor/agent.log"
+name = "Linux Server"
 
 [[agents]]
-# local agent, that runs on the same computer as the server
+# local agent that runs on the same computer as the server
 local = true
 name = "local"
-dir = "/home/me/projects"
-log = "~/.local/share/redoor/log/local.log"
 ```
+
+Run it
 
 ```bash
+# Start immediately
 redoor server
+
+# or setup to run at startup if on linux
+redoor server systemd setup
 ```
 
-Agent:
+### Agent
 
 ```toml
 # Shared secret between the server and the agent
@@ -95,12 +94,16 @@ agent_token = "secret"
 [agent]
 server = "http://127.0.0.1:3000"
 name = "macbook"
-# dir = "/home/me/projects"
-# log = "log/agent.log"
 ```
 
+Run it
+
 ```bash
+# Start immediately
 redoor agent
+
+# or setup to run at startup if on linux
+redoor agent systemd setup
 ```
 
 ## SSH relay
