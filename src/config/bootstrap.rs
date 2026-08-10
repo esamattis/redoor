@@ -163,7 +163,7 @@ agent_token = {agent_token}
 # cookie_secure = false
 
 [agent]
-ws_address = "ws://localhost:3000/ws"
+server = "http://localhost:3000"
 name = {agent_name}
 dir = {agent_dir}
 

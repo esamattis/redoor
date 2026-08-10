@@ -83,12 +83,13 @@ pub(crate) struct ServerSection {
 /// Parsed `[agent]` table for a standalone `redoor agent` process.
 ///
 /// All fields are optional in the file so CLI and env can supply missing
-/// values; agent startup requires `ws_address` and top-level `agent_token`
+/// values; agent startup requires `server` and top-level `agent_token`
 /// after applying CLI > env > config > default precedence. The name defaults
 /// to the computer hostname.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AgentSection {
-    pub(crate) ws_address: Option<String>,
+    /// Redoor server URL (`http(s)://` or `ws(s)://`); path optional and forced to `/ws`.
+    pub(crate) server: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) dir: Option<String>,
     pub(crate) log: Option<String>,
@@ -176,11 +177,7 @@ pub(crate) fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> boo
     let Some(agent) = config.agent.as_ref() else {
         return false;
     };
-    !config.agent_token.is_empty()
-        && agent
-            .ws_address
-            .as_ref()
-            .is_some_and(|value| !value.is_empty())
+    !config.agent_token.is_empty() && agent.server.as_ref().is_some_and(|value| !value.is_empty())
 }
 
 /// Parses optional login credentials and listener settings from `[server]`.
@@ -307,7 +304,8 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         return Ok(None);
     };
 
-    const KNOWN_KEYS: [&str; 4] = ["ws_address", "name", "dir", "log"];
+    // `ws_address` remains accepted so existing agent configs keep working.
+    const KNOWN_KEYS: [&str; 5] = ["server", "ws_address", "name", "dir", "log"];
     for (key, _) in table.iter() {
         if !KNOWN_KEYS.contains(&key) {
             bail!(
@@ -334,8 +332,20 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         }
     };
 
+    let server = non_empty_string("server")?;
+    let legacy_ws_address = non_empty_string("ws_address")?;
+    let server = match (server, legacy_ws_address) {
+        (Some(_), Some(_)) => {
+            bail!("agent.server and agent.ws_address cannot both be set; use agent.server")
+        }
+        (Some(server), None) => Some(server),
+        // Prefer the new key name in memory while still loading legacy files.
+        (None, Some(ws_address)) => Some(ws_address),
+        (None, None) => None,
+    };
+
     Ok(Some(AgentSection {
-        ws_address: non_empty_string("ws_address")?,
+        server,
         name: non_empty_string("name")?,
         dir: non_empty_string("dir")?,
         log: non_empty_string("log")?,
@@ -1013,7 +1023,7 @@ log = "log/prod-db.log"
             r#"agent_token = "test-agent-token"
 
 [agent]
-ws_address = "ws://127.0.0.1:3000/ws"
+server = "http://127.0.0.1:3000"
 "#,
         )
         .unwrap();
@@ -1031,7 +1041,7 @@ ws_address = "ws://127.0.0.1:3000/ws"
         );
         assert!(
             standalone_agent_is_fully_configured(&config),
-            "[agent] ws_address + token should satisfy bare startup without a name"
+            "[agent] server + token should satisfy bare startup without a name"
         );
     }
 
@@ -1257,7 +1267,7 @@ target = "host"
             "# bind =",
             "# cookie_secure =",
             "[agent]",
-            "ws_address =",
+            "server =",
             "local = true",
             "# target =",
             "# username = \"remote-user\"",
@@ -1364,7 +1374,7 @@ target = "host"
             r#"agent_token = "test-agent-token"
 
 [agent]
-ws_address = "wss://example.com/ws"
+server = "https://example.com"
 name = "edge"
 dir = "/var/app"
 log = "log/agent.log"
@@ -1376,10 +1386,75 @@ log = "log/agent.log"
         std::fs::remove_file(&temp).ok();
 
         let agent = config.agent.expect("[agent] should be present");
-        assert_eq!(agent.ws_address.as_deref(), Some("wss://example.com/ws"));
+        assert_eq!(agent.server.as_deref(), Some("https://example.com"));
         assert_eq!(agent.name.as_deref(), Some("edge"));
         assert_eq!(agent.dir.as_deref(), Some("/var/app"));
         assert_eq!(agent.log.as_deref(), Some("log/agent.log"));
+    }
+
+    /// Keeps existing agent configs working after the `server` rename.
+    #[tokio::test]
+    async fn test_parse_config_file_accepts_legacy_ws_address() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-legacy-ws-address-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"agent_token = "test-agent-token"
+
+[agent]
+ws_address = "wss://example.com/ws"
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        let agent = config.agent.as_ref().expect("[agent] should be present");
+        // Legacy key maps into the same field so resolve/start paths stay single-keyed.
+        assert_eq!(agent.server.as_deref(), Some("wss://example.com/ws"));
+        assert!(
+            standalone_agent_is_fully_configured(&config),
+            "legacy ws_address must still satisfy standalone agent setup checks"
+        );
+    }
+
+    /// Prevents ambiguous configs that set both the new and legacy server keys.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_server_and_ws_address() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-both-server-keys-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"agent_token = "test-agent-token"
+
+[agent]
+server = "https://example.com"
+ws_address = "wss://example.com/ws"
+"#,
+        )
+        .unwrap();
+
+        let result = parse_config_file(temp.to_str().unwrap()).await;
+        std::fs::remove_file(&temp).ok();
+
+        let error = result
+            .expect_err("both server keys must be rejected")
+            .to_string();
+        assert!(
+            error.contains("server") && error.contains("ws_address"),
+            "error should name both keys: {error}"
+        );
     }
 
     /// Verifies Linux accepts a credentials-free [server] table for PAM login.

@@ -23,10 +23,10 @@ pub(crate) struct AgentArgs {
     /// Detach the agent from the terminal and continue running in the background.
     #[arg(long)]
     pub(crate) daemon: bool,
-    /// WebSocket URL of the server (e.g. `ws://127.0.0.1:3000/ws`).
-    /// Overrides `REDOOR_AGENT_WS` and `[agent].ws_address`.
+    /// Redoor server URL (`http(s)://` or `ws(s)://`). Path is optional and forced to `/ws`.
+    /// Overrides `REDOOR_AGENT_WS` and `[agent].server` (or legacy `[agent].ws_address`).
     #[arg(env = "REDOOR_AGENT_WS")]
-    pub(crate) ws_address: Option<String>,
+    pub(crate) server: Option<String>,
     /// Physical TCP endpoint used by an SSH tunnel while the URL retains TLS and HTTP identity.
     #[arg(long, hide = true)]
     pub(crate) connect_address: Option<String>,

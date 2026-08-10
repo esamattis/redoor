@@ -204,7 +204,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 /// Imports a missing daemon config before detaching closes the invoking terminal's stdin.
 pub(crate) async fn prepare_daemon_config(args: &AgentArgs) -> anyhow::Result<()> {
     let required_settings_provided = args
-        .ws_address
+        .server
         .as_deref()
         .is_some_and(|value| !value.is_empty())
         && args.token.as_deref().is_some_and(|value| !value.is_empty());
@@ -233,6 +233,7 @@ pub(crate) async fn prepare_daemon_config(args: &AgentArgs) -> anyhow::Result<()
 
 /// Fully resolved agent launch settings after applying source precedence.
 struct ResolvedAgentSettings {
+    /// Canonical `ws(s)://…/ws` URL after normalizing the operator-supplied server address.
     ws_address: String,
     /// Optional physical TCP endpoint used when a tunnel differs from the logical server URL.
     connect_address: Option<String>,
@@ -251,13 +252,13 @@ struct ResolvedAgentSettings {
 /// Applies CLI > env > config file > default for every agent setting.
 ///
 /// Clap already merged CLI and env into `args`. The agent name defaults to the
-/// machine hostname while `ws_address` and `token` remain required.
+/// machine hostname while `server` and `token` remain required.
 async fn resolve_agent_settings(
     args: AgentArgs,
 ) -> Result<ResolvedAgentSettings, Box<dyn std::error::Error>> {
     let explicit_config = args.config.is_some();
     let required_settings_provided = args
-        .ws_address
+        .server
         .as_deref()
         .is_some_and(|value| !value.is_empty())
         && args.token.as_deref().is_some_and(|value| !value.is_empty());
@@ -312,9 +313,11 @@ fn resolve_agent_settings_from_sources(
         .unwrap_or_default();
 
     // args already holds CLI or env; config is the next tier.
-    let ws_address = first_non_empty([args.ws_address, agent_section.ws_address]).ok_or(
-        "agent ws_address is required; set it via CLI, REDOOR_AGENT_WS, or [agent].ws_address",
-    )?;
+    let server = first_non_empty([args.server, agent_section.server])
+        .ok_or("agent server is required; set it via CLI, REDOOR_AGENT_WS, or [agent].server")?;
+    let ws_address = crate::server_address::ServerAddress::parse_with_warning(&server)
+        .map_err(|error| format!("invalid agent server address: {error}"))?
+        .websocket_url();
 
     let name = first_non_empty([args.name, agent_section.name])
         .or_else(System::host_name)

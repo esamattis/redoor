@@ -17,12 +17,12 @@ test.describe("Server home", () => {
         ).toBeVisible();
 
         const browserUrl = new URL(page.url());
-        const websocketProtocol =
-            browserUrl.protocol === "https:" ? "wss:" : "ws:";
+        const serverProtocol =
+            browserUrl.protocol === "https:" ? "https:" : "http:";
         const expectedConfig = `agent_token = "test-agent-token"
 
 [agent]
-ws_address = "${websocketProtocol}//${browserUrl.host}/ws"
+server = "${serverProtocol}//${browserUrl.host}"
 `;
         // Exact text proves the browser generated a complete config from the real token and its own origin.
         await expect(config).toHaveText(expectedConfig);

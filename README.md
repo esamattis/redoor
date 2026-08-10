@@ -48,22 +48,22 @@ See `redoor --help` for more
 
 Use `redoor agent relay` when the SSH target cannot reach the redoor server directly, but the machine running the command can reach both. The command provisions the agent when needed, opens a reverse SSH tunnel from a random port on the target, and exits when SSH exits. It does not supervise or restart the agent after successful startup.
 
-`--server` is a `HOST:PORT` endpoint reached from the machine running `redoor agent relay`, not from the SSH target:
+`--server` is an `http(s)://` or `ws(s)://` URL reached from the machine running `redoor agent relay`, not from the SSH target. Path is optional and always forced to `/ws`:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.internal.example:3000 user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server http://redoor.internal.example:3000 user@linux-server
 ```
 
-Use `--wss` when HTTPS/WSS terminates at the routed endpoint. The agent connects through the random tunnel port while retaining the route hostname for TLS SNI and WebSocket HTTP authority. Normal certificate verification remains enabled:
+Use `https://` or `wss://` when TLS terminates at the routed endpoint. The agent connects through the random tunnel port while retaining the route hostname for TLS SNI and WebSocket HTTP authority. Normal certificate verification remains enabled:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.example.com:443 --wss user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server https://redoor.example.com user@linux-server
 ```
 
 For a self-signed, privately issued, expired, or hostname-mismatched certificate, `--insecure` disables TLS certificate verification and prints a warning. Use it only when the routed endpoint cannot provide a trusted certificate:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.internal.example:443 --wss --insecure user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server https://redoor.internal.example --insecure user@linux-server
 ```
 
 ## Configuration
@@ -111,7 +111,7 @@ log = "~/.local/share/redoor/log/local.log"
 agent_token = "secret"
 
 [agent]
-ws_address = "ws://127.0.0.1:3000/ws"
+server = "http://127.0.0.1:3000"
 name = "macbook"
 # dir = "/home/me/projects"
 # log = "log/agent.log"

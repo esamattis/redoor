@@ -118,7 +118,7 @@ mod tests {
         let content = br#"agent_token = "shared-token"
 
 [agent]
-ws_address = "wss://example.test/ws"
+server = "https://example.test"
 "#;
         let mut input = std::io::Cursor::new(content);
         let mut output = Vec::new();

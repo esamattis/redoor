@@ -62,13 +62,13 @@ function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
     const { api } = RootRoute.useRouteContext();
     const router = useRouter();
-    const websocketProtocol =
-        window.location.protocol === "https:" ? "wss:" : "ws:";
-    const websocketAddress = `${websocketProtocol}//${window.location.host}/ws`;
+    const serverProtocol =
+        window.location.protocol === "https:" ? "https:" : "http:";
+    const serverAddress = `${serverProtocol}//${window.location.host}`;
     const agentConfig = `agent_token = ${JSON.stringify(serverInfo.agent_token)}
 
 [agent]
-ws_address = ${JSON.stringify(websocketAddress)}
+server = ${JSON.stringify(serverAddress)}
 `;
 
     return (

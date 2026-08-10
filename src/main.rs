@@ -6,6 +6,7 @@ mod launchd;
 mod process_control;
 mod process_logs;
 mod server;
+mod server_address;
 mod ssh;
 mod systemd;
 mod systemd_notify;
@@ -505,13 +506,13 @@ mod tests {
                 "agent",
                 "relay",
                 "--server",
-                "redoor.example:3000",
+                "http://redoor.example:3000",
                 "--token",
                 "secret",
                 "user@linux.example",
             ])
             .is_ok(),
-            "a server and SSH target should be sufficient for the relay command"
+            "a server URL and SSH target should be sufficient for the relay command"
         );
         assert!(
             Cli::try_parse_from([
@@ -531,7 +532,7 @@ mod tests {
                 "agent",
                 "relay",
                 "--route",
-                "redoor.example:3000",
+                "http://redoor.example:3000",
                 "--token",
                 "secret",
                 "user@linux.example",
@@ -544,7 +545,7 @@ mod tests {
                 "redoor",
                 "ssh",
                 "--server",
-                "redoor.example:3000",
+                "http://redoor.example:3000",
                 "--token",
                 "secret",
                 "user@linux.example",
@@ -552,26 +553,19 @@ mod tests {
             .is_err(),
             "the former top-level ssh command must no longer be accepted"
         );
-    }
-
-    /// Prevents certificate verification from being disabled accidentally on a plain route.
-    #[test]
-    fn ssh_insecure_requires_wss() {
         assert!(
             Cli::try_parse_from([
                 "redoor",
                 "agent",
                 "relay",
                 "--server",
-                "redoor.example:443",
-                "--wss",
-                "--insecure",
+                "redoor.example:3000",
                 "--token",
                 "secret",
                 "user@linux.example",
             ])
-            .is_ok(),
-            "insecure mode must remain available for explicitly selected WSS routes"
+            .is_err(),
+            "the relay command must reject bare host:port servers"
         );
         assert!(
             Cli::try_parse_from([
@@ -579,14 +573,50 @@ mod tests {
                 "agent",
                 "relay",
                 "--server",
-                "redoor.example:443",
-                "--insecure",
+                "https://redoor.example.com",
+                "--wss",
                 "--token",
                 "secret",
                 "user@linux.example",
             ])
             .is_err(),
-            "plain WebSocket routes must reject the TLS-only insecure switch"
+            "the former --wss flag must no longer be accepted"
+        );
+    }
+
+    /// Prevents certificate verification from being disabled accidentally on a plain route.
+    #[test]
+    fn ssh_insecure_parses_with_secure_server_url() {
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "relay",
+                "--server",
+                "https://redoor.example.com",
+                "--insecure",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_ok(),
+            "insecure mode must remain available for https/wss server URLs"
+        );
+        // Clap still accepts --insecure with plain URLs; run_relay rejects that combination.
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "relay",
+                "--server",
+                "http://redoor.example.com:443",
+                "--insecure",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_ok(),
+            "clap parsing alone cannot enforce scheme requirements on --insecure"
         );
     }
 }

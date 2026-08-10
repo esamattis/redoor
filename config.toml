@@ -13,7 +13,7 @@ password = "secret"
 
 # Standalone agent (redoor agent / systemd --mode agent). Not used for [[agents]].
 # [agent]
-# ws_address = "ws://127.0.0.1:3000/ws"
+# server = "http://127.0.0.1:3000"
 # name = "local"
 # dir = "/home/esamatti"
 # log = "/home/esamatti/redoor-agent.log"

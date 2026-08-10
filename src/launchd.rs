@@ -371,7 +371,7 @@ async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Resu
         ServiceRole::Agent => {
             if !crate::config::standalone_agent_is_fully_configured(&config) {
                 bail!(
-                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] ws_address so the service can start without CLI flags",
+                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] server so the service can start without CLI flags",
                     config_path.display()
                 );
             }
@@ -403,7 +403,7 @@ Edit it before starting the service.",
             config_path.display()
         );
         if mode == ServiceRole::Agent {
-            println!("The [agent] section probably needs to be changed (token, ws_address).");
+            println!("The [agent] section probably needs to be changed (token, server).");
         }
     } else {
         println!("Config: {}", config_path.display());

@@ -12,7 +12,7 @@
 //! `remote_port:destination_host:destination_port`. SSH listens on
 //! `remote_port` on the remote host and asks the local SSH client to connect to
 //! the destination. Managed agents use the local redoor server, while
-//! standalone `redoor agent relay --server host:port` uses a server reachable from the
+//! standalone `redoor agent relay --server <url>` uses a server reachable from the
 //! machine running the command. The remote agent is given
 //! `ws://localhost:<remote_port>/ws`, so what looks like a local WebSocket
 //! connection to the agent actually reaches the server through that tunnel.
@@ -34,13 +34,12 @@
 mod provision;
 mod transport;
 
-use std::str::FromStr;
-
 use clap::Args;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use redoor::{Level, log};
 
+use crate::server_address::ServerAddress;
 use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
 use transport::{SshHost, SshRunOptions};
 
@@ -49,7 +48,7 @@ use transport::{SshHost, SshRunOptions};
 ///
 /// The machine running this command must be able to reach both the SSH target
 /// and `--server`. Redoor provisions the agent binary on the SSH target, opens a
-/// reverse tunnel from a random dynamic port there to `HOST:PORT` here, and
+/// reverse tunnel from a random dynamic port there to the server host/port here, and
 /// keeps the SSH session attached until it exits.
 #[derive(Args)]
 #[command(author, version, about)]
@@ -62,18 +61,16 @@ pub(crate) struct RelayArgs {
     /// SSH server port. Forwarded to ssh via `-p`.
     #[arg(short = 'p', default_value_t = 22)]
     pub(crate) ssh_port: u16,
-    /// Redoor server destination reached from the machine running this command,
-    /// formatted as `HOST:PORT` or `[IPv6]:PORT`. A random dynamic port on the
-    /// SSH target forwards to this destination. With `--wss`, the hostname is
-    /// also used for TLS SNI and WebSocket HTTP authority. Do not include a URL scheme.
+    /// Redoor server URL reached from the machine running this command
+    /// (`http(s)://` or `ws(s)://`). A random dynamic port on the SSH target
+    /// forwards to this host/port. `https`/`wss` enable TLS; the hostname is
+    /// retained for SNI and WebSocket HTTP authority. Path is optional and forced to `/ws`.
     #[arg(long)]
-    pub(crate) server: RelayServer,
-    /// Use secure WebSockets for an HTTPS/WSS deployment. Certificate verification is enabled.
-    #[arg(long)]
-    pub(crate) wss: bool,
+    pub(crate) server: ServerAddress,
     /// Disable TLS certificate verification. This permits untrusted, expired,
     /// or hostname-mismatched certificates and should be used only when necessary.
-    #[arg(long, requires = "wss")]
+    /// Requires an `https://` or `wss://` server URL.
+    #[arg(long)]
     pub(crate) insecure: bool,
     /// Name the remote agent registers with on the server. Defaults to the
     /// host portion of the ssh target so multiple SSH-backed agents are naturally
@@ -93,81 +90,6 @@ pub(crate) struct RelayArgs {
     /// Remote ssh target in `user@host` form. Kept positional to mirror the
     /// standard ssh CLI usage so existing muscle memory transfers.
     pub(crate) target: String,
-}
-
-/// Host and port reached from the local SSH client for a standalone relay.
-/// Keeping this separate from the SSH target avoids implying that the remote
-/// Linux host must be able to resolve or connect to the redoor server.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RelayServer {
-    /// Destination hostname or IP address, stored without IPv6 brackets.
-    host: String,
-    /// Destination port where the redoor WebSocket server is listening.
-    port: u16,
-}
-
-impl FromStr for RelayServer {
-    type Err = String;
-
-    /// Parses a server while requiring brackets around IPv6 addresses so the
-    /// final port separator remains unambiguous to both Clap and OpenSSH.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.contains("://") {
-            return Err("server must be HOST:PORT without a URL scheme".to_string());
-        }
-        let (host, port) = if let Some(bracketed) = value.strip_prefix('[') {
-            bracketed
-                .split_once("]:")
-                .ok_or_else(|| "IPv6 server must use [ADDRESS]:PORT".to_string())?
-        } else {
-            let (host, port) = value
-                .rsplit_once(':')
-                .ok_or_else(|| "server must use HOST:PORT".to_string())?;
-            if host.contains(':') {
-                return Err("IPv6 server must use [ADDRESS]:PORT".to_string());
-            }
-            (host, port)
-        };
-        if host.is_empty() || host.chars().any(char::is_whitespace) {
-            return Err("server host must not be empty or contain whitespace".to_string());
-        }
-        if host.contains(['/', '\\', '?', '#', '@', '[', ']', '%']) {
-            return Err(
-                "server host must not contain URL path, userinfo, or escape syntax".to_string(),
-            );
-        }
-        if value.starts_with('[') && host.parse::<std::net::Ipv6Addr>().is_err() {
-            return Err("IPv6 server must contain a valid IPv6 address".to_string());
-        }
-        let port = port
-            .parse::<u16>()
-            .map_err(|_| "server port must be an integer from 1 to 65535".to_string())?;
-        if port == 0 {
-            return Err("server port must be an integer from 1 to 65535".to_string());
-        }
-        let authority = if host.contains(':') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
-        reqwest::Url::parse(&format!("wss://{authority}/ws"))
-            .map_err(|_| "server host is not valid in a WebSocket authority".to_string())?;
-        Ok(Self {
-            host: host.to_string(),
-            port,
-        })
-    }
-}
-
-impl RelayServer {
-    /// Formats the logical WebSocket authority while restoring brackets required for IPv6 URLs.
-    fn authority(&self) -> String {
-        if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
-    }
 }
 
 /// Derives a default agent name from the ssh target by stripping any
@@ -218,6 +140,9 @@ pub(crate) struct SshBackedAgentConfig {
 /// inherited so the user can observe agent logs while this command owns the SSH session.
 pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error::Error>> {
     let server = args.server;
+    if args.insecure && !server.is_secure() {
+        return Err("--insecure requires an https:// or wss:// --server URL".into());
+    }
     if args.insecure {
         eprintln!(
             "WARNING: --insecure disables TLS certificate verification for the routed server"
@@ -233,7 +158,7 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
         target: args.target,
         log: None,
     };
-    start_relay(config, server, &args.token, args.wss, args.insecure).await
+    start_relay(config, server, &args.token, args.insecure).await
 }
 
 /// Remembers the last random remote port so every retry necessarily chooses a
@@ -599,19 +524,18 @@ fn ssh_exit_result(status: std::process::ExitStatus) -> Result<(), Box<dyn std::
 /// responsible for presenting the failure and choosing the process status.
 pub(crate) async fn start_relay(
     config: SshBackedAgentConfig,
-    server: RelayServer,
+    server: ServerAddress,
     agent_token: &str,
-    wss: bool,
     insecure: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let secure_server = wss.then(|| SecureRelayServer {
+    let secure_server = server.is_secure().then(|| SecureRelayServer {
         authority: server.authority(),
         insecure,
     });
     let prepared = prepare_ssh_backed_agent_for_destination(
         &config,
-        server.host,
-        server.port,
+        server.host().to_string(),
+        server.port(),
         agent_token,
         true,
         secure_server,
@@ -651,83 +575,57 @@ mod tests {
         assert!((49152..=65535).contains(&second));
     }
 
-    /// Verifies DNS servers preserve the destination independently of the port
+    /// Verifies URL servers preserve the destination independently of the port
     /// exposed to the agent on the SSH target.
     #[test]
-    fn parses_hostname_server() {
-        let server = "redoor.example:4000"
-            .parse::<super::RelayServer>()
-            .expect("hostname server should parse");
+    fn parses_hostname_server_url() {
+        let server = "http://redoor.example:4000"
+            .parse::<crate::server_address::ServerAddress>()
+            .expect("hostname server URL should parse");
 
         // The SSH client must resolve the exact host supplied by the operator.
-        assert_eq!(server.host, "redoor.example");
+        assert_eq!(server.host(), "redoor.example");
         // The destination port may differ from the remote listener port.
-        assert_eq!(server.port, 4000);
+        assert_eq!(server.port(), 4000);
+        // http:// selects plain WebSocket routing through the tunnel.
+        assert!(!server.is_secure());
+    }
+
+    /// Verifies https/wss schemes select secure tunnel routing without a separate flag.
+    #[test]
+    fn parses_secure_server_url() {
+        let server = "https://redoor.example.com"
+            .parse::<crate::server_address::ServerAddress>()
+            .expect("https server URL should parse");
+
+        assert!(server.is_secure());
+        assert_eq!(server.port(), 443);
+        assert_eq!(server.authority(), "redoor.example.com:443");
     }
 
     /// Verifies bracketed IPv6 servers are accepted without retaining syntax
     /// brackets in the destination model.
     #[test]
-    fn parses_bracketed_ipv6_server() {
-        let server = "[2001:db8::10]:4000"
-            .parse::<super::RelayServer>()
-            .expect("bracketed IPv6 server should parse");
+    fn parses_bracketed_ipv6_server_url() {
+        let server = "ws://[2001:db8::10]:4000"
+            .parse::<crate::server_address::ServerAddress>()
+            .expect("bracketed IPv6 server URL should parse");
 
         // Transport formatting adds brackets itself, so the model stores only the address.
-        assert_eq!(server.host, "2001:db8::10");
+        assert_eq!(server.host(), "2001:db8::10");
         // IPv6 servers use the same validated destination-port representation.
-        assert_eq!(server.port, 4000);
+        assert_eq!(server.port(), 4000);
     }
 
-    /// Verifies servers reject URL syntax because scheme selection remains a separate flag.
+    /// Verifies bare host:port is rejected so relay matches the agent URL contract.
     #[test]
-    fn rejects_server_with_websocket_scheme() {
-        let error = "ws://redoor.example:4000"
-            .parse::<super::RelayServer>()
-            .expect_err("server URL should be rejected");
+    fn rejects_server_without_url_scheme() {
+        let error = "redoor.example:4000"
+            .parse::<crate::server_address::ServerAddress>()
+            .expect_err("bare host:port should be rejected");
 
-        // A focused error keeps users from assuming URL schemes are supported.
-        assert!(error.contains("without a URL scheme"));
-    }
-
-    /// Verifies raw IPv6 is rejected so the destination port cannot be parsed
-    /// ambiguously from an address containing multiple colons.
-    #[test]
-    fn rejects_unbracketed_ipv6_server() {
-        let error = "2001:db8::10:4000"
-            .parse::<super::RelayServer>()
-            .expect_err("unbracketed IPv6 server should be rejected");
-
-        // The correction tells operators exactly how to make the server unambiguous.
-        assert!(error.contains("[ADDRESS]:PORT"));
-    }
-
-    /// Prevents tunnel destinations from being reinterpreted when embedded in the WSS URL.
-    #[test]
-    fn rejects_server_with_url_authority_delimiters() {
-        for server in [
-            "redoor.example/path:443",
-            "user@redoor.example:443",
-            "redoor.example%2fpath:443",
-        ] {
-            let error = server
-                .parse::<super::RelayServer>()
-                .expect_err("URL syntax in a server host should be rejected");
-
-            // Rejecting the input keeps the OpenSSH destination and logical WSS host identical.
-            assert!(error.contains("URL path, userinfo, or escape syntax"));
-        }
-    }
-
-    /// Prevents arbitrary bracketed hostnames from masquerading as IPv6 URL authorities.
-    #[test]
-    fn rejects_invalid_bracketed_ipv6_server() {
-        let error = "[redoor.example]:443"
-            .parse::<super::RelayServer>()
-            .expect_err("brackets should be reserved for valid IPv6 literals");
-
-        // A focused error avoids producing an invalid logical WSS authority later.
-        assert!(error.contains("valid IPv6 address"));
+        // A focused error steers operators toward the shared URL forms.
+        assert!(error.contains("http") || error.contains("ws") || error.contains("URL"));
     }
 
     /// Verifies managed tunnel ports stay in the dynamic/private range and a
