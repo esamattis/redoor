@@ -552,9 +552,9 @@ target = "user@example.com"
             AgentConfig::Local(_) => panic!("entry without `local = true` should be ssh"),
         };
         assert_eq!(agent.target, "user@example.com");
-        // ssh_port defaults to 22 when not specified, matching `redoor ssh`.
+        // ssh_port defaults to 22 when not specified, matching `redoor agent relay`.
         assert_eq!(agent.ssh_port, 22);
-        // username, name, remote_bin and dir are None so start_ssh_agent can
+        // username, name, remote_bin and dir are None so the SSH launcher can
         // derive them (default name from target, default remote_bin from
         // versioned layout, default dir from the remote shell's cwd).
         assert!(agent.username.is_none());

@@ -37,13 +37,7 @@ enum Commands {
     /// Run the server or use its role-specific utilities.
     Server(ServerArgs),
     /// Run the agent or use its role-specific utilities.
-    Agent(AgentCommandArgs),
-    /// Start an agent on an SSH host and route it through this machine to a redoor server.
-    ///
-    /// Use this when the SSH host and redoor server cannot connect to each other,
-    /// but this machine can reach both. The command provisions the remote agent,
-    /// opens a reverse SSH tunnel to `--route`, and runs until SSH exits.
-    Ssh(ssh::SshArgs),
+    Agent(Box<AgentCommandArgs>),
 }
 
 /// Process role selected by the parent CLI command for service management.
@@ -125,6 +119,8 @@ enum AgentCommand {
     Systemd(systemd::SystemdArgs),
     /// Install or manage the agent as a macOS LaunchAgent.
     Launchd(launchd::LaunchdArgs),
+    /// Start an agent on an SSH host and relay it through this machine to a redoor server.
+    Relay(ssh::RelayArgs),
 }
 
 /// Options used to locate and limit standalone-agent file logs.
@@ -191,6 +187,16 @@ async fn main() {
             Some(AgentCommand::Launchd(launchd)) => {
                 run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
             }
+            Some(AgentCommand::Relay(relay)) => {
+                if let Err(error) = logging::init(None).await {
+                    eprintln!("{error:#}");
+                    std::process::exit(1);
+                }
+                if let Err(error) = ssh::run_relay(relay).await {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
             None => {
                 let daemon = args.run.daemon;
                 if daemon {
@@ -204,16 +210,6 @@ async fn main() {
                 .await;
             }
         },
-        Commands::Ssh(args) => {
-            if let Err(error) = logging::init(None).await {
-                eprintln!("{error:#}");
-                std::process::exit(1);
-            }
-            if let Err(error) = ssh::run(args).await {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
     }
 }
 
@@ -502,24 +498,59 @@ mod tests {
     /// Keeps the SSH relay command focused on the topology where this machine
     /// bridges an otherwise disconnected target and redoor server.
     #[test]
-    fn ssh_command_requires_route() {
+    fn agent_relay_requires_server() {
         assert!(
             Cli::try_parse_from([
                 "redoor",
-                "ssh",
-                "--route",
+                "agent",
+                "relay",
+                "--server",
                 "redoor.example:3000",
                 "--token",
                 "secret",
                 "user@linux.example",
             ])
             .is_ok(),
-            "a route and SSH target should be sufficient for the relay command"
+            "a server and SSH target should be sufficient for the relay command"
         );
         assert!(
-            Cli::try_parse_from(["redoor", "ssh", "--token", "secret", "user@linux.example",])
-                .is_err(),
-            "the relay command must reject invocations without a route"
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "relay",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_err(),
+            "the relay command must reject invocations without a server"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "relay",
+                "--route",
+                "redoor.example:3000",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_err(),
+            "the relay command must reject the former route flag"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "ssh",
+                "--server",
+                "redoor.example:3000",
+                "--token",
+                "secret",
+                "user@linux.example",
+            ])
+            .is_err(),
+            "the former top-level ssh command must no longer be accepted"
         );
     }
 
@@ -529,8 +560,9 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "redoor",
-                "ssh",
-                "--route",
+                "agent",
+                "relay",
+                "--server",
                 "redoor.example:443",
                 "--wss",
                 "--insecure",
@@ -544,8 +576,9 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "redoor",
-                "ssh",
-                "--route",
+                "agent",
+                "relay",
+                "--server",
                 "redoor.example:443",
                 "--insecure",
                 "--token",

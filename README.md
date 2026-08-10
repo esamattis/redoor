@@ -46,24 +46,24 @@ See `redoor --help` for more
 
 ## SSH relay
 
-Use the attached `redoor ssh` command when the SSH target cannot reach the redoor server directly, but the machine running the command can reach both. The command provisions the agent when needed, opens a reverse SSH tunnel from a random port on the target, and exits when SSH exits. It does not supervise or restart the agent after successful startup.
+Use `redoor agent relay` when the SSH target cannot reach the redoor server directly, but the machine running the command can reach both. The command provisions the agent when needed, opens a reverse SSH tunnel from a random port on the target, and exits when SSH exits. It does not supervise or restart the agent after successful startup.
 
-`--route` is a `HOST:PORT` endpoint reached from the machine running `redoor ssh`, not from the SSH target:
+`--server` is a `HOST:PORT` endpoint reached from the machine running `redoor agent relay`, not from the SSH target:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor ssh --route redoor.internal.example:3000 user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.internal.example:3000 user@linux-server
 ```
 
 Use `--wss` when HTTPS/WSS terminates at the routed endpoint. The agent connects through the random tunnel port while retaining the route hostname for TLS SNI and WebSocket HTTP authority. Normal certificate verification remains enabled:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor ssh --route redoor.example.com:443 --wss user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.example.com:443 --wss user@linux-server
 ```
 
 For a self-signed, privately issued, expired, or hostname-mismatched certificate, `--insecure` disables TLS certificate verification and prints a warning. Use it only when the routed endpoint cannot provide a trusted certificate:
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor ssh --route redoor.internal.example:443 --wss --insecure user@linux-server
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server redoor.internal.example:443 --wss --insecure user@linux-server
 ```
 
 ## Configuration
