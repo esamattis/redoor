@@ -27,6 +27,7 @@
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
 - Add comments to test assertions why they are there
+- Add integration tests for all rest api features
 - Always after changes run `pn test` with a timeout of at least 300 seconds so the integration and Playwright tests have enough time to finish
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
 - When making git commits always add description explaining why the change was made, not what it does
