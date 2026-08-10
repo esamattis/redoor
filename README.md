@@ -35,6 +35,8 @@ See `$HOME/.local/bin/redoor --help`
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
 
+Full reference for every option: [docs/config.md](docs/config.md).
+
 ### Server
 
 ```toml
