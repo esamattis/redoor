@@ -41,48 +41,16 @@ redoor agent launchd setup
 
 See `redoor --help` for more
 
-## SSH relay
-
-Use `redoor agent relay` when the SSH target cannot reach the redoor server directly, but the machine running the command can reach both. The command provisions the agent when needed, opens a reverse SSH tunnel from a random port on the target, and exits when SSH exits. It does not supervise or restart the agent after successful startup.
-
-`--server` is an `http(s)://` or `ws(s)://` URL reached from the machine running `redoor agent relay`, not from the SSH target. Path is optional and always forced to `/ws`:
-
-```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server http://redoor.internal.example:3000 user@linux-server
-```
-
-Use `https://` or `wss://` when TLS terminates at the routed endpoint. The agent connects through the random tunnel port while retaining the route hostname for TLS SNI and WebSocket HTTP authority. Normal certificate verification remains enabled:
-
-```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server https://redoor.example.com user@linux-server
-```
-
-For a self-signed, privately issued, expired, or hostname-mismatched certificate, `--insecure` disables TLS certificate verification and prints a warning. Use it only when the routed endpoint cannot provide a trusted certificate:
-
-```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server https://redoor.internal.example --insecure user@linux-server
-```
-
-Daemonize the local relay (PID/log under `~/.local/share/redoor/` as `relay.pid` / `relay.log`) the same way as agent/server:
-
-```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --daemon --server http://redoor.internal.example:3000 user@linux-server
-redoor agent relay status
-redoor agent relay logs
-redoor agent relay stop
-```
-
 ## Configuration
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
 
-`redoor server` example 
+Server:
 
 ```toml
 # Shared secret between the server and the agent
 agent_token = "secret"
 
-## Server configuration
 [server]
 # Web UI login. On Linux, omit both to use PAM (system user).
 # username = "admin"
@@ -93,7 +61,7 @@ agent_token = "secret"
 # cookie_secure = false # set true behind HTTPS
 # log = "log/server.log"
 
-## Managed agents, connects via ssh tunnels, auto installs agent binary
+## Automatically spawn agents via SSH
 [[agents]]
 target = "user@example.com"
 # username = "deploy"
@@ -110,7 +78,11 @@ dir = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
 ```
 
-`redoor agent` example 
+```bash
+redoor server
+```
+
+Agent:
 
 ```toml
 # Shared secret between the server and the agent
@@ -121,4 +93,16 @@ server = "http://127.0.0.1:3000"
 name = "macbook"
 # dir = "/home/me/projects"
 # log = "log/agent.log"
+```
+
+```bash
+redoor agent
+```
+
+## SSH relay
+
+When the redoor server cannot reach a SSH host, run `redoor agent relay` on a machine that can reach both.
+
+```bash
+REDOOR_AGENT_TOKEN=secret redoor agent relay --server http://redoor.internal:3000 user@host
 ```
