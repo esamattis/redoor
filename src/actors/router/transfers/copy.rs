@@ -183,11 +183,13 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     super::super::state::CopyContentKind::RawFile => Command::LocalCopyFile {
                         source_path: request.source_path.clone(),
                         dest_path: request.dest_path.clone(),
+                        on_existing: request.on_existing,
                     },
                     super::super::state::CopyContentKind::TarDirectory => {
                         Command::LocalCopyDirectory {
                             source_path: request.source_path.clone(),
                             dest_path: request.dest_path.clone(),
+                            on_existing: request.on_existing,
                         }
                     }
                 };
@@ -254,7 +256,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 request_id: dest_request_id,
                 command: request
                     .content_kind
-                    .upload_command(request.dest_path.clone()),
+                    .upload_command(request.dest_path.clone(), request.on_existing),
             });
             let _ = request.reply.send(Ok(public_request_id));
         }

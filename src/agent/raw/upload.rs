@@ -1,7 +1,8 @@
+use super::super::transfers::destination::{check_existing_destination, place_temp_at_destination};
 use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
 use redoor::{
     Level,
-    commands::{CommandErrorKind, CommandResult},
+    commands::{CommandErrorKind, CommandResult, CopyExistingMode},
     log,
     streaming::{self, StreamPayloadKind},
     types::{AgentId, RequestId},
@@ -44,6 +45,7 @@ fn temp_upload_path(path: &str) -> PathBuf {
 struct RawUploadSession {
     path: String,
     temp_path: PathBuf,
+    on_existing: CopyExistingMode,
     file: File,
     existing_permissions: Option<std::fs::Permissions>,
     bytes_written: u64,
@@ -139,6 +141,7 @@ impl RawUploadWorker {
         let RawUploadSession {
             path: final_path,
             temp_path,
+            on_existing,
             file,
             existing_permissions,
             bytes_written,
@@ -175,11 +178,13 @@ impl RawUploadWorker {
             return;
         }
 
-        if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
+        if let Err(error) =
+            place_temp_at_destination(&temp_path, Path::new(&final_path), on_existing, false).await
+        {
             let error_message = format!("Failed to finalize uploaded file: {}", error);
             log!(
                 Level::Error,
-                "Upload rename failed: request_id={}, path={}, temp_path={}, error={}",
+                "Upload place failed: request_id={}, path={}, temp_path={}, error={}",
                 request_id,
                 final_path,
                 temp_path.display(),
@@ -192,11 +197,7 @@ impl RawUploadWorker {
                     &tx,
                     &agent_id,
                     request_id,
-                    AgentCommandError::raw_upload(
-                        CommandErrorKind::from_io_error(&error),
-                        error_message,
-                    )
-                    .into(),
+                    AgentCommandError::raw_upload(error.kind(), error_message).into(),
                 )
                 .await;
             active_uploads.remove(request_id);
@@ -335,6 +336,7 @@ impl AgentActor {
         agent_id: &AgentId,
         request_id: RequestId,
         path: String,
+        on_existing: CopyExistingMode,
     ) {
         let upload_already_exists = active_uploads.contains(request_id);
 
@@ -351,6 +353,17 @@ impl AgentActor {
                     ),
                 )
                 .into(),
+            )
+            .await;
+            return;
+        }
+
+        if let Err(error) = check_existing_destination(Path::new(&path), on_existing, false).await {
+            self.send_command_response(
+                write,
+                agent_id,
+                request_id,
+                AgentCommandError::raw_upload(error.kind(), error.to_string()).into(),
             )
             .await;
             return;
@@ -381,10 +394,11 @@ impl AgentActor {
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
                 log!(
                     Level::Info,
-                    "Started raw upload: request_id={}, path={}, temp_path={}",
+                    "Started raw upload: request_id={}, path={}, temp_path={}, on_existing={:?}",
                     request_id,
                     path,
-                    temp_path.display()
+                    temp_path.display(),
+                    on_existing
                 );
                 active_uploads.insert(
                     request_id,
@@ -402,6 +416,7 @@ impl AgentActor {
                         session: RawUploadSession {
                             path,
                             temp_path,
+                            on_existing,
                             file,
                             existing_permissions,
                             bytes_written: 0,

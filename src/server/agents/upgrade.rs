@@ -124,6 +124,7 @@ async fn upload_upgrade_binary(
         agent_id.clone(),
         Command::RawUpload {
             path: destination_path.to_string(),
+            on_existing: redoor::commands::CopyExistingMode::Override,
         },
         destination_path.to_string(),
         total_bytes,

@@ -131,17 +131,31 @@ pub enum Command {
     },
     RawUpload {
         path: String,
+        /// Controls replacement when the destination already exists.
+        /// Defaults to override so direct HTTP raw uploads keep replacing files.
+        #[serde(default = "CopyExistingMode::override_mode")]
+        on_existing: CopyExistingMode,
     },
     TarUpload {
         path: String,
+        /// Controls replacement when the destination already exists.
+        /// Defaults to error so directory placement stays non-destructive unless copy asks otherwise.
+        #[serde(default)]
+        on_existing: CopyExistingMode,
     },
     LocalCopyFile {
         source_path: String,
         dest_path: String,
+        /// Controls replacement when the destination already exists.
+        #[serde(default)]
+        on_existing: CopyExistingMode,
     },
     LocalCopyDirectory {
         source_path: String,
         dest_path: String,
+        /// Controls replacement when the destination already exists.
+        #[serde(default)]
+        on_existing: CopyExistingMode,
     },
     RawDelete {
         path: String,
@@ -195,16 +209,26 @@ impl Command {
                 (None, None) => format!("RawDownload path={path}"),
             },
             Self::TarDownload { path } => format!("TarDownload path={path}"),
-            Self::RawUpload { path } => format!("RawUpload path={path}"),
-            Self::TarUpload { path } => format!("TarUpload path={path}"),
+            Self::RawUpload { path, on_existing } => {
+                format!("RawUpload path={path} on_existing={on_existing:?}")
+            }
+            Self::TarUpload { path, on_existing } => {
+                format!("TarUpload path={path} on_existing={on_existing:?}")
+            }
             Self::LocalCopyFile {
                 source_path,
                 dest_path,
-            } => format!("LocalCopyFile source={source_path} dest={dest_path}"),
+                on_existing,
+            } => format!(
+                "LocalCopyFile source={source_path} dest={dest_path} on_existing={on_existing:?}"
+            ),
             Self::LocalCopyDirectory {
                 source_path,
                 dest_path,
-            } => format!("LocalCopyDirectory source={source_path} dest={dest_path}"),
+                on_existing,
+            } => format!(
+                "LocalCopyDirectory source={source_path} dest={dest_path} on_existing={on_existing:?}"
+            ),
             Self::RawDelete { path } => format!("RawDelete path={path}"),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
             Self::RenamePath {
@@ -573,11 +597,36 @@ pub struct CopyEndpoint {
     pub path: String,
 }
 
+/// Controls what copy does when the destination path already exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CopyExistingMode {
+    /// Fail the copy and leave the destination untouched.
+    #[default]
+    Error,
+    /// Replace the destination path entirely with the source contents.
+    Override,
+    /// Merge source contents into the destination tree; conflicting files are replaced.
+    Merge,
+}
+
+impl CopyExistingMode {
+    /// Default used by direct raw uploads so existing HTTP clients keep overwriting files.
+    pub const fn override_mode() -> Self {
+        Self::Override
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CopyFileRequest {
     pub source: CopyEndpoint,
     pub dest: CopyEndpoint,
+    /// What to do when `dest.path` already exists. Omitted requests keep the historical error behavior.
+    #[serde(default)]
+    pub on_existing: CopyExistingMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -834,6 +883,7 @@ mod tests {
         let result = handler
             .execute(Command::TarUpload {
                 path: "test-dir".to_string(),
+                on_existing: CopyExistingMode::Error,
             })
             .await;
 
@@ -849,6 +899,7 @@ mod tests {
         let result = handler
             .execute(Command::RawUpload {
                 path: "upload.txt".to_string(),
+                on_existing: CopyExistingMode::Override,
             })
             .await;
 

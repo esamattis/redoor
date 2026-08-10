@@ -403,6 +403,7 @@ mod tests {
                         agent_id: AgentId::from("agent-1"),
                         command: Command::RawUpload {
                             path: "/tmp/file.bin".to_string(),
+                            on_existing: crate::commands::CopyExistingMode::Override,
                         },
                         path: "/tmp/file.bin".to_string(),
                         total_bytes: 32,

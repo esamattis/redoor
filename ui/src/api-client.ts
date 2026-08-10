@@ -19,6 +19,7 @@ import type { CreateDirectoryResponse } from "#bindings/CreateDirectoryResponse"
 import type { CopyFileRequest } from "#bindings/CopyFileRequest";
 import type { CopyFileResponse } from "#bindings/CopyFileResponse";
 import type { CopyEndpoint } from "#bindings/CopyEndpoint";
+import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { TerminalSize } from "#bindings/TerminalSize";
 import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
@@ -59,6 +60,7 @@ export type {
     CopyFileRequest,
     CopyFileResponse,
     CopyEndpoint,
+    CopyExistingMode,
     TerminalSize,
     TerminalClientMessage,
     TerminalServerMessage,
@@ -568,6 +570,9 @@ export class Agent {
     async copyTo(
         destination: CopyEndpoint,
         sourcePath: string,
+        options?: {
+            on_existing?: CopyExistingMode;
+        },
     ): Promise<CopyFileResponse> {
         encodeFilesystemPath(sourcePath);
         encodeFilesystemPath(destination.path);
@@ -577,6 +582,7 @@ export class Agent {
                 path: sourcePath,
             },
             dest: destination,
+            on_existing: options?.on_existing ?? "error",
         };
 
         const response = await apiRequest<CopyFileResponseJson>(

@@ -151,10 +151,14 @@ pub enum CopyContentKind {
 
 impl CopyContentKind {
     /// Builds the destination-side upload command for this copy mode.
-    pub(crate) fn upload_command(self, path: String) -> Command {
+    pub(crate) fn upload_command(
+        self,
+        path: String,
+        on_existing: crate::commands::CopyExistingMode,
+    ) -> Command {
         match self {
-            Self::RawFile => Command::RawUpload { path },
-            Self::TarDirectory => Command::TarUpload { path },
+            Self::RawFile => Command::RawUpload { path, on_existing },
+            Self::TarDirectory => Command::TarUpload { path, on_existing },
         }
     }
 

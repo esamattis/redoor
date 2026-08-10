@@ -34,8 +34,8 @@ impl CommandHandler {
                 range_end,
             } => self.raw_download(path, range_start, range_end).await,
             Command::TarDownload { path } => self.tar_download(path).await,
-            Command::RawUpload { path } => self.raw_upload(path).await,
-            Command::TarUpload { path } => self.tar_upload(path).await,
+            Command::RawUpload { path, .. } => self.raw_upload(path).await,
+            Command::TarUpload { path, .. } => self.tar_upload(path).await,
             Command::LocalCopyFile { .. } => CommandResult::error(
                 CommandErrorKind::InvalidInput,
                 "LocalCopyFile is handled by the agent runtime",

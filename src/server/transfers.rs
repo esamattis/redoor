@@ -123,6 +123,7 @@ pub(crate) async fn copy_file_handler(
                 dest_path: dest_path.clone(),
                 total_bytes,
                 content_kind,
+                on_existing: payload.on_existing,
                 reply,
             })
         })

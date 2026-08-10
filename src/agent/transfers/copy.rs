@@ -1,7 +1,10 @@
 use super::super::{AgentActor, AgentCommandError};
+use super::destination::{
+    DestinationPlaceError, check_existing_destination, place_temp_at_destination,
+};
 use redoor::{
     Level,
-    commands::CommandResult,
+    commands::{CommandResult, CopyExistingMode},
     log,
     types::{AgentId, Message, RequestId},
 };
@@ -39,10 +42,8 @@ pub(crate) enum LocalCopyError {
     DestinationParentNotFound(String),
     #[error("Destination parent is not a directory: {0}")]
     DestinationParentNotDirectory(String),
-    #[error("Destination already exists: {0}")]
-    DestinationAlreadyExists(String),
-    #[error("Failed to check destination path: {0}")]
-    CheckDestinationPath(#[source] std::io::Error),
+    #[error(transparent)]
+    DestinationPlacement(#[from] DestinationPlaceError),
     #[error("Invalid source path: {0}")]
     InvalidSourcePath(String),
     #[error("Invalid destination path: {0}")]
@@ -88,8 +89,6 @@ pub(crate) enum LocalCopyError {
     PlannerFailed(String),
     #[error("Failed to create temp directory: {0}")]
     CreateTempDirectory(#[source] std::io::Error),
-    #[error("Failed to finalize copied directory: {0}")]
-    FinalizeCopiedDirectory(#[source] std::io::Error),
     #[error("Lost router connection while reporting local copy progress")]
     ProgressChannelClosed,
 }
@@ -100,15 +99,13 @@ impl LocalCopyError {
         match self {
             Self::AccessSourceFile(error)
             | Self::AccessSourceDirectory(error)
-            | Self::CheckDestinationPath(error)
-            | Self::CreateTempDirectory(error)
-            | Self::FinalizeCopiedDirectory(error) => {
+            | Self::CreateTempDirectory(error) => {
                 redoor::commands::CommandErrorKind::from_io_error(error)
             }
+            Self::DestinationPlacement(error) => error.kind(),
             Self::SourceNotDirectory(_) | Self::DestinationParentNotDirectory(_) => {
                 redoor::commands::CommandErrorKind::NotADirectory
             }
-            Self::DestinationAlreadyExists(_) => redoor::commands::CommandErrorKind::AlreadyExists,
             Self::SamePath
             | Self::DestinationInsideSource
             | Self::SourceNotFile(_)
@@ -339,6 +336,24 @@ async fn copy_file_streaming(
     temp_path: &Path,
     reporter: &mut LocalCopyProgressReporter,
 ) -> Result<(), LocalCopyError> {
+    stream_file_to_temp(source_path, temp_path, reporter).await?;
+
+    tokio::fs::rename(temp_path, dest_path).await.map_err(|_| {
+        LocalCopyError::FinalizeCopiedFile {
+            from: temp_path.display().to_string(),
+            to: dest_path.display().to_string(),
+        }
+    })?;
+
+    Ok(())
+}
+
+/// Streams one source file into a temp path without publishing the final destination yet.
+async fn stream_file_to_temp(
+    source_path: &Path,
+    temp_path: &Path,
+    reporter: &mut LocalCopyProgressReporter,
+) -> Result<(), LocalCopyError> {
     let mut source = File::open(source_path)
         .await
         .map_err(|_| LocalCopyError::OpenSourceFile(source_path.display().to_string()))?;
@@ -372,13 +387,6 @@ async fn copy_file_streaming(
         .await
         .map_err(|_| LocalCopyError::FlushDestinationFile(temp_path.display().to_string()))?;
     drop(destination);
-
-    tokio::fs::rename(temp_path, dest_path).await.map_err(|_| {
-        LocalCopyError::FinalizeCopiedFile {
-            from: temp_path.display().to_string(),
-            to: dest_path.display().to_string(),
-        }
-    })?;
 
     Ok(())
 }
@@ -507,17 +515,19 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
+        on_existing: CopyExistingMode,
         response: LocalCopyResponseContext<'_>,
     ) {
         log!(
             Level::Info,
-            "Started local copy file: request_id={}, source={}, dest={}",
+            "Started local copy file: request_id={}, source={}, dest={}, on_existing={:?}",
             response.request_id,
             source_path,
-            dest_path
+            dest_path,
+            on_existing
         );
         match self
-            .run_local_copy_file(source_path, dest_path, &response)
+            .run_local_copy_file(source_path, dest_path, on_existing, &response)
             .await
         {
             Ok(result) => {
@@ -552,6 +562,7 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
+        on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
@@ -567,16 +578,7 @@ impl AgentActor {
 
         validate_local_copy_destination(&source_path_buf, &dest_path_buf, false)?;
         validate_local_copy_parent(&dest_path_buf).await?;
-
-        match tokio::fs::try_exists(&dest_path_buf).await {
-            Ok(true) => {
-                return Err(LocalCopyError::DestinationAlreadyExists(dest_path));
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(LocalCopyError::CheckDestinationPath(error));
-            }
-        }
+        check_existing_destination(&dest_path_buf, on_existing, false).await?;
 
         let mut reporter = LocalCopyProgressReporter::new(
             response.write.clone(),
@@ -588,9 +590,14 @@ impl AgentActor {
 
         reporter.report(true).await?;
 
-        match copy_file_streaming(&source_path_buf, &dest_path_buf, &temp_path, &mut reporter).await
-        {
+        match stream_file_to_temp(&source_path_buf, &temp_path, &mut reporter).await {
             Ok(()) => {
+                if let Err(error) =
+                    place_temp_at_destination(&temp_path, &dest_path_buf, on_existing, false).await
+                {
+                    cleanup_local_copy_temp_path(&temp_path).await;
+                    return Err(LocalCopyError::from(error));
+                }
                 if let Err(error) = reporter.finish().await {
                     cleanup_local_copy_temp_path(&temp_path).await;
                     return Err(error);
@@ -609,17 +616,19 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
+        on_existing: CopyExistingMode,
         response: LocalCopyResponseContext<'_>,
     ) {
         log!(
             Level::Info,
-            "Started local copy directory: request_id={}, source={}, dest={}",
+            "Started local copy directory: request_id={}, source={}, dest={}, on_existing={:?}",
             response.request_id,
             source_path,
-            dest_path
+            dest_path,
+            on_existing
         );
         match self
-            .run_local_copy_directory(source_path, dest_path, &response)
+            .run_local_copy_directory(source_path, dest_path, on_existing, &response)
             .await
         {
             Ok(result) => {
@@ -654,6 +663,7 @@ impl AgentActor {
         &self,
         source_path: String,
         dest_path: String,
+        on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
@@ -669,16 +679,7 @@ impl AgentActor {
 
         validate_local_copy_destination(&source_path_buf, &dest_path_buf, true)?;
         validate_local_copy_parent(&dest_path_buf).await?;
-
-        match tokio::fs::try_exists(&dest_path_buf).await {
-            Ok(true) => {
-                return Err(LocalCopyError::DestinationAlreadyExists(dest_path));
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(LocalCopyError::CheckDestinationPath(error));
-            }
-        }
+        check_existing_destination(&dest_path_buf, on_existing, true).await?;
 
         let plan = match tokio::task::spawn_blocking({
             let source_path_buf = source_path_buf.clone();
@@ -713,9 +714,12 @@ impl AgentActor {
             .await
         {
             Ok(()) => {
-                if let Err(error) = tokio::fs::rename(&temp_dest_root, &dest_path_buf).await {
+                if let Err(error) =
+                    place_temp_at_destination(&temp_dest_root, &dest_path_buf, on_existing, true)
+                        .await
+                {
                     let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                    return Err(LocalCopyError::FinalizeCopiedDirectory(error));
+                    return Err(LocalCopyError::from(error));
                 }
 
                 if let Err(error) = reporter.finish().await {
@@ -771,6 +775,7 @@ mod tests {
             .local_copy_file(
                 source_path.display().to_string(),
                 dest_path.display().to_string(),
+                CopyExistingMode::Error,
                 LocalCopyResponseContext {
                     write: &write_tx,
                     agent_id: &AgentId::from("agent-1"),

@@ -426,7 +426,7 @@ describe("Raw Copy API", () => {
         ).rejects.toThrow(/different/i);
     });
 
-    it("should reject copying a directory onto an existing destination", async () => {
+    it("should reject copying a directory onto an existing destination by default", async () => {
         const sourceRoot = tempFiles.tempFile({
             suffix: "-existing-dest-source",
         });
@@ -462,8 +462,245 @@ describe("Raw Copy API", () => {
 
         // Surfacing an errored row proves destination conflicts fail through the logical copy transfer.
         expect(erroredTransfer.state).toBe("errored");
-        // Keeping the original destination directory untouched proves directory copies do not merge into existing targets.
+        // Keeping the original destination directory untouched proves default error mode does not mutate existing targets.
         expect(await fs.readdir(destRoot)).toHaveLength(0);
+    });
+
+    describe.each([
+        { scope: "same-agent" as const },
+        { scope: "cross-agent" as const },
+    ])("on_existing directory copy ($scope)", ({ scope }) => {
+        let destAgentId: string;
+        let secondAgentPid: number | undefined;
+
+        beforeAll(async () => {
+            if (scope === "same-agent") {
+                destAgentId = testAgent.id;
+                return;
+            }
+
+            const secondAgentName = "raw-copy-on-existing-target-agent";
+            const serverProcess = processManager.getProcess(serverPid);
+            if (!serverProcess) {
+                throw new Error("Server process not found");
+            }
+
+            const waitForSecondAgent = waitForLogMessage(
+                serverProcess,
+                new RegExp(
+                    `Transfer socket registered: agent_id=${secondAgentName},`,
+                ),
+                10000,
+            );
+
+            secondAgentPid = processManager.spawnAgent({
+                wsAddress: `ws://127.0.0.1:${serverPort}/ws`,
+                name: secondAgentName,
+                cwd: tempFiles.tempDirectory({
+                    suffix: "-on-existing-target-agent-cwd",
+                }),
+            });
+
+            await waitForSecondAgent;
+
+            const secondAgent = await waitForValue({
+                description: "on_existing cross-agent destination agent",
+                predicate: async () => {
+                    const agents = await apiClient.listAgents();
+                    return agents.find((agent) => agent.name === secondAgentName);
+                },
+            });
+            destAgentId = secondAgent.id;
+        }, 30000);
+
+        afterAll(() => {
+            if (secondAgentPid !== undefined) {
+                processManager.kill(secondAgentPid);
+            }
+        });
+
+        it("should error when on_existing is error and destination exists", async () => {
+            const sourceRoot = tempFiles.tempFile({
+                suffix: `-on-existing-error-source-${scope}`,
+            });
+            const destRoot = tempFiles.tempFile({
+                suffix: `-on-existing-error-dest-${scope}`,
+            });
+
+            await fs.mkdir(sourceRoot, { recursive: true });
+            await fs.mkdir(destRoot, { recursive: true });
+            await fs.writeFile(
+                path.join(sourceRoot, "from-source.txt"),
+                "source-payload",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "keep-me.txt"),
+                "dest-only",
+                "utf-8",
+            );
+
+            const response = await testAgent.copyTo(
+                { agent: destAgentId, path: destRoot },
+                sourceRoot,
+                { on_existing: "error" },
+            );
+
+            const erroredTransfer = await waitForValue({
+                description: `${scope} errored copy with on_existing=error`,
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "errored",
+                    );
+                },
+            });
+
+            // Explicit error mode must fail the logical transfer instead of mutating the destination.
+            expect(erroredTransfer.state).toBe("errored");
+            // Destination agent identity proves the rejection path matches the scoped copy target.
+            expect(erroredTransfer.dest?.agent).toBe(destAgentId);
+            // Preserving dest-only content proves error mode leaves the existing tree untouched.
+            expect(
+                await fs.readFile(path.join(destRoot, "keep-me.txt"), "utf-8"),
+            ).toBe("dest-only");
+            // Source content must not appear under the destination when the copy is rejected.
+            await expect(
+                fs.stat(path.join(destRoot, "from-source.txt")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+        });
+
+        it("should replace an existing destination when on_existing is override", async () => {
+            const sourceRoot = tempFiles.tempFile({
+                suffix: `-on-existing-override-source-${scope}`,
+            });
+            const destRoot = tempFiles.tempFile({
+                suffix: `-on-existing-override-dest-${scope}`,
+            });
+
+            await fs.mkdir(path.join(sourceRoot, "nested"), { recursive: true });
+            await fs.mkdir(destRoot, { recursive: true });
+            await fs.writeFile(
+                path.join(sourceRoot, "nested", "file.txt"),
+                "source-version",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "old-only.txt"),
+                "should-be-removed",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "nested-placeholder.txt"),
+                "also-removed",
+                "utf-8",
+            );
+
+            const response = await testAgent.copyTo(
+                { agent: destAgentId, path: destRoot },
+                sourceRoot,
+                { on_existing: "override" },
+            );
+
+            const completedTransfer = await waitForValue({
+                description: `${scope} completed override directory copy`,
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "completed",
+                    );
+                },
+            });
+
+            // Destination agent identity proves override ran on the scoped copy path (local or tar stream).
+            expect(completedTransfer.dest?.agent).toBe(destAgentId);
+            // Override must publish the source tree contents at the destination path.
+            expect(
+                await fs.readFile(
+                    path.join(destRoot, "nested", "file.txt"),
+                    "utf-8",
+                ),
+            ).toBe("source-version");
+            // Dest-only files must disappear because override replaces the whole path.
+            await expect(
+                fs.stat(path.join(destRoot, "old-only.txt")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+            await expect(
+                fs.stat(path.join(destRoot, "nested-placeholder.txt")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+        });
+
+        it("should merge into an existing destination when on_existing is merge", async () => {
+            const sourceRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-source-${scope}`,
+            });
+            const destRoot = tempFiles.tempFile({
+                suffix: `-on-existing-merge-dest-${scope}`,
+            });
+
+            await fs.mkdir(path.join(sourceRoot, "shared"), { recursive: true });
+            await fs.mkdir(path.join(destRoot, "shared"), { recursive: true });
+            await fs.writeFile(
+                path.join(sourceRoot, "shared", "conflict.txt"),
+                "from-source",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(sourceRoot, "source-only.txt"),
+                "source-only",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "shared", "conflict.txt"),
+                "from-dest",
+                "utf-8",
+            );
+            await fs.writeFile(
+                path.join(destRoot, "dest-only.txt"),
+                "dest-only",
+                "utf-8",
+            );
+
+            const response = await testAgent.copyTo(
+                { agent: destAgentId, path: destRoot },
+                sourceRoot,
+                { on_existing: "merge" },
+            );
+
+            const completedTransfer = await waitForValue({
+                description: `${scope} completed merge directory copy`,
+                predicate: async () => {
+                    const progress = await apiClient.getTransferProgress();
+                    return progress.transfers.find(
+                        (transfer: TransferProgressEntry) =>
+                            transfer.request_id === response.copy_request_id &&
+                            transfer.state === "completed",
+                    );
+                },
+            });
+
+            // Destination agent identity proves merge ran on the scoped copy path (local or tar stream).
+            expect(completedTransfer.dest?.agent).toBe(destAgentId);
+            // Conflicting files must take the source contents during merge.
+            expect(
+                await fs.readFile(
+                    path.join(destRoot, "shared", "conflict.txt"),
+                    "utf-8",
+                ),
+            ).toBe("from-source");
+            // Source-only files must be added beside existing destination entries.
+            expect(
+                await fs.readFile(path.join(destRoot, "source-only.txt"), "utf-8"),
+            ).toBe("source-only");
+            // Dest-only files must survive merge because only overlapping paths are replaced.
+            expect(
+                await fs.readFile(path.join(destRoot, "dest-only.txt"), "utf-8"),
+            ).toBe("dest-only");
+        });
     });
 
     it("should return quickly while a large copy is still in progress", async () => {

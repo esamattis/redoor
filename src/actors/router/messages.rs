@@ -285,6 +285,8 @@ pub struct StartCopyRequest {
     pub total_bytes: u64,
     /// Copy mode determining command/result mapping and payload kind.
     pub content_kind: CopyContentKind,
+    /// Controls replacement when the destination path already exists.
+    pub on_existing: crate::commands::CopyExistingMode,
     /// Reply port that returns the public transfer id.
     pub reply: RouterReply<Result<TransferId, RouterError>>,
 }

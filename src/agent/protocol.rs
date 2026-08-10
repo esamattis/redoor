@@ -61,11 +61,13 @@ async fn handle_command_message(
         Command::LocalCopyFile {
             source_path,
             dest_path,
+            on_existing,
         } => {
             AgentActor
                 .local_copy_file(
                     source_path,
                     dest_path,
+                    on_existing,
                     super::transfers::copy::LocalCopyResponseContext {
                         write: &write_text,
                         agent_id: &agent_id,
@@ -77,11 +79,13 @@ async fn handle_command_message(
         Command::LocalCopyDirectory {
             source_path,
             dest_path,
+            on_existing,
         } => {
             AgentActor
                 .local_copy_directory(
                     source_path,
                     dest_path,
+                    on_existing,
                     super::transfers::copy::LocalCopyResponseContext {
                         write: &write_text,
                         agent_id: &agent_id,
@@ -405,26 +409,28 @@ impl AgentActor {
         command: Command,
     ) -> bool {
         match command {
-            Command::RawUpload { path } => {
+            Command::RawUpload { path, on_existing } => {
                 self.start_raw_upload_session(
                     active_uploads.clone(),
                     write,
                     agent_id,
                     request_id,
                     path,
+                    on_existing,
                 )
                 .await;
                 self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)
                     .await;
                 true
             }
-            Command::TarUpload { path } => {
+            Command::TarUpload { path, on_existing } => {
                 self.start_tar_upload_session(
                     active_uploads.clone(),
                     write,
                     agent_id,
                     request_id,
                     path,
+                    on_existing,
                 )
                 .await;
                 self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)

@@ -367,6 +367,7 @@ pub(crate) async fn raw_agent_put_handler(
         agent_id,
         Command::RawUpload {
             path: resolved_path.clone(),
+            on_existing: redoor::commands::CopyExistingMode::Override,
         },
         resolved_path.clone(),
         total_bytes,

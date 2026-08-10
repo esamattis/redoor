@@ -1,8 +1,11 @@
 use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
+use super::destination::{
+    DestinationPlaceError, check_existing_destination, place_temp_at_destination,
+};
 use anyhow::Result;
 use redoor::{
     Level,
-    commands::{CommandErrorKind, CommandResult},
+    commands::{CommandErrorKind, CommandResult, CopyExistingMode},
     log,
     streaming::{self, StreamPayloadKind},
     types::{AgentId, RequestId},
@@ -28,10 +31,8 @@ pub(crate) enum TarUploadError {
     AccessDestinationParent(#[source] std::io::Error),
     #[error("Destination parent is not a directory: {0}")]
     DestinationParentNotDirectory(String),
-    #[error("Failed to check destination path: {0}")]
-    CheckDestinationPath(#[source] std::io::Error),
-    #[error("Destination already exists: {0}")]
-    DestinationAlreadyExists(String),
+    #[error(transparent)]
+    DestinationPlacement(#[from] DestinationPlaceError),
     #[error("Failed to create temp directory: {0}")]
     CreateTempDirectory(#[source] std::io::Error),
     #[error("Failed to read tar entries")]
@@ -54,11 +55,11 @@ impl TarUploadError {
     /// Maps one tar-upload failure to the stable command error kind carried over the protocol.
     pub(crate) fn kind(&self) -> CommandErrorKind {
         match self {
-            Self::AccessDestinationParent(error)
-            | Self::CheckDestinationPath(error)
-            | Self::CreateTempDirectory(error) => CommandErrorKind::from_io_error(error),
+            Self::AccessDestinationParent(error) | Self::CreateTempDirectory(error) => {
+                CommandErrorKind::from_io_error(error)
+            }
+            Self::DestinationPlacement(error) => error.kind(),
             Self::DestinationParentNotDirectory(_) => CommandErrorKind::NotADirectory,
-            Self::DestinationAlreadyExists(_) => CommandErrorKind::AlreadyExists,
             Self::EscapingTarEntryPath(_)
             | Self::EmptyTarEntryPath
             | Self::DestinationParentNotFound(_)
@@ -124,7 +125,10 @@ fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf, TarUploadError>
 }
 
 /// Creates the temp destination and background unpack worker for one tar upload request.
-async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, TarUploadError> {
+async fn create_tar_upload_session(
+    path: String,
+    on_existing: CopyExistingMode,
+) -> Result<TarUploadSession, TarUploadError> {
     let destination = PathBuf::from(&path);
     let parent = destination
         .parent()
@@ -140,14 +144,7 @@ async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, Tar
         ));
     }
 
-    if tokio::fs::try_exists(&destination)
-        .await
-        .map_err(TarUploadError::CheckDestinationPath)?
-    {
-        return Err(TarUploadError::DestinationAlreadyExists(
-            destination.display().to_string(),
-        ));
-    }
+    check_existing_destination(&destination, on_existing, true).await?;
 
     let temp_path = temp_upload_dir_path(&path);
     tokio::fs::create_dir(&temp_path)
@@ -166,6 +163,7 @@ async fn create_tar_upload_session(path: String) -> Result<TarUploadSession, Tar
     Ok(TarUploadSession {
         path,
         temp_path,
+        on_existing,
         chunk_sender,
         completion_receiver,
         bytes_written: 0,
@@ -267,6 +265,7 @@ fn unpack_tar_stream_into_directory(
 struct TarUploadSession {
     path: String,
     temp_path: PathBuf,
+    on_existing: CopyExistingMode,
     chunk_sender: std_mpsc::SyncSender<Vec<u8>>,
     completion_receiver: oneshot::Receiver<Result<(), TarUploadError>>,
     bytes_written: u64,
@@ -468,6 +467,7 @@ impl AgentActor {
         agent_id: &AgentId,
         request_id: RequestId,
         path: String,
+        on_existing: CopyExistingMode,
     ) {
         let upload_already_exists = active_uploads.contains(request_id);
 
@@ -489,16 +489,17 @@ impl AgentActor {
             return;
         }
 
-        match create_tar_upload_session(path.clone()).await {
+        match create_tar_upload_session(path.clone(), on_existing).await {
             Ok(session) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
                 log!(
                     Level::Info,
-                    "Started tar upload: request_id={}, path={}, temp_path={}",
+                    "Started tar upload: request_id={}, path={}, temp_path={}, on_existing={:?}",
                     request_id,
                     path,
-                    session.temp_path.display()
+                    session.temp_path.display(),
+                    on_existing
                 );
                 active_uploads.insert(
                     request_id,
@@ -534,7 +535,7 @@ impl AgentActor {
     }
 }
 
-/// Finalizes a tar upload by waiting for extraction, renaming the temp tree, and reporting the result.
+/// Finalizes a tar upload by waiting for extraction, placing the temp tree, and reporting the result.
 async fn finalize_tar_upload(
     tx: &mpsc::Sender<WsMessage>,
     agent_id: &AgentId,
@@ -543,6 +544,7 @@ async fn finalize_tar_upload(
 ) {
     let final_path = session.path.clone();
     let temp_path = session.temp_path.clone();
+    let on_existing = session.on_existing;
     let bytes_written = session.bytes_written;
 
     drop(session.chunk_sender);
@@ -554,8 +556,10 @@ async fn finalize_tar_upload(
 
     match unpack_result {
         Ok(()) => {
-            if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
-                let error_message = format!("Failed to finalize uploaded directory: {}", error);
+            if let Err(error) =
+                place_temp_at_destination(&temp_path, Path::new(&final_path), on_existing, true)
+                    .await
+            {
                 let _ = tokio::fs::remove_dir_all(&temp_path).await;
 
                 AgentActor
@@ -563,11 +567,7 @@ async fn finalize_tar_upload(
                         tx,
                         agent_id,
                         request_id,
-                        AgentCommandError::raw_upload(
-                            CommandErrorKind::from_io_error(&error),
-                            error_message,
-                        )
-                        .into(),
+                        AgentCommandError::from(TarUploadError::from(error)).into(),
                     )
                     .await;
                 return;
