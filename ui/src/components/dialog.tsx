@@ -60,6 +60,16 @@ export function Dialog(props: {
             dialog.showModal();
         }
 
+        // showModal() runs after React's autoFocus layout effect and focuses the
+        // first tabbable control (usually the close button). Prefer an explicit
+        // autofocus target, otherwise the first editable field in the body.
+        const autofocusTarget =
+            dialog.querySelector<HTMLElement>("[autofocus]") ??
+            dialog.querySelector<HTMLElement>(
+                "input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])",
+            );
+        autofocusTarget?.focus();
+
         return () => {
             if (dialog.open) {
                 dialog.close();

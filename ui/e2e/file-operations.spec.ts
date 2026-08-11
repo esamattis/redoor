@@ -118,6 +118,10 @@ test.describe.serial("File Operations", () => {
         await expect(
             page.getByRole("dialog", { name: "Create directory" }),
         ).toBeVisible();
+        // Autofocus lets users type the name immediately after choosing New directory.
+        await expect(
+            page.getByRole("textbox", { name: "Directory name" }),
+        ).toBeFocused();
 
         await page
             .getByRole("textbox", { name: "Directory name" })
@@ -158,6 +162,10 @@ test.describe.serial("File Operations", () => {
         const dialog = page.getByRole("dialog", { name: "Create file" });
         // The dedicated dialog keeps file naming explicit before creating anything remotely.
         await expect(dialog).toBeVisible();
+        // Autofocus lets users type the name immediately after choosing New file.
+        await expect(
+            dialog.getByRole("textbox", { name: "File name" }),
+        ).toBeFocused();
         await dialog.getByRole("textbox", { name: "File name" }).fill(fileName);
         // The path preview confirms the empty file will be created in the active directory.
         await expect(dialog.getByText(filePath)).toBeVisible();
