@@ -258,6 +258,19 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
+        // Archive download mirrors the file detail action so users can save the folder as tar.
+        const downloadArchive = page.getByRole("link", {
+            name: "Download Archive",
+            exact: true,
+        });
+        await expect(downloadArchive).toBeVisible();
+        // The href targets the raw endpoint with download=1 so the browser treats it as an attachment.
+        await expect(downloadArchive).toHaveAttribute(
+            "href",
+            new RegExp(
+                `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
+            ),
+        );
         // Activating details replaces the child list instead of rendering both dense views together.
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),

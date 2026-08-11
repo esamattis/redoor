@@ -2112,37 +2112,53 @@ function DirectoryDetailView(props: {
     directoryName: string;
     lsResult: LsDirectoryResponse;
 }) {
+    const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
+    // Raw GET on a directory streams agent tar gzipped at the server as a .tar.gz attachment.
+    const archiveUrl = props.agent.getRawUrl(props.path, { download: true });
+
     return (
         <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
             <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
                 <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-                <div className="relative flex min-w-0 items-start gap-4">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                        <Folder className="h-7 w-7 text-blue-400" />
-                    </div>
-                    <div className="min-w-0 pt-0.5">
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                            Directory details
-                        </p>
-                        <h1
-                            aria-label="Directory name"
-                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                        >
-                            {props.directoryName}
-                        </h1>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <NativeOpenButton
-                                agent={props.agent}
-                                path={props.path}
-                            />
-                            <RenamePathForm
-                                agent={props.agent}
-                                path={props.path}
-                                currentName={props.directoryName}
-                                entryType="directory"
-                                view="details"
-                            />
+                <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
+                    <div className="flex min-w-0 items-start gap-4">
+                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                            <Folder className="h-7 w-7 text-blue-400" />
                         </div>
+                        <div className="min-w-0 pt-0.5">
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                                Directory details
+                            </p>
+                            <h1
+                                aria-label="Directory name"
+                                className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                            >
+                                {props.directoryName}
+                            </h1>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <NativeOpenButton
+                                    agent={props.agent}
+                                    path={props.path}
+                                />
+                                <RenamePathForm
+                                    agent={props.agent}
+                                    path={props.path}
+                                    currentName={props.directoryName}
+                                    entryType="directory"
+                                    view="details"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                        <a
+                            href={archiveUrl}
+                            download={archiveName}
+                            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
+                        >
+                            <Download className="h-4 w-4" />
+                            Download Archive
+                        </a>
                     </div>
                 </div>
 

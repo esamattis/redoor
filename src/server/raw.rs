@@ -62,6 +62,10 @@ fn parse_range_header(range: &RangeHeader, file_size: u64) -> Option<(u64, u64)>
 }
 
 /// Route: `GET /api/v1/agents/{agent}/raw/{*path}`
+///
+/// Files stream as raw bytes (optional Range). Directories reuse the agent tar
+/// download path so the browser can save a folder as an archive without a
+/// separate copy endpoint.
 pub(crate) async fn raw_agent_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     Query(params): Query<RawQueryParams>,
@@ -126,6 +130,16 @@ pub(crate) async fn raw_agent_handler(
         }
     };
 
+    if metadata.is_dir {
+        return stream_directory_archive(
+            state,
+            agent_id,
+            path,
+            headers.typed_get::<RangeHeader>().is_some(),
+        )
+        .await;
+    }
+
     let range_option = headers.typed_get::<RangeHeader>();
     let (range_start, range_end, status_code, content_length, content_range_header) =
         if let Some(range) = range_option {
@@ -156,7 +170,7 @@ pub(crate) async fn raw_agent_handler(
             (None, None, StatusCode::OK, metadata.file_size, None)
         };
 
-    let (response_sender, mut response_receiver) =
+    let (response_sender, response_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
 
     match state
@@ -194,22 +208,149 @@ pub(crate) async fn raw_agent_handler(
         }
     }
 
+    let body_stream = match begin_download_body_stream(response_receiver, &path).await {
+        Ok(stream) => stream,
+        Err(response) => return response,
+    };
+
+    let mut response_builder = Response::builder()
+        .status(status_code)
+        .header("Content-Type", metadata.mime_type)
+        .header("Content-Length", content_length.to_string())
+        .header("Accept-Ranges", "bytes");
+
+    if let Some(content_range) = content_range_header {
+        response_builder = response_builder.header("Content-Range", content_range);
+    }
+
+    if token_download || params.download.as_deref() == Some("1") {
+        let filename = path.split('/').next_back().unwrap_or("file");
+        response_builder = response_builder.header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", filename),
+        );
+    }
+
+    response_builder
+        .body(Body::from_stream(body_stream))
+        .unwrap()
+        .into_response()
+}
+
+/// Streams a directory as gzip-compressed tar using the existing agent tar download worker.
+///
+/// Compression stays on the REST edge so agent↔agent copy can keep piping plain tar without
+/// gunzip support or a second transfer payload kind.
+async fn stream_directory_archive(
+    state: ServerState,
+    agent_id: AgentId,
+    path: String,
+    has_range_header: bool,
+) -> Response {
+    // Tar size is unknown until the agent finishes walking the tree, so byte ranges
+    // cannot be satisfied the way they are for fixed-length file downloads.
+    if has_range_header {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Range requests are not supported for directory archive downloads"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let (response_sender, response_receiver) =
+        tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
+
+    match state
+        .router_ref
+        .request(30000, |reply| {
+            actors::router::RouterMsg::ExecuteStreamCommandRest(
+                actors::router::ExecuteStreamRequest {
+                    agent_id: agent_id.clone(),
+                    command: Command::TarDownload { path: path.clone() },
+                    path: path.clone(),
+                    // Archive length is discovered while streaming; progress promotes the
+                    // transferred count to total_bytes when the transfer completes.
+                    // Counts are plain tar bytes from the agent, before REST-edge gzip.
+                    total_bytes: 0,
+                    reply,
+                    chunk_sender: response_sender,
+                },
+            )
+        })
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return router_error_response(error);
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to start stream".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let body_stream = match begin_download_body_stream(response_receiver, &path).await {
+        Ok(stream) => stream,
+        Err(response) => return response,
+    };
+
+    // Gzip only the HTTP body: agent still emits plain tar for reuse by copy uploads.
+    let tar_reader = tokio_util::io::StreamReader::new(body_stream);
+    let gzip_reader = async_compression::tokio::bufread::GzipEncoder::new(tar_reader);
+    let gzipped_stream = tokio_util::io::ReaderStream::new(gzip_reader);
+
+    let leaf_name = path.split('/').next_back().filter(|name| !name.is_empty());
+    let archive_name = match leaf_name {
+        Some(name) => format!("{name}.tar.gz"),
+        None => "archive.tar.gz".to_string(),
+    };
+
+    // Always attachment: directory bytes are an archive, never inline browser content.
+    // application/gzip keeps the payload as a downloadable .tar.gz rather than transparent
+    // Content-Encoding decompression that would leave clients with raw tar bytes.
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/gzip")
+        .header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{archive_name}\""),
+        )
+        .body(Body::from_stream(gzipped_stream))
+        .unwrap()
+        .into_response()
+}
+
+/// Waits for the first agent chunk so immediate failures can still return JSON errors,
+/// then builds the HTTP body stream used by both raw file and directory tar downloads.
+async fn begin_download_body_stream(
+    mut response_receiver: tokio::sync::mpsc::Receiver<redoor::streaming::StreamChunk>,
+    path: &str,
+) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + use<>, Response>
+{
     let first_chunk = match response_receiver.recv().await {
         Some(chunk) => chunk,
         None => {
-            return (
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "No data received".to_string(),
                 }),
             )
-                .into_response();
+                .into_response());
         }
     };
 
     if first_chunk.is_error {
         let error_msg = if first_chunk.data.is_empty() {
-            format!("File error: {}", path)
+            format!("File error: {path}")
         } else {
             String::from_utf8_lossy(&first_chunk.data).to_string()
         };
@@ -222,12 +363,12 @@ pub(crate) async fn raw_agent_handler(
             StatusCode::INTERNAL_SERVER_ERROR
         };
 
-        return (status, Json(ErrorResponse { error: error_msg })).into_response();
+        return Err((status, Json(ErrorResponse { error: error_msg })).into_response());
     }
 
     use async_stream::stream;
 
-    let stream = stream! {
+    Ok(stream! {
         // `first_chunk` was awaited before constructing the HTTP response so we could still
         // return a normal JSON error response with an appropriate status code if the agent
         // failed immediately. Once we start streaming the body, the headers and status code are
@@ -261,30 +402,7 @@ pub(crate) async fn raw_agent_handler(
             }
         }
         // Reaching the end of the channel cleanly ends the HTTP body stream.
-    };
-
-    let mut response_builder = Response::builder()
-        .status(status_code)
-        .header("Content-Type", metadata.mime_type)
-        .header("Content-Length", content_length.to_string())
-        .header("Accept-Ranges", "bytes");
-
-    if let Some(content_range) = content_range_header {
-        response_builder = response_builder.header("Content-Range", content_range);
-    }
-
-    if token_download || params.download.as_deref() == Some("1") {
-        let filename = path.split('/').next_back().unwrap_or("file");
-        response_builder = response_builder.header(
-            "Content-Disposition",
-            format!("attachment; filename=\"{}\"", filename),
-        );
-    }
-
-    response_builder
-        .body(Body::from_stream(stream))
-        .unwrap()
-        .into_response()
+    })
 }
 
 /// Route: `POST /api/v1/agents/{agent}/one-time-token/{*path}`

@@ -185,12 +185,21 @@ pub(crate) fn set_copy_progress(
     }
 }
 
-/// Marks a transfer as completed and snaps transferred bytes to the total.
+/// Marks a transfer as completed and aligns transferred/total byte counts.
+///
+/// Known-size downloads snap transferred bytes to the planned total. Directory tar
+/// downloads start with total_bytes=0 because the archive size is unknown up front;
+/// on completion the accumulated transferred count becomes the final total so the
+/// progress row does not reset to zero.
 pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: TransferId) {
     let mut updated = false;
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Completed;
-        progress.transferred_bytes = progress.total_bytes;
+        if progress.total_bytes == 0 {
+            progress.total_bytes = progress.transferred_bytes;
+        } else {
+            progress.transferred_bytes = progress.total_bytes;
+        }
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = None;
         updated = true;
