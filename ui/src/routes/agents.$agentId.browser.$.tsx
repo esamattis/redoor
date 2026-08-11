@@ -1140,7 +1140,7 @@ function BrowserHeader(props: {
                         view={props.isDetailsView ? "details" : undefined}
                         downloadUrl={archiveUrl}
                         downloadName={archiveName}
-                        downloadLabel="Download archive"
+                        downloadTooltip="Downloads this directory as a .tar.gz archive."
                     />
                 ) : null
             }
@@ -1782,6 +1782,32 @@ function FileEntry(props: {
                     >
                         {entry.name}
                     </Link>
+                    <Tooltip
+                        content={
+                            isDirectory
+                                ? "Download as .tar.gz archive"
+                                : "Download file"
+                        }
+                    >
+                        <a
+                            href={agent.getRawUrl(fullPath, {
+                                download: true,
+                            })}
+                            download={
+                                isDirectory
+                                    ? `${entry.name}.tar.gz`
+                                    : entry.name
+                            }
+                            aria-label={
+                                isDirectory
+                                    ? `Download directory ${entry.name} as .tar.gz`
+                                    : `Download file ${entry.name}`
+                            }
+                            className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
+                        >
+                            <Download className="h-3.5 w-3.5" />
+                        </a>
+                    </Tooltip>
                     <RenamePathAction
                         agent={agent}
                         path={fullPath}
@@ -2305,7 +2331,8 @@ function PersistentPathActions(props: {
     view?: "details" | "edit";
     downloadUrl: string;
     downloadName: string;
-    downloadLabel: "Download" | "Download archive";
+    /** Explains archive packaging when the download is a directory tarball. */
+    downloadTooltip?: string;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -2340,17 +2367,27 @@ function PersistentPathActions(props: {
         }
     };
 
+    const downloadLink = (
+        <a
+            href={props.downloadUrl}
+            download={props.downloadName}
+            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+        >
+            <Download className="h-4 w-4" />
+            Download
+        </a>
+    );
+
     return (
         <>
             <NativeOpenButton agent={props.agent} path={props.path} />
-            <a
-                href={props.downloadUrl}
-                download={props.downloadName}
-                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
-            >
-                <Download className="h-4 w-4" />
-                {props.downloadLabel}
-            </a>
+            {props.downloadTooltip ? (
+                <Tooltip content={props.downloadTooltip}>
+                    {downloadLink}
+                </Tooltip>
+            ) : (
+                downloadLink
+            )}
             <PathMoreActions
                 agent={props.agent}
                 path={props.path}
@@ -2628,7 +2665,6 @@ function FilePageHeader(props: {
                     view={props.activeView === "view" ? "edit" : undefined}
                     downloadUrl={props.downloadUrl}
                     downloadName={props.fileName}
-                    downloadLabel="Download"
                 />
             }
         />

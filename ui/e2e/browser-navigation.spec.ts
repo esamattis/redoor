@@ -63,6 +63,30 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
+        // Row actions expose download without leaving the directory listing.
+        const downloadFile = page.getByRole("link", {
+            name: "Download file file1.txt",
+            exact: true,
+        });
+        await expect(downloadFile).toBeVisible();
+        await expect(downloadFile).toHaveAttribute(
+            "href",
+            new RegExp(
+                `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
+            ),
+        );
+        const downloadDirectory = page.getByRole("link", {
+            name: "Download directory subdir1 as .tar.gz",
+            exact: true,
+        });
+        await expect(downloadDirectory).toBeVisible();
+        await expect(downloadDirectory).toHaveAttribute(
+            "href",
+            new RegExp(
+                `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
+            ),
+        );
+
         const fileEntries = page.locator("main tbody tr");
         await expect(fileEntries).toHaveCount(5);
     });
@@ -263,14 +287,16 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
-        // Archive download mirrors the file detail action so users can save the folder as tar.
-        const downloadArchive = page.getByRole("link", {
-            name: "Download archive",
-            exact: true,
-        });
-        await expect(downloadArchive).toBeVisible();
+        // Directory download uses the same label as files; packaging is explained via tooltip.
+        const downloadDirectory = page
+            .getByLabel("File browser actions")
+            .getByRole("link", {
+                name: "Download",
+                exact: true,
+            });
+        await expect(downloadDirectory).toBeVisible();
         // The href targets the raw endpoint with download=1 so the browser treats it as an attachment.
-        await expect(downloadArchive).toHaveAttribute(
+        await expect(downloadDirectory).toHaveAttribute(
             "href",
             new RegExp(
                 `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
