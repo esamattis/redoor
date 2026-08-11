@@ -84,6 +84,7 @@ fn has_non_empty_value(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 /// Returns the platform URL/path launcher when a graphical desktop is available.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn desktop_open_program(desktop_environment: DesktopEnvironment) -> &'static str {
     match desktop_environment {
         #[cfg(target_os = "linux")]
