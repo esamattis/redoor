@@ -30,6 +30,128 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should display modified time and sort every metadata column", async ({
+        page,
+    }) => {
+        const now = Date.now();
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        const modifiedAt = Math.floor(
+            (now - ((3 * 24 + 2) * 60 + 3) * 60_000) / 1000,
+        );
+        await page.route(
+            `**/api/v1/agents/${encodeURIComponent(ctx.agentId)}/ls/**`,
+            async (route) => {
+                await route.fulfill({
+                    contentType: "application/json",
+                    body: JSON.stringify({
+                        path: ctx.testDirPath,
+                        owner: "owner",
+                        group: "group",
+                        uid: 1000,
+                        gid: 1000,
+                        permissions: 0o755,
+                        files: [
+                            {
+                                name: "z-directory",
+                                type: "directory",
+                                size: 0,
+                                owner: "charlie",
+                                group: "gamma",
+                                uid: 1000,
+                                gid: 1000,
+                                modified_at: modifiedAt + 2 * 86_400,
+                            },
+                            {
+                                name: "alpha.txt",
+                                type: "file",
+                                size: 10,
+                                owner: "bravo",
+                                group: "beta",
+                                uid: 1000,
+                                gid: 1000,
+                                modified_at: modifiedAt,
+                            },
+                            {
+                                name: "beta.txt",
+                                type: "file",
+                                size: 100,
+                                owner: "alpha",
+                                group: "alpha",
+                                uid: 1000,
+                                gid: 1000,
+                                modified_at: modifiedAt + 86_400,
+                            },
+                        ],
+                    }),
+                });
+            },
+        );
+        await page.goto(directoryUrl);
+
+        const modifiedCell = page.getByLabel("Modified alpha.txt");
+        const modifiedTime = modifiedCell.locator("time");
+        // The visible cell provides an absolute local date and an ISO value for machines.
+        await expect(modifiedTime).not.toHaveText("");
+        await expect(modifiedTime).toHaveAttribute(
+            "datetime",
+            new Date(modifiedAt * 1000).toISOString(),
+        );
+        await modifiedTime.hover();
+        // The tooltip spells out the complete age rather than using compact abbreviations.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "3 days 2 hours 3 minutes ago",
+        );
+
+        const rows = page.locator("main tbody tr");
+        const expectOrder = async (names: string[]) => {
+            const expectedLabels = names.map((name) =>
+                name === "z-directory"
+                    ? `Directory entry ${name}`
+                    : `File entry ${name}`,
+            );
+            // Waiting on the first row ensures React has committed the requested order.
+            await expect(rows.first()).toHaveAttribute(
+                "aria-label",
+                expectedLabels[0] ?? "",
+            );
+            // Row labels capture the complete ordering without depending on visual styling.
+            expect(
+                await rows.evaluateAll((entries) =>
+                    entries.map((entry) => entry.getAttribute("aria-label")),
+                ),
+            ).toEqual(expectedLabels);
+        };
+
+        await page
+            .getByRole("button", { name: "Sort by Name ascending" })
+            .click();
+        await expectOrder(["alpha.txt", "beta.txt", "z-directory"]);
+        await page
+            .getByRole("button", { name: "Sort by Name descending" })
+            .click();
+        await expectOrder(["z-directory", "beta.txt", "alpha.txt"]);
+        await page
+            .getByRole("button", { name: "Sort by Type ascending" })
+            .click();
+        await expectOrder(["z-directory", "alpha.txt", "beta.txt"]);
+        await page
+            .getByRole("button", { name: "Sort by Size ascending" })
+            .click();
+        await expectOrder(["z-directory", "alpha.txt", "beta.txt"]);
+        await page
+            .getByRole("button", { name: "Sort by Modified ascending" })
+            .click();
+        await expectOrder(["alpha.txt", "beta.txt", "z-directory"]);
+        await page
+            .getByRole("button", { name: "Sort by Owner ascending" })
+            .click();
+        await expectOrder(["beta.txt", "alpha.txt", "z-directory"]);
+        await page
+            .getByRole("button", { name: "Sort by Group ascending" })
+            .click();
+        await expectOrder(["beta.txt", "alpha.txt", "z-directory"]);
+    });
+
     test("should navigate to subdirectory and display files", async ({
         page,
     }) => {

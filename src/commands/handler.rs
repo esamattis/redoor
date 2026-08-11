@@ -105,6 +105,8 @@ impl CommandHandler {
                                     let size = entry_metadata.size();
                                     let uid = entry_metadata.uid();
                                     let gid = entry_metadata.gid();
+                                    let modified_at =
+                                        UnixTimestampSeconds::new(entry_metadata.mtime());
 
                                     let owner = User::from_uid(nix::unistd::Uid::from_raw(uid))
                                         .ok()
@@ -124,6 +126,7 @@ impl CommandHandler {
                                         group,
                                         uid,
                                         gid,
+                                        modified_at,
                                     });
                                 }
                             }

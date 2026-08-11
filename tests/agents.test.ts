@@ -318,6 +318,10 @@ describe("Agents API", () => {
             expect(firstFile.gid).toBeDefined();
             expect(typeof firstFile.gid).toBe("number");
             expect(firstFile.gid).toBeGreaterThan(0);
+            // Modification time must travel with the listing so clients do not issue one request per row.
+            expect(typeof firstFile.modified_at).toBe("number");
+            // A real filesystem timestamp should be a positive Unix epoch value.
+            expect(firstFile.modified_at).toBeGreaterThan(0);
             expect(firstFile.owner).toBeDefined();
             expect(
                 firstFile.owner === null || typeof firstFile.owner === "string",

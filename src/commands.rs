@@ -465,6 +465,7 @@ pub struct ShutdownAgentResponse {
     pub agent: AgentInfoResponse,
 }
 
+/// Describes one directory entry completely enough to render and sort a file list.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LsEntry {
@@ -477,6 +478,7 @@ pub struct LsEntry {
     pub group: Option<String>,
     pub uid: u32,
     pub gid: u32,
+    pub modified_at: UnixTimestampSeconds,
 }
 
 /// Exposes directory entries and metadata so clients can provide alternate directory views.

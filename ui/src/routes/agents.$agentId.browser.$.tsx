@@ -34,6 +34,9 @@ import {
     MoreHorizontal,
     Plus,
     Home,
+    ArrowDownUp,
+    ChevronDown,
+    ChevronUp,
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -44,6 +47,7 @@ import { requestClipboardPaste } from "#ui/components/global-file-import-handler
 import { RouteError } from "#ui/components/route-error";
 import { Tooltip } from "#ui/components/tooltip";
 import { Toast } from "#ui/components/toast";
+import type { LsEntry } from "#bindings/LsEntry";
 import {
     FILE_SEARCH_RESULT_EVENT,
     FileSearcher,
@@ -150,6 +154,56 @@ function sortFileEntries<T extends { name: string }>(entries: T[]): T[] {
         return a.name.localeCompare(b.name, undefined, {
             sensitivity: "base",
         });
+    });
+}
+
+type FileSortColumn = "type" | "name" | "size" | "modified" | "owner" | "group";
+type FileSortDirection = "ascending" | "descending";
+
+/** Formats the complete minute-level age used by modification-time tooltips. */
+function formatModifiedAge(modifiedAt: number, now: number): string {
+    const totalMinutes = Math.max(
+        0,
+        Math.floor((now - modifiedAt * 1000) / 60_000),
+    );
+    if (totalMinutes === 0) return "less than a minute ago";
+
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+    const minutes = totalMinutes % 60;
+    const parts = [
+        days > 0 ? `${days} ${days === 1 ? "day" : "days"}` : null,
+        hours > 0 ? `${hours} ${hours === 1 ? "hour" : "hours"}` : null,
+        minutes > 0
+            ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+            : null,
+    ].filter((part): part is string => part !== null);
+
+    return `${parts.join(" ")} ago`;
+}
+
+/** Compares one selected metadata column and uses the name to keep ties stable. */
+function compareFileEntries(
+    left: LsEntry,
+    right: LsEntry,
+    column: FileSortColumn,
+): number {
+    let comparison: number;
+    if (column === "size") {
+        comparison = left.size - right.size;
+    } else if (column === "modified") {
+        comparison = left.modified_at - right.modified_at;
+    } else {
+        const leftValue = column === "name" ? left.name : (left[column] ?? "");
+        const rightValue =
+            column === "name" ? right.name : (right[column] ?? "");
+        comparison = leftValue.localeCompare(rightValue, undefined, {
+            sensitivity: "base",
+        });
+    }
+    if (comparison !== 0 || column === "name") return comparison;
+    return left.name.localeCompare(right.name, undefined, {
+        sensitivity: "base",
     });
 }
 
@@ -1523,15 +1577,7 @@ function FileList(props: {
     agentName: string;
     directoryPath: string;
     actions: React.ReactNode;
-    files: Array<{
-        name: string;
-        type: string;
-        size: number;
-        owner: string | null;
-        group: string | null;
-        uid: number;
-        gid: number;
-    }>;
+    files: LsEntry[];
 }) {
     const navigate = useNavigate();
     const agent = Route.useLoaderData().agent;
@@ -1542,10 +1588,30 @@ function FileList(props: {
     const [searchState, setSearchState] = React.useState<FileSearchState>({
         status: "idle",
     });
+    const [sort, setSort] = React.useState<{
+        column: FileSortColumn;
+        direction: FileSortDirection;
+    } | null>(null);
     const normalizedFilter = filter.toLowerCase();
     const filteredFiles = props.files.filter((entry) =>
         entry.name.toLowerCase().includes(normalizedFilter),
     );
+    const displayedFiles = sort
+        ? [...filteredFiles].sort((left, right) => {
+              const comparison = compareFileEntries(left, right, sort.column);
+              return sort.direction === "ascending" ? comparison : -comparison;
+          })
+        : filteredFiles;
+
+    const changeSort = (column: FileSortColumn) => {
+        setSort((current) => ({
+            column,
+            direction:
+                current?.column === column && current.direction === "ascending"
+                    ? "descending"
+                    : "ascending",
+        }));
+    };
 
     React.useEffect(() => {
         if (filterFocusPath !== props.directoryPath) {
@@ -1644,34 +1710,55 @@ function FileList(props: {
                 <FileSearchResults agent={agent} state={searchState} />
             ) : (
                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[44rem]">
+                    <table className="w-full min-w-[55rem]">
                         <thead>
                             <tr className="border-b border-slate-800 bg-[#1a1f2a]">
                                 <th className="text-left p-3 text-sm font-medium text-slate-400">
                                     Select
                                 </th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Type
-                                </th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Name
-                                </th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Size
-                                </th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Owner
-                                </th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Group
-                                </th>
+                                <SortableFileColumnHeader
+                                    label="Type"
+                                    column="type"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
+                                <SortableFileColumnHeader
+                                    label="Name"
+                                    column="name"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
+                                <SortableFileColumnHeader
+                                    label="Size"
+                                    column="size"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
+                                <SortableFileColumnHeader
+                                    label="Modified"
+                                    column="modified"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
+                                <SortableFileColumnHeader
+                                    label="Owner"
+                                    column="owner"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
+                                <SortableFileColumnHeader
+                                    label="Group"
+                                    column="group"
+                                    sort={sort}
+                                    onSort={changeSort}
+                                />
                                 <th className="text-right p-3 text-sm font-medium text-slate-400">
                                     Actions
                                 </th>
                             </tr>
                         </thead>
                         <tbody>
-                            {filteredFiles.map((entry) => (
+                            {displayedFiles.map((entry) => (
                                 <FileEntry
                                     key={entry.name}
                                     agentId={props.agentId}
@@ -1686,6 +1773,42 @@ function FileList(props: {
                 </div>
             )}
         </div>
+    );
+}
+
+/** Provides one accessible control that toggles a file-list sort direction. */
+function SortableFileColumnHeader(props: {
+    label: string;
+    column: FileSortColumn;
+    sort: { column: FileSortColumn; direction: FileSortDirection } | null;
+    onSort: (column: FileSortColumn) => void;
+}) {
+    const direction =
+        props.sort?.column === props.column ? props.sort.direction : null;
+    const nextDirection =
+        direction === "ascending" ? "descending" : "ascending";
+    const SortIcon =
+        direction === "ascending"
+            ? ChevronUp
+            : direction === "descending"
+              ? ChevronDown
+              : ArrowDownUp;
+
+    return (
+        <th
+            aria-sort={direction ?? "none"}
+            className="p-1 text-left text-sm font-medium text-slate-400"
+        >
+            <button
+                type="button"
+                onClick={() => props.onSort(props.column)}
+                aria-label={`Sort by ${props.label} ${nextDirection}`}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-2 text-left transition-colors hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+                {props.label}
+                <SortIcon className="h-3.5 w-3.5" />
+            </button>
+        </th>
     );
 }
 
@@ -1776,15 +1899,7 @@ function FileEntry(props: {
     agentId: string;
     agentName: string;
     directoryPath: string;
-    entry: {
-        name: string;
-        type: string;
-        size: number;
-        owner: string | null;
-        group: string | null;
-        uid: number;
-        gid: number;
-    };
+    entry: LsEntry;
     isParent: boolean;
 }) {
     const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
@@ -1867,6 +1982,22 @@ function FileEntry(props: {
                 aria-label={`Size for ${entry.name}`}
             >
                 {isDirectory ? "-" : formatSize(entry.size)}
+            </td>
+            <td
+                className="p-3 text-slate-400"
+                aria-label={`Modified ${entry.name}`}
+            >
+                <Tooltip
+                    content={formatModifiedAge(entry.modified_at, Date.now())}
+                >
+                    <time
+                        dateTime={new Date(
+                            entry.modified_at * 1000,
+                        ).toISOString()}
+                    >
+                        {new Date(entry.modified_at * 1000).toLocaleString()}
+                    </time>
+                </Tooltip>
             </td>
             <td className="p-3 text-slate-400">{entry.owner || "-"}</td>
             <td className="p-3 text-slate-400">{entry.group || "-"}</td>
