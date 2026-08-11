@@ -41,7 +41,9 @@ test.describe.serial("File Operations", () => {
             const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
             await Promise.all([
                 page.waitForURL(uploadDestinationUrl),
-                page.getByRole("link", { name: "subdir3", exact: true }).click(),
+                page
+                    .getByRole("link", { name: "subdir3", exact: true })
+                    .click(),
             ]);
             await expect(
                 page.getByRole("navigation", { name: "Breadcrumbs" }),
