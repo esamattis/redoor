@@ -86,6 +86,12 @@ test.describe.serial("File Browser Navigation", () => {
                 `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
             ),
         );
+        await downloadDirectory.hover();
+        const downloadTooltip = page.getByRole("tooltip", {
+            name: "Download as .tar.gz archive",
+        });
+        // The shared tooltip must escape the file table's clipped card instead of losing content at its edge.
+        await expect(downloadTooltip).toBeInViewport({ ratio: 1 });
 
         const fileEntries = page.locator("main tbody tr");
         await expect(fileEntries).toHaveCount(5);
