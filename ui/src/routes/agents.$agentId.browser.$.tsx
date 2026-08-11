@@ -2329,6 +2329,8 @@ function PersistentPathActions(props: {
         setDeleteState({ type: "deleting" });
         try {
             await props.agent.deleteFile(props.path);
+            setIsConfirmDeleteOpen(false);
+            setDeleteState({ type: "idle" });
             await navigate({ to: props.agent.getBrowserUrl(parentPath) });
         } catch (error) {
             setDeleteState({

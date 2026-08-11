@@ -365,6 +365,47 @@ test.describe.serial("File Operations", () => {
         ).toHaveCount(0);
     });
 
+    test("should delete the open directory from the more menu", async ({
+        page,
+    }) => {
+        const parentDirectoryPath = path.join(ctx.testDirPath, "subdir3");
+        const deletableDirectoryName = `delete-directory-${Date.now()}`;
+        const deletableDirectoryPath = path.join(
+            parentDirectoryPath,
+            deletableDirectoryName,
+        );
+        const parentDirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(parentDirectoryPath)}`;
+        await fs.mkdir(deletableDirectoryPath);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(deletableDirectoryPath)}`,
+        );
+
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Delete directory", exact: true })
+            .click();
+        const dialog = page.getByRole("dialog", {
+            name: "Delete this directory?",
+        });
+        // The directory action must retain the same explicit destructive confirmation as file deletion.
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("button", { name: "Delete directory" }).click();
+
+        // Completing the action must leave the now-missing directory instead of keeping the busy dialog open.
+        await expect(page).toHaveURL(parentDirectoryUrl);
+        await expect(dialog).toBeHidden();
+        // The missing entry confirms the parent listing refreshed after recursive deletion.
+        await expect(
+            page.getByRole("link", {
+                name: deletableDirectoryName,
+                exact: true,
+            }),
+        ).toHaveCount(0);
+        await expect(fs.stat(deletableDirectoryPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+    });
+
     test("should delete selected file from directory view after confirmation", async ({
         page,
     }) => {
