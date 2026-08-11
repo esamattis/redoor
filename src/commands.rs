@@ -311,6 +311,8 @@ pub struct MetadataResponse {
     pub is_dir: bool,
     /// True only when the agent verified the whole file is UTF-8 and small enough to edit safely.
     pub editable: bool,
+    /// True only when the agent verified content magic bytes and size allow in-browser image viewing.
+    pub viewable_image: bool,
     /// Outstanding process-local download tokens for this exact agent and path.
     pub one_time_tokens: Vec<String>,
 }

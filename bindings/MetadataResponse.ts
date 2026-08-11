@@ -6,6 +6,10 @@ export type MetadataResponse = { path: string, mime_type: string, file_size: num
  */
 editable: boolean, 
 /**
+ * True only when the agent verified content magic bytes and size allow in-browser image viewing.
+ */
+viewable_image: boolean, 
+/**
  * Outstanding process-local download tokens for this exact agent and path.
  */
 one_time_tokens: Array<string>, };

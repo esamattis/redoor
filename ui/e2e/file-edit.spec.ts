@@ -111,7 +111,9 @@ test.describe.serial("File Edit View", () => {
             .toBe("saved from ui");
     });
 
-    test("should show placeholder View for binary files", async ({ page }) => {
+    test("should show unsupported message for binary files", async ({
+        page,
+    }) => {
         const binaryPath = path.join(ctx.testDirPath, "binary.bin");
         await fs.writeFile(
             binaryPath,
@@ -129,26 +131,18 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "binary.bin", exact: true })
             .click();
 
-        const viewButton = page.getByRole("button", {
-            name: "View",
-            exact: true,
-        });
-        // Non-editable files retain the second representation affordance as a placeholder.
-        await expect(viewButton).toBeVisible();
-        let alertMessage: string | null = null;
-        page.once("dialog", async (dialog) => {
-            alertMessage = dialog.message();
-            await dialog.accept();
-        });
-        await viewButton.click();
-        // The temporary alert makes unsupported viewing explicit instead of silently doing nothing.
-        expect(alertMessage).toBe("not implemented");
+        // Non-image binaries still expose View so users get an explicit unsupported state.
+        await page.getByRole("link", { name: "View", exact: true }).click();
+        await expect(page).toHaveURL(/\?view=edit$/);
+        await expect(page.getByLabel("Unsupported file type")).toHaveText(
+            "Viewing this file type is not supported",
+        );
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("binary.bin");
     });
 
-    test("should show placeholder View for large text files", async ({
+    test("should show unsupported message for large text files", async ({
         page,
     }) => {
         const largePath = path.join(ctx.testDirPath, "large.txt");
@@ -167,12 +161,50 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "large.txt", exact: true })
             .click();
 
-        // Size gating uses the placeholder View action instead of loading a large textarea.
-        await expect(
-            page.getByRole("button", { name: "View", exact: true }),
-        ).toBeVisible();
+        // Size gating routes oversized text to the unsupported view instead of a huge textarea.
+        await page.getByRole("link", { name: "View", exact: true }).click();
+        await expect(page.getByLabel("Unsupported file type")).toHaveText(
+            "Viewing this file type is not supported",
+        );
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("large.txt");
+    });
+
+    test("should open image view for PNG magic bytes without relying on extension", async ({
+        page,
+    }) => {
+        const imagePath = path.join(ctx.testDirPath, "photo.bin");
+        // Minimal PNG signature so the agent marks the path viewable by content.
+        await fs.writeFile(
+            imagePath,
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .locator(
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
+            )
+            .click();
+
+        await page
+            .getByRole("link", { name: "photo.bin", exact: true })
+            .click();
+        await page.getByRole("link", { name: "View", exact: true }).click();
+
+        await expect(page).toHaveURL(/\?view=edit$/);
+        // Image representation is selected in the same View switch used by the text editor.
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "View", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        await expect(
+            page.getByRole("img", { name: "photo.bin" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("photo.bin");
     });
 });

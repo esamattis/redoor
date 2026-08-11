@@ -329,22 +329,53 @@ function FileBrowser() {
         }
 
         const editable = data.metadata?.editable === true;
+        const viewableImage = data.metadata?.viewable_image === true;
 
         if (search.view === "edit") {
-            if (!editable) {
-                return <RouteError error={new Error("File is not editable")} />;
+            if (editable) {
+                return (
+                    <div className="p-6">
+                        <div className="mx-auto max-w-6xl">
+                            <FileEditView
+                                agent={agent}
+                                agentId={agentId}
+                                path={path}
+                                fileName={fileName}
+                                filePath={lsResult.path}
+                                mimeType={
+                                    data.metadata?.mime_type ?? "text/plain"
+                                }
+                                downloadUrl={downloadUrl}
+                            />
+                        </div>
+                    </div>
+                );
+            }
+
+            if (viewableImage) {
+                return (
+                    <div className="p-6">
+                        <div className="mx-auto max-w-6xl">
+                            <FileImageView
+                                agent={agent}
+                                agentId={agentId}
+                                path={path}
+                                fileName={fileName}
+                                downloadUrl={downloadUrl}
+                            />
+                        </div>
+                    </div>
+                );
             }
 
             return (
                 <div className="p-6">
                     <div className="mx-auto max-w-6xl">
-                        <FileEditView
+                        <UnsupportedFileView
                             agent={agent}
                             agentId={agentId}
                             path={path}
                             fileName={fileName}
-                            filePath={lsResult.path}
-                            mimeType={data.metadata?.mime_type ?? "text/plain"}
                             downloadUrl={downloadUrl}
                         />
                     </div>
@@ -362,7 +393,6 @@ function FileBrowser() {
                         fileName={fileName}
                         lsResult={lsResult}
                         downloadUrl={downloadUrl}
-                        editable={editable}
                         initialOneTimeTokens={
                             data.metadata?.one_time_tokens ?? []
                         }
@@ -2591,7 +2621,6 @@ function FileViewNavigation(props: {
     agent: Agent;
     path: string;
     parentPath: string | null;
-    editable: boolean;
     activeView: "details" | "view";
 }) {
     return (
@@ -2617,30 +2646,19 @@ function FileViewNavigation(props: {
                     <Info className="h-4 w-4" />
                     Details
                 </Link>
-                {props.editable ? (
-                    <Link
-                        to={getBrowserPathHref(props.agent, props.path)}
-                        search={{ view: "edit" }}
-                        aria-current={
-                            props.activeView === "view" ? "page" : undefined
-                        }
-                        className={getViewSwitchItemClass(
-                            props.activeView === "view",
-                        )}
-                    >
-                        <File className="h-4 w-4" />
-                        View
-                    </Link>
-                ) : (
-                    <button
-                        type="button"
-                        onClick={() => alert("not implemented")}
-                        className={getViewSwitchItemClass(false)}
-                    >
-                        <File className="h-4 w-4" />
-                        View
-                    </button>
-                )}
+                <Link
+                    to={getBrowserPathHref(props.agent, props.path)}
+                    search={{ view: "edit" }}
+                    aria-current={
+                        props.activeView === "view" ? "page" : undefined
+                    }
+                    className={getViewSwitchItemClass(
+                        props.activeView === "view",
+                    )}
+                >
+                    <File className="h-4 w-4" />
+                    View
+                </Link>
             </ViewSwitch>
         </>
     );
@@ -2653,7 +2671,6 @@ function FilePageHeader(props: {
     path: string;
     fileName: string;
     downloadUrl: string;
-    editable: boolean;
     activeView: "details" | "view";
 }) {
     const parentPath = getImmediateParentPath(props.path);
@@ -2669,7 +2686,6 @@ function FilePageHeader(props: {
                     agent={props.agent}
                     path={props.path}
                     parentPath={parentPath}
-                    editable={props.editable}
                     activeView={props.activeView}
                 />
             }
@@ -2696,7 +2712,6 @@ function FileDetailView(props: {
     fileName: string;
     lsResult: LsFileResponse;
     downloadUrl: string;
-    editable: boolean;
     initialOneTimeTokens: Array<string>;
 }) {
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
@@ -2751,7 +2766,6 @@ function FileDetailView(props: {
                 path={props.path}
                 fileName={props.fileName}
                 downloadUrl={props.downloadUrl}
-                editable={props.editable}
                 activeView="details"
             />
 
@@ -3093,7 +3107,6 @@ function FileEditView(props: {
                 path={props.path}
                 fileName={props.fileName}
                 downloadUrl={props.downloadUrl}
-                editable={true}
                 activeView="view"
             />
 
@@ -3151,6 +3164,95 @@ function FileEditView(props: {
                             className="min-h-[70vh] w-full resize-y rounded-xl border border-slate-700 bg-slate-950/80 p-4 font-mono text-sm leading-6 text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                     )}
+                </div>
+            </article>
+        </div>
+    );
+}
+
+/** Renders agent-verified images through the authenticated raw download URL. */
+function FileImageView(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    fileName: string;
+    downloadUrl: string;
+}) {
+    return (
+        <div>
+            <FilePageHeader
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                fileName={props.fileName}
+                downloadUrl={props.downloadUrl}
+                activeView="view"
+            />
+
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+                <header className="border-b border-slate-800 p-6 md:p-8">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        Image
+                    </p>
+                    <h1
+                        aria-label="File name"
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.fileName}
+                    </h1>
+                </header>
+
+                <div className="flex items-center justify-center p-4 md:p-6">
+                    <img
+                        src={props.downloadUrl}
+                        alt={props.fileName}
+                        className="max-h-[70vh] max-w-full rounded-xl object-contain"
+                    />
+                </div>
+            </article>
+        </div>
+    );
+}
+
+/** Explains that the agent did not mark this path as text-editable or image-viewable. */
+function UnsupportedFileView(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    fileName: string;
+    downloadUrl: string;
+}) {
+    return (
+        <div>
+            <FilePageHeader
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                fileName={props.fileName}
+                downloadUrl={props.downloadUrl}
+                activeView="view"
+            />
+
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+                <header className="border-b border-slate-800 p-6 md:p-8">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        Unsupported file
+                    </p>
+                    <h1
+                        aria-label="File name"
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.fileName}
+                    </h1>
+                </header>
+
+                <div className="p-6 md:p-8">
+                    <p
+                        aria-label="Unsupported file type"
+                        className="text-sm text-slate-300"
+                    >
+                        Viewing this file type is not supported
+                    </p>
                 </div>
             </article>
         </div>

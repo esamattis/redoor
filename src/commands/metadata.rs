@@ -4,6 +4,8 @@ use tokio::{fs::File, io::AsyncReadExt};
 
 /// Keeps in-browser text editing away from multi-megabyte payloads.
 const MAX_EDITABLE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Keeps in-browser image viewing away from multi-tens-of-megabyte payloads.
+const MAX_VIEWABLE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// Bounds content sniffing for special files and large downloads.
 const MIME_SNIFF_BYTES: usize = 8 * 1024;
 
@@ -27,6 +29,7 @@ pub(super) async fn execute(path: String) -> CommandResult {
             let is_file = metadata.is_file();
             let is_dir = metadata.is_dir();
             let editable = is_file_editable(&path, file_size, is_file).await;
+            let viewable_image = is_viewable_image(&path, file_size, is_file).await;
 
             CommandResult::Metadata(MetadataResponse {
                 path,
@@ -35,6 +38,7 @@ pub(super) async fn execute(path: String) -> CommandResult {
                 is_file,
                 is_dir,
                 editable,
+                viewable_image,
                 // Agents cannot observe server-local credentials; the HTTP handler fills these.
                 one_time_tokens: Vec::new(),
             })
@@ -58,8 +62,27 @@ async fn is_file_editable(path: &str, file_size: u64, is_file: bool) -> bool {
     }
 }
 
+/// Marks a file image-viewable only after size and content magic-byte checks succeed.
+async fn is_viewable_image(path: &str, file_size: u64, is_file: bool) -> bool {
+    // Extension is ignored so renamed images still open and fake extensions cannot.
+    if !is_file || file_size == 0 || file_size > MAX_VIEWABLE_IMAGE_BYTES {
+        return false;
+    }
+
+    match read_file_prefix(path).await {
+        Some(bytes) => is_browser_viewable_image_magic(&bytes),
+        None => false,
+    }
+}
+
 /// Sniffs a small prefix so extensionless downloads get a useful MIME type without full buffering.
 async fn detect_mime_type_from_content(path: &str) -> Option<String> {
+    let content = read_file_prefix(path).await?;
+    detect_mime_type(&content).map(str::to_string)
+}
+
+/// Reads only the bounded prefix used for MIME and image magic sniffing.
+async fn read_file_prefix(path: &str) -> Option<Vec<u8>> {
     let mut file = match File::open(path).await {
         Ok(file) => file,
         Err(_) => return None,
@@ -81,7 +104,34 @@ async fn detect_mime_type_from_content(path: &str) -> Option<String> {
         bytes_read += read;
     }
 
-    detect_mime_type(&content[..bytes_read]).map(str::to_string)
+    Some(content[..bytes_read].to_vec())
+}
+
+/// True when the prefix matches image formats browsers can render natively.
+fn is_browser_viewable_image_magic(content: &[u8]) -> bool {
+    if content.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        // PNG
+        true
+    } else if content.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        // JPEG
+        true
+    } else if content.starts_with(b"GIF87a") || content.starts_with(b"GIF89a") {
+        true
+    } else if content.starts_with(b"BM") {
+        // BMP
+        true
+    } else if content.starts_with(b"RIFF") && content.len() >= 12 && &content[8..12] == b"WEBP" {
+        true
+    } else if content.len() >= 12 && &content[4..8] == b"ftyp" {
+        // AVIF / HEIC family brands inside the ISO BMFF ftyp box.
+        let brand = &content[8..12];
+        brand == b"avif" || brand == b"avis" || brand == b"heic" || brand == b"heif"
+    } else if content.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        // ICO
+        true
+    } else {
+        false
+    }
 }
 
 /// Matches the bounded prefix against formats that cannot be inferred from a filename.
@@ -214,6 +264,91 @@ mod tests {
                 // Size gating avoids loading multi-megabyte bodies into the browser textarea.
                 assert!(!metadata.editable);
                 assert!(metadata.file_size > MAX_EDITABLE_FILE_BYTES);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn png_magic_is_viewable_image_without_extension() {
+        let path = std::env::temp_dir().join(format!("redoor-metadata-png-{}", std::process::id()));
+        tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            .await
+            .expect("write png");
+
+        let result = execute(path.to_string_lossy().into_owned()).await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // Image viewing is gated on content magic, not the filename suffix.
+                assert!(metadata.viewable_image);
+                assert!(!metadata.editable);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn png_magic_is_viewable_image_with_text_extension() {
+        let path =
+            std::env::temp_dir().join(format!("redoor-metadata-png-{}.txt", std::process::id()));
+        tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            .await
+            .expect("write png");
+
+        let result = execute(path.to_string_lossy().into_owned()).await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // A misleading extension must not hide a real image from the viewer.
+                assert!(metadata.viewable_image);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn binary_without_image_magic_is_not_viewable() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-metadata-not-image-{}.png",
+            std::process::id()
+        ));
+        tokio::fs::write(&path, [0x00, 0x01, 0x02, 0x03])
+            .await
+            .expect("write binary");
+
+        let result = execute(path.to_string_lossy().into_owned()).await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // A .png suffix alone is not enough without matching magic bytes.
+                assert!(!metadata.viewable_image);
+            }
+            other => panic!("Expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_image_is_not_viewable() {
+        let path =
+            std::env::temp_dir().join(format!("redoor-metadata-large-png-{}", std::process::id()));
+        let mut large = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        large.resize((MAX_VIEWABLE_IMAGE_BYTES as usize) + 1, 0);
+        tokio::fs::write(&path, large)
+            .await
+            .expect("write large png");
+
+        let result = execute(path.to_string_lossy().into_owned()).await;
+        let _ = tokio::fs::remove_file(&path).await;
+
+        match result {
+            CommandResult::Metadata(metadata) => {
+                // Size gating avoids loading multi-tens-of-megabyte images into the browser.
+                assert!(!metadata.viewable_image);
+                assert!(metadata.file_size > MAX_VIEWABLE_IMAGE_BYTES);
             }
             other => panic!("Expected Metadata, got {other:?}"),
         }
