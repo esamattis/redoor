@@ -8,22 +8,96 @@ import {
 } from "lucide-react";
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
 import { formatSize, formatSpeed } from "#ui/utils/path";
+import {
+    getAnimatedTransferProgress,
+    getTransferSpeedBytesPerSecond,
+} from "#ui/utils/transfer-progress";
 
-function getTransferSpeedBytesPerSecond(
+type TransferAnimationFrame = {
+    transfer: TransferProgressEntry;
+    refreshedAtMilliseconds: number;
+    elapsedSeconds: number;
+};
+
+/** Restarts projection from each API snapshot and advances it at animation-frame cadence. */
+function useTransferAnimation(
     transfer: TransferProgressEntry,
-): number | null {
-    const endTime =
-        transfer.ended_at === null || transfer.ended_at === undefined
-            ? Date.now() / 1000
-            : transfer.ended_at;
+): TransferAnimationFrame {
+    const [animationFrame, setAnimationFrame] = React.useState(() => ({
+        transfer,
+        refreshedAtMilliseconds: Date.now(),
+        elapsedSeconds: 0,
+    }));
 
-    const elapsedSeconds = endTime - transfer.started_at;
+    React.useEffect(() => {
+        const refreshedAtMilliseconds = Date.now();
+        let frameRequest: number;
 
-    if (elapsedSeconds <= 0) {
-        return null;
+        const updateAnimation = () => {
+            setAnimationFrame({
+                transfer,
+                refreshedAtMilliseconds,
+                elapsedSeconds: (Date.now() - refreshedAtMilliseconds) / 1000,
+            });
+
+            if (transfer.state === "active") {
+                frameRequest = window.requestAnimationFrame(updateAnimation);
+            }
+        };
+
+        frameRequest = window.requestAnimationFrame(updateAnimation);
+        return () => window.cancelAnimationFrame(frameRequest);
+    }, [transfer]);
+
+    if (animationFrame.transfer !== transfer) {
+        return {
+            transfer,
+            refreshedAtMilliseconds: Date.now(),
+            elapsedSeconds: 0,
+        };
     }
 
-    return transfer.transferred_bytes / elapsedSeconds;
+    return animationFrame;
+}
+
+/** Shows projected bytes and a pie whose full state only comes from the API. */
+function TransferProgressCell(props: { transfer: TransferProgressEntry }) {
+    const animationFrame = useTransferAnimation(props.transfer);
+    const progress = getAnimatedTransferProgress(
+        props.transfer,
+        animationFrame.elapsedSeconds,
+        animationFrame.refreshedAtMilliseconds,
+    );
+    const speed = getTransferSpeedBytesPerSecond(
+        props.transfer,
+        animationFrame.refreshedAtMilliseconds,
+    );
+    const displayedBytes = Math.floor(progress.transferredBytes);
+    const pieDegrees = progress.percentage * 3.6;
+
+    return (
+        <div className="flex items-center gap-3">
+            <span
+                className="h-9 w-9 shrink-0 rounded-full border border-slate-600/70"
+                style={{
+                    background: `conic-gradient(from -90deg, ${props.transfer.state === "completed" ? "#34d399" : "#60a5fa"} 0deg ${pieDegrees}deg, #334155 ${pieDegrees}deg 360deg)`,
+                }}
+                role="img"
+                aria-label={`Transfer progress ${Math.round(progress.percentage)}%`}
+            />
+            <div className="flex flex-col gap-1 text-sm text-slate-300">
+                <span>
+                    {formatSize(displayedBytes)} /{" "}
+                    {formatSize(props.transfer.total_bytes)}
+                </span>
+                <span className="text-xs text-slate-500">
+                    {props.transfer.state === "active"
+                        ? `Current speed: ${formatSpeed(speed)}`
+                        : `Final speed: ${formatSpeed(speed)}`}
+                </span>
+            </div>
+        </div>
+    );
 }
 
 function TransferTableHeader() {
@@ -181,27 +255,7 @@ export function TransferList(props: {
                                     )}
                                 </td>
                                 <td className="p-3">
-                                    <div className="flex flex-col gap-1 text-sm text-slate-300">
-                                        <span>
-                                            {formatSize(
-                                                transfer.transferred_bytes,
-                                            )}{" "}
-                                            / {formatSize(transfer.total_bytes)}
-                                        </span>
-                                        <span className="text-xs text-slate-500">
-                                            {transfer.state === "active"
-                                                ? `Current speed: ${formatSpeed(
-                                                      getTransferSpeedBytesPerSecond(
-                                                          transfer,
-                                                      ),
-                                                  )}`
-                                                : `Final speed: ${formatSpeed(
-                                                      getTransferSpeedBytesPerSecond(
-                                                          transfer,
-                                                      ),
-                                                  )}`}
-                                        </span>
-                                    </div>
+                                    <TransferProgressCell transfer={transfer} />
                                 </td>
                                 <td className="p-3">
                                     <div className="flex flex-col gap-1">
