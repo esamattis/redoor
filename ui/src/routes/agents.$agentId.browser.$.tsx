@@ -2444,6 +2444,69 @@ function NativeOpenButton(props: { agent: Agent; path: string }) {
     );
 }
 
+/** Presents file and directory identity consistently while allowing file-only path copying. */
+function PathDetailHeader(props: {
+    entryType: "file" | "directory";
+    name: string;
+    path: string;
+    pathCopied?: boolean;
+    onCopyPath?: () => void;
+}) {
+    const isDirectory = props.entryType === "directory";
+    const typeLabel = isDirectory ? "Directory" : "File";
+
+    return (
+        <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
+            <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
+            <div className="relative flex min-w-0 items-start gap-4">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                    {isDirectory ? (
+                        <Folder className="h-7 w-7 text-blue-400" />
+                    ) : (
+                        <File className="h-7 w-7 text-blue-400" />
+                    )}
+                </div>
+                <div className="min-w-0 pt-0.5">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        {typeLabel} details
+                    </p>
+                    <h1
+                        aria-label={`${typeLabel} name`}
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.name}
+                    </h1>
+                </div>
+            </div>
+            <div className="relative mt-6">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                        Full Path
+                    </p>
+                    {props.onCopyPath ? (
+                        <button
+                            type="button"
+                            onClick={props.onCopyPath}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
+                            aria-label="Copy full path"
+                        >
+                            {props.pathCopied ? (
+                                <Check className="h-3.5 w-3.5 text-emerald-400" />
+                            ) : (
+                                <Copy className="h-3.5 w-3.5" />
+                            )}
+                            {props.pathCopied ? "Copied" : "Copy"}
+                        </button>
+                    ) : null}
+                </div>
+                <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
+                    {props.path}
+                </code>
+            </div>
+        </header>
+    );
+}
+
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 function DirectoryDetailView(props: {
     path: string;
@@ -2452,34 +2515,11 @@ function DirectoryDetailView(props: {
 }) {
     return (
         <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-            <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-                <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-                <div className="relative flex min-w-0 items-start gap-4">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                        <Folder className="h-7 w-7 text-blue-400" />
-                    </div>
-                    <div className="min-w-0 pt-0.5">
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                            Directory details
-                        </p>
-                        <h1
-                            aria-label="Directory name"
-                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                        >
-                            {props.directoryName}
-                        </h1>
-                    </div>
-                </div>
-
-                <div className="relative mt-6">
-                    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Full Path
-                    </p>
-                    <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
-                        {props.path}
-                    </code>
-                </div>
-            </header>
+            <PathDetailHeader
+                entryType="directory"
+                name={props.directoryName}
+                path={props.path}
+            />
 
             <FilesystemMetadataSections
                 metadata={props.lsResult}
@@ -2550,6 +2590,49 @@ function FileViewNavigation(props: {
     );
 }
 
+/** Keeps file navigation and object actions identical across its representations. */
+function FilePageHeader(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    fileName: string;
+    downloadUrl: string;
+    editable: boolean;
+    activeView: "details" | "view";
+}) {
+    const parentPath = getImmediateParentPath(props.path);
+
+    return (
+        <BrowserPageHeader
+            agent={props.agent}
+            agentId={props.agentId}
+            path={props.path}
+            actionLabel="File actions"
+            navigation={
+                <FileViewNavigation
+                    agent={props.agent}
+                    path={props.path}
+                    parentPath={parentPath}
+                    editable={props.editable}
+                    activeView={props.activeView}
+                />
+            }
+            actions={
+                <PersistentPathActions
+                    agent={props.agent}
+                    path={props.path}
+                    currentName={props.fileName}
+                    entryType="file"
+                    view={props.activeView === "view" ? "edit" : undefined}
+                    downloadUrl={props.downloadUrl}
+                    downloadName={props.fileName}
+                    downloadLabel="Download"
+                />
+            }
+        />
+    );
+}
+
 /** Presents file metadata and destructive actions with clear visual separation. */
 function FileDetailView(props: {
     agent: Agent;
@@ -2561,8 +2644,6 @@ function FileDetailView(props: {
     editable: boolean;
     initialOneTimeTokens: Array<string>;
 }) {
-    const parentPath = getImmediateParentPath(props.path);
-
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
     );
@@ -2609,39 +2690,25 @@ function FileDetailView(props: {
 
     return (
         <div>
-            <BrowserPageHeader
+            <FilePageHeader
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                actionLabel="File actions"
-                navigation={
-                    <FileViewNavigation
-                        agent={props.agent}
-                        path={props.path}
-                        parentPath={parentPath}
-                        editable={props.editable}
-                        activeView="details"
-                    />
-                }
-                actions={
-                    <PersistentPathActions
-                        agent={props.agent}
-                        path={props.path}
-                        currentName={props.fileName}
-                        entryType="file"
-                        downloadUrl={props.downloadUrl}
-                        downloadName={props.fileName}
-                        downloadLabel="Download"
-                    />
-                }
+                fileName={props.fileName}
+                downloadUrl={props.downloadUrl}
+                editable={props.editable}
+                activeView="details"
             />
 
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-                <FileDetailHeader
-                    fileName={props.fileName}
-                    filePath={props.lsResult.path}
-                    copiedCommand={copiedCommand}
-                    onCopyPath={copyToClipboard}
+                <PathDetailHeader
+                    entryType="file"
+                    name={props.fileName}
+                    path={props.lsResult.path}
+                    pathCopied={copiedCommand === "path"}
+                    onCopyPath={() =>
+                        copyToClipboard(props.lsResult.path, "path")
+                    }
                 />
 
                 <FilesystemMetadataSections
@@ -2660,59 +2727,6 @@ function FileDetailView(props: {
                 />
             </article>
         </div>
-    );
-}
-
-/** Renders the file identity, immediate actions, and canonical path. */
-function FileDetailHeader(props: {
-    fileName: string;
-    filePath: string;
-    copiedCommand: string | null;
-    onCopyPath: (text: string, commandType: string) => void;
-}) {
-    return (
-        <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-            <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-            <div className="relative flex min-w-0 items-start gap-4">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                    <File className="h-7 w-7 text-blue-400" />
-                </div>
-                <div className="min-w-0 pt-0.5">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                        File details
-                    </p>
-                    <h1
-                        aria-label="File name"
-                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                    >
-                        {props.fileName}
-                    </h1>
-                </div>
-            </div>
-            <div className="relative mt-6">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Full Path
-                    </p>
-                    <button
-                        type="button"
-                        onClick={() => props.onCopyPath(props.filePath, "path")}
-                        className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
-                        aria-label="Copy full path"
-                    >
-                        {props.copiedCommand === "path" ? (
-                            <Check className="h-3.5 w-3.5 text-emerald-400" />
-                        ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                        )}
-                        {props.copiedCommand === "path" ? "Copied" : "Copy"}
-                    </button>
-                </div>
-                <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
-                    {props.filePath}
-                </code>
-            </div>
-        </header>
     );
 }
 
@@ -2917,7 +2931,6 @@ function FileEditView(props: {
     mimeType: string;
     downloadUrl: string;
 }) {
-    const parentPath = getImmediateParentPath(props.path);
     const agentRef = React.useRef(props.agent);
     agentRef.current = props.agent;
     const [loadState, setLoadState] = React.useState<FileEditLoadState>({
@@ -3019,32 +3032,14 @@ function FileEditView(props: {
 
     return (
         <div>
-            <BrowserPageHeader
+            <FilePageHeader
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                actionLabel="File actions"
-                navigation={
-                    <FileViewNavigation
-                        agent={props.agent}
-                        path={props.path}
-                        parentPath={parentPath}
-                        editable={true}
-                        activeView="view"
-                    />
-                }
-                actions={
-                    <PersistentPathActions
-                        agent={props.agent}
-                        path={props.path}
-                        currentName={props.fileName}
-                        entryType="file"
-                        view="edit"
-                        downloadUrl={props.downloadUrl}
-                        downloadName={props.fileName}
-                        downloadLabel="Download"
-                    />
-                }
+                fileName={props.fileName}
+                downloadUrl={props.downloadUrl}
+                editable={true}
+                activeView="view"
             />
 
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
