@@ -24,6 +24,37 @@ mod upload;
 
 pub(crate) use upload::{AgentUpload, AgentUploadStartError, raw_agent_put_handler};
 
+/// Records the bytes one token-authorized HTTP body handed off, including partial bodies on drop.
+struct OneTimeDownloadProgress {
+    registry: redoor::one_time_token_registry::OneTimeTokenRegistry,
+    agent_id: AgentId,
+    path: String,
+    token: Uuid,
+    start: u64,
+    next_offset: u64,
+    file_size: u64,
+}
+
+impl OneTimeDownloadProgress {
+    /// Advances when Axum accepts an item so browser retry offsets cannot leave one frame uncredited.
+    fn record_bytes(&mut self, bytes: u64) {
+        self.next_offset = self.next_offset.saturating_add(bytes).min(self.file_size);
+    }
+}
+
+impl Drop for OneTimeDownloadProgress {
+    /// Persists partial coverage on cancellation and consumes the token when merged coverage is complete.
+    fn drop(&mut self) {
+        self.registry.record_downloaded_range(
+            &self.agent_id,
+            &self.path,
+            &self.token,
+            self.start..self.next_offset,
+            self.file_size,
+        );
+    }
+}
+
 /// Controls download presentation and optional cookie-free one-time authorization.
 #[derive(Deserialize)]
 pub(crate) struct RawQueryParams {
@@ -77,7 +108,7 @@ pub(crate) async fn raw_agent_handler(
     let token_download = if let Some(one_time_token) = params.one_time_token.as_ref() {
         if !state
             .one_time_token_registry
-            .consume(&agent_id, &path, one_time_token)
+            .contains(&agent_id, &path, one_time_token)
         {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -186,6 +217,8 @@ pub(crate) async fn raw_agent_handler(
                     },
                     path: path.clone(),
                     total_bytes: content_length,
+                    full_size: Some(metadata.file_size),
+                    resume_offset: range_start,
                     reply,
                     chunk_sender: response_sender,
                 },
@@ -208,10 +241,20 @@ pub(crate) async fn raw_agent_handler(
         }
     }
 
-    let body_stream = match begin_download_body_stream(response_receiver, &path).await {
-        Ok(stream) => stream,
-        Err(response) => return response,
-    };
+    let one_time_progress = params.one_time_token.map(|token| OneTimeDownloadProgress {
+        registry: state.one_time_token_registry.clone(),
+        agent_id: agent_id.clone(),
+        path: path.clone(),
+        token,
+        start: range_start.unwrap_or(0),
+        next_offset: range_start.unwrap_or(0),
+        file_size: metadata.file_size,
+    });
+    let body_stream =
+        match begin_download_body_stream(response_receiver, &path, one_time_progress).await {
+            Ok(stream) => stream,
+            Err(response) => return response,
+        };
 
     let mut response_builder = Response::builder()
         .status(status_code)
@@ -278,6 +321,8 @@ async fn stream_directory_archive(
                     // transferred count to total_bytes when the transfer completes.
                     // Counts are plain tar bytes from the agent, before REST-edge gzip.
                     total_bytes: 0,
+                    full_size: None,
+                    resume_offset: None,
                     reply,
                     chunk_sender: response_sender,
                 },
@@ -300,7 +345,7 @@ async fn stream_directory_archive(
         }
     }
 
-    let body_stream = match begin_download_body_stream(response_receiver, &path).await {
+    let body_stream = match begin_download_body_stream(response_receiver, &path, None).await {
         Ok(stream) => stream,
         Err(response) => return response,
     };
@@ -336,6 +381,7 @@ async fn stream_directory_archive(
 async fn begin_download_body_stream(
     mut response_receiver: tokio::sync::mpsc::Receiver<redoor::streaming::StreamChunk>,
     path: &str,
+    mut one_time_progress: Option<OneTimeDownloadProgress>,
 ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + use<>, Response>
 {
     let first_chunk = match response_receiver.recv().await {
@@ -377,15 +423,11 @@ async fn begin_download_body_stream(
         // failed immediately. Once we start streaming the body, the headers and status code are
         // already committed, so from this point forward we can only emit bytes or terminate the
         // stream with an I/O error.
-        if !first_chunk.data.is_empty() {
-            // `yield` produces one item from this async stream, which Axum forwards as the next
-            // chunk in the HTTP response body.
-            yield Ok(bytes::Bytes::from(first_chunk.data));
-        }
-
-        // Continue forwarding chunks from the agent to the HTTP client until the agent closes
-        // the channel or reports a read error.
-        while let Some(parsed) = response_receiver.recv().await {
+        let mut pending_chunk = Some(first_chunk);
+        while let Some(parsed) = match pending_chunk.take() {
+            Some(chunk) => Some(chunk),
+            None => response_receiver.recv().await,
+        } {
             if parsed.is_error {
                 // A later chunk can only fail after the response has already started. Convert the
                 // agent error into a stream error so Axum/Hyper stops the body stream and the
@@ -399,9 +441,17 @@ async fn begin_download_body_stream(
                 break;
             }
 
+            let is_last = parsed.is_last;
+            let bytes = parsed.data.len() as u64;
             // Empty chunks carry no payload, so skip them and wait for the next message.
             if !parsed.data.is_empty() {
+                if let Some(progress) = one_time_progress.as_mut() {
+                    progress.record_bytes(bytes);
+                }
                 yield Ok(bytes::Bytes::from(parsed.data));
+            }
+            if is_last {
+                break;
             }
         }
         // Reaching the end of the channel cleanly ends the HTTP body stream.

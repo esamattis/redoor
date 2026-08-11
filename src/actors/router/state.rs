@@ -108,6 +108,8 @@ pub struct DirectDownload {
     pub(crate) agent_id: AgentId,
     /// Bounded REST-facing sink that receives forwarded chunks.
     pub(crate) chunk_sender: tokio::sync::mpsc::Sender<StreamChunk>,
+    /// Progress entry may differ from the request id when a range request resumes a download.
+    pub(crate) progress_id: Option<TransferId>,
     /// Whether REST-side teardown already triggered cancellation for this
     /// upload, used to suppress duplicate forwarding and duplicate completion.
     pub(crate) canceled_by_rest: bool,

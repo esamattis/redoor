@@ -768,6 +768,7 @@ mod tests {
             super::super::state::DirectDownload {
                 agent_id: AgentId::from("agent"),
                 chunk_sender,
+                progress_id: Some(download_id.as_transfer_id()),
                 canceled_by_rest: false,
             },
         );

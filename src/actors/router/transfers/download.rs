@@ -39,6 +39,8 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
                 agent_id: request.agent_id.clone(),
                 path: request.path,
                 total_bytes: request.total_bytes,
+                full_size: request.full_size,
+                resume_offset: request.resume_offset,
                 chunk_sender: request.chunk_sender,
             },
         );
@@ -71,8 +73,6 @@ pub(crate) fn route_chunk(
     let chunk = request.chunk;
     let reply = request.reply;
     let request_id = chunk.request_id;
-    let transfer_id = request_id.as_transfer_id();
-
     let chunk_sender = match state.streams.downloads.get(&request_id) {
         Some(transfer) => {
             if transfer.agent_id != agent_id {
@@ -121,10 +121,6 @@ pub(crate) fn route_chunk(
         }
     };
 
-    if !chunk.is_error {
-        progress::increment_bytes(state, transfer_id, chunk.data.len() as u64);
-    }
-
     let error_message = if chunk.is_error {
         Some(if chunk.data.is_empty() {
             "Download failed on agent".to_string()
@@ -136,6 +132,7 @@ pub(crate) fn route_chunk(
     };
     let chunk_index = chunk.chunk_index;
     let is_last = chunk.is_last;
+    let bytes = chunk.data.len() as u64;
 
     let myself = myself.clone();
     tokio::spawn(async move {
@@ -146,6 +143,7 @@ pub(crate) fn route_chunk(
                 request_id,
                 chunk_index,
                 is_last,
+                bytes,
                 error_message,
                 send_succeeded,
                 reply,
@@ -161,11 +159,10 @@ pub(crate) fn route_chunk(
 
 /// Finalizes one direct-download chunk after the REST-side bounded send completes.
 pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloadChunkRoute) {
-    let transfer_id = route.request_id.as_transfer_id();
     let is_error = route.error_message.is_some();
 
     if !route.send_succeeded {
-        let should_cancel_agent = match state.streams.downloads.get_mut(&route.request_id) {
+        let cancellation = match state.streams.downloads.get_mut(&route.request_id) {
             Some(transfer) => {
                 if transfer.agent_id != route.agent_id {
                     log!(
@@ -181,14 +178,18 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                     return;
                 }
                 transfer.canceled_by_rest = true;
-                true
+                Some(
+                    transfer
+                        .progress_id
+                        .unwrap_or_else(|| route.request_id.as_transfer_id()),
+                )
             }
             None => {
                 return;
             }
         };
 
-        if should_cancel_agent {
+        if let Some(transfer_id) = cancellation {
             log!(
                 Level::Warning,
                 "Failed to send chunk to REST stream: request_id={}",
@@ -222,6 +223,17 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
 
     if !has_matching_transfer {
         return;
+    }
+
+    let transfer_id = state
+        .streams
+        .downloads
+        .get(&route.request_id)
+        .and_then(|transfer| transfer.progress_id)
+        .unwrap_or_else(|| route.request_id.as_transfer_id());
+
+    if !is_error {
+        progress::increment_bytes(state, transfer_id, route.bytes);
     }
 
     if let Some(error_message) = &route.error_message {

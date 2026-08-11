@@ -17,6 +17,10 @@ pub(crate) struct DownloadStartContext {
     pub(crate) path: String,
     /// Expected total byte count for the transfer.
     pub(crate) total_bytes: u64,
+    /// Full file size used to validate a range continuation candidate.
+    pub(crate) full_size: Option<u64>,
+    /// Starting file offset when this request may resume a canceled download.
+    pub(crate) resume_offset: Option<u64>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub(crate) chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
 }
@@ -59,28 +63,69 @@ pub(crate) struct CopyStartContext {
 pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadStartContext) {
     let transfer_id = context.request_id.as_transfer_id();
     let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
-    state.progress.entries.insert(
-        transfer_id,
-        TransferProgressEntry {
-            request_id: transfer_id,
-            agent_id: context.agent_id.clone(),
-            path: context.path,
-            source: None,
-            dest: None,
-            direction: TransferDirection::Download,
-            total_bytes: context.total_bytes,
-            transferred_bytes: 0,
-            started_at: now,
-            ended_at: None,
-            state: TransferProgressState::Active,
-            error: None,
-        },
-    );
+    let restart_offset = context
+        .full_size
+        .map(|_| context.resume_offset.unwrap_or(0));
+    let resumed_transfer_id = restart_offset.and_then(|restart_offset| {
+        let full_size = context.full_size?;
+        state
+            .progress
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.agent_id == context.agent_id
+                    && entry.path == context.path
+                    && matches!(entry.direction, TransferDirection::Download)
+                    && matches!(entry.state, TransferProgressState::Errored)
+                    && entry.error.as_deref() == Some("Download canceled by client")
+                    && entry.total_bytes == full_size
+                    && entry
+                        .ended_at
+                        .is_some_and(|ended_at| now.0.saturating_sub(ended_at.0) <= 60)
+                    && (context.resume_offset.is_none()
+                        || (entry.transferred_bytes >= restart_offset
+                            && entry.transferred_bytes - restart_offset
+                                <= crate::streaming::MAX_TRANSFER_FRAME_PAYLOAD_BYTES as u64))
+            })
+            .max_by_key(|entry| entry.request_id)
+            .map(|entry| entry.request_id)
+    });
+    let progress_id = resumed_transfer_id.unwrap_or(transfer_id);
+
+    if let Some(restart_offset) = restart_offset
+        && let Some(progress) =
+            resumed_transfer_id.and_then(|progress_id| state.progress.entries.get_mut(&progress_id))
+    {
+        // A client retry may restart the full request or overlap one queued frame with a range.
+        progress.transferred_bytes = restart_offset;
+        progress.state = TransferProgressState::Active;
+        progress.ended_at = None;
+        progress.error = None;
+    } else {
+        state.progress.entries.insert(
+            transfer_id,
+            TransferProgressEntry {
+                request_id: transfer_id,
+                agent_id: context.agent_id.clone(),
+                path: context.path,
+                source: None,
+                dest: None,
+                direction: TransferDirection::Download,
+                total_bytes: context.total_bytes,
+                transferred_bytes: 0,
+                started_at: now,
+                ended_at: None,
+                state: TransferProgressState::Active,
+                error: None,
+            },
+        );
+    }
     state.streams.downloads.insert(
         context.request_id,
         DirectDownload {
             agent_id: context.agent_id,
             chunk_sender: context.chunk_sender,
+            progress_id: Some(progress_id),
             canceled_by_rest: false,
         },
     );

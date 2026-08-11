@@ -164,6 +164,8 @@ pub struct FinishDownloadChunkRoute {
     pub chunk_index: ChunkIndex,
     /// Whether this chunk terminates the stream successfully.
     pub is_last: bool,
+    /// Number of payload bytes accepted by the REST-facing stream.
+    pub bytes: u64,
     /// Surfaced error if the incoming chunk represented an error frame.
     pub error_message: Option<String>,
     /// Whether the bounded send to the REST consumer succeeded.
@@ -218,6 +220,10 @@ pub struct ExecuteStreamRequest {
     pub path: String,
     /// Expected total byte count used for progress reporting.
     pub total_bytes: u64,
+    /// Full file size used to recognize a continuation after client-side range resume.
+    pub full_size: Option<u64>,
+    /// Starting file offset for a range request that may continue a canceled download.
+    pub resume_offset: Option<u64>,
     /// Reply port that confirms whether the stream started successfully.
     pub reply: RouterReply<Result<(), RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.

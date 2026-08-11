@@ -237,6 +237,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 DirectDownload {
                     agent_id: request.source_agent_id.clone(),
                     chunk_sender: tokio::sync::mpsc::channel(1).0,
+                    progress_id: None,
                     canceled_by_rest: false,
                 },
             );

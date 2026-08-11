@@ -83,9 +83,7 @@ describe("Raw Download API", () => {
         // Token creation remains protected by the normal authenticated API boundary.
         expect(createResponse.status).toBe(200);
         const { one_time_token: oneTimeToken } =
-            createOneTimeTokenResponseSchema.parse(
-                await createResponse.json(),
-            );
+            createOneTimeTokenResponseSchema.parse(await createResponse.json());
         const metadataBefore = await testAgent.metadata(testFilePath);
         // Metadata exposes the still-outstanding token only for its exact path.
         expect(metadataBefore.one_time_tokens).toContain(oneTimeToken);
@@ -95,8 +93,7 @@ describe("Raw Download API", () => {
         );
         // A path mismatch fails before file work without consuming the valid token.
         expect(mismatchResponse.status).toBe(401);
-        const metadataAfterMismatch =
-            await testAgent.metadata(testFilePath);
+        const metadataAfterMismatch = await testAgent.metadata(testFilePath);
         // Failed matching leaves the legitimate exact-path token outstanding.
         expect(metadataAfterMismatch.one_time_tokens).toContain(oneTimeToken);
 
@@ -118,6 +115,100 @@ describe("Raw Download API", () => {
         // Successful consumption removes the token from registry memory and metadata.
         expect(metadataAfterUse.one_time_tokens).not.toContain(oneTimeToken);
     });
+
+    it("should retain a one-time token until an interrupted download is resumed", async () => {
+        const totalBytes = 4 * 1024 * 1024;
+        const downloadContent = Buffer.alloc(totalBytes, "t");
+        const sourcePath = tempFiles.create(downloadContent, {
+            suffix: ".bin",
+        });
+        const { one_time_token: oneTimeToken } =
+            await testAgent.createOneTimeToken(sourcePath);
+        const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
+        const proxyPort = await getAvailablePort();
+        const proxy = await toxiproxy.createProxy({
+            name: `one-time-download-retry-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            listen: `127.0.0.1:${proxyPort}`,
+            upstream: `127.0.0.1:${serverPort}`,
+        });
+        const bandwidthToxic = await proxy.addToxic({
+            name: "slow-one-time-download",
+            type: "bandwidth",
+            stream: "downstream",
+            toxicity: 1,
+            attributes: { rate: 256 },
+        });
+
+        onTestFinished(async () => {
+            await proxy.remove().catch(() => undefined);
+        });
+
+        const tokenUrl = new URL(testAgent.getRawUrl(sourcePath));
+        tokenUrl.host = proxy.listen;
+        tokenUrl.searchParams.set("one_time_token", oneTimeToken);
+        const initialResponse = await fetch(tokenUrl);
+        // The outstanding token authorizes the first anonymous request.
+        expect(initialResponse.status).toBe(200);
+        const reader = initialResponse.body?.getReader();
+        if (!reader) {
+            throw new Error("One-time download response body was unavailable");
+        }
+        const firstChunk = await reader.read();
+        // Receiving a non-final prefix gives the retry a deterministic range offset.
+        expect(firstChunk.done).toBe(false);
+        if (!firstChunk.value) {
+            throw new Error("One-time download returned no prefix bytes");
+        }
+        const resumeOffset = firstChunk.value.byteLength;
+        await reader.cancel();
+
+        await waitForValue({
+            description: "canceled one-time download progress row",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                return response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === sourcePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "errored",
+                );
+            },
+        });
+        const metadataAfterCancel = await testAgent.metadata(sourcePath);
+        // Canceling before the complete file is delivered must leave the token retryable.
+        expect(metadataAfterCancel.one_time_tokens).toContain(oneTimeToken);
+
+        await bandwidthToxic.remove();
+        const resumedResponse = await fetch(tokenUrl, {
+            headers: { Range: `bytes=${resumeOffset}-` },
+        });
+        // The same anonymous token authorizes the remaining byte range.
+        expect(resumedResponse.status).toBe(206);
+        const resumedBytes = Buffer.from(await resumedResponse.arrayBuffer());
+        // The resumed response returns exactly the requested suffix.
+        expect(
+            Buffer.compare(
+                resumedBytes,
+                downloadContent.subarray(resumeOffset),
+            ),
+        ).toBe(0);
+
+        await waitForValue({
+            description: "one-time token removal after resumed download",
+            timeoutMs: 10000,
+            predicate: async () => {
+                const metadata = await testAgent.metadata(sourcePath);
+                return metadata.one_time_tokens.includes(oneTimeToken)
+                    ? undefined
+                    : true;
+            },
+        });
+        const reusedResponse = await fetch(tokenUrl);
+        // Covering the complete file across both requests consumes the token permanently.
+        expect(reusedResponse.status).toBe(401);
+    }, 40000);
 
     it("should download large file via raw endpoint", async () => {
         const largeContent = "x".repeat(100 * 1024);
@@ -564,7 +655,51 @@ describe("Raw Download API", () => {
                     : undefined;
             },
         });
-    }, 40000);
+
+        const resumedResponse = await proxiedAgent.download(sourcePath);
+        // Android can retry a canceled browser download as a second full HTTP request.
+        expect(resumedResponse.status).toBe(200);
+        const resumedBytes = Buffer.from(await resumedResponse.arrayBuffer());
+        // Matching all bytes proves the replacement request itself completed successfully.
+        expect(Buffer.compare(resumedBytes, downloadContent)).toBe(0);
+
+        const completedTransfer = await waitForValue({
+            description: "completed download progress row after full retry",
+            timeoutMs: 30000,
+            predicate: async () => {
+                const response = await apiClient.getTransferProgress();
+                const completed = response.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.request_id === activeTransfer.request_id &&
+                        transfer.state === "completed",
+                );
+                if (completed) {
+                    return completed;
+                }
+                const matching = response.transfers.filter(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === proxiedAgent.id &&
+                        transfer.path === sourcePath,
+                );
+                throw new Error(JSON.stringify(matching));
+            },
+        });
+
+        // Reusing the logical request row prevents a successful resumed download from retaining a false error.
+        expect(completedTransfer.error).toBeNull();
+        // Full progress confirms the successful retry replaced the original partial count.
+        expect(completedTransfer.transferred_bytes).toBe(totalBytes);
+        const matchingTransfers = (
+            await apiClient.getTransferProgress()
+        ).transfers.filter(
+            (transfer: TransferProgressEntry) =>
+                transfer.agent_id === proxiedAgent.id &&
+                transfer.path === sourcePath &&
+                transfer.direction === "download",
+        );
+        // One row proves the retry was folded into the original logical download instead of reported separately.
+        expect(matchingTransfers).toHaveLength(1);
+    }, 50000);
 
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });

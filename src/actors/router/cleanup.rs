@@ -79,9 +79,15 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         .collect();
 
     for request_id in &orphaned_downloads {
-        if state.streams.downloads.remove(request_id).is_some() {
+        if let Some(transfer) = state.streams.downloads.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            progress::mark_transfer_errored(state, request_id.as_transfer_id(), disconnect_message);
+            progress::mark_transfer_errored(
+                state,
+                transfer
+                    .progress_id
+                    .unwrap_or_else(|| request_id.as_transfer_id()),
+                disconnect_message,
+            );
             log!(
                 Level::Warning,
                 "Cleaning up orphaned download stream: request_id={}, agent_id={}",
@@ -182,8 +188,14 @@ pub(crate) async fn cleanup_agent_transfer_requests(
         .map(|(request_id, _)| *request_id)
         .collect();
     for request_id in &download_ids {
-        if state.streams.downloads.remove(request_id).is_some() {
-            progress::mark_transfer_errored(state, request_id.as_transfer_id(), reason.clone());
+        if let Some(transfer) = state.streams.downloads.remove(request_id) {
+            progress::mark_transfer_errored(
+                state,
+                transfer
+                    .progress_id
+                    .unwrap_or_else(|| request_id.as_transfer_id()),
+                reason.clone(),
+            );
         }
     }
 
@@ -250,6 +262,9 @@ pub(crate) fn cancel_transfer(
             }
 
             transfer.canceled_by_rest = true;
+            let progress_id = transfer
+                .progress_id
+                .unwrap_or_else(|| request_id.as_transfer_id());
             if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
                 agent_connection.send_message(Message::CancelTransfer { request_id });
             }
@@ -257,7 +272,7 @@ pub(crate) fn cancel_transfer(
             // already stopped consuming the stream at this point.
             progress::mark_transfer_errored(
                 state,
-                request_id.as_transfer_id(),
+                progress_id,
                 "Download canceled by client".to_string(),
             );
         }
