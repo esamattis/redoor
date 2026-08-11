@@ -20,7 +20,7 @@ test.describe.serial("File Edit View", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("should show edit button for plain text files", async ({ page }) => {
+    test("should link View for plain text files", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
@@ -32,9 +32,9 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
 
-        // Edit is only offered after the agent marks the file editable via UTF-8 sniffing.
+        // View links to the text representation after UTF-8 sniffing marks the file editable.
         await expect(
-            page.getByRole("link", { name: "Edit", exact: true }),
+            page.getByRole("link", { name: "View", exact: true }),
         ).toBeVisible();
     });
 
@@ -51,11 +51,17 @@ test.describe.serial("File Edit View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
-        await page.getByRole("link", { name: "Edit", exact: true }).click();
+        await page.getByRole("link", { name: "View", exact: true }).click();
 
         await expect(page).toHaveURL(/\?view=edit$/);
         // The textarea should contain the on-disk contents so edits start from truth.
         await expect(page.getByLabel("File editor")).toHaveValue("content1");
+        // The switch identifies View as the active file representation while editing.
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "View", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toBeDisabled();
@@ -105,7 +111,7 @@ test.describe.serial("File Edit View", () => {
             .toBe("saved from ui");
     });
 
-    test("should hide edit button for binary files", async ({ page }) => {
+    test("should show placeholder View for binary files", async ({ page }) => {
         const binaryPath = path.join(ctx.testDirPath, "binary.bin");
         await fs.writeFile(
             binaryPath,
@@ -123,16 +129,28 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "binary.bin", exact: true })
             .click();
 
-        // Invalid UTF-8 must not expose the text editor even when listed as a regular file.
-        await expect(
-            page.getByRole("link", { name: "Edit", exact: true }),
-        ).toHaveCount(0);
+        const viewButton = page.getByRole("button", {
+            name: "View",
+            exact: true,
+        });
+        // Non-editable files retain the second representation affordance as a placeholder.
+        await expect(viewButton).toBeVisible();
+        let alertMessage: string | null = null;
+        page.once("dialog", async (dialog) => {
+            alertMessage = dialog.message();
+            await dialog.accept();
+        });
+        await viewButton.click();
+        // The temporary alert makes unsupported viewing explicit instead of silently doing nothing.
+        expect(alertMessage).toBe("not implemented");
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("binary.bin");
     });
 
-    test("should hide edit button for large text files", async ({ page }) => {
+    test("should show placeholder View for large text files", async ({
+        page,
+    }) => {
         const largePath = path.join(ctx.testDirPath, "large.txt");
         // Just over the 2 MiB editor limit so multi-megabyte text stays download-only.
         const largeContent = "a".repeat(2 * 1024 * 1024 + 1);
@@ -149,10 +167,10 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "large.txt", exact: true })
             .click();
 
-        // Size gating prevents loading multi-megabyte bodies into a textarea.
+        // Size gating uses the placeholder View action instead of loading a large textarea.
         await expect(
-            page.getByRole("link", { name: "Edit", exact: true }),
-        ).toHaveCount(0);
+            page.getByRole("button", { name: "View", exact: true }),
+        ).toBeVisible();
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("large.txt");

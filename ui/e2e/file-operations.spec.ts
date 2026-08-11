@@ -107,7 +107,10 @@ test.describe.serial("File Operations", () => {
             .click();
         await page.getByRole("link", { name: "subdir3", exact: true }).click();
 
-        await page.getByRole("button", { name: "Create directory" }).click();
+        await page.getByRole("button", { name: "New", exact: true }).click();
+        await page
+            .getByRole("button", { name: "New directory", exact: true })
+            .click();
 
         // The dialog must open before submitting so the test exercises the browser action rather than the API directly.
         await expect(
@@ -145,7 +148,10 @@ test.describe.serial("File Operations", () => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
 
         await page.goto(directoryUrl);
-        await page.getByRole("button", { name: "Create file" }).click();
+        await page.getByRole("button", { name: "New", exact: true }).click();
+        await page
+            .getByRole("button", { name: "New file", exact: true })
+            .click();
 
         const dialog = page.getByRole("dialog", { name: "Create file" });
         // The dedicated dialog keeps file naming explicit before creating anything remotely.
@@ -181,6 +187,129 @@ test.describe.serial("File Operations", () => {
         );
     });
 
+    test("should rename a file inline without leaving the directory", async ({
+        page,
+    }) => {
+        const directoryPath = path.join(ctx.testDirPath, "subdir3");
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        const originalName = `inline.${Date.now()}.archive.txt`;
+        const renamedName = `inline-renamed-${Date.now()}.txt`;
+        const originalPath = path.join(directoryPath, originalName);
+        const renamedPath = path.join(directoryPath, renamedName);
+        await fs.writeFile(originalPath, "inline rename content");
+        await page.goto(directoryUrl);
+
+        await page
+            .getByRole("button", {
+                name: `Rename file ${originalName}`,
+                exact: true,
+            })
+            .click();
+        const dialog = page.getByRole("dialog", { name: "Rename file" });
+        const renameInput = dialog.getByRole("textbox", {
+            name: "Rename file",
+        });
+        // The inline pencil must open the shared focused rename workflow.
+        await expect(dialog).toBeVisible();
+        await expect(renameInput).toBeFocused();
+        // Multi-dot names select only the basename before the first extension separator.
+        await expect
+            .poll(() =>
+                renameInput.evaluate((input) => ({
+                    start:
+                        input instanceof HTMLInputElement
+                            ? input.selectionStart
+                            : null,
+                    end:
+                        input instanceof HTMLInputElement
+                            ? input.selectionEnd
+                            : null,
+                })),
+            )
+            .toEqual({ start: 0, end: originalName.indexOf(".", 1) });
+
+        await renameInput.fill(renamedName);
+        await dialog
+            .getByRole("button", { name: "Rename", exact: true })
+            .click();
+
+        // A successful inline rename closes its workflow instead of leaving a stale modal open.
+        await expect(dialog).toBeHidden();
+        // Inline editing keeps the current directory address stable.
+        await expect(page).toHaveURL(directoryUrl);
+        // Refreshing in place replaces the old entry with the renamed link.
+        await expect(
+            page.getByRole("link", { name: renamedName, exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: originalName, exact: true }),
+        ).toHaveCount(0);
+        // Disk contents prove the inline workflow moved the file without rewriting it.
+        await expect(fs.readFile(renamedPath, "utf8")).resolves.toBe(
+            "inline rename content",
+        );
+        await expect(fs.stat(originalPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+    });
+
+    test("should rename a directory inline without opening it", async ({
+        page,
+    }) => {
+        const directoryPath = path.join(ctx.testDirPath, "subdir3");
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        const originalName = `inline-directory-${Date.now()}`;
+        const renamedName = `inline-renamed-directory-${Date.now()}`;
+        const originalPath = path.join(directoryPath, originalName);
+        const renamedPath = path.join(directoryPath, renamedName);
+        await fs.mkdir(originalPath);
+        await page.goto(directoryUrl);
+
+        await page
+            .getByRole("button", {
+                name: `Rename directory ${originalName}`,
+                exact: true,
+            })
+            .click();
+        const dialog = page.getByRole("dialog", {
+            name: "Rename directory",
+        });
+        const renameInput = dialog.getByRole("textbox", {
+            name: "Rename directory",
+        });
+        // Extensionless directory names are selected in full for immediate replacement.
+        await expect
+            .poll(() =>
+                renameInput.evaluate((input) => ({
+                    start:
+                        input instanceof HTMLInputElement
+                            ? input.selectionStart
+                            : null,
+                    end:
+                        input instanceof HTMLInputElement
+                            ? input.selectionEnd
+                            : null,
+                })),
+            )
+            .toEqual({ start: 0, end: originalName.length });
+        await renameInput.fill(renamedName);
+        await dialog
+            .getByRole("button", { name: "Rename", exact: true })
+            .click();
+
+        // Inline directory renames close the modal and retain the parent listing URL.
+        await expect(dialog).toBeHidden();
+        await expect(page).toHaveURL(directoryUrl);
+        // The new directory link appearing proves route data refreshed in place.
+        await expect(
+            page.getByRole("link", { name: renamedName, exact: true }),
+        ).toBeVisible();
+        await expect(fs.stat(renamedPath)).resolves.toMatchObject({});
+        await expect(fs.stat(originalPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+    });
+
     test("should delete file from detail view after confirmation", async ({
         page,
     }) => {
@@ -200,7 +329,10 @@ test.describe.serial("File Operations", () => {
         await page.getByRole("link", { name: "subdir3" }).click();
         await page.getByRole("link", { name: "delete-me.txt" }).click();
 
-        await page.getByRole("button", { name: "Delete file" }).click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
 
         // This verifies the UI uses a custom confirmation dialog instead of deleting immediately.
         await expect(
@@ -212,7 +344,10 @@ test.describe.serial("File Operations", () => {
             page.getByRole("dialog", { name: "Delete this file?" }),
         ).toBeHidden();
 
-        await page.getByRole("button", { name: "Delete file" }).click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
         await page
             .getByRole("dialog", { name: "Delete this file?" })
             .getByRole("button", { name: "Delete file" })

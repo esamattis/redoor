@@ -50,10 +50,19 @@ test.describe.serial("File Detail View", () => {
         await expect(page.getByLabel("Owner Read: allowed")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
         await expect(
-            page.getByRole("link", { name: "Download File" }),
+            page.getByRole("link", { name: "Download", exact: true }),
         ).toBeVisible();
         await expect(
-            page.getByRole("link", { name: "Back", exact: true }),
+            page.getByRole("link", { name: "Up", exact: true }),
+        ).toBeVisible();
+        const fileView = page.getByLabel("File view");
+        // File details use the same explicit active-state semantics as directory views.
+        await expect(
+            fileView.getByRole("link", { name: "Details", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        // Every file exposes its alternate View representation in the same switch.
+        await expect(
+            fileView.getByRole("link", { name: "View", exact: true }),
         ).toBeVisible();
     });
 
@@ -87,8 +96,10 @@ test.describe.serial("File Detail View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}`,
         );
 
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page.getByRole("button", { name: "Rename", exact: true }).click();
         const renameInput = page.getByRole("textbox", { name: "Rename file" });
-        // The current name is editable directly in the file details header.
+        // The focused rename workflow starts with the current leaf name.
         await expect(renameInput).toHaveValue(originalName);
         await renameInput.fill(renamedName);
         await page.getByRole("button", { name: "Rename", exact: true }).click();
@@ -119,7 +130,7 @@ test.describe.serial("File Detail View", () => {
             .click();
 
         const backButton = page.getByRole("link", {
-            name: "Back",
+            name: "Up",
             exact: true,
         });
         await backButton.click();
@@ -174,7 +185,7 @@ test.describe.serial("File Detail View", () => {
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
 
-        const backLink = page.getByRole("link", { name: "Back", exact: true });
+        const backLink = page.getByRole("link", { name: "Up", exact: true });
         await backLink.click();
 
         // These assertions verify the nested directory listing is restored after using the back link.

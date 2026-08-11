@@ -20,7 +20,7 @@ test.describe.serial("Copy Operations", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("should show the copy destination action above directory listings", async ({
+    test("should show the copy destination action only with a selection", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
@@ -30,20 +30,23 @@ test.describe.serial("Copy Operations", () => {
             )
             .click();
 
-        const copyButton = page.getByRole("button", {
+        let copyButton = page.getByRole("button", {
             name: "Copy selected files here",
         });
         const fileListing = page.getByRole("table").first();
 
-        // The directory owns the destination action even before anything is selected.
-        await expect(copyButton).toBeVisible();
-        await expect(copyButton).toBeDisabled();
+        // An unavailable copy action no longer consumes a full row above the listing.
+        await expect(copyButton).toHaveCount(0);
 
         await page
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
-        // Selecting a file enables the destination action in the directory view.
+        copyButton = page.getByRole("button", {
+            name: "Copy selected files here",
+        });
+        // Selecting a file reveals the destination action in the directory toolbar.
+        await expect(copyButton).toBeVisible();
         await expect(copyButton).toBeEnabled();
 
         const selectedItemsPanel = page
@@ -60,7 +63,7 @@ test.describe.serial("Copy Operations", () => {
         const copyButtonBox = await copyButton.boundingBox();
         const fileListingBox = await fileListing.boundingBox();
 
-        // Comparing vertical positions verifies the action is rendered above the file listing.
+        // Comparing vertical positions verifies the contextual action remains above the file listing.
         expect(copyButtonBox).not.toBeNull();
         expect(fileListingBox).not.toBeNull();
         expect(copyButtonBox?.y).toBeLessThan(fileListingBox?.y ?? 0);
@@ -114,7 +117,10 @@ test.describe.serial("Copy Operations", () => {
         ).toBeVisible();
 
         // Create a new directory that will serve as the copy destination.
-        await page.getByRole("button", { name: "Create directory" }).click();
+        await page.getByRole("button", { name: "New", exact: true }).click();
+        await page
+            .getByRole("button", { name: "New directory", exact: true })
+            .click();
         await expect(
             page.getByRole("dialog", { name: "Create directory" }),
         ).toBeVisible();
@@ -182,7 +188,8 @@ test.describe.serial("Copy Operations", () => {
             name: "Copy selected files here",
         });
         await expect(copyButton).toBeEnabled();
-        await expect(page.getByText("1 item selected")).toBeVisible();
+        // The contextual label carries the selected count without a separate destination banner.
+        await expect(copyButton).toHaveText("Copy 1 here");
 
         const copyResponsePromise = page.waitForResponse(
             (response) =>

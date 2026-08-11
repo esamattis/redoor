@@ -31,7 +31,10 @@ import {
     FilePlus,
     ExternalLink,
     LoaderCircle,
+    MoreHorizontal,
+    Plus,
 } from "lucide-react";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Checkbox } from "#ui/components/checkbox";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
@@ -237,12 +240,8 @@ function FileBrowser() {
                         path={path}
                         parentPath={parentPath}
                         directoryPath={path}
-                        showHiddenFiles={showHiddenFiles}
                         isDetailsView={false}
                         pathUnavailable={true}
-                        onToggleHiddenFiles={() =>
-                            setShowHiddenFiles((prev) => !prev)
-                        }
                     />
                     {pathError.type === "missing" ? (
                         <MissingPathSkeleton />
@@ -285,16 +284,11 @@ function FileBrowser() {
                         path={path}
                         parentPath={parentPath}
                         directoryPath={path}
-                        showHiddenFiles={showHiddenFiles}
                         isDetailsView={isDetailsView}
-                        onToggleHiddenFiles={() =>
-                            setShowHiddenFiles((prev) => !prev)
-                        }
                     />
 
                     {isDetailsView ? (
                         <DirectoryDetailView
-                            agent={agent}
                             path={path}
                             directoryName={
                                 path.split("/").filter(Boolean).pop() ?? "/"
@@ -302,21 +296,24 @@ function FileBrowser() {
                             lsResult={lsResult}
                         />
                     ) : (
-                        <>
-                            <CopySelectedFilesAction
-                                agents={data.agents}
-                                destinationAgent={agent}
-                                directoryPath={path}
-                            />
-
-                            <FileList
-                                key={path}
-                                agentId={agentId}
-                                agentName={agentName}
-                                directoryPath={path}
-                                files={sortedFiles}
-                            />
-                        </>
+                        <FileList
+                            key={path}
+                            agentId={agentId}
+                            agentName={agentName}
+                            directoryPath={path}
+                            files={sortedFiles}
+                            actions={
+                                <DirectoryFilesActions
+                                    agent={agent}
+                                    agents={data.agents}
+                                    directoryPath={path}
+                                    showHiddenFiles={showHiddenFiles}
+                                    onToggleHiddenFiles={() =>
+                                        setShowHiddenFiles((prev) => !prev)
+                                    }
+                                />
+                            }
+                        />
                     )}
                 </div>
             </div>
@@ -347,6 +344,7 @@ function FileBrowser() {
                             fileName={fileName}
                             filePath={lsResult.path}
                             mimeType={data.metadata?.mime_type ?? "text/plain"}
+                            downloadUrl={downloadUrl}
                         />
                     </div>
                 </div>
@@ -432,6 +430,10 @@ function CopySelectedFilesAction(props: {
               : copyState.message;
     const isCopying = copyState.type === "copying";
 
+    if (selectedFiles.length === 0) {
+        return null;
+    }
+
     const handleCopySelectedFiles = async () => {
         if (selectedFiles.length === 0) {
             return;
@@ -511,26 +513,7 @@ function CopySelectedFilesAction(props: {
     };
 
     return (
-        <div className="mb-4 flex min-h-12 flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/35 px-3 py-2">
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-                <span className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-800 text-slate-300">
-                    <Copy className="h-3.5 w-3.5" />
-                </span>
-                <span>
-                    {selectedFiles.length === 0
-                        ? "Select files to copy them here"
-                        : `${selectedFiles.length} ${selectedFiles.length === 1 ? "item" : "items"} selected`}
-                </span>
-                {statusMessage ? (
-                    <span
-                        role={copyState.type === "error" ? "alert" : "status"}
-                        aria-live="polite"
-                        className={`ml-2 ${copyState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
-                    >
-                        {statusMessage}
-                    </span>
-                ) : null}
-            </div>
+        <>
             <button
                 type="button"
                 onClick={handleCopySelectedFiles}
@@ -538,12 +521,22 @@ function CopySelectedFilesAction(props: {
                 disabled={
                     selectedFiles.length === 0 || isCopying || isRoutePending
                 }
-                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 shadow-sm transition-colors hover:border-slate-600 hover:bg-slate-700 disabled:cursor-not-allowed disabled:border-slate-800 disabled:bg-transparent disabled:text-slate-600"
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
                 <Copy className="h-3.5 w-3.5" />
-                {isCopying ? "Copying..." : "Copy here"}
+                {isCopying ? "Copying..." : `Copy ${selectedFiles.length} here`}
             </button>
-        </div>
+            {statusMessage ? (
+                <Toast
+                    tone={copyState.type === "error" ? "error" : "success"}
+                    icon={<Copy className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss copy status"
+                    onDismiss={() => setCopyState({ type: "idle" })}
+                >
+                    {statusMessage}
+                </Toast>
+            ) : null}
+        </>
     );
 }
 
@@ -673,10 +666,14 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
 }
 
 /** Opens a focused dialog so directory creation does not crowd the toolbar. */
-function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
+function CreateDirectoryAction(props: {
+    agent: Agent;
+    directoryPath: string;
+    isOpen: boolean;
+    onClose: () => void;
+}) {
     const navigate = useNavigate();
     const inputId = React.useId();
-    const [isDialogOpen, setIsDialogOpen] = React.useState(false);
     const [directoryName, setDirectoryName] = React.useState("");
     const [createDirectoryState, setCreateDirectoryState] =
         React.useState<CreateDirectoryState>({
@@ -690,7 +687,7 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
     const isCreating = createDirectoryState.type === "creating";
 
     const resetDialog = () => {
-        setIsDialogOpen(false);
+        props.onClose();
         setDirectoryName("");
         setCreateDirectoryState({ type: "idle" });
     };
@@ -701,12 +698,6 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
         }
 
         resetDialog();
-    };
-
-    const openDialog = () => {
-        setDirectoryName("");
-        setCreateDirectoryState({ type: "idle" });
-        setIsDialogOpen(true);
     };
 
     const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -737,93 +728,85 @@ function CreateDirectoryAction(props: { agent: Agent; directoryPath: string }) {
     };
 
     return (
-        <>
-            <button
-                type="button"
-                onClick={openDialog}
-                aria-label="Create directory"
-                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-            >
-                <FolderPlus className="h-4 w-4 text-slate-400" />
-                New directory
-            </button>
+        <Dialog
+            isOpen={props.isOpen}
+            title="Create directory"
+            description="Create a new directory in the current location."
+            closeAriaLabel="Close create directory dialog"
+            isBusy={isCreating}
+            errorMessage={
+                createDirectoryState.type === "error"
+                    ? createDirectoryState.message
+                    : null
+            }
+            onClose={closeDialog}
+        >
+            <form onSubmit={handleSubmit} className="mt-4">
+                <label
+                    htmlFor={inputId}
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    Directory name
+                </label>
+                <input
+                    id={inputId}
+                    type="text"
+                    value={directoryName}
+                    onChange={(event) => {
+                        setDirectoryName(event.target.value);
+                        if (createDirectoryState.type === "error") {
+                            setCreateDirectoryState({ type: "idle" });
+                        }
+                    }}
+                    placeholder="logs"
+                    autoFocus
+                    disabled={isCreating}
+                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
+                />
 
-            <Dialog
-                isOpen={isDialogOpen}
-                title="Create directory"
-                description="Create a new directory in the current location."
-                closeAriaLabel="Close create directory dialog"
-                isBusy={isCreating}
-                errorMessage={
-                    createDirectoryState.type === "error"
-                        ? createDirectoryState.message
-                        : null
-                }
-                onClose={closeDialog}
-            >
-                <form onSubmit={handleSubmit} className="mt-4">
-                    <label
-                        htmlFor={inputId}
-                        className="mb-2 block text-sm font-medium text-slate-300"
-                    >
-                        Directory name
-                    </label>
-                    <input
-                        id={inputId}
-                        type="text"
-                        value={directoryName}
-                        onChange={(event) => {
-                            setDirectoryName(event.target.value);
-                            if (createDirectoryState.type === "error") {
-                                setCreateDirectoryState({ type: "idle" });
-                            }
-                        }}
-                        placeholder="logs"
-                        autoFocus
-                        disabled={isCreating}
-                        className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
-                    />
-
-                    {createDirectoryPath ? (
-                        <div className="mt-4">
-                            <p className="mb-2 text-sm text-slate-400">
-                                Directory path
-                            </p>
-                            <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
-                                {createDirectoryPath}
-                            </p>
-                        </div>
-                    ) : null}
-
-                    <div className="mt-6 flex justify-end gap-3">
-                        <button
-                            type="button"
-                            onClick={closeDialog}
-                            disabled={isCreating}
-                            className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            disabled={isCreating}
-                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <FolderPlus className="h-4 w-4" />
-                            {isCreating ? "Creating..." : "Create directory"}
-                        </button>
+                {createDirectoryPath ? (
+                    <div className="mt-4">
+                        <p className="mb-2 text-sm text-slate-400">
+                            Directory path
+                        </p>
+                        <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                            {createDirectoryPath}
+                        </p>
                     </div>
-                </form>
-            </Dialog>
-        </>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={closeDialog}
+                        disabled={isCreating}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={isCreating}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <FolderPlus className="h-4 w-4" />
+                        {isCreating ? "Creating..." : "Create directory"}
+                    </button>
+                </div>
+            </form>
+        </Dialog>
     );
 }
 
 /** Creates an empty text file and opens it immediately in the editor. */
-function CreateFileAction(props: { agent: Agent; directoryPath: string }) {
+function CreateFileAction(props: {
+    agent: Agent;
+    directoryPath: string;
+    isOpen: boolean;
+    onClose: () => void;
+}) {
     const navigate = useNavigate();
     const inputId = React.useId();
-    const [isDialogOpen, setIsDialogOpen] = React.useState(false);
     const [fileName, setFileName] = React.useState("");
     const [createFileState, setCreateFileState] =
         React.useState<CreateFileState>({ type: "idle" });
@@ -835,7 +818,7 @@ function CreateFileAction(props: { agent: Agent; directoryPath: string }) {
     const isCreating = createFileState.type === "creating";
 
     const resetDialog = () => {
-        setIsDialogOpen(false);
+        props.onClose();
         setFileName("");
         setCreateFileState({ type: "idle" });
     };
@@ -887,106 +870,132 @@ function CreateFileAction(props: { agent: Agent; directoryPath: string }) {
     };
 
     return (
-        <>
-            <button
-                type="button"
-                onClick={() => {
-                    setFileName("");
-                    setCreateFileState({ type: "idle" });
-                    setIsDialogOpen(true);
-                }}
-                aria-label="Create file"
-                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-            >
-                <FilePlus className="h-4 w-4 text-slate-400" />
-                New file
-            </button>
+        <Dialog
+            isOpen={props.isOpen}
+            title="Create file"
+            description="Create an empty text file and open it for editing."
+            closeAriaLabel="Close create file dialog"
+            isBusy={isCreating}
+            errorMessage={
+                createFileState.type === "error"
+                    ? createFileState.message
+                    : null
+            }
+            onClose={closeDialog}
+        >
+            <form onSubmit={handleSubmit} className="mt-4">
+                <label
+                    htmlFor={inputId}
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    File name
+                </label>
+                <input
+                    id={inputId}
+                    type="text"
+                    value={fileName}
+                    onChange={(event) => {
+                        setFileName(event.target.value);
+                        if (createFileState.type === "error") {
+                            setCreateFileState({ type: "idle" });
+                        }
+                    }}
+                    placeholder="notes.txt"
+                    autoFocus
+                    disabled={isCreating}
+                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
+                />
 
-            <Dialog
-                isOpen={isDialogOpen}
-                title="Create file"
-                description="Create an empty text file and open it for editing."
-                closeAriaLabel="Close create file dialog"
-                isBusy={isCreating}
-                errorMessage={
-                    createFileState.type === "error"
-                        ? createFileState.message
-                        : null
-                }
-                onClose={closeDialog}
-            >
-                <form onSubmit={handleSubmit} className="mt-4">
-                    <label
-                        htmlFor={inputId}
-                        className="mb-2 block text-sm font-medium text-slate-300"
-                    >
-                        File name
-                    </label>
-                    <input
-                        id={inputId}
-                        type="text"
-                        value={fileName}
-                        onChange={(event) => {
-                            setFileName(event.target.value);
-                            if (createFileState.type === "error") {
-                                setCreateFileState({ type: "idle" });
-                            }
-                        }}
-                        placeholder="notes.txt"
-                        autoFocus
-                        disabled={isCreating}
-                        className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
-                    />
-
-                    {createFilePath ? (
-                        <div className="mt-4">
-                            <p className="mb-2 text-sm text-slate-400">
-                                File path
-                            </p>
-                            <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
-                                {createFilePath}
-                            </p>
-                        </div>
-                    ) : null}
-
-                    <div className="mt-6 flex justify-end gap-3">
-                        <button
-                            type="button"
-                            onClick={closeDialog}
-                            disabled={isCreating}
-                            className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            disabled={isCreating}
-                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <FilePlus className="h-4 w-4" />
-                            {isCreating ? "Creating..." : "Create file"}
-                        </button>
+                {createFilePath ? (
+                    <div className="mt-4">
+                        <p className="mb-2 text-sm text-slate-400">File path</p>
+                        <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                            {createFilePath}
+                        </p>
                     </div>
-                </form>
-            </Dialog>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={closeDialog}
+                        disabled={isCreating}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={isCreating}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <FilePlus className="h-4 w-4" />
+                        {isCreating ? "Creating..." : "Create file"}
+                    </button>
+                </div>
+            </form>
+        </Dialog>
+    );
+}
+
+/** Groups file and directory creation without mixing their modal workflows. */
+function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
+    const [dialogType, setDialogType] = React.useState<
+        "file" | "directory" | null
+    >(null);
+
+    return (
+        <>
+            <ActionMenu label="New" icon={<Plus className="h-4 w-4" />}>
+                {(close) => (
+                    <>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                setDialogType("file");
+                            }}
+                        >
+                            <FilePlus className="h-4 w-4 text-slate-400" />
+                            New file
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                setDialogType("directory");
+                            }}
+                        >
+                            <FolderPlus className="h-4 w-4 text-slate-400" />
+                            New directory
+                        </ActionMenuButton>
+                    </>
+                )}
+            </ActionMenu>
+            <CreateFileAction
+                agent={props.agent}
+                directoryPath={props.directoryPath}
+                isOpen={dialogType === "file"}
+                onClose={() => setDialogType(null)}
+            />
+            <CreateDirectoryAction
+                agent={props.agent}
+                directoryPath={props.directoryPath}
+                isOpen={dialogType === "directory"}
+                onClose={() => setDialogType(null)}
+            />
         </>
     );
 }
 
-/** Separates location context, navigation, and directory actions by purpose. */
-function BrowserHeader(props: {
+/** Keeps location, navigation, view state, and object actions in a stable frame. */
+function BrowserPageHeader(props: {
     agent: Agent;
     agentId: string;
     path: string;
-    parentPath: string | null;
-    directoryPath: string;
-    showHiddenFiles: boolean;
-    isDetailsView: boolean;
-    pathUnavailable?: boolean;
-    onToggleHiddenFiles: () => void;
+    startEditingPath?: boolean;
+    actionLabel: string;
+    navigation: React.ReactNode;
+    actions?: React.ReactNode;
 }) {
-    const pathUnavailable = props.pathUnavailable === true;
-
     return (
         <header className="mb-4">
             <div className="mb-3 flex items-center gap-3">
@@ -1002,119 +1011,201 @@ function BrowserHeader(props: {
                     <Breadcrumbs
                         agent={props.agent}
                         path={props.path}
-                        startEditing={pathUnavailable}
+                        startEditing={props.startEditingPath}
                     />
                 </div>
             </div>
-
             <div
-                aria-label="File browser actions"
+                aria-label={props.actionLabel}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
             >
                 <div className="flex flex-wrap items-center gap-1">
-                    {props.isDetailsView || pathUnavailable ? (
-                        <Link
-                            to={
-                                props.parentPath
-                                    ? getBrowserPathHref(
-                                          props.agent,
-                                          props.parentPath,
-                                      )
-                                    : props.agent.getBrowserUrl("/")
-                            }
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-                            disabled={props.parentPath === null}
-                        >
-                            <ArrowUp className="h-4 w-4" />
-                            Up
-                        </Link>
-                    ) : null}
-                    {!pathUnavailable ? (
-                        <>
-                            {props.isDetailsView ? (
-                                <>
-                                    <Link
-                                        to={getBrowserPathHref(
-                                            props.agent,
-                                            props.directoryPath,
-                                        )}
-                                        search={{}}
-                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-white/5 hover:text-blue-200"
-                                    >
-                                        <List className="h-4 w-4" />
-                                        View files
-                                    </Link>
-                                </>
-                            ) : (
-                                <>
-                                    <Link
-                                        to={getBrowserPathHref(
-                                            props.agent,
-                                            props.directoryPath,
-                                        )}
-                                        search={{ view: "details" }}
-                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                                    >
-                                        <Info className="h-4 w-4" />
-                                        View details
-                                    </Link>
-                                    <button
-                                        type="button"
-                                        onClick={props.onToggleHiddenFiles}
-                                        aria-pressed={props.showHiddenFiles}
-                                        aria-label={
-                                            props.showHiddenFiles
-                                                ? "Hide hidden files"
-                                                : "Show hidden files"
-                                        }
-                                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
-                                    >
-                                        {props.showHiddenFiles ? (
-                                            <EyeOff className="h-4 w-4" />
-                                        ) : (
-                                            <Eye className="h-4 w-4" />
-                                        )}
-                                        {props.showHiddenFiles
-                                            ? "Hide hidden"
-                                            : "Show hidden"}
-                                    </button>
-                                </>
-                            )}
-                        </>
-                    ) : null}
+                    {props.navigation}
                 </div>
-
-                {!pathUnavailable ? (
+                {props.actions ? (
                     <div className="flex flex-wrap items-center gap-1">
-                        {!props.isDetailsView ? (
-                            <Tooltip content="Pasted text or images are created as new files in this directory.">
-                                <button
-                                    type="button"
-                                    onClick={requestClipboardPaste}
-                                    aria-label="Paste files or text"
-                                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                                >
-                                    <ClipboardPaste className="h-4 w-4 text-slate-400" />
-                                    Paste
-                                </button>
-                            </Tooltip>
-                        ) : null}
-                        <CreateFileAction
-                            agent={props.agent}
-                            directoryPath={props.directoryPath}
-                        />
-                        <CreateDirectoryAction
-                            agent={props.agent}
-                            directoryPath={props.directoryPath}
-                        />
-                        <UploadFilesAction
-                            agent={props.agent}
-                            directoryPath={props.directoryPath}
-                        />
+                        {props.actions}
                     </div>
                 ) : null}
             </div>
         </header>
+    );
+}
+
+/** Visually binds alternate representations while exposing their shared purpose. */
+function ViewSwitch(props: { label: string; children: React.ReactNode }) {
+    return (
+        <div
+            aria-label={props.label}
+            className="flex gap-0.5 rounded-md border border-slate-800 bg-slate-950/60 p-0.5"
+        >
+            {props.children}
+        </div>
+    );
+}
+
+/** Makes the active representation unmistakable without changing control size. */
+function getViewSwitchItemClass(isActive: boolean) {
+    const baseClass =
+        "inline-flex items-center gap-2 rounded border px-3 py-1.5 text-sm font-medium transition-colors";
+    return isActive
+        ? `${baseClass} border-blue-500/40 bg-blue-500/15 text-blue-200 shadow-sm`
+        : `${baseClass} border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-100`;
+}
+
+/** Separates location context, navigation, and directory actions by purpose. */
+function BrowserHeader(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    parentPath: string | null;
+    directoryPath: string;
+    isDetailsView: boolean;
+    pathUnavailable?: boolean;
+}) {
+    const pathUnavailable = props.pathUnavailable === true;
+    const directoryName = props.path.split("/").filter(Boolean).pop() ?? "/";
+    const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
+    const archiveUrl = props.agent.getRawUrl(props.path, { download: true });
+
+    return (
+        <BrowserPageHeader
+            agent={props.agent}
+            agentId={props.agentId}
+            path={props.path}
+            startEditingPath={pathUnavailable}
+            actionLabel="File browser actions"
+            navigation={
+                <>
+                    <Link
+                        to={
+                            props.parentPath
+                                ? getBrowserPathHref(
+                                      props.agent,
+                                      props.parentPath,
+                                  )
+                                : props.agent.getBrowserUrl("/")
+                        }
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+                        disabled={props.parentPath === null}
+                    >
+                        <ArrowUp className="h-4 w-4" />
+                        Up
+                    </Link>
+                    {!pathUnavailable ? (
+                        <ViewSwitch label="Directory view">
+                            <Link
+                                to={getBrowserPathHref(
+                                    props.agent,
+                                    props.directoryPath,
+                                )}
+                                search={{}}
+                                aria-current={
+                                    props.isDetailsView ? undefined : "page"
+                                }
+                                className={getViewSwitchItemClass(
+                                    !props.isDetailsView,
+                                )}
+                            >
+                                <List className="h-4 w-4" />
+                                Files
+                            </Link>
+                            <Link
+                                to={getBrowserPathHref(
+                                    props.agent,
+                                    props.directoryPath,
+                                )}
+                                search={{ view: "details" }}
+                                aria-current={
+                                    props.isDetailsView ? "page" : undefined
+                                }
+                                className={getViewSwitchItemClass(
+                                    props.isDetailsView,
+                                )}
+                            >
+                                <Info className="h-4 w-4" />
+                                Details
+                            </Link>
+                        </ViewSwitch>
+                    ) : null}
+                </>
+            }
+            actions={
+                !pathUnavailable ? (
+                    <PersistentPathActions
+                        agent={props.agent}
+                        path={props.path}
+                        currentName={directoryName}
+                        entryType="directory"
+                        view={props.isDetailsView ? "details" : undefined}
+                        downloadUrl={archiveUrl}
+                        downloadName={archiveName}
+                        downloadLabel="Download archive"
+                    />
+                ) : null
+            }
+        />
+    );
+}
+
+/** Keeps controls that affect only the file-list representation inside that view. */
+function DirectoryFilesActions(props: {
+    agent: Agent;
+    agents: Agent[];
+    directoryPath: string;
+    showHiddenFiles: boolean;
+    onToggleHiddenFiles: () => void;
+}) {
+    return (
+        <div
+            aria-label="Files view actions"
+            className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/35 p-2"
+        >
+            <button
+                type="button"
+                onClick={props.onToggleHiddenFiles}
+                aria-pressed={props.showHiddenFiles}
+                aria-label={
+                    props.showHiddenFiles
+                        ? "Hide hidden files"
+                        : "Show hidden files"
+                }
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
+            >
+                {props.showHiddenFiles ? (
+                    <EyeOff className="h-4 w-4" />
+                ) : (
+                    <Eye className="h-4 w-4" />
+                )}
+                {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
+            </button>
+            <div className="flex flex-wrap items-center gap-1">
+                <Tooltip content="Pasted text or images are created as new files in this directory.">
+                    <button
+                        type="button"
+                        onClick={requestClipboardPaste}
+                        aria-label="Paste files or text"
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                        <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                        Paste
+                    </button>
+                </Tooltip>
+                <DirectoryNewAction
+                    agent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+                <UploadFilesAction
+                    agent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+                <CopySelectedFilesAction
+                    agents={props.agents}
+                    destinationAgent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+            </div>
+        </div>
     );
 }
 
@@ -1385,6 +1476,7 @@ function FileList(props: {
     agentId: string;
     agentName: string;
     directoryPath: string;
+    actions: React.ReactNode;
     files: Array<{
         name: string;
         type: string;
@@ -1408,7 +1500,6 @@ function FileList(props: {
     const filteredFiles = props.files.filter((entry) =>
         entry.name.toLowerCase().includes(normalizedFilter),
     );
-    const parentPath = getImmediateParentPath(props.directoryPath);
 
     React.useEffect(() => {
         if (filterFocusPath !== props.directoryPath) {
@@ -1471,20 +1562,9 @@ function FileList(props: {
     };
 
     return (
-        <div className="space-y-3">
-            <div className="flex max-w-2xl flex-wrap items-center gap-2">
-                <Link
-                    to={
-                        parentPath
-                            ? getBrowserPathHref(agent, parentPath)
-                            : agent.getBrowserUrl("/")
-                    }
-                    className="inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-slate-900"
-                    disabled={parentPath === null}
-                >
-                    <ArrowUp className="h-4 w-4" />
-                    Up
-                </Link>
+        <div className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
+            {props.actions}
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/35 p-2">
                 <label className="relative min-w-0 flex-1">
                     <span className="sr-only">Filter files</span>
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
@@ -1517,7 +1597,7 @@ function FileList(props: {
             {searchRecursively ? (
                 <FileSearchResults agent={agent} state={searchState} />
             ) : (
-                <table className="w-full rounded-lg border border-slate-800 bg-[#11141b]">
+                <table className="w-full">
                     <thead>
                         <tr className="border-b border-slate-800 bg-[#1a1f2a]">
                             <th className="text-left p-3 text-sm font-medium text-slate-400">
@@ -1562,7 +1642,7 @@ function FileList(props: {
 function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
     if (props.state.status === "idle") {
         return (
-            <div className="rounded-lg border border-dashed border-slate-700 bg-[#11141b] px-5 py-10 text-center text-sm text-slate-500">
+            <div className="px-5 py-10 text-center text-sm text-slate-500">
                 Type a file or directory name to search below this directory.
             </div>
         );
@@ -1571,7 +1651,7 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
         return (
             <div
                 role="alert"
-                className="rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-3 text-sm text-red-300"
+                className="bg-red-950/30 px-4 py-3 text-sm text-red-300"
             >
                 {props.state.message}
             </div>
@@ -1579,7 +1659,7 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
     }
 
     return (
-        <div className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
+        <div>
             <p
                 role={props.state.status === "searching" ? "status" : undefined}
                 className="flex h-9 items-center gap-2 border-b border-slate-800 bg-slate-950/40 px-4 text-xs text-slate-400"
@@ -1695,12 +1775,39 @@ function FileEntry(props: {
                 )}
             </td>
             <td className="p-3">
-                <Link
-                    to={agent.getBrowserUrl(fullPath)}
-                    className={`${isDirectory ? "flex items-center gap-3 " : ""}text-blue-400 font-medium hover:underline`}
-                >
-                    {entry.name}
-                </Link>
+                <div className="flex min-w-0 items-center gap-2">
+                    <Link
+                        to={agent.getBrowserUrl(fullPath)}
+                        className="min-w-0 truncate font-medium text-blue-400 hover:underline"
+                    >
+                        {entry.name}
+                    </Link>
+                    <RenamePathAction
+                        agent={agent}
+                        path={fullPath}
+                        currentName={entry.name}
+                        entryType={isDirectory ? "directory" : "file"}
+                        navigateAfterRename={false}
+                    >
+                        {(renameAction) => (
+                            <>
+                                <Tooltip
+                                    content={`Rename ${isDirectory ? "directory" : "file"}`}
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={renameAction.open}
+                                        aria-label={`Rename ${isDirectory ? "directory" : "file"} ${entry.name}`}
+                                        className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
+                                    >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                    </button>
+                                </Tooltip>
+                                {renameAction.dialog}
+                            </>
+                        )}
+                    </RenamePathAction>
+                </div>
             </td>
             <td
                 className={
@@ -1926,15 +2033,20 @@ function FilesystemMetadataSections(props: {
     );
 }
 
-/** Renames the current entry in place and follows it without leaving a stale browser URL. */
-function RenamePathForm(props: {
+/** Renames the current entry in a focused workflow and follows its new URL. */
+function RenamePathDialog(props: {
     agent: Agent;
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details";
+    view?: "details" | "edit";
+    navigateAfterRename: boolean;
+    isOpen: boolean;
+    onClose: () => void;
 }) {
     const navigate = useNavigate();
+    const router = useRouter();
+    const nameInputRef = React.useRef<HTMLInputElement>(null);
     const [name, setName] = React.useState(props.currentName);
     const [renameState, setRenameState] = React.useState<RenameState>({
         type: "idle",
@@ -1953,7 +2065,20 @@ function RenamePathForm(props: {
     React.useEffect(() => {
         setName(props.currentName);
         setRenameState({ type: "idle" });
-    }, [props.currentName, props.path]);
+    }, [props.currentName, props.isOpen, props.path]);
+
+    React.useEffect(() => {
+        if (!props.isOpen) {
+            return;
+        }
+
+        // Preserve extensions during typing, while treating a leading dot as part of the name.
+        const firstDotIndex = props.currentName.indexOf(".", 1);
+        const selectionEnd =
+            firstDotIndex === -1 ? props.currentName.length : firstDotIndex;
+        nameInputRef.current?.focus();
+        nameInputRef.current?.setSelectionRange(0, selectionEnd);
+    }, [props.currentName, props.isOpen]);
 
     const handleRename = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -1992,9 +2117,19 @@ function RenamePathForm(props: {
 
         try {
             await props.agent.renamePath(props.path, destinationPath);
+            props.onClose();
+            if (!props.navigateAfterRename) {
+                await router.invalidate();
+                return;
+            }
             await navigate({
                 to: props.agent.getBrowserUrl(destinationPath),
-                search: props.view === "details" ? { view: "details" } : {},
+                search:
+                    props.view === "details"
+                        ? { view: "details" }
+                        : props.view === "edit"
+                          ? { view: "edit" }
+                          : {},
             });
         } catch (error) {
             setRenameState({
@@ -2007,18 +2142,26 @@ function RenamePathForm(props: {
     const label = `Rename ${props.entryType}`;
 
     return (
-        <form
-            onSubmit={handleRename}
-            className="mt-4 flex max-w-xl flex-wrap items-start gap-2"
+        <Dialog
+            isOpen={props.isOpen}
+            title={`Rename ${props.entryType}`}
+            description={`Choose a new name for ${props.currentName}.`}
+            closeAriaLabel={`Close rename ${props.entryType} dialog`}
+            isBusy={isRenaming}
+            errorMessage={
+                renameState.type === "error" ? renameState.message : null
+            }
+            onClose={props.onClose}
         >
-            <div className="min-w-56 flex-1">
+            <form onSubmit={handleRename} className="mt-4">
                 <label
                     htmlFor={`${props.entryType}-rename-input`}
-                    className="sr-only"
+                    className="mb-2 block text-sm font-medium text-slate-300"
                 >
-                    {label}
+                    New name
                 </label>
                 <input
+                    ref={nameInputRef}
                     id={`${props.entryType}-rename-input`}
                     type="text"
                     value={name}
@@ -2032,21 +2175,217 @@ function RenamePathForm(props: {
                     disabled={isRenaming || parentPath === null}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
                 />
-                {renameState.type === "error" ? (
-                    <p role="alert" className="mt-2 text-sm text-red-300">
-                        {renameState.message}
-                    </p>
-                ) : null}
-            </div>
-            <button
-                type="submit"
-                disabled={!canRename || isRenaming}
-                className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={props.onClose}
+                        disabled={isRenaming}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={!canRename || isRenaming}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <Pencil className="h-4 w-4" />
+                        {isRenaming ? "Renaming..." : "Rename"}
+                    </button>
+                </div>
+            </form>
+        </Dialog>
+    );
+}
+
+/** Owns the rename workflow so different surfaces can provide their own trigger. */
+function RenamePathAction(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    view?: "details" | "edit";
+    navigateAfterRename?: boolean;
+    children: (action: {
+        open: () => void;
+        disabled: boolean;
+        dialog: React.ReactNode;
+    }) => React.ReactNode;
+}) {
+    const [isOpen, setIsOpen] = React.useState(false);
+    const disabled = getImmediateParentPath(props.path) === null;
+
+    return props.children({
+        open: () => setIsOpen(true),
+        disabled,
+        dialog: (
+            <RenamePathDialog
+                agent={props.agent}
+                path={props.path}
+                currentName={props.currentName}
+                entryType={props.entryType}
+                view={props.view}
+                navigateAfterRename={props.navigateAfterRename !== false}
+                isOpen={isOpen}
+                onClose={() => setIsOpen(false)}
+            />
+        ),
+    });
+}
+
+/** Keeps rename and destructive object actions out of the primary action row. */
+function PathMoreActions(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    view?: "details" | "edit";
+    onDelete?: () => void;
+}) {
+    const canModify = getImmediateParentPath(props.path) !== null;
+
+    return (
+        <RenamePathAction
+            agent={props.agent}
+            path={props.path}
+            currentName={props.currentName}
+            entryType={props.entryType}
+            view={props.view}
+        >
+            {(renameAction) => (
+                <>
+                    <ActionMenu
+                        label="More"
+                        icon={<MoreHorizontal className="h-4 w-4" />}
+                    >
+                        {(close) => (
+                            <>
+                                <ActionMenuButton
+                                    disabled={renameAction.disabled}
+                                    onClick={() => {
+                                        close();
+                                        renameAction.open();
+                                    }}
+                                >
+                                    <Pencil className="h-4 w-4 text-slate-400" />
+                                    Rename
+                                </ActionMenuButton>
+                                {props.onDelete ? (
+                                    <>
+                                        <div className="my-1 border-t border-slate-800" />
+                                        <ActionMenuButton
+                                            tone="danger"
+                                            disabled={!canModify}
+                                            onClick={() => {
+                                                close();
+                                                props.onDelete?.();
+                                            }}
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                            Delete {props.entryType}
+                                        </ActionMenuButton>
+                                    </>
+                                ) : null}
+                            </>
+                        )}
+                    </ActionMenu>
+                    {renameAction.dialog}
+                </>
+            )}
+        </RenamePathAction>
+    );
+}
+
+/** Keeps object-level actions stable while each representation supplies its own controls. */
+function PersistentPathActions(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    view?: "details" | "edit";
+    downloadUrl: string;
+    downloadName: string;
+    downloadLabel: "Download" | "Download archive";
+}) {
+    const navigate = useNavigate();
+    const parentPath = getImmediateParentPath(props.path);
+    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
+    const [deleteState, setDeleteState] = React.useState<DeleteState>({
+        type: "idle",
+    });
+
+    const closeDeleteDialog = () => {
+        if (deleteState.type === "deleting") {
+            return;
+        }
+        setIsConfirmDeleteOpen(false);
+        setDeleteState({ type: "idle" });
+    };
+
+    const handleDelete = async () => {
+        if (parentPath === null) {
+            return;
+        }
+        setDeleteState({ type: "deleting" });
+        try {
+            await props.agent.deleteFile(props.path);
+            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
+        } catch (error) {
+            setDeleteState({
+                type: "error",
+                message: getErrorMessage(error, "Delete failed"),
+            });
+        }
+    };
+
+    return (
+        <>
+            <NativeOpenButton agent={props.agent} path={props.path} />
+            <a
+                href={props.downloadUrl}
+                download={props.downloadName}
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
             >
-                <Pencil className="h-4 w-4" />
-                {isRenaming ? "Renaming..." : "Rename"}
-            </button>
-        </form>
+                <Download className="h-4 w-4" />
+                {props.downloadLabel}
+            </a>
+            <PathMoreActions
+                agent={props.agent}
+                path={props.path}
+                currentName={props.currentName}
+                entryType={props.entryType}
+                view={props.view}
+                onDelete={() => {
+                    setDeleteState({ type: "idle" });
+                    setIsConfirmDeleteOpen(true);
+                }}
+            />
+            <ConfirmationDialog
+                isOpen={isConfirmDeleteOpen}
+                title={`Delete this ${props.entryType}?`}
+                description={
+                    <>
+                        This permanently deletes
+                        <span className="mx-1 break-all font-medium text-slate-100">
+                            {props.currentName}
+                        </span>
+                        from the agent filesystem.
+                    </>
+                }
+                confirmLabel={`Delete ${props.entryType}`}
+                busyLabel="Deleting..."
+                isBusy={deleteState.type === "deleting"}
+                errorMessage={
+                    deleteState.type === "error" ? deleteState.message : null
+                }
+                onClose={closeDeleteDialog}
+                onConfirm={handleDelete}
+            >
+                <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                    {props.path}
+                </p>
+            </ConfirmationDialog>
+        </>
     );
 }
 
@@ -2107,58 +2446,28 @@ function NativeOpenButton(props: { agent: Agent; path: string }) {
 
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 function DirectoryDetailView(props: {
-    agent: Agent;
     path: string;
     directoryName: string;
     lsResult: LsDirectoryResponse;
 }) {
-    const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
-    // Raw GET on a directory streams agent tar gzipped at the server as a .tar.gz attachment.
-    const archiveUrl = props.agent.getRawUrl(props.path, { download: true });
-
     return (
-        <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+        <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
             <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
                 <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-                <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
-                    <div className="flex min-w-0 items-start gap-4">
-                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                            <Folder className="h-7 w-7 text-blue-400" />
-                        </div>
-                        <div className="min-w-0 pt-0.5">
-                            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                                Directory details
-                            </p>
-                            <h1
-                                aria-label="Directory name"
-                                className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                            >
-                                {props.directoryName}
-                            </h1>
-                            <div className="mt-3 flex flex-wrap items-center gap-2">
-                                <NativeOpenButton
-                                    agent={props.agent}
-                                    path={props.path}
-                                />
-                                <RenamePathForm
-                                    agent={props.agent}
-                                    path={props.path}
-                                    currentName={props.directoryName}
-                                    entryType="directory"
-                                    view="details"
-                                />
-                            </div>
-                        </div>
+                <div className="relative flex min-w-0 items-start gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                        <Folder className="h-7 w-7 text-blue-400" />
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                        <a
-                            href={archiveUrl}
-                            download={archiveName}
-                            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
+                    <div className="min-w-0 pt-0.5">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                            Directory details
+                        </p>
+                        <h1
+                            aria-label="Directory name"
+                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
                         >
-                            <Download className="h-4 w-4" />
-                            Download Archive
-                        </a>
+                            {props.directoryName}
+                        </h1>
                     </div>
                 </div>
 
@@ -2181,6 +2490,66 @@ function DirectoryDetailView(props: {
     );
 }
 
+/** Keeps parent navigation and both file representations identical across views. */
+function FileViewNavigation(props: {
+    agent: Agent;
+    path: string;
+    parentPath: string | null;
+    editable: boolean;
+    activeView: "details" | "view";
+}) {
+    return (
+        <>
+            <Link
+                to={getBrowserPathHref(props.agent, props.parentPath ?? "/")}
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+            >
+                <ArrowUp className="h-4 w-4" />
+                Up
+            </Link>
+            <ViewSwitch label="File view">
+                <Link
+                    to={getBrowserPathHref(props.agent, props.path)}
+                    search={{}}
+                    aria-current={
+                        props.activeView === "details" ? "page" : undefined
+                    }
+                    className={getViewSwitchItemClass(
+                        props.activeView === "details",
+                    )}
+                >
+                    <Info className="h-4 w-4" />
+                    Details
+                </Link>
+                {props.editable ? (
+                    <Link
+                        to={getBrowserPathHref(props.agent, props.path)}
+                        search={{ view: "edit" }}
+                        aria-current={
+                            props.activeView === "view" ? "page" : undefined
+                        }
+                        className={getViewSwitchItemClass(
+                            props.activeView === "view",
+                        )}
+                    >
+                        <File className="h-4 w-4" />
+                        View
+                    </Link>
+                ) : (
+                    <button
+                        type="button"
+                        onClick={() => alert("not implemented")}
+                        className={getViewSwitchItemClass(false)}
+                    >
+                        <File className="h-4 w-4" />
+                        View
+                    </button>
+                )}
+            </ViewSwitch>
+        </>
+    );
+}
+
 /** Presents file metadata and destructive actions with clear visual separation. */
 function FileDetailView(props: {
     agent: Agent;
@@ -2192,16 +2561,11 @@ function FileDetailView(props: {
     editable: boolean;
     initialOneTimeTokens: Array<string>;
 }) {
-    const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
 
     const [copiedCommand, setCopiedCommand] = React.useState<string | null>(
         null,
     );
-    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
-    const [deleteState, setDeleteState] = React.useState<DeleteState>({
-        type: "idle",
-    });
     const [oneTimeTokens, setOneTimeTokens] = React.useState(
         props.initialOneTimeTokens,
     );
@@ -2220,31 +2584,6 @@ function FileDetailView(props: {
             setTimeout(() => setCopiedCommand(null), 2000);
         } catch (err) {
             console.error("Failed to copy:", err);
-        }
-    };
-
-    const closeDeleteDialog = () => {
-        if (deleteState.type === "deleting") {
-            return;
-        }
-
-        setIsConfirmDeleteOpen(false);
-        setDeleteState({ type: "idle" });
-    };
-
-    const handleDelete = async () => {
-        setDeleteState({ type: "deleting" });
-
-        try {
-            await props.agent.deleteFile(props.lsResult.path);
-            await navigate({
-                to: props.agent.getBrowserUrl(parentPath ?? "/"),
-            });
-        } catch (error) {
-            setDeleteState({
-                type: "error",
-                message: getErrorMessage(error, "Delete failed"),
-            });
         }
     };
 
@@ -2270,61 +2609,39 @@ function FileDetailView(props: {
 
     return (
         <div>
-            <div className="mb-4">
-                <div className="mb-3 flex items-center gap-3">
-                    <Link
-                        to="/agents/$agentId"
-                        params={{ agentId: props.agentId }}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <HardDrive className="h-3.5 w-3.5" />
-                        Agent details
-                    </Link>
-                    <div className="min-w-0 flex-1">
-                        <Breadcrumbs agent={props.agent} path={props.path} />
-                    </div>
-                </div>
-                <div
-                    aria-label="File actions"
-                    className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
-                >
-                    <Link
-                        to={getBrowserPathHref(props.agent, parentPath ?? "/")}
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                    >
-                        <ArrowLeft className="h-4 w-4" />
-                        Back
-                    </Link>
-                    <NativeOpenButton
+            <BrowserPageHeader
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                actionLabel="File actions"
+                navigation={
+                    <FileViewNavigation
                         agent={props.agent}
-                        path={props.lsResult.path}
+                        path={props.path}
+                        parentPath={parentPath}
+                        editable={props.editable}
+                        activeView="details"
                     />
-                    {props.editable ? (
-                        <Link
-                            to={getBrowserPathHref(props.agent, props.path)}
-                            search={{ view: "edit" }}
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                        >
-                            <Pencil className="h-4 w-4" />
-                            Edit
-                        </Link>
-                    ) : null}
-                </div>
-            </div>
+                }
+                actions={
+                    <PersistentPathActions
+                        agent={props.agent}
+                        path={props.path}
+                        currentName={props.fileName}
+                        entryType="file"
+                        downloadUrl={props.downloadUrl}
+                        downloadName={props.fileName}
+                        downloadLabel="Download"
+                    />
+                }
+            />
 
-            <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <FileDetailHeader
-                    agent={props.agent}
-                    path={props.path}
                     fileName={props.fileName}
                     filePath={props.lsResult.path}
-                    downloadUrl={props.downloadUrl}
                     copiedCommand={copiedCommand}
                     onCopyPath={copyToClipboard}
-                    onOpenDelete={() => {
-                        setDeleteState({ type: "idle" });
-                        setIsConfirmDeleteOpen(true);
-                    }}
                 />
 
                 <FilesystemMetadataSections
@@ -2342,91 +2659,34 @@ function FileDetailView(props: {
                     onCopy={copyToClipboard}
                 />
             </article>
-
-            <ConfirmationDialog
-                isOpen={isConfirmDeleteOpen}
-                title="Delete this file?"
-                description={
-                    <>
-                        This permanently deletes
-                        <span className="mx-1 break-all font-medium text-slate-100">
-                            {props.fileName}
-                        </span>
-                        from the agent filesystem.
-                    </>
-                }
-                confirmLabel="Delete file"
-                busyLabel="Deleting..."
-                isBusy={deleteState.type === "deleting"}
-                errorMessage={
-                    deleteState.type === "error" ? deleteState.message : null
-                }
-                onClose={closeDeleteDialog}
-                onConfirm={handleDelete}
-            >
-                <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
-                    {props.lsResult.path}
-                </p>
-            </ConfirmationDialog>
         </div>
     );
 }
 
 /** Renders the file identity, immediate actions, and canonical path. */
 function FileDetailHeader(props: {
-    agent: Agent;
-    path: string;
     fileName: string;
     filePath: string;
-    downloadUrl: string;
     copiedCommand: string | null;
     onCopyPath: (text: string, commandType: string) => void;
-    onOpenDelete: () => void;
 }) {
     return (
         <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
             <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-            <div className="relative flex flex-col justify-between gap-6 md:flex-row md:items-start">
-                <div className="flex min-w-0 items-start gap-4">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
-                        <File className="h-7 w-7 text-blue-400" />
-                    </div>
-                    <div className="min-w-0 pt-0.5">
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                            File details
-                        </p>
-                        <h1
-                            aria-label="File name"
-                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                        >
-                            {props.fileName}
-                        </h1>
-                        <RenamePathForm
-                            agent={props.agent}
-                            path={props.path}
-                            currentName={props.fileName}
-                            entryType="file"
-                        />
-                    </div>
+            <div className="relative flex min-w-0 items-start gap-4">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                    <File className="h-7 w-7 text-blue-400" />
                 </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                    <a
-                        href={props.downloadUrl}
-                        download={props.fileName}
-                        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500"
+                <div className="min-w-0 pt-0.5">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        File details
+                    </p>
+                    <h1
+                        aria-label="File name"
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
                     >
-                        <Download className="h-4 w-4" />
-                        Download File
-                    </a>
-                    <button
-                        type="button"
-                        aria-label="Delete file"
-                        onClick={props.onOpenDelete}
-                        className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm font-semibold text-red-300 transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-200"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                        Delete
-                    </button>
+                        {props.fileName}
+                    </h1>
                 </div>
             </div>
             <div className="relative mt-6">
@@ -2596,6 +2856,57 @@ type FileEditSaveState =
     | { type: "saved" }
     | { type: "error"; message: string };
 
+/** Keeps save state and editor mutations inside the representation they affect. */
+function FileEditActions(props: {
+    statusMessage: string | null;
+    hasError: boolean;
+    isSaved: boolean;
+    canEdit: boolean;
+    isDirty: boolean;
+    isSaving: boolean;
+    onRestore: () => void;
+    onSave: () => void;
+}) {
+    return (
+        <>
+            {props.statusMessage ? (
+                <span
+                    role="status"
+                    aria-label="File edit status"
+                    aria-live="polite"
+                    className={`px-2 text-sm ${
+                        props.hasError
+                            ? "text-red-300"
+                            : props.isSaved
+                              ? "text-emerald-300"
+                              : "text-slate-400"
+                    }`}
+                >
+                    {props.statusMessage}
+                </span>
+            ) : null}
+            <button
+                type="button"
+                aria-label="Restore file contents"
+                onClick={props.onRestore}
+                disabled={!props.canEdit || !props.isDirty}
+                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                Restore
+            </button>
+            <button
+                type="button"
+                aria-label="Save file"
+                onClick={props.onSave}
+                disabled={!props.canEdit || !props.isDirty}
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                {props.isSaving ? "Saving..." : "Save"}
+            </button>
+        </>
+    );
+}
+
 /** Edits plain-text file contents in one textarea with explicit save/restore. */
 function FileEditView(props: {
     agent: Agent;
@@ -2604,6 +2915,7 @@ function FileEditView(props: {
     fileName: string;
     filePath: string;
     mimeType: string;
+    downloadUrl: string;
 }) {
     const parentPath = getImmediateParentPath(props.path);
     const agentRef = React.useRef(props.agent);
@@ -2707,67 +3019,62 @@ function FileEditView(props: {
 
     return (
         <div>
-            <FileEditNavigation
+            <BrowserPageHeader
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                parentPath={parentPath}
+                actionLabel="File actions"
+                navigation={
+                    <FileViewNavigation
+                        agent={props.agent}
+                        path={props.path}
+                        parentPath={parentPath}
+                        editable={true}
+                        activeView="view"
+                    />
+                }
+                actions={
+                    <PersistentPathActions
+                        agent={props.agent}
+                        path={props.path}
+                        currentName={props.fileName}
+                        entryType="file"
+                        view="edit"
+                        downloadUrl={props.downloadUrl}
+                        downloadName={props.fileName}
+                        downloadLabel="Download"
+                    />
+                }
             />
 
-            <article className="overflow-hidden rounded-2xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
-                    <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
-                        <div className="min-w-0">
-                            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                                Edit file
-                            </p>
-                            <h1
-                                aria-label="File name"
-                                className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                            >
-                                {props.fileName}
-                            </h1>
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-2">
-                            <button
-                                type="button"
-                                aria-label="Restore file contents"
-                                onClick={handleRestore}
-                                disabled={!canEdit || !isDirty}
-                                className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/80 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                Restore
-                            </button>
-                            <button
-                                type="button"
-                                aria-label="Save file"
-                                onClick={() => {
-                                    void handleSave();
-                                }}
-                                disabled={!canEdit || !isDirty}
-                                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                {isSaving ? "Saving..." : "Save"}
-                            </button>
-                        </div>
-                    </div>
-                    {statusMessage ? (
-                        <p
-                            role="status"
-                            aria-label="File edit status"
-                            aria-live="polite"
-                            className={`mt-4 text-sm ${
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        Edit file
+                    </p>
+                    <h1
+                        aria-label="File name"
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.fileName}
+                    </h1>
+                    <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                        <FileEditActions
+                            statusMessage={statusMessage}
+                            hasError={
                                 loadState.type === "error" ||
                                 saveState.type === "error"
-                                    ? "text-red-300"
-                                    : saveState.type === "saved"
-                                      ? "text-emerald-300"
-                                      : "text-slate-400"
-                            }`}
-                        >
-                            {statusMessage}
-                        </p>
-                    ) : null}
+                            }
+                            isSaved={saveState.type === "saved"}
+                            canEdit={canEdit}
+                            isDirty={isDirty}
+                            isSaving={isSaving}
+                            onRestore={handleRestore}
+                            onSave={() => {
+                                void handleSave();
+                            }}
+                        />
+                    </div>
                 </header>
 
                 <div className="p-4 md:p-6">
@@ -2796,55 +3103,6 @@ function FileEditView(props: {
                     )}
                 </div>
             </article>
-        </div>
-    );
-}
-
-/** Keeps edit navigation separate from content-loading and save state. */
-function FileEditNavigation(props: {
-    agent: Agent;
-    agentId: string;
-    path: string;
-    parentPath: string | null;
-}) {
-    return (
-        <div className="mb-4">
-            <div className="mb-3 flex items-center gap-3">
-                <Link
-                    to="/agents/$agentId"
-                    params={{ agentId: props.agentId }}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    <HardDrive className="h-3.5 w-3.5" />
-                    Agent details
-                </Link>
-                <div className="min-w-0 flex-1">
-                    <Breadcrumbs agent={props.agent} path={props.path} />
-                </div>
-            </div>
-            <div
-                aria-label="File actions"
-                className="flex flex-wrap items-center rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
-            >
-                <Link
-                    to={getBrowserPathHref(
-                        props.agent,
-                        props.parentPath ?? "/",
-                    )}
-                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                >
-                    <ArrowLeft className="h-4 w-4" />
-                    Back
-                </Link>
-                <Link
-                    to={getBrowserPathHref(props.agent, props.path)}
-                    search={{}}
-                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    <Info className="h-4 w-4" />
-                    View details
-                </Link>
-            </div>
         </div>
     );
 }

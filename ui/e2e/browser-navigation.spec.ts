@@ -151,12 +151,10 @@ test.describe.serial("File Browser Navigation", () => {
         // Filter-driven navigation restores keyboard focus in the destination listing.
         await expect(destinationFilterInput).toBeFocused();
 
-        await destinationFilterInput.press("Shift+Tab");
-
-        // Up immediately precedes the filter so reverse tabbing reaches parent navigation.
+        // Parent navigation stays in the shared header instead of moving with the search controls.
         await expect(
             page.getByRole("link", { name: "Up", exact: true }),
-        ).toBeFocused();
+        ).toBeVisible();
     });
 
     test("should recursively search from the current directory", async ({
@@ -240,9 +238,12 @@ test.describe.serial("File Browser Navigation", () => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
 
-        await page
-            .getByRole("link", { name: "View details", exact: true })
-            .click();
+        const directoryView = page.getByLabel("Directory view");
+        // The selected styling is backed by current-page semantics for assistive technology.
+        await expect(
+            directoryView.getByRole("link", { name: "Files", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         // The query parameter makes the alternate view directly addressable and reload-safe.
         await expect(page).toHaveURL(`${directoryUrl}?view=details`);
@@ -254,13 +255,17 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(directoryHeading).toBeVisible();
         // The visible heading value identifies the directory represented by the metadata.
         await expect(directoryHeading).toHaveText(ctx.testDirName);
+        // Changing representations moves the active state to Details.
+        await expect(
+            directoryView.getByRole("link", { name: "Details", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
         // Shared filesystem details must expose the directory's Unix access mode.
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
         // Archive download mirrors the file detail action so users can save the folder as tar.
         const downloadArchive = page.getByRole("link", {
-            name: "Download Archive",
+            name: "Download archive",
             exact: true,
         });
         await expect(downloadArchive).toBeVisible();
@@ -275,10 +280,12 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).not.toBeVisible();
+        // Content-creation actions belong to the file listing rather than metadata view.
+        await expect(
+            page.getByRole("button", { name: "New", exact: true }),
+        ).toHaveCount(0);
 
-        await page
-            .getByRole("link", { name: "View files", exact: true })
-            .click();
+        await page.getByRole("link", { name: "Files", exact: true }).click();
 
         // Returning to the list removes the details query so the default URL stays canonical.
         await expect(page).toHaveURL(directoryUrl);
@@ -299,6 +306,8 @@ test.describe.serial("File Browser Navigation", () => {
         const originalUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}?view=details`;
         await page.goto(originalUrl);
 
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page.getByRole("button", { name: "Rename", exact: true }).click();
         const renameInput = page.getByRole("textbox", {
             name: "Rename directory",
         });
