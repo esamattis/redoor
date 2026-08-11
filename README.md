@@ -29,7 +29,13 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/he
 
 This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent. Or just manually download static pre-build binary from [releases](https://github.com/esamattis/redoor/releases).
 
-See `$HOME/.local/bin/redoor --help`
+Start with
+
+```
+$HOME/.local/bin/redoor server
+```
+
+and see `$HOME/.local/bin/redoor --help`
 
 ## Configuration
 
