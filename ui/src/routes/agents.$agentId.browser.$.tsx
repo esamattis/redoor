@@ -1618,6 +1618,9 @@ function FileList(props: {
                             <th className="text-left p-3 text-sm font-medium text-slate-400">
                                 Group
                             </th>
+                            <th className="text-right p-3 text-sm font-medium text-slate-400">
+                                Actions
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1782,32 +1785,6 @@ function FileEntry(props: {
                     >
                         {entry.name}
                     </Link>
-                    <Tooltip
-                        content={
-                            isDirectory
-                                ? "Download as .tar.gz archive"
-                                : "Download file"
-                        }
-                    >
-                        <a
-                            href={agent.getRawUrl(fullPath, {
-                                download: true,
-                            })}
-                            download={
-                                isDirectory
-                                    ? `${entry.name}.tar.gz`
-                                    : entry.name
-                            }
-                            aria-label={
-                                isDirectory
-                                    ? `Download directory ${entry.name} as .tar.gz`
-                                    : `Download file ${entry.name}`
-                            }
-                            className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
-                        >
-                            <Download className="h-3.5 w-3.5" />
-                        </a>
-                    </Tooltip>
                     <RenamePathAction
                         agent={agent}
                         path={fullPath}
@@ -1845,6 +1822,32 @@ function FileEntry(props: {
             </td>
             <td className="p-3 text-slate-400">{entry.owner || "-"}</td>
             <td className="p-3 text-slate-400">{entry.group || "-"}</td>
+            <td className="p-3 text-right">
+                <Tooltip
+                    content={
+                        isDirectory
+                            ? "Download as .tar.gz archive"
+                            : "Download file"
+                    }
+                >
+                    <a
+                        href={agent.getRawUrl(fullPath, {
+                            download: true,
+                        })}
+                        download={
+                            isDirectory ? `${entry.name}.tar.gz` : entry.name
+                        }
+                        aria-label={
+                            isDirectory
+                                ? `Download directory ${entry.name} as .tar.gz`
+                                : `Download file ${entry.name}`
+                        }
+                        className="inline-flex shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
+                    >
+                        <Download className="h-3.5 w-3.5" />
+                    </a>
+                </Tooltip>
+            </td>
         </tr>
     );
 }
