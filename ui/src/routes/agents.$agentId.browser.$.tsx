@@ -1057,16 +1057,18 @@ function BrowserPageHeader(props: {
             </div>
             <div
                 aria-label={props.actionLabel}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+                className="overflow-x-auto overscroll-x-contain rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
             >
-                <div className="flex flex-wrap items-center gap-1">
-                    {props.navigation}
-                </div>
-                {props.actions ? (
-                    <div className="flex flex-wrap items-center gap-1">
-                        {props.actions}
+                <div className="flex min-w-max items-center justify-between gap-2">
+                    <div className="flex shrink-0 items-center gap-1">
+                        {props.navigation}
                     </div>
-                ) : null}
+                    {props.actions ? (
+                        <div className="flex shrink-0 items-center gap-1">
+                            {props.actions}
+                        </div>
+                    ) : null}
+                </div>
             </div>
         </header>
     );
@@ -1455,16 +1457,16 @@ function Breadcrumbs(props: {
                 <>
                     <nav
                         aria-label="Breadcrumbs"
-                        className="flex min-w-0 flex-wrap items-center gap-2 text-sm"
+                        className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain text-sm"
                     >
                         {isAtRoot ? (
-                            <span className="font-medium text-slate-100">
+                            <span className="shrink-0 font-medium text-slate-100">
                                 /
                             </span>
                         ) : (
                             <Link
                                 to={props.agent.getBrowserUrl("/")}
-                                className="text-blue-400 hover:underline"
+                                className="shrink-0 text-blue-400 hover:underline"
                             >
                                 /
                             </Link>
@@ -1476,7 +1478,7 @@ function Breadcrumbs(props: {
                             return (
                                 <div
                                     key={index}
-                                    className="flex items-center gap-2"
+                                    className="flex shrink-0 items-center gap-2"
                                 >
                                     {index > 0 ? (
                                         <span className="text-slate-600">
@@ -1484,7 +1486,7 @@ function Breadcrumbs(props: {
                                         </span>
                                     ) : null}
                                     {isLast ? (
-                                        <span className="font-medium text-slate-100">
+                                        <span className="whitespace-nowrap font-medium text-slate-100">
                                             {part}
                                         </span>
                                     ) : (
@@ -1492,7 +1494,7 @@ function Breadcrumbs(props: {
                                             to={props.agent.getBrowserUrl(
                                                 accumulatedPath,
                                             )}
-                                            className="font-medium text-blue-400 hover:underline"
+                                            className="whitespace-nowrap font-medium text-blue-400 hover:underline"
                                         >
                                             {part}
                                         </Link>
@@ -1505,7 +1507,7 @@ function Breadcrumbs(props: {
                         type="button"
                         onClick={startEditing}
                         aria-label="Edit file path"
-                        className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
                         <Pencil className="h-3.5 w-3.5" />
                     </button>
@@ -1641,45 +1643,47 @@ function FileList(props: {
             {searchRecursively ? (
                 <FileSearchResults agent={agent} state={searchState} />
             ) : (
-                <table className="w-full">
-                    <thead>
-                        <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Select
-                            </th>
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Type
-                            </th>
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Name
-                            </th>
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Size
-                            </th>
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Owner
-                            </th>
-                            <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                Group
-                            </th>
-                            <th className="text-right p-3 text-sm font-medium text-slate-400">
-                                Actions
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filteredFiles.map((entry) => (
-                            <FileEntry
-                                key={entry.name}
-                                agentId={props.agentId}
-                                agentName={props.agentName}
-                                directoryPath={props.directoryPath}
-                                entry={entry}
-                                isParent={false}
-                            />
-                        ))}
-                    </tbody>
-                </table>
+                <div className="overflow-x-auto">
+                    <table className="w-full min-w-[44rem]">
+                        <thead>
+                            <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Select
+                                </th>
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Type
+                                </th>
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Name
+                                </th>
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Size
+                                </th>
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Owner
+                                </th>
+                                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                                    Group
+                                </th>
+                                <th className="text-right p-3 text-sm font-medium text-slate-400">
+                                    Actions
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredFiles.map((entry) => (
+                                <FileEntry
+                                    key={entry.name}
+                                    agentId={props.agentId}
+                                    agentName={props.agentName}
+                                    directoryPath={props.directoryPath}
+                                    entry={entry}
+                                    isParent={false}
+                                />
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             )}
         </div>
     );

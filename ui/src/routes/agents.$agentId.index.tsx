@@ -419,15 +419,15 @@ function AgentDetailsHeader(props: {
 
     return (
         <div className="mb-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h1
                     aria-label="Agent name"
-                    className="flex items-center gap-3 text-2xl font-bold text-slate-100"
+                    className="flex min-w-0 items-center gap-3 text-2xl font-bold text-slate-100"
                 >
-                    <HardDrive className="h-8 w-8 text-blue-400" />
-                    {props.details.name}
+                    <HardDrive className="h-8 w-8 shrink-0 text-blue-400" />
+                    <span className="truncate">{props.details.name}</span>
                 </h1>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <RestartButton
                         target={`agent ${props.details.name}`}
                         description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."

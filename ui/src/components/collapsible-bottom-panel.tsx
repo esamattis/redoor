@@ -66,9 +66,9 @@ export function CollapsibleBottomPanel(props: {
             <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
                 <div
                     ref={resize.headerRef}
-                    className="flex shrink-0 flex-wrap items-center gap-3"
+                    className="flex min-w-0 shrink-0 items-center gap-3"
                 >
-                    <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex min-w-0 shrink-0 items-center gap-3">
                         {props.icon ? (
                             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
                                 {props.icon}
@@ -87,14 +87,16 @@ export function CollapsibleBottomPanel(props: {
                         </div>
                     </div>
                     {props.actionsAlignment === "start" ? (
-                        <div className="flex min-w-0 items-center">
+                        <div className="flex min-w-0 flex-1 items-center">
                             {props.actions}
                         </div>
                     ) : null}
-                    <div className="ml-auto flex min-w-0 items-center gap-1">
-                        {props.actionsAlignment === "start"
-                            ? null
-                            : props.actions}
+                    <div className="ml-auto flex shrink-0 items-center gap-1">
+                        {props.actionsAlignment === "start" ? null : (
+                            <div className="flex min-w-0 max-w-[50vw] items-center overflow-x-auto overscroll-x-contain sm:max-w-none">
+                                {props.actions}
+                            </div>
+                        )}
                         <div className="mx-1 h-5 w-px bg-slate-800" />
                         <button
                             type="button"

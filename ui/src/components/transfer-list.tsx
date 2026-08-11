@@ -137,8 +137,8 @@ export function TransferList(props: {
     }
 
     return (
-        <div className="overflow-auto bg-[#11141b]">
-            <table className="w-full bg-[#11141b]">
+        <div className="overflow-x-auto bg-[#11141b]">
+            <table className="w-full min-w-[48rem] bg-[#11141b]">
                 <TransferTableHeader />
                 <tbody>
                     {props.transfers.map((transfer) => {
@@ -162,7 +162,7 @@ export function TransferList(props: {
                                 key={transfer.request_id.toString()}
                                 className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5 align-top"
                             >
-                                <td className="p-3">
+                                <td className="whitespace-nowrap p-3">
                                     <div className="flex flex-col">
                                         <span className="text-sm font-medium text-slate-100">
                                             {transfer.direction === "copy"
@@ -177,7 +177,7 @@ export function TransferList(props: {
                                         </span>
                                     </div>
                                 </td>
-                                <td className="p-3">
+                                <td className="whitespace-nowrap p-3">
                                     <span
                                         className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
                                             transfer.direction === "upload"
@@ -200,10 +200,10 @@ export function TransferList(props: {
                                               : "Copy"}
                                     </span>
                                 </td>
-                                <td className="p-3">
+                                <td className="max-w-xs p-3">
                                     {transfer.direction === "copy" ? (
-                                        <div className="space-y-1 break-all font-mono text-xs text-slate-300">
-                                            <div>
+                                        <div className="space-y-1 font-mono text-xs text-slate-300">
+                                            <div className="truncate">
                                                 {sourceAgent ? (
                                                     <Link
                                                         to={sourceAgent.getBrowserUrl(
@@ -211,6 +211,10 @@ export function TransferList(props: {
                                                                 ?.path ?? "",
                                                         )}
                                                         className="text-blue-400 hover:underline"
+                                                        title={
+                                                            transfer.source
+                                                                ?.path
+                                                        }
                                                     >
                                                         {transfer.source?.path}
                                                     </Link>
@@ -221,7 +225,7 @@ export function TransferList(props: {
                                             <div className="text-slate-600">
                                                 -&gt;
                                             </div>
-                                            <div>
+                                            <div className="truncate">
                                                 {destAgent ? (
                                                     <Link
                                                         to={destAgent.getBrowserUrl(
@@ -229,6 +233,9 @@ export function TransferList(props: {
                                                                 ?.path ?? "",
                                                         )}
                                                         className="text-blue-400 hover:underline"
+                                                        title={
+                                                            transfer.dest?.path
+                                                        }
                                                     >
                                                         {transfer.dest?.path}
                                                     </Link>
@@ -238,13 +245,14 @@ export function TransferList(props: {
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="break-all font-mono text-xs text-slate-300">
+                                        <div className="truncate font-mono text-xs text-slate-300">
                                             {agent ? (
                                                 <Link
                                                     to={agent.getBrowserUrl(
                                                         transfer.path,
                                                     )}
                                                     className="text-blue-400 hover:underline"
+                                                    title={transfer.path}
                                                 >
                                                     {transfer.path}
                                                 </Link>
@@ -254,10 +262,10 @@ export function TransferList(props: {
                                         </div>
                                     )}
                                 </td>
-                                <td className="p-3">
+                                <td className="whitespace-nowrap p-3">
                                     <TransferProgressCell transfer={transfer} />
                                 </td>
-                                <td className="p-3">
+                                <td className="whitespace-nowrap p-3">
                                     <div className="flex flex-col gap-1">
                                         <span
                                             className={`text-sm font-medium ${
@@ -272,9 +280,12 @@ export function TransferList(props: {
                                             {transfer.state}
                                         </span>
                                         {transfer.error ? (
-                                            <span className="inline-flex items-start gap-1 text-xs text-red-400">
+                                            <span className="inline-flex max-w-xs items-start gap-1 text-xs text-red-400">
                                                 <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                                <span className="break-words">
+                                                <span
+                                                    className="truncate"
+                                                    title={transfer.error}
+                                                >
                                                     {transfer.error}
                                                 </span>
                                             </span>

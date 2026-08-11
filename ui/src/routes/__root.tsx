@@ -461,13 +461,13 @@ function TopTabStrip(props: {
     return (
         <header
             aria-label="Primary navigation"
-            className="flex min-h-0 items-end gap-1 border-b border-slate-800 bg-[#0f1218] px-3 pt-2"
+            className="flex min-h-0 min-w-0 items-end gap-1 border-b border-slate-800 bg-[#0f1218] px-3 pt-2"
         >
             <BrandMark />
             <div
                 role="tablist"
                 aria-label="Agents"
-                className="flex min-h-0 flex-1 items-end gap-1 overflow-x-auto pb-0"
+                className="flex min-h-0 min-w-0 flex-1 items-end gap-1 overflow-x-auto overscroll-x-contain pb-0"
             >
                 {props.agents.length === 0 ? (
                     <span className="px-3 pb-2 text-sm text-slate-500">
@@ -503,7 +503,7 @@ function TopTabStrip(props: {
                                 role="tab"
                                 aria-label={`${agent.name}, ${agent.status}`}
                                 aria-selected={isActive}
-                                className={`group flex max-w-56 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
+                                className={`group flex max-w-56 shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
                                     isActive
                                         ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]"
                                         : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"
@@ -643,7 +643,9 @@ function BrandMark() {
                 className="h-5 w-5"
                 aria-hidden="true"
             />
-            <span className="text-sm font-semibold tracking-tight">Redoor</span>
+            <span className="hidden text-sm font-semibold tracking-tight sm:inline">
+                Redoor
+            </span>
         </Link>
     );
 }
