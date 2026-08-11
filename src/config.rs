@@ -21,9 +21,6 @@ pub(crate) use bootstrap::{
     default_server_log_path,
 };
 pub(crate) use import::import_agent_config_from_stdin;
-// Preserve test/setup-facing config paths even though the production binary does not call them.
-#[allow(unused_imports)]
-pub(crate) use bootstrap::{CreatedDefaultConfig, create_default_config_if_missing_with_token};
 pub(crate) use local_agent::spawn_local_agent;
 
 /// Shorthand for the [`Document`] type produced by [`Document::parse`], whose
@@ -1161,7 +1158,7 @@ target = "host"
         );
     }
 
-    /// Verifies first startup creates a complete, parseable config and later startups preserve it.
+    /// Verifies first startup creates a minimal, parseable demo config and later startups preserve it.
     #[tokio::test]
     async fn test_create_default_config_if_missing() {
         let directory = std::env::temp_dir().join(format!(
@@ -1190,6 +1187,10 @@ target = "host"
             .server
             .as_ref()
             .expect("server bootstrap must write a [server] table");
+        assert!(
+            config.agent.is_none(),
+            "minimal starter config is server-only; standalone [agent] is not required for demo"
+        );
 
         #[cfg(target_os = "linux")]
         {
@@ -1203,52 +1204,36 @@ target = "host"
                 "Linux bootstrap should not print a generated password"
             );
             assert!(
-                content.contains("system username/password") || content.contains("PAM"),
+                content.contains("# username =") && content.contains("# password ="),
+                "Linux starter config should leave username/password commented"
+            );
+            assert!(
+                content.contains("PAM"),
                 "Linux starter config should document PAM login"
             );
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let expected_username = bootstrap::current_process_username().await.unwrap();
             assert_eq!(
                 server.username.as_deref(),
-                Some(expected_username.as_str()),
-                "the generated login should use the effective process account"
+                Some("redoor"),
+                "macOS demo login should use the fixed redoor username"
             );
             assert_eq!(
-                server.password.as_ref(),
-                bootstrap.password.as_ref(),
-                "the generated login should use the one-time printed password"
+                server.password.as_deref(),
+                Some("changeme"),
+                "macOS demo login should use the fixed changeme password"
             );
-            let password = bootstrap
-                .password
-                .as_ref()
-                .expect("non-Linux bootstrap must generate a password");
-            assert!(
-                password.len() >= 32,
-                "bootstrap password must be high entropy"
-            );
-            assert_ne!(
-                password, &bootstrap.agent_token,
-                "password and agent_token must be independent secrets"
+            assert_eq!(
+                bootstrap.password.as_deref(),
+                Some("changeme"),
+                "bootstrap should report the fixed demo password once"
             );
         }
 
         assert!(
-            standalone_agent_is_fully_configured(&config),
-            "starter config must be enough for bare `redoor agent`"
-        );
-        let agent = config
-            .agent
-            .as_ref()
-            .expect("starter config must include [agent]");
-        assert!(
-            server.log.is_none() && agent.log.is_none(),
+            server.log.is_none(),
             "starter config should rely on conventional runtime log paths"
-        );
-        assert!(
-            agent.dir.is_some(),
-            "starter config must set a default agent working directory"
         );
         let local_agent = config.agents.iter().find_map(|entry| match entry {
             AgentConfig::Local(config) => Some(config),
@@ -1256,23 +1241,22 @@ target = "host"
         });
         let local_agent =
             local_agent.expect("starter config must include a managed local [[agents]] entry");
+        assert_eq!(
+            local_agent.name.as_deref(),
+            Some("local"),
+            "demo local agent should use the README name"
+        );
         assert!(
             local_agent.log.is_none(),
             "starter managed agents should inherit output unless a log is configured"
         );
         for option in [
             "agent_token =",
-            "# port =",
-            "# bind =",
-            "# cookie_secure =",
-            "[agent]",
-            "server =",
+            "# port = 3000",
+            "# bind = \"0.0.0.0\" # default 127.0.0.1",
+            "# cookie_secure = false",
             "local = true",
-            "# target =",
-            "# username = \"remote-user\"",
-            "# ssh_port =",
-            "# remote_bin =",
-            "dir =",
+            "name = \"local\"",
         ] {
             assert!(
                 content.contains(option),
@@ -1289,44 +1273,6 @@ target = "host"
         assert_eq!(
             unchanged, content,
             "checking an existing config must leave every byte unchanged"
-        );
-
-        tokio::fs::remove_dir_all(directory).await.ok();
-    }
-
-    /// Verifies bootstrap can reuse a caller-supplied shared agent token.
-    #[tokio::test]
-    async fn test_create_default_config_with_supplied_agent_token() {
-        let directory = std::env::temp_dir().join(format!(
-            "redoor-agent-default-config-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = directory.join("config.toml");
-
-        let created = create_default_config_if_missing_with_token(&path, Some("shared-token"))
-            .await
-            .unwrap()
-            .expect("a missing config should be created");
-        let config = parse_config_file(path.to_str().unwrap()).await.unwrap();
-
-        assert_eq!(
-            created.agent_token, "shared-token",
-            "the bootstrap result should report the supplied shared token"
-        );
-        assert_eq!(
-            config.agent_token, "shared-token",
-            "the shared parser should recover the supplied token from the common config"
-        );
-        assert!(
-            config.server.is_some(),
-            "shared bootstrap always writes [server]"
-        );
-        assert!(
-            standalone_agent_is_fully_configured(&config),
-            "shared bootstrap must be runnable as a bare agent without CLI flags"
         );
 
         tokio::fs::remove_dir_all(directory).await.ok();

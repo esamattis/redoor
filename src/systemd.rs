@@ -433,7 +433,8 @@ fn home_directory() -> Result<PathBuf> {
 
 /// Ensures setup has the shared config. Returns whether a new starter file was written.
 ///
-/// Server setup generates a starter file, while agent setup imports the server's config.
+/// Only `redoor server` generates starter config; server systemd setup requires that
+/// file already exist. Agent setup still imports the server's config from stdin.
 #[cfg(target_os = "linux")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
@@ -450,29 +451,10 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    let created = crate::config::create_default_config_if_missing(config_path).await?;
-
-    if let Some(created) = created {
-        if let Some(password) = created.password {
-            println!(
-                "Created config at {}\nusername password: {}\nagent_token: {}\nStore these secrets securely; they will not be shown again.",
-                config_path.display(),
-                password,
-                created.agent_token
-            );
-        } else {
-            println!(
-                "Created config at {}\nagent_token: {}\nStore this secret securely; it will not be shown again.",
-                config_path.display(),
-                created.agent_token
-            );
-        }
-        Ok(true)
-    } else {
-        // Another setup may have won the create-new race after our existence check.
-        validate_existing_config(mode, config_path).await?;
-        Ok(false)
-    }
+    bail!(
+        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run setup",
+        config_path.display()
+    )
 }
 
 /// Rejects incomplete configs before writing a unit that assumes the TOML is enough.

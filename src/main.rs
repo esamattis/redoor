@@ -2,6 +2,7 @@ mod agent;
 mod app_name;
 mod binaries;
 mod config;
+mod desktop;
 mod launchd;
 mod process_control;
 mod process_logs;
@@ -322,8 +323,9 @@ async fn run_utility(future: impl std::future::Future<Output = anyhow::Result<()
 /// Starts the long-lived server using the established flat startup arguments.
 async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
     let app_name = app_name::app_name().expect("Clap validated the application name");
-    // Explicit paths remain strict, while the conventional path bootstraps a
-    // documented starter config so first startup does not require manual setup.
+    // Only this command bootstraps the conventional path so first-run secrets and
+    // the local agent entry appear from a single intentional entry point.
+    let mut created_default_config = false;
     let config_path = match args.config.clone() {
         Some(path) => PathBuf::from(path),
         None => {
@@ -336,11 +338,11 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
             };
             match config::create_default_config_if_missing(&path).await {
                 Ok(Some(created)) => {
+                    created_default_config = true;
                     if let Some(password) = created.password {
                         eprintln!(
-                            "Created default config '{}'.\n  username password: {}\n  agent_token: {}\nStore these secrets securely; they will not be shown again.",
+                            "Created default config '{}'.\n  username: redoor\n  password: {password}\n  agent_token: {}\nStore these secrets securely; they will not be shown again.",
                             path.display(),
-                            password,
                             created.agent_token
                         );
                     } else {
@@ -514,6 +516,21 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
     {
         eprintln!("Failed to register managed agents: {error}");
         std::process::exit(1);
+    }
+
+    // First-run demo: open the login page with a platform-specific credential hint
+    // when a graphical desktop is available so `redoor server` is enough to try the UI.
+    if created_default_config && desktop::detect_desktop_environment().is_some() {
+        let login_url = desktop::first_run_login_url(&bind, port);
+        println!("Opening {login_url}");
+        tokio::spawn(async move {
+            if let Err(error) = desktop::open_with_desktop(&login_url).await {
+                log!(
+                    Level::Warning,
+                    "Failed to open first-run login URL: {error}"
+                );
+            }
+        });
     }
 
     axum::serve(

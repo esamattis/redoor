@@ -1,7 +1,7 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
     AgentState, DownloadSessionHandle, LogStreamSessionHandle, TerminalSessionHandle, logs,
-    notification, raw::RawDownloadContext, terminal,
+    raw::RawDownloadContext, terminal,
 };
 use redoor::{
     Level,
@@ -95,9 +95,17 @@ async fn handle_command_message(
                 .await;
         }
         Command::OpenPath { path } => {
-            let result = match notification::open_path(&path).await {
+            let result = match crate::desktop::open_with_desktop(&path).await {
                 Ok(()) => CommandResult::OpenPath,
-                Err(message) => CommandResult::error(CommandErrorKind::Internal, message),
+                Err(message) => {
+                    // Agent-facing wording: operators care that this host cannot open paths, not the launcher probe.
+                    let message = if message.contains("No graphical desktop") {
+                        "Agent does not have access to a graphical desktop".to_string()
+                    } else {
+                        message
+                    };
+                    CommandResult::error(CommandErrorKind::Internal, message)
+                }
             };
             log!(
                 Level::Info,

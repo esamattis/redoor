@@ -101,7 +101,7 @@ pub(crate) struct AgentActor;
 pub(crate) struct AgentRuntime {
     pub(crate) state: AgentState,
     /// Desktop detected at process startup, if this agent can plausibly reach a GUI session.
-    desktop_environment: Option<notification::DesktopEnvironment>,
+    desktop_environment: Option<crate::desktop::DesktopEnvironment>,
     /// User-selected wait after a successful connection, or `None` when notifications are disabled.
     startup_notification_delay: Option<tokio::time::Duration>,
     /// Identifies the connection whose delayed startup notification is currently authoritative.

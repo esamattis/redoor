@@ -47,7 +47,7 @@ impl AgentRuntime {
     ) -> Self {
         Self {
             state: AgentState::new(agent_id, agent_name, connection, default_directory, token),
-            desktop_environment: notification::detect_desktop_environment(),
+            desktop_environment: crate::desktop::detect_desktop_environment(),
             startup_notification_delay,
             startup_notification_generation: None,
             startup_notification_sent: false,
