@@ -116,11 +116,12 @@ pub(crate) struct AgentRuntime {
 pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let exit_on_stdin_eof = args.exit_on_stdin_eof;
     let resolved = resolve_agent_settings(args).await?;
-    let launch_directory = std::env::current_dir()?;
-    let configured_directory = resolved
-        .dir
-        .map(std::path::PathBuf::from)
-        .unwrap_or(launch_directory);
+    let configured_directory = resolved.home.map(std::path::PathBuf::from).unwrap_or(
+        std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+            .ok_or("HOME is not set; pass --home with the agent home directory")?,
+    );
     let default_directory = tokio::fs::canonicalize(&configured_directory)
         .await
         .map_err(|error| {
@@ -180,7 +181,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     }
     log!(
         Level::Info,
-        "Starting agent '{}': ws={}, dir={}",
+        "Starting agent '{}': ws={}, home={}",
         agent_name,
         connection.server_url(),
         default_directory
@@ -242,7 +243,7 @@ struct ResolvedAgentSettings {
     insecure_tls: bool,
     name: String,
     token: String,
-    dir: Option<String>,
+    home: Option<String>,
     log: Option<String>,
     /// Non-negative delay selected on the command line, or `None` when explicitly disabled.
     notification_delay_seconds: Option<u64>,
@@ -334,7 +335,11 @@ fn resolve_agent_settings_from_sources(
         "agent token is required; set it via --token, REDOOR_AGENT_TOKEN, or top-level agent_token",
     )?;
 
-    let dir = first_non_empty([args.dir, agent_section.dir]);
+    let home = first_non_empty([
+        args.home,
+        std::env::var("REDOOR_AGENT_DIR").ok(),
+        agent_section.home,
+    ]);
     let notification_delay_seconds =
         match args.notification.unwrap_or(NotificationDelay::Seconds(5)) {
             NotificationDelay::Off => None,
@@ -351,7 +356,7 @@ fn resolve_agent_settings_from_sources(
         insecure_tls: args.insecure_tls,
         name,
         token,
-        dir,
+        home,
         log,
         notification_delay_seconds,
         loaded_config_path,

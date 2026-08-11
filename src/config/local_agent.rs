@@ -37,8 +37,8 @@ pub(crate) async fn spawn_local_agent(
         .arg("--token")
         .arg(agent_token);
 
-    if let Some(dir) = &config.dir {
-        command.arg("-d").arg(dir);
+    if let Some(home) = &config.home {
+        command.arg("--home").arg(home);
     }
 
     command.stdin(Stdio::inherit());

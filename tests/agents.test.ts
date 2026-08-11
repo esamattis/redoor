@@ -122,7 +122,54 @@ describe("Agents API", () => {
         expect(registeredAgent?.name).toBe(hostname());
     });
 
-    it("publishes a relative --dir without changing the launch cwd", async () => {
+    it("uses the process user home when --home is omitted", async () => {
+        const processHome = tempFiles.tempDirectory({
+            suffix: "-process-home",
+        });
+        const agentName = "process-home-agent";
+        const agentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: agentName,
+            cwd: agentCwd,
+            env: { HOME: processHome },
+        });
+        onTestFinished(() => processManager.kill(agentPid));
+
+        const registeredAgent = await waitForValue({
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((agent) => agent.name === agentName);
+            },
+            description: "process-home-defaulted agent registration",
+        });
+
+        // The published browser location must follow the active process user's HOME, not its cwd.
+        expect(registeredAgent?.cwd).toBe(processHome);
+    });
+
+    it("accepts the hidden legacy --dir alias", async () => {
+        const agentName = "legacy-dir-agent";
+        const agentPid = processManager.spawnAgent({
+            wsAddress: wsUrl,
+            name: agentName,
+            cwd: agentCwd,
+            legacyDir: agentCwd,
+        });
+        onTestFinished(() => processManager.kill(agentPid));
+
+        const registeredAgent = await waitForValue({
+            predicate: async () => {
+                const agents = await apiClient.listAgents();
+                return agents.find((agent) => agent.name === agentName);
+            },
+            description: "legacy-dir agent registration",
+        });
+
+        // Existing invocations must retain their configured browser location during migration.
+        expect(registeredAgent?.cwd).toBe(agentCwd);
+    });
+
+    it("publishes a relative --home without changing the launch cwd", async () => {
         const launchDirectory = tempFiles.tempDirectory({
             suffix: "-launch-directory",
         });
@@ -134,7 +181,7 @@ describe("Agents API", () => {
             wsAddress: wsUrl,
             name: agentName,
             cwd: launchDirectory,
-            dir: relativeDefault,
+            home: relativeDefault,
             log: "relative-agent.log",
         });
         onTestFinished(() => processManager.kill(agentPid));
@@ -147,9 +194,9 @@ describe("Agents API", () => {
             description: "relative default directory agent registration",
         });
 
-        // Relative --dir is resolved once against the process launch directory.
+        // Relative --home is resolved once against the process launch directory.
         expect(registeredAgent?.cwd).toBe(expectedDefault);
-        // A relative log remains launch-cwd-relative, proving --dir did not mutate process cwd.
+        // A relative log remains launch-cwd-relative, proving --home did not mutate process cwd.
         await expect(
             fs.stat(path.join(launchDirectory, "relative-agent.log")),
         ).resolves.toBeDefined();

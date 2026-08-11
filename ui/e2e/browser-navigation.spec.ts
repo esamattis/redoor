@@ -325,6 +325,20 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        await page.getByRole("textbox", { name: "File path" }).press("Enter");
+        // Enter accepts an unchanged path even when the router has no navigation to commit.
+        await expect(
+            page.getByRole("textbox", { name: "File path" }),
+        ).not.toBeVisible();
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        await page.getByRole("button", { name: "Navigate to path" }).click();
+        // The submit button shares unchanged-path acceptance with keyboard submission.
+        await expect(
+            page.getByRole("textbox", { name: "File path" }),
+        ).not.toBeVisible();
     });
 
     test("should rename a directory and retain its details URL", async ({
@@ -586,7 +600,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(upButton).toHaveAttribute("aria-disabled", "true");
     });
 
-    test("should navigate back to agent page using Agent details button", async ({
+    test("should navigate back to agent page using Agent button", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
@@ -596,8 +610,13 @@ test.describe.serial("File Browser Navigation", () => {
             )
             .click();
 
+        // The icon link must return directly to the agent's published home from nested paths.
+        await expect(
+            page.getByRole("link", { name: "Agent home" }),
+        ).toHaveAttribute("href", new URL(ctx.agentBrowserUrl).pathname);
         const backToAgentButton = page.getByRole("link", {
-            name: "Agent details",
+            name: "Agent",
+            exact: true,
         });
         await backToAgentButton.click();
 

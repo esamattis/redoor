@@ -41,7 +41,7 @@ function writeValidConfig(options?: { includeSecondAgent?: boolean }) {
 [[agents]]
 local = true
 name = "${SECOND_AGENT_NAME}"
-dir = "${secondAgentDir}"
+home = "${secondAgentDir}"
 log = "${secondAgentLogPath}"
 `
         : "";
@@ -57,7 +57,7 @@ password = "${TEST_PASSWORD}"
 [[agents]]
 local = true
 name = "${AGENT_NAME}"
-dir = "${agentDir}"
+home = "${agentDir}"
 log = "${agentLogPath}"
 ${secondAgent}`,
     );

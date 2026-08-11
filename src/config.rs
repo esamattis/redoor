@@ -43,8 +43,8 @@ pub(crate) struct LocalAgentConfig {
     /// defaults to the system hostname so multiple local agents on
     /// different machines are naturally distinguishable.
     pub(crate) name: Option<String>,
-    /// Default directory the spawned agent publishes for UI tab navigation.
-    pub(crate) dir: Option<String>,
+    /// Home directory the spawned agent publishes for UI tab navigation.
+    pub(crate) home: Option<String>,
     /// Log file path. When set, the spawned `redoor agent` process's
     /// stdout/stderr is redirected (append mode) to this file. When
     /// `None`, stdio is inherited so the agent's logs appear in the
@@ -89,7 +89,7 @@ pub(crate) struct AgentSection {
     /// Redoor server URL (`http(s)://` or `ws(s)://`); path optional and forced to `/ws`.
     pub(crate) server: Option<String>,
     pub(crate) name: Option<String>,
-    pub(crate) dir: Option<String>,
+    pub(crate) home: Option<String>,
     pub(crate) log: Option<String>,
 }
 
@@ -303,7 +303,7 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
     };
 
     // `ws_address` remains accepted so existing agent configs keep working.
-    const KNOWN_KEYS: [&str; 5] = ["server", "ws_address", "name", "dir", "log"];
+    const KNOWN_KEYS: [&str; 6] = ["server", "ws_address", "name", "home", "dir", "log"];
     for (key, _) in table.iter() {
         if !KNOWN_KEYS.contains(&key) {
             bail!(
@@ -342,10 +342,12 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         (None, None) => None,
     };
 
+    let home = aliased_string(&non_empty_string, "agent", "home", "dir")?;
+
     Ok(Some(AgentSection {
         server,
         name: non_empty_string("name")?,
-        dir: non_empty_string("dir")?,
+        home,
         log: non_empty_string("log")?,
     }))
 }
@@ -380,7 +382,7 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, _path: &str) -> Result<Vec<Agent
 /// field: without a host there is nothing to ssh to. All other fields are
 /// explicit per-entry settings that the operator must declare so a missing
 /// field is surfaced as an error rather than silently falling back to a
-/// default the operator may not have intended. `dir` is shared with the
+/// default the operator may not have intended. `home` is shared with the
 /// local variant so an operator can mirror a UI default directory across both
 /// kinds of agents without duplicating logic.
 fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshBackedAgentConfig> {
@@ -420,10 +422,7 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
-    let dir = entry
-        .get("dir")
-        .and_then(|item| item.as_str())
-        .map(|s| s.to_string());
+    let home = aliased_table_string(entry, index, "home", "dir")?;
 
     let log = entry
         .get("log")
@@ -435,7 +434,7 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
         ssh_port,
         name,
         remote_bin,
-        dir,
+        home,
         target,
         log,
     })
@@ -443,8 +442,8 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
 
 /// Parses one local `[[agents]]` entry. No ssh-specific fields are allowed
 /// because local agents speak the websocket protocol directly and would
-/// never use them. `name`, `dir`, and `log` are all optional and fall back
-/// to the agent's own defaults (hostname, current dir, stdio logging).
+/// never use them. `name`, `home`, and `log` are all optional and fall back
+/// to the agent's own defaults (hostname, process user home, stdio logging).
 fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConfig> {
     // Reject ssh-specific fields so an operator who pastes an ssh entry and
     // just adds `local = true` gets a clear error rather than a confusing
@@ -490,16 +489,51 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
         .get("name")
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
-    let dir = entry
-        .get("dir")
-        .and_then(|item| item.as_str())
-        .map(|s| s.to_string());
+    let home = aliased_table_string(entry, index, "home", "dir")?;
     let log = entry
         .get("log")
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
-    Ok(AgentConfig::Local(LocalAgentConfig { name, dir, log }))
+    Ok(AgentConfig::Local(LocalAgentConfig { name, home, log }))
+}
+
+/// Reads a renamed standalone setting while rejecting ambiguous old-and-new input.
+fn aliased_string(
+    read: &impl Fn(&str) -> Result<Option<String>>,
+    section: &str,
+    key: &str,
+    legacy_key: &str,
+) -> Result<Option<String>> {
+    match (read(key)?, read(legacy_key)?) {
+        (Some(_), Some(_)) => bail!(
+            "{section}.{key} and {section}.{legacy_key} cannot both be set; use {section}.{key}"
+        ),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Reads a renamed managed-agent setting while rejecting ambiguous old-and-new input.
+fn aliased_table_string(
+    entry: &toml_edit::Table,
+    index: usize,
+    key: &str,
+    legacy_key: &str,
+) -> Result<Option<String>> {
+    let value = entry.get(key).and_then(|item| item.as_str());
+    let legacy_value = entry.get(legacy_key).and_then(|item| item.as_str());
+    match (value, legacy_value) {
+        (Some(_), Some(_)) => bail!(
+            "agents entry #{} has both '{}' and '{}'; use '{}'",
+            index,
+            key,
+            legacy_key,
+            key
+        ),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value.to_string())),
+        (None, None) => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -563,13 +597,13 @@ target = "user@example.com"
         assert_eq!(agent.target, "user@example.com");
         // An omitted port must defer to OpenSSH host configuration rather than force port 22.
         assert_eq!(agent.ssh_port, None);
-        // username, name, remote_bin and dir are None so the SSH launcher can
+        // username, name, remote_bin and home are None so the SSH launcher can
         // derive them (default name from target, default remote_bin from
-        // versioned layout, default dir from the remote shell's cwd).
+        // versioned layout, default home from the remote process user).
         assert!(agent.username.is_none());
         assert!(agent.name.is_none());
         assert!(agent.remote_bin.is_none());
-        assert!(agent.dir.is_none());
+        assert!(agent.home.is_none());
         assert!(agent.log.is_none(), "log should be None when not specified");
     }
 
@@ -591,7 +625,7 @@ username = "deploy"
 ssh_port = 2222
 name = "db-agent"
 remote_bin = "/usr/local/bin/redoor"
-dir = "/srv/app"
+home = "/srv/app"
 log = "log/db-agent.log"
 
 [[agents]]
@@ -612,7 +646,7 @@ target = "web-1"
         assert_eq!(first.ssh_port, Some(2222));
         assert_eq!(first.name.as_deref(), Some("db-agent"));
         assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
-        assert_eq!(first.dir.as_deref(), Some("/srv/app"));
+        assert_eq!(first.home.as_deref(), Some("/srv/app"));
         assert_eq!(first.log.as_deref(), Some("log/db-agent.log"));
 
         // The second entry defers to OpenSSH while the first overrides its port explicitly.
@@ -732,7 +766,7 @@ ssh_port = 99999
 
     /// Verifies that a `local = true` entry without any other fields parses
     /// into a [`AgentConfig::Local`] with all optional fields `None`, so the
-    /// runtime can fall back to its own defaults (hostname, current dir,
+    /// runtime can fall back to its own defaults (hostname, process user home,
     /// inherited stdio).
     #[tokio::test]
     async fn test_parse_config_file_minimal_local_entry() {
@@ -767,7 +801,7 @@ local = true
             agent.name.is_none(),
             "name should be None so the runtime defaults to hostname"
         );
-        assert!(agent.dir.is_none(), "dir should be None by default");
+        assert!(agent.home.is_none(), "home should be None by default");
         assert!(agent.log.is_none(), "log should be None by default");
     }
 
@@ -786,7 +820,7 @@ local = true
 [[agents]]
 local = true
 name = "my-local"
-dir = "/var/work"
+home = "/var/work"
 log = "/var/log/my-local.log"
 "#;
         write_test_config(&temp, content).unwrap();
@@ -804,7 +838,7 @@ log = "/var/log/my-local.log"
             AgentConfig::SshBacked(_) => panic!("entry with `local = true` should be local"),
         };
         assert_eq!(agent.name.as_deref(), Some("my-local"));
-        assert_eq!(agent.dir.as_deref(), Some("/var/work"));
+        assert_eq!(agent.home.as_deref(), Some("/var/work"));
         assert_eq!(agent.log.as_deref(), Some("/var/log/my-local.log"));
     }
 
@@ -932,9 +966,7 @@ local = true
         }
     }
 
-    /// Verifies that a `dir` on an ssh entry is accepted and forwarded into
-    /// the [`SshBackedAgentConfig`] so an operator can pin a remote agent's cwd to
-    /// a project tree, mirroring the same option on local agents.
+    /// Keeps existing managed-agent configs working after the home rename.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_dir() {
         let temp = std::env::temp_dir().join(format!(
@@ -964,9 +996,9 @@ dir = "/var/www/app"
             AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
         };
         assert_eq!(
-            agent.dir.as_deref(),
+            agent.home.as_deref(),
             Some("/var/www/app"),
-            "dir should be read from the toml entry"
+            "legacy dir should populate home"
         );
     }
 
@@ -1321,7 +1353,7 @@ target = "host"
 [agent]
 server = "https://example.com"
 name = "edge"
-dir = "/var/app"
+home = "/var/app"
 log = "log/agent.log"
 "#,
         )
@@ -1333,7 +1365,7 @@ log = "log/agent.log"
         let agent = config.agent.expect("[agent] should be present");
         assert_eq!(agent.server.as_deref(), Some("https://example.com"));
         assert_eq!(agent.name.as_deref(), Some("edge"));
-        assert_eq!(agent.dir.as_deref(), Some("/var/app"));
+        assert_eq!(agent.home.as_deref(), Some("/var/app"));
         assert_eq!(agent.log.as_deref(), Some("log/agent.log"));
     }
 

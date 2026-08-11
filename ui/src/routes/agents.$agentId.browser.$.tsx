@@ -33,6 +33,7 @@ import {
     LoaderCircle,
     MoreHorizontal,
     Plus,
+    Home,
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -1005,8 +1006,17 @@ function BrowserPageHeader(props: {
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
                     <HardDrive className="h-3.5 w-3.5" />
-                    Agent details
+                    Agent
                 </Link>
+                <Tooltip content="Open agent home directory">
+                    <Link
+                        to={props.agent.getBrowserUrl(props.agent.cwd ?? "/")}
+                        aria-label="Agent home"
+                        className="inline-flex shrink-0 items-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <Home className="h-4 w-4" aria-hidden="true" />
+                    </Link>
+                </Tooltip>
                 <div className="min-w-0 flex-1">
                     <Breadcrumbs
                         agent={props.agent}
@@ -1373,6 +1383,10 @@ function Breadcrumbs(props: {
                   ? editedPath
                   : `/${editedPath}`;
 
+        setIsEditing(false);
+        if (targetPath === props.path) {
+            return;
+        }
         // Destination route decides whether the editor stays open (missing path).
         await navigate({
             to: props.agent.getBrowserUrl(targetPath),

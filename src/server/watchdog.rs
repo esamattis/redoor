@@ -88,8 +88,8 @@ pub(crate) async fn register_agents(
 /// Extracts only the configured browser directory, leaving unknown SSH defaults nullable.
 fn configured_directory(config: &AgentConfig) -> Option<String> {
     match config {
-        AgentConfig::Local(config) => config.dir.clone(),
-        AgentConfig::SshBacked(config) => config.dir.clone(),
+        AgentConfig::Local(config) => config.home.clone(),
+        AgentConfig::SshBacked(config) => config.home.clone(),
     }
 }
 

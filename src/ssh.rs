@@ -97,9 +97,9 @@ pub(crate) struct RelayArgs {
     /// as the destination when one is provided.
     #[arg(long)]
     pub(crate) binary_source: Option<PathBuf>,
-    /// Default directory the remote agent publishes for UI tab navigation.
-    #[arg(short = 'd', long)]
-    pub(crate) dir: Option<String>,
+    /// Home directory the remote agent publishes for UI tab navigation.
+    #[arg(long, alias = "dir", short_alias = 'd')]
+    pub(crate) home: Option<String>,
     /// Local log file for relay diagnostics and SSH-forwarded remote agent output.
     /// Overrides `REDOOR_RELAY_LOG`. Defaults to `~/.local/share/<app-name>/relay.log`
     /// for non-root users.
@@ -139,8 +139,8 @@ pub(crate) struct SshBackedAgentConfig {
     /// Path to the redoor binary on the remote host. When `None`, defaults to
     /// the versioned install layout.
     pub(crate) remote_bin: Option<String>,
-    /// Default UI directory; when absent the remote launch cwd is published.
-    pub(crate) dir: Option<String>,
+    /// Default UI home directory; when absent the remote process user's home is published.
+    pub(crate) home: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub(crate) target: String,
     /// Optional local log file path. When set, the ssh process's
@@ -191,7 +191,7 @@ pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error:
         name: args.name,
         // Keep None distinct so provisioning knows whether it may manage the default path.
         remote_bin: args.remote_bin,
-        dir: args.dir,
+        home: args.home,
         target,
         // SSH stdout/stderr carry remote agent logs; append them beside local diagnostics.
         log: Some(log),
@@ -240,7 +240,7 @@ pub(crate) struct PreparedSshBackedAgent {
     /// Root CLI namespace passed explicitly so the remote process matches the server.
     app_name: String,
     remote_bin: String,
-    dir: Option<String>,
+    home: Option<String>,
     /// Destination host reached from the machine running the SSH client.
     destination_host: String,
     /// Destination server port reached from the machine running the SSH client.
@@ -316,9 +316,9 @@ impl PreparedSshBackedAgent {
                 remote_argv.push("--insecure-tls".to_string());
             }
         }
-        if let Some(dir) = &self.dir {
-            remote_argv.push("-d".to_string());
-            remote_argv.push(dir.clone());
+        if let Some(home) = &self.home {
+            remote_argv.push("--home".to_string());
+            remote_argv.push(home.clone());
         }
         let options = self.options.clone().with_reverse_forward(
             remote_port,
@@ -437,10 +437,10 @@ async fn prepare_ssh_backed_agent_for_destination(
 
     log!(
         Level::Info,
-        "Prepared redoor agent on remote host: name={}, remote_bin={}, dir={:?}, log={:?}",
+        "Prepared redoor agent on remote host: name={}, remote_bin={}, home={:?}, log={:?}",
         agent_name,
         remote_bin,
-        config.dir,
+        config.home,
         config.log,
     );
 
@@ -449,7 +449,7 @@ async fn prepare_ssh_backed_agent_for_destination(
         agent_name,
         app_name: crate::app_name::app_name()?,
         remote_bin,
-        dir: config.dir.clone(),
+        home: config.home.clone(),
         destination_host,
         destination_port,
         options,
@@ -739,7 +739,7 @@ mod tests {
             agent_name: "target".to_string(),
             app_name: "redoor".to_string(),
             remote_bin: "/tmp/redoor".to_string(),
-            dir: None,
+            home: None,
             destination_host: "redoor.example".to_string(),
             destination_port: 443,
             options: super::SshRunOptions::default(),

@@ -53,13 +53,13 @@ password = "${TEST_PASSWORD}"
 [[agents]]
 local = true
 name = "${AGENT_NAME}"
-dir = "${agentDir}"
+home = "${agentDir}"
 log = "${agentLogPath}"
 
 [[agents]]
 local = true
 name = "${FAILING_AGENT_NAME}"
-dir = "${agentDir}/does-not-exist"
+home = "${agentDir}/does-not-exist"
 log = "${agentLogPath}.failing"
 `,
     );

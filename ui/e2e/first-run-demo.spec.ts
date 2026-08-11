@@ -208,9 +208,9 @@ test.describe("First-run demo", () => {
             await expect(
                 page.getByRole("tab", { name: "local, connected" }),
             ).toBeVisible({ timeout: 30_000 });
-            // Project root is the server cwd, so a known repo file proves the local agent is usable.
+            // The server log lives in the process user's home, proving the local agent uses the new default.
             await expect(
-                page.getByRole("link", { name: "README.md", exact: true }),
+                page.getByRole("link", { name: "server.log", exact: true }),
             ).toBeVisible({ timeout: 30_000 });
         } finally {
             await stopServer(child);

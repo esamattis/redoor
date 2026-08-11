@@ -40,7 +40,7 @@ function AgentLogsPage() {
                         className="mt-6 inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                     >
                         <HardDrive className="h-4 w-4" />
-                        Agent details
+                        Agent
                     </Link>
                 </section>
             </div>

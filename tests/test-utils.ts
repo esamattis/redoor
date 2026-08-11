@@ -207,9 +207,11 @@ export type SpawnAgentArgs = {
     executablePath?: string;
     name?: string;
     cwd: string;
-    dir?: string;
+    home?: string;
+    legacyDir?: string;
     log?: string;
     token?: string;
+    env?: NodeJS.ProcessEnv;
 };
 
 export type SpawnServerArgs = {
@@ -271,8 +273,11 @@ export class ProcessManager {
             cliArgs.push("--name", args.name);
         }
 
-        if (args.dir !== undefined) {
-            cliArgs.push("--dir", args.dir);
+        if (args.home !== undefined) {
+            cliArgs.push("--home", args.home);
+        }
+        if (args.legacyDir !== undefined) {
+            cliArgs.push("--dir", args.legacyDir);
         }
 
         if (args.log !== undefined) {
@@ -293,6 +298,7 @@ export class ProcessManager {
             cwd: args.cwd,
             env: {
                 REDOOR_APP_NAME: appName,
+                ...args.env,
             },
         });
         this.agentAppNames.set(pid, appName);
@@ -431,7 +437,7 @@ export async function startServerAndAgent(options: {
         wsAddress: wsUrl,
         name: options.agentName,
         cwd: options.agentCwd,
-        dir: options.agentCwd,
+        home: options.agentCwd,
         executablePath: options.agentExecutablePath,
     });
 

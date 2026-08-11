@@ -51,10 +51,10 @@ pub(crate) struct AgentArgs {
     /// Defaults to `~/.local/share/<app-name>/agent.log` for non-root users.
     #[arg(long, env = "REDOOR_AGENT_LOG")]
     pub(crate) log: Option<String>,
-    /// Default directory opened by the UI without limiting filesystem access.
-    /// Overrides `REDOOR_AGENT_DIR` and `[agent].dir`.
-    #[arg(short = 'd', long, env = "REDOOR_AGENT_DIR")]
-    pub(crate) dir: Option<String>,
+    /// Home directory opened by the UI without limiting filesystem access.
+    /// Overrides `REDOOR_AGENT_HOME` and `[agent].home`.
+    #[arg(long, env = "REDOOR_AGENT_HOME", alias = "dir", short_alias = 'd')]
+    pub(crate) home: Option<String>,
     /// Seconds to wait after connecting before notifying the desktop, or `off` to disable it.
     #[arg(
         long,

@@ -83,7 +83,7 @@ Used by a standalone `redoor agent` process (and by systemd/launchd agent units)
 | --- | --- | --- | --- |
 | `server` | string | none (required to connect) | Redoor server URL (`http(s)://` or `ws(s)://`). Path is optional and forced to `/ws`. Override with positional `SERVER` / `REDOOR_AGENT_WS`. |
 | `name` | string | computer hostname | Registration name shown in the UI. Override with `--name` / `REDOOR_AGENT_NAME`. |
-| `dir` | string | process cwd / bootstrap default | Default directory opened in the UI; does not limit filesystem access. Override with `--dir` / `REDOOR_AGENT_DIR`. |
+| `home` | string | process user home directory | Home directory opened in the UI; does not limit filesystem access. Override with `--home` / `REDOOR_AGENT_HOME`. |
 | `log` | string | platform default\* | Agent log file path. Override with `--log` / `REDOOR_AGENT_LOG`. |
 
 \*Default log path: `~/.local/share/redoor/agent.log` (non-root) or `/var/log/redoor/agent.log` (root).
@@ -94,7 +94,7 @@ Legacy alias: `ws_address` is still accepted as a synonym for `server`. Do not s
 [agent]
 server = "http://127.0.0.1:3000"
 name = "macbook"
-dir = "/home/me/projects"
+home = "/home/me/projects"
 log = "log/agent.log"
 ```
 
@@ -114,7 +114,7 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `ssh_port` | integer (u16) | no | SSH port. When omitted, OpenSSH host config / default applies (not forced to 22). |
 | `name` | string | no | Registration name. Defaults to the host portion of `target`. |
 | `remote_bin` | string | no | Path to the redoor binary on the remote host. When omitted, uses the versioned install layout under `${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/<version>/redoor`. |
-| `dir` | string | no | Default UI directory on the remote agent. When omitted, the remote launch cwd is published. |
+| `home` | string | no | Home directory opened on the remote agent. When omitted, the remote process user's home directory is published. |
 | `log` | string | no | Local file that captures the SSH process stdout/stderr (append mode). |
 
 ```toml
@@ -124,7 +124,7 @@ target = "user@example.com"
 # ssh_port = 22
 # name = "prod-server"
 # remote_bin = "/home/deploy/.local/share/redoor/binaries/<version>/redoor"
-# dir = "/srv/app"
+# home = "/srv/app"
 # log = "/var/log/redoor/prod-agent.log"
 ```
 
@@ -136,7 +136,7 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | --- | --- | --- | --- |
 | `local` | bool | yes | Must be `true`. |
 | `name` | string | no | Registration name. Defaults to the system hostname. |
-| `dir` | string | no | Default UI directory. |
+| `home` | string | no | Home directory opened in the UI. Defaults to the spawned process user's home directory. |
 | `log` | string | no | File for the spawned agent stdout/stderr (append). When omitted, stdio is inherited from the server. |
 
 SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`) are rejected on local entries.
@@ -145,7 +145,7 @@ SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`) are rejected on l
 [[agents]]
 local = true
 name = "local"
-dir = "/home/me/projects"
+home = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
 ```
 
@@ -168,19 +168,19 @@ password = "long-private-password"
 [agent]
 server = "http://127.0.0.1:3000"
 name = "macbook"
-dir = "/home/me/projects"
+home = "/home/me/projects"
 # log = "log/agent.log"
 
 [[agents]]
 local = true
 name = "local"
-dir = "/home/me/projects"
+home = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
 
 [[agents]]
 target = "user@example.com"
 name = "prod-server"
-dir = "/srv/app"
+home = "/srv/app"
 log = "/var/log/redoor/prod-agent.log"
 ```
 
@@ -196,7 +196,7 @@ These override matching config keys when set (CLI still wins):
 | `REDOOR_AGENT_WS` | `[agent].server` |
 | `REDOOR_AGENT_TOKEN` | top-level `agent_token` (agent process) |
 | `REDOOR_AGENT_NAME` | `[agent].name` |
-| `REDOOR_AGENT_DIR` | `[agent].dir` |
+| `REDOOR_AGENT_HOME` | `[agent].home` |
 | `REDOOR_AGENT_LOG` | `[agent].log` |
 | `REDOOR_RELAY_LOG` | relay log path (`redoor agent relay`) |
 | `REDOOR_AGENT_NOTIFICATION` | desktop notification delay after connect (`off` disables) |
