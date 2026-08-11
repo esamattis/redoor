@@ -383,8 +383,8 @@ test.describe.serial("File Browser Navigation", () => {
                 `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
-        await page.getByRole("link", { name: "subdir2" }).click();
-        await page.getByRole("link", { name: "deep" }).click();
+        await page.getByRole("link", { name: "subdir2", exact: true }).click();
+        await page.getByRole("link", { name: "deep", exact: true }).click();
 
         const breadcrumbs = page.getByRole("navigation", {
             name: "Breadcrumbs",
@@ -409,7 +409,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
-        await page.getByRole("link", { name: "subdir1" }).click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
         const subdir1Breadcrumbs = page.getByRole("navigation", {
             name: "Breadcrumbs",
         });

@@ -173,7 +173,7 @@ test.describe.serial("File Detail View", () => {
                 `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
-        await page.getByRole("link", { name: "subdir1" }).click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
 
         await page
             .getByRole("link", { name: "nested1.txt", exact: true })

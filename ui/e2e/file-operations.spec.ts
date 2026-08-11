@@ -41,7 +41,7 @@ test.describe.serial("File Operations", () => {
             const uploadDestinationUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
             await Promise.all([
                 page.waitForURL(uploadDestinationUrl),
-                page.getByRole("link", { name: "subdir3" }).click(),
+                page.getByRole("link", { name: "subdir3", exact: true }).click(),
             ]);
             await expect(
                 page.getByRole("navigation", { name: "Breadcrumbs" }),
@@ -326,8 +326,10 @@ test.describe.serial("File Operations", () => {
                 `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
-        await page.getByRole("link", { name: "subdir3" }).click();
-        await page.getByRole("link", { name: "delete-me.txt" }).click();
+        await page.getByRole("link", { name: "subdir3", exact: true }).click();
+        await page
+            .getByRole("link", { name: "delete-me.txt", exact: true })
+            .click();
 
         await page.getByRole("button", { name: "More", exact: true }).click();
         await page
@@ -361,7 +363,7 @@ test.describe.serial("File Operations", () => {
         );
         // The deleted entry disappearing from the listing proves the route refreshed with the new filesystem state.
         await expect(
-            page.getByRole("link", { name: "delete-me.txt" }),
+            page.getByRole("link", { name: "delete-me.txt", exact: true }),
         ).toHaveCount(0);
     });
 
@@ -423,7 +425,7 @@ test.describe.serial("File Operations", () => {
                 `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
             )
             .click();
-        await page.getByRole("link", { name: "subdir3" }).click();
+        await page.getByRole("link", { name: "subdir3", exact: true }).click();
 
         await page
             .getByRole("button", {
