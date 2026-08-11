@@ -14,6 +14,7 @@ fn append_directory_entries(
     builder: &mut tar::Builder<ChannelTarWriter>,
     source_root: &Path,
     current_path: &Path,
+    archive_root: Option<&Path>,
 ) -> Result<()> {
     let mut entries = std::fs::read_dir(current_path)
         .with_context(|| format!("Failed to read directory: {}", current_path.display()))?
@@ -24,7 +25,7 @@ fn append_directory_entries(
 
     for entry in entries {
         let entry_path = entry.path();
-        let relative_path = entry_path
+        let source_relative_path = entry_path
             .strip_prefix(source_root)
             .with_context(|| {
                 format!(
@@ -34,25 +35,29 @@ fn append_directory_entries(
                 )
             })?
             .to_path_buf();
+        let archive_path = match archive_root {
+            Some(archive_root) => archive_root.join(source_relative_path),
+            None => source_relative_path,
+        };
         let metadata = std::fs::symlink_metadata(&entry_path)
             .with_context(|| format!("Failed to read entry metadata: {}", entry_path.display()))?;
 
         if metadata.is_dir() {
             builder
-                .append_dir(&relative_path, &entry_path)
+                .append_dir(&archive_path, &entry_path)
                 .with_context(|| {
                     format!(
                         "Failed to append directory to tar: {}",
                         entry_path.display()
                     )
                 })?;
-            append_directory_entries(builder, source_root, &entry_path)?;
+            append_directory_entries(builder, source_root, &entry_path, archive_root)?;
         } else if metadata.is_file() {
             let mut file = std::fs::File::open(&entry_path).with_context(|| {
                 format!("Failed to open file for tar: {}", entry_path.display())
             })?;
             builder
-                .append_file(&relative_path, &mut file)
+                .append_file(&archive_path, &mut file)
                 .with_context(|| {
                     format!("Failed to append file to tar: {}", entry_path.display())
                 })?;
@@ -106,6 +111,8 @@ enum TarDownloadEvent {
 /// Owns the state and side effects for one in-progress tar directory download.
 struct TarDownloadWorker {
     path: String,
+    /// Adds the downloaded directory as the archive's single top-level member.
+    include_root: bool,
     request_id: RequestId,
     write: mpsc::Sender<WsMessage>,
     cancel_receiver: watch::Receiver<bool>,
@@ -206,6 +213,7 @@ impl TarDownloadWorker {
 
         let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
         let source_path_for_worker = source_path.clone();
+        let include_root = self.include_root;
 
         tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Handle::current();
@@ -215,12 +223,35 @@ impl TarDownloadWorker {
             };
             let mut builder = tar::Builder::new(writer);
 
-            let result = append_directory_entries(
-                &mut builder,
-                &source_path_for_worker,
-                &source_path_for_worker,
-            )
-            .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
+            let archive_root = include_root.then(|| {
+                source_path_for_worker
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("archive"))
+            });
+
+            let root_result = match archive_root.as_deref() {
+                Some(archive_root) => builder
+                    .append_dir(archive_root, &source_path_for_worker)
+                    .with_context(|| {
+                        format!(
+                            "Failed to append root directory to tar: {}",
+                            source_path_for_worker.display()
+                        )
+                    }),
+                None => Ok(()),
+            };
+
+            let result = root_result
+                .and_then(|_| {
+                    append_directory_entries(
+                        &mut builder,
+                        &source_path_for_worker,
+                        &source_path_for_worker,
+                        archive_root.as_deref(),
+                    )
+                })
+                .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
 
             if let Err(error) = result {
                 log!(
@@ -299,6 +330,7 @@ impl AgentActor {
     pub(crate) async fn tar_download(
         &self,
         path: String,
+        include_root: bool,
         request_id: RequestId,
         write: &mpsc::Sender<WsMessage>,
         cancel_receiver: watch::Receiver<bool>,
@@ -312,6 +344,7 @@ impl AgentActor {
         );
         TarDownloadWorker {
             path,
+            include_root,
             request_id,
             write: write.clone(),
             cancel_receiver,

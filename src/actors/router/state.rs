@@ -170,7 +170,12 @@ impl CopyContentKind {
                 range_start: None,
                 range_end: None,
             },
-            Self::TarDirectory => Command::TarDownload { path },
+            // Copies extract directly into the requested destination, so they must not add
+            // the source directory name as another destination path component.
+            Self::TarDirectory => Command::TarDownload {
+                path,
+                include_root: false,
+            },
         }
     }
 

@@ -269,7 +269,10 @@ async fn stream_directory_archive(
             actors::router::RouterMsg::ExecuteStreamCommandRest(
                 actors::router::ExecuteStreamRequest {
                     agent_id: agent_id.clone(),
-                    command: Command::TarDownload { path: path.clone() },
+                    command: Command::TarDownload {
+                        path: path.clone(),
+                        include_root: true,
+                    },
                     path: path.clone(),
                     // Archive length is discovered while streaming; progress promotes the
                     // transferred count to total_bytes when the transfer completes.

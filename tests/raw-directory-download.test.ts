@@ -1,11 +1,4 @@
-import {
-    describe,
-    it,
-    expect,
-    beforeAll,
-    afterAll,
-    afterEach,
-} from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import type { TransferProgressEntry } from "#ui/api-client";
 import { Agent } from "#ui/api-client";
 
@@ -35,9 +28,7 @@ async function listTarMembers(archivePath: string): Promise<string[]> {
 describe("Raw Directory Archive Download API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
-    let apiClient: Awaited<
-        ReturnType<typeof startServerAndAgent>
-    >["apiClient"];
+    let apiClient: Awaited<ReturnType<typeof startServerAndAgent>>["apiClient"];
     let testAgent: Agent;
 
     afterEach(() => {
@@ -83,7 +74,9 @@ describe("Raw Directory Archive Download API", () => {
         });
         // Directory GETs are presented as gzipped tar attachments for browser save-as.
         expect(response.status).toBe(200);
-        expect(response.headers.get("Content-Type")).toMatch(/application\/gzip/);
+        expect(response.headers.get("Content-Type")).toMatch(
+            /application\/gzip/,
+        );
         expect(response.headers.get("Content-Disposition")).toMatch(
             /attachment; filename=".*\.tar\.gz"/,
         );
@@ -101,14 +94,16 @@ describe("Raw Directory Archive Download API", () => {
             suffix: ".tar.gz",
         });
         const members = await listTarMembers(archivePath);
-        // Root file membership confirms top-level entries are included.
+        const directoryName = path.basename(sourceRoot);
+        // The downloaded directory is the single archive root so extraction preserves its name.
         expect(members).toEqual(
             expect.arrayContaining([
-                "top.txt",
-                "nested",
-                "nested/deeper",
-                "nested/deeper/child.txt",
-                "empty",
+                directoryName,
+                `${directoryName}/top.txt`,
+                `${directoryName}/nested`,
+                `${directoryName}/nested/deeper`,
+                `${directoryName}/nested/deeper/child.txt`,
+                `${directoryName}/empty`,
             ]),
         );
 
@@ -118,17 +113,28 @@ describe("Raw Directory Archive Download API", () => {
         await execFileAsync("tar", ["-xzf", archivePath, "-C", extractRoot]);
         // Round-tripping through tar.gz proves nested payload bytes stayed intact.
         expect(
-            await fs.readFile(path.join(extractRoot, "top.txt"), "utf-8"),
+            await fs.readFile(
+                path.join(extractRoot, directoryName, "top.txt"),
+                "utf-8",
+            ),
         ).toBe("directory archive root file");
         expect(
             await fs.readFile(
-                path.join(extractRoot, "nested", "deeper", "child.txt"),
+                path.join(
+                    extractRoot,
+                    directoryName,
+                    "nested",
+                    "deeper",
+                    "child.txt",
+                ),
                 "utf-8",
             ),
         ).toBe("directory archive nested file");
         // Empty directory extraction proves directory-only members survive the stream.
         expect(
-            (await fs.stat(path.join(extractRoot, "empty"))).isDirectory(),
+            (
+                await fs.stat(path.join(extractRoot, directoryName, "empty"))
+            ).isDirectory(),
         ).toBe(true);
 
         const completedTransfer = await waitForValue({
@@ -162,15 +168,17 @@ describe("Raw Directory Archive Download API", () => {
         });
         // Empty directories still produce a valid gzipped tar stream rather than a JSON error.
         expect(response.status).toBe(200);
-        expect(response.headers.get("Content-Type")).toMatch(/application\/gzip/);
+        expect(response.headers.get("Content-Type")).toMatch(
+            /application\/gzip/,
+        );
 
         const archiveBytes = Buffer.from(await response.arrayBuffer());
         const archivePath = tempFiles.create(archiveBytes, {
             suffix: ".tar.gz",
         });
         const members = await listTarMembers(archivePath);
-        // An empty source tree should not invent nested members.
-        expect(members).toEqual([]);
+        // Empty downloads still contain their root so extraction creates the requested directory.
+        expect(members).toEqual([path.basename(sourceRoot)]);
     });
 
     it("should reject range requests for directory archives", async () => {

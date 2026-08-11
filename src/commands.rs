@@ -128,6 +128,9 @@ pub enum Command {
     },
     TarDownload {
         path: String,
+        /// Includes the source directory itself for archives intended for user extraction.
+        #[serde(default)]
+        include_root: bool,
     },
     RawUpload {
         path: String,
@@ -208,7 +211,9 @@ impl Command {
                 (None, Some(end)) => format!("RawDownload path={path} range_end={end}"),
                 (None, None) => format!("RawDownload path={path}"),
             },
-            Self::TarDownload { path } => format!("TarDownload path={path}"),
+            Self::TarDownload { path, include_root } => {
+                format!("TarDownload path={path} include_root={include_root}")
+            }
             Self::RawUpload { path, on_existing } => {
                 format!("RawUpload path={path} on_existing={on_existing:?}")
             }
@@ -866,12 +871,27 @@ mod tests {
         let result = handler
             .execute(Command::TarDownload {
                 path: "test-dir".to_string(),
+                include_root: false,
             })
             .await;
 
         match result {
             CommandResult::TarDownload { path } => {
                 assert_eq!(path, "test-dir");
+            }
+            _ => panic!("Expected TarDownload"),
+        }
+    }
+
+    #[test]
+    fn test_tar_download_defaults_to_excluding_root() {
+        let command: Command = serde_json::from_str(r#"{"type":"TarDownload","path":"test-dir"}"#)
+            .expect("legacy tar download command should deserialize");
+
+        match command {
+            Command::TarDownload { include_root, .. } => {
+                // Missing fields from older servers must retain the flat archive used by copies.
+                assert!(!include_root);
             }
             _ => panic!("Expected TarDownload"),
         }

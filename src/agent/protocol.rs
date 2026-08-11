@@ -45,12 +45,13 @@ async fn handle_command_message(
                 )
                 .await;
         }
-        Command::TarDownload { path } => {
+        Command::TarDownload { path, include_root } => {
             let (cancel_sender, cancel_receiver) = watch::channel(false);
             active_downloads.insert(request_id, DownloadSessionHandle { cancel_sender });
             AgentActor
                 .tar_download(
                     path,
+                    include_root,
                     request_id,
                     &write_binary,
                     cancel_receiver,
