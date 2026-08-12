@@ -2,6 +2,7 @@ import React from "react";
 import { useRouter } from "@tanstack/react-router";
 import { ClipboardPaste, Upload } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
 import { Dialog } from "./dialog";
 import { Toast } from "./toast";
 
@@ -524,9 +525,11 @@ function PastedTextFileDialog(props: {
     textFileName: string;
     textFileNameError: string | null;
 }) {
+    const isOpen = props.pastedText !== null;
+
     return (
         <Dialog
-            isOpen={props.pastedText !== null}
+            isOpen={isOpen}
             title="Save pasted text"
             description={
                 props.destination
@@ -545,6 +548,7 @@ function PastedTextFileDialog(props: {
                     Filename
                 </label>
                 <input
+                    ref={focusAndSelectFileNameStem}
                     id="pasted-text-file-name"
                     type="text"
                     value={props.textFileName}

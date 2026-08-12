@@ -197,6 +197,46 @@ test.describe.serial("File Operations", () => {
         );
     });
 
+    test("should preselect the pasted text filename before its extension", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("button", { name: "Paste files or text" }),
+        ).toBeVisible();
+
+        await page.evaluate(() => {
+            const clipboardData = new DataTransfer();
+            clipboardData.setData("text/plain", "pasted content");
+            window.dispatchEvent(
+                new ClipboardEvent("paste", {
+                    bubbles: true,
+                    clipboardData,
+                }),
+            );
+        });
+
+        const dialog = page.getByRole("dialog", { name: "Save pasted text" });
+        const fileNameInput = dialog.getByRole("textbox", { name: "Filename" });
+        // Selecting only the stem lets typing replace the default name while preserving .txt.
+        await expect(fileNameInput).toBeFocused();
+        await expect
+            .poll(() =>
+                fileNameInput.evaluate((input) => ({
+                    start:
+                        input instanceof HTMLInputElement
+                            ? input.selectionStart
+                            : null,
+                    end:
+                        input instanceof HTMLInputElement
+                            ? input.selectionEnd
+                            : null,
+                })),
+            )
+            .toEqual({ start: 0, end: "pasted-text".length });
+    });
+
     test("should rename a file inline without leaving the directory", async ({
         page,
     }) => {

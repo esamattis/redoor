@@ -55,6 +55,7 @@ import {
     type FileSearchState,
 } from "#ui/file-searcher";
 import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
+import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
 import { formatSize } from "#ui/utils/path";
 import {
     ApiError,
@@ -2281,7 +2282,6 @@ function RenamePathDialog(props: {
 }) {
     const navigate = useNavigate();
     const router = useRouter();
-    const nameInputRef = React.useRef<HTMLInputElement>(null);
     const [name, setName] = React.useState(props.currentName);
     const [renameState, setRenameState] = React.useState<RenameState>({
         type: "idle",
@@ -2301,19 +2301,6 @@ function RenamePathDialog(props: {
         setName(props.currentName);
         setRenameState({ type: "idle" });
     }, [props.currentName, props.isOpen, props.path]);
-
-    React.useEffect(() => {
-        if (!props.isOpen) {
-            return;
-        }
-
-        // Preserve extensions during typing, while treating a leading dot as part of the name.
-        const firstDotIndex = props.currentName.indexOf(".", 1);
-        const selectionEnd =
-            firstDotIndex === -1 ? props.currentName.length : firstDotIndex;
-        nameInputRef.current?.focus();
-        nameInputRef.current?.setSelectionRange(0, selectionEnd);
-    }, [props.currentName, props.isOpen]);
 
     const handleRename = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -2398,7 +2385,7 @@ function RenamePathDialog(props: {
                     New name
                 </label>
                 <input
-                    ref={nameInputRef}
+                    ref={focusAndSelectFileNameStem}
                     id={`${props.entryType}-rename-input`}
                     type="text"
                     value={name}
