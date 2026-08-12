@@ -1010,19 +1010,46 @@ function TransferProgressPanel(props: {
     const activeTransfers = props.transfers.filter(
         (transfer) => transfer.state === "active",
     );
-
-    if (activeTransfers.length === 0) {
-        return null;
-    }
+    const summary = [
+        [
+            activeTransfers.filter(
+                (transfer) => transfer.direction === "download",
+            ).length,
+            "downloading",
+        ],
+        [
+            activeTransfers.filter(
+                (transfer) => transfer.direction === "upload",
+            ).length,
+            "uploading",
+        ],
+        [
+            activeTransfers.filter((transfer) => transfer.direction === "copy")
+                .length,
+            "copying",
+        ],
+        [
+            props.transfers.filter((transfer) => transfer.state === "completed")
+                .length,
+            "completed",
+        ],
+        [
+            props.transfers.filter((transfer) => transfer.state === "errored")
+                .length,
+            "errored",
+        ],
+    ]
+        .filter(([count]) => count !== 0)
+        .map(([count, label]) => `${count} ${label}`)
+        .join(", ");
 
     return (
         <CollapsibleBottomPanel
-            title="Active transfers"
-            description="Currently running file transfers"
+            title="Transfers"
+            defaultCollapsed
             badge={
                 <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">
-                    {activeTransfers.length}{" "}
-                    {activeTransfers.length === 1 ? "transfer" : "transfers"}
+                    {summary || "No transfers"}
                 </span>
             }
             actions={

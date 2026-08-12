@@ -129,7 +129,8 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
             canceled_by_rest: false,
         },
     );
-    ui::notify_refresh(state);
+    // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
+    ui::notify_refresh_immediately(state);
 }
 
 /// Creates a progress entry and direct-upload state for a newly started upload.
@@ -163,7 +164,8 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             canceled_by_rest: false,
         },
     );
-    ui::notify_refresh(state);
+    // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
+    ui::notify_refresh_immediately(state);
 }
 
 /// Creates a progress entry for a newly started logical copy transfer.
@@ -192,7 +194,8 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
             error: None,
         },
     );
-    ui::notify_refresh(state);
+    // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
+    ui::notify_refresh_immediately(state);
 }
 
 /// Adds transferred bytes to an existing progress entry and clears stale errors.
@@ -315,6 +318,47 @@ mod tests {
     use super::*;
     use crate::commands::{TransferDirection, TransferProgressState, UiEvent};
     use std::time::Instant;
+
+    #[tokio::test]
+    async fn transfer_start_bypasses_ui_refresh_throttle() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        state.ui.refresh_pending = true;
+        state.ui.last_refresh_sent_at = Some(Instant::now());
+
+        record_copy_start(
+            &mut state,
+            CopyStartContext {
+                request_id: TransferId::new(8),
+                source_agent_id: AgentId::from("agent-1"),
+                source_path: "/tmp/source.bin".to_string(),
+                dest_agent_id: AgentId::from("agent-2"),
+                dest_path: "/tmp/destination.bin".to_string(),
+                total_bytes: 16,
+            },
+        );
+
+        let start_event = ui_rx
+            .recv()
+            .await
+            .expect("new transfers should trigger an immediate refresh");
+        assert!(
+            matches!(start_event, UiEvent::Refresh),
+            "transfer creation should bypass the throttle so the persistent UI bar updates immediately"
+        );
+        assert!(
+            !state.ui.refresh_pending,
+            "an immediate start refresh should replace any older pending refresh"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
 
     #[tokio::test]
     async fn terminal_progress_updates_bypass_ui_refresh_throttle() {
