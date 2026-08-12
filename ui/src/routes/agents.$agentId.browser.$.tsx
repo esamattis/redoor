@@ -35,6 +35,7 @@ import {
     Plus,
     Home,
     ArrowDownUp,
+    GitCompareArrows,
     ChevronDown,
     ChevronUp,
 } from "lucide-react";
@@ -57,6 +58,7 @@ import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
 import { formatSize } from "#ui/utils/path";
 import {
     ApiError,
+    type ApiClient,
     type Agent,
     type LsResponse,
     isLsDirectoryResponse,
@@ -208,9 +210,11 @@ function compareFileEntries(
 }
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
-    validateSearch: (search): { view?: "details" | "edit" } => ({
+    validateSearch: (search): { view?: "details" | "edit" | "diff" } => ({
         view:
-            search.view === "details" || search.view === "edit"
+            search.view === "details" ||
+            search.view === "edit" ||
+            search.view === "diff"
                 ? search.view
                 : undefined,
     }),
@@ -279,6 +283,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
 function FileBrowser() {
     const data = Route.useLoaderData();
+    const { api } = Route.useRouteContext();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
@@ -384,6 +389,26 @@ function FileBrowser() {
 
         const editable = data.metadata?.editable === true;
         const viewableImage = data.metadata?.viewable_image === true;
+
+        if (search.view === "diff") {
+            return (
+                <div className="p-6">
+                    <div className="mx-auto max-w-6xl">
+                        <FileDiffView
+                            key={`${agentId}:${lsResult.path}`}
+                            api={api}
+                            agent={agent}
+                            agents={data.agents}
+                            agentId={agentId}
+                            path={path}
+                            fileName={fileName}
+                            filePath={lsResult.path}
+                            downloadUrl={downloadUrl}
+                        />
+                    </div>
+                </div>
+            );
+        }
 
         if (search.view === "edit") {
             if (editable) {
@@ -2249,7 +2274,7 @@ function RenamePathDialog(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit";
+    view?: "details" | "edit" | "diff";
     navigateAfterRename: boolean;
     isOpen: boolean;
     onClose: () => void;
@@ -2339,7 +2364,9 @@ function RenamePathDialog(props: {
                         ? { view: "details" }
                         : props.view === "edit"
                           ? { view: "edit" }
-                          : {},
+                          : props.view === "diff"
+                            ? { view: "diff" }
+                            : {},
             });
         } catch (error) {
             setRenameState({
@@ -2414,7 +2441,7 @@ function RenamePathAction(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit";
+    view?: "details" | "edit" | "diff";
     navigateAfterRename?: boolean;
     children: (action: {
         open: () => void;
@@ -2449,7 +2476,7 @@ function PathMoreActions(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit";
+    view?: "details" | "edit" | "diff";
     onDelete?: () => void;
 }) {
     const canModify = getImmediateParentPath(props.path) !== null;
@@ -2512,7 +2539,7 @@ function PersistentPathActions(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit";
+    view?: "details" | "edit" | "diff";
     downloadUrl: string;
     downloadName: string;
     /** Explains archive packaging when the download is a directory tarball. */
@@ -2758,7 +2785,7 @@ function FileViewNavigation(props: {
     agent: Agent;
     path: string;
     parentPath: string | null;
-    activeView: "details" | "view";
+    activeView: "details" | "view" | "diff";
 }) {
     return (
         <>
@@ -2796,6 +2823,19 @@ function FileViewNavigation(props: {
                     <File className="h-4 w-4" />
                     View
                 </Link>
+                <Link
+                    to={getBrowserPathHref(props.agent, props.path)}
+                    search={{ view: "diff" }}
+                    aria-current={
+                        props.activeView === "diff" ? "page" : undefined
+                    }
+                    className={getViewSwitchItemClass(
+                        props.activeView === "diff",
+                    )}
+                >
+                    <GitCompareArrows className="h-4 w-4" />
+                    Diff
+                </Link>
             </ViewSwitch>
         </>
     );
@@ -2808,7 +2848,7 @@ function FilePageHeader(props: {
     path: string;
     fileName: string;
     downloadUrl: string;
-    activeView: "details" | "view";
+    activeView: "details" | "view" | "diff";
 }) {
     const parentPath = getImmediateParentPath(props.path);
 
@@ -2832,7 +2872,13 @@ function FilePageHeader(props: {
                     path={props.path}
                     currentName={props.fileName}
                     entryType="file"
-                    view={props.activeView === "view" ? "edit" : undefined}
+                    view={
+                        props.activeView === "view"
+                            ? "edit"
+                            : props.activeView === "diff"
+                              ? "diff"
+                              : undefined
+                    }
                     downloadUrl={props.downloadUrl}
                     downloadName={props.fileName}
                 />
@@ -3124,6 +3170,178 @@ function FileEditActions(props: {
                 {props.isSaving ? "Saving..." : "Save"}
             </button>
         </>
+    );
+}
+
+type FileDiffState =
+    | { type: "idle" }
+    | { type: "loading" }
+    | { type: "success"; diff: string }
+    | { type: "error"; message: string };
+
+/** Reuses the agent and absolute-path controls for cross-agent file operations. */
+function AgentPathFields(props: {
+    agents: Array<Agent>;
+    agentId: string;
+    path: string;
+    disabled: boolean;
+    onAgentChange: (agentId: string) => void;
+    onPathChange: (path: string) => void;
+}) {
+    return (
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+            <label className="grid gap-2 text-sm font-medium text-slate-200">
+                Agent
+                <select
+                    aria-label="Diff agent"
+                    value={props.agentId}
+                    onChange={(event) =>
+                        props.onAgentChange(event.target.value)
+                    }
+                    disabled={props.disabled}
+                    className="h-11 rounded-lg border border-slate-700 bg-slate-950 px-3 text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {props.agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                        </option>
+                    ))}
+                </select>
+            </label>
+            <label className="grid gap-2 text-sm font-medium text-slate-200">
+                Path
+                <input
+                    type="text"
+                    aria-label="Diff path"
+                    value={props.path}
+                    onChange={(event) => props.onPathChange(event.target.value)}
+                    disabled={props.disabled}
+                    required
+                    className="h-11 rounded-lg border border-slate-700 bg-slate-950 px-3 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+            </label>
+        </div>
+    );
+}
+
+/** Compares the selected file against an editable file on any connected agent. */
+function FileDiffView(props: {
+    api: ApiClient;
+    agent: Agent;
+    agents: Array<Agent>;
+    agentId: string;
+    path: string;
+    fileName: string;
+    filePath: string;
+    downloadUrl: string;
+}) {
+    const availableAgents = props.agents.filter(
+        (agent) => agent.status === "connected",
+    );
+    const defaultAgent =
+        availableAgents.find((agent) => agent.id !== props.agentId) ??
+        availableAgents[0];
+    const [selectedAgentId, setSelectedAgentId] = React.useState(
+        defaultAgent?.id ?? "",
+    );
+    const [selectedPath, setSelectedPath] = React.useState(props.filePath);
+    const [state, setState] = React.useState<FileDiffState>({ type: "idle" });
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (!selectedAgentId) {
+            return;
+        }
+
+        setState({ type: "loading" });
+        try {
+            const response = await props.api.diffFiles(
+                { agent: props.agentId, path: props.filePath },
+                { agent: selectedAgentId, path: selectedPath },
+            );
+            setState({ type: "success", diff: response.unified_diff });
+        } catch (error) {
+            setState({
+                type: "error",
+                message: getErrorMessage(error, "Failed to generate diff"),
+            });
+        }
+    };
+
+    return (
+        <div>
+            <FilePageHeader
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                fileName={props.fileName}
+                downloadUrl={props.downloadUrl}
+                activeView="diff"
+            />
+
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+                <header className="border-b border-slate-800 p-6 md:p-8">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        Compare file
+                    </p>
+                    <h1
+                        aria-label="File name"
+                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.fileName}
+                    </h1>
+                </header>
+
+                <form className="grid gap-5 p-6 md:p-8" onSubmit={handleSubmit}>
+                    <AgentPathFields
+                        agents={availableAgents}
+                        agentId={selectedAgentId}
+                        path={selectedPath}
+                        disabled={state.type === "loading"}
+                        onAgentChange={setSelectedAgentId}
+                        onPathChange={setSelectedPath}
+                    />
+                    <div>
+                        <button
+                            type="submit"
+                            disabled={
+                                state.type === "loading" || !selectedAgentId
+                            }
+                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <GitCompareArrows className="h-4 w-4" />
+                            {state.type === "loading"
+                                ? "Generating diff..."
+                                : "Generate diff"}
+                        </button>
+                    </div>
+                </form>
+
+                {state.type === "error" ? (
+                    <p
+                        role="alert"
+                        className="border-t border-slate-800 p-6 text-sm text-red-300 md:p-8"
+                    >
+                        {state.message}
+                    </p>
+                ) : state.type === "success" ? (
+                    <section
+                        aria-label="File diff"
+                        className="border-t border-slate-800 p-4 md:p-6"
+                    >
+                        {state.diff ? (
+                            <pre className="max-h-[70vh] overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-sm leading-6 text-slate-200">
+                                <code>{state.diff}</code>
+                            </pre>
+                        ) : (
+                            <p className="text-sm text-slate-400">
+                                The files are identical.
+                            </p>
+                        )}
+                    </section>
+                ) : null}
+            </article>
+        </div>
     );
 }
 

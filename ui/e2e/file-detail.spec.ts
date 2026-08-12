@@ -86,6 +86,35 @@ test.describe.serial("File Detail View", () => {
         expect(sizeText).not.toBe("-");
     });
 
+    test("should diff a file against another agent", async ({ page }) => {
+        const filePath = path.join(ctx.testDirPath, "file1.txt");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        await page.getByRole("link", { name: "Diff", exact: true }).click();
+
+        // The comparison starts with the first other agent and the currently selected file path.
+        await expect(page.getByLabel("Diff agent")).toHaveValue(ctx.agent2Id);
+        await expect(page.getByLabel("Diff path")).toHaveValue(filePath);
+        await page
+            .getByLabel("Diff path")
+            .fill(path.join(ctx.testDirPath, "file2.txt"));
+        await page.getByRole("button", { name: "Generate diff" }).click();
+
+        const diff = page.getByRole("region", { name: "File diff" });
+        // Signed lines prove the form submitted both selected endpoints to the unified diff API.
+        await expect(diff.getByText(/-content1/)).toBeVisible();
+        await expect(diff.getByText(/\+content2/)).toBeVisible();
+        // The active navigation state keeps the diff representation addressable by URL.
+        await expect(page).toHaveURL(/\?view=diff$/);
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "Diff", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+    });
+
     test("should rename a file and update the detail URL", async ({ page }) => {
         const originalName = `rename-file-${Date.now()}.txt`;
         const renamedName = `renamed-file-${Date.now()}.txt`;
