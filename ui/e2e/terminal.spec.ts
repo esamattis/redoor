@@ -139,10 +139,18 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByLabel(`Terminal 1 for ${ctx.agentName}`),
         ).toBeVisible();
+        // Activating a terminal must leave focus in the tablist for keyboard navigation.
+        await expect(
+            page.getByRole("tab", { name: "Terminal 1" }),
+        ).toBeFocused();
         await page.getByRole("tab", { name: "Terminal 1" }).press("ArrowRight");
         await expect(
             page.getByRole("tab", { name: "Terminal 2" }),
         ).toHaveAttribute("aria-selected", "true");
+        // Arrow navigation moves both selection and keyboard focus together.
+        await expect(
+            page.getByRole("tab", { name: "Terminal 2" }),
+        ).toBeFocused();
         // Mouse and keyboard tab switching preserve both live sockets.
         expect(terminalSockets).toHaveLength(2);
 

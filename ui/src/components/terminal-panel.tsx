@@ -105,6 +105,15 @@ function getServerDisconnectMessage(
     return null;
 }
 
+/** Preserves keyboard navigation when terminal activation starts from its tablist. */
+function isTerminalTabFocused(): boolean {
+    return Boolean(
+        document.activeElement?.closest(
+            '[role="tablist"][aria-label="Terminal tabs"]',
+        ),
+    );
+}
+
 /** Owns all ephemeral terminal tabs for the currently routed agent. */
 export function TerminalPanel(props: { agent: Agent; cwd: string }) {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
@@ -434,7 +443,9 @@ function connectTerminal(props: {
                 !props.isPanelCollapsedRef.current
             ) {
                 props.resources.fitAddonRef.current?.fit();
-                props.terminal.focus();
+                if (!isTerminalTabFocused()) {
+                    props.terminal.focus();
+                }
             }
             return;
         }
@@ -627,7 +638,9 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                         !isPanelCollapsedRef.current
                     ) {
                         resources.fitAddonRef.current?.fit();
-                        resources.terminalRef.current?.focus();
+                        if (!isTerminalTabFocused()) {
+                            resources.terminalRef.current?.focus();
+                        }
                     }
                 });
             }
