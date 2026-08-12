@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { MoreHorizontal, Play, Power, FolderOpen } from "lucide-react";
 import type { Agent, BinaryIdentity } from "#ui/api-client";
@@ -10,6 +11,7 @@ import {
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { agentsQueryOptions } from "#ui/queries";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { Route as RootRoute } from "./__root";
 
@@ -22,6 +24,7 @@ type MutationState = Record<string, "start" | "shutdown" | undefined>;
 /** Lists retained inventory and scopes lifecycle mutation state to individual rows. */
 function AgentManagement() {
     const router = useRouter();
+    const queryClient = useQueryClient();
     const actionsButtonRef = React.useRef<HTMLButtonElement>(null);
     const { api } = RootRoute.useRouteContext();
     const { agents, serverInfo } = RootRoute.useLoaderData();
@@ -50,52 +53,65 @@ function AgentManagement() {
     const [mutationErrors, setMutationErrors] = React.useState<
         Record<string, string | undefined>
     >({});
+    const startMutation = useMutation({
+        mutationFn: (agent: Agent) => agent.start(),
+        onMutate: (agent) => {
+            setMutations((state) => ({ ...state, [agent.id]: "start" }));
+            setMutationErrors((state) => ({
+                ...state,
+                [agent.id]: undefined,
+            }));
+        },
+        onSuccess: () => router.invalidate(),
+        onError: (error, agent) => {
+            setMutationErrors((state) => ({
+                ...state,
+                [agent.id]:
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to start agent",
+            }));
+        },
+        onSettled: (_data, _error, agent) => {
+            setMutations((state) => ({ ...state, [agent.id]: undefined }));
+        },
+    });
+    const shutdownMutation = useMutation({
+        mutationFn: (agent: Agent) => agent.shutdown(),
+        onMutate: (agent) => {
+            setMutations((state) => ({ ...state, [agent.id]: "shutdown" }));
+            setMutationErrors((state) => ({
+                ...state,
+                [agent.id]: undefined,
+            }));
+        },
+        onSuccess: async () => {
+            setShutdownAgent(null);
+            await router.invalidate();
+        },
+        onError: (error, agent) => {
+            setMutationErrors((state) => ({
+                ...state,
+                [agent.id]:
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to shut down agent",
+            }));
+        },
+        onSettled: (_data, _error, agent) => {
+            setMutations((state) => ({ ...state, [agent.id]: undefined }));
+        },
+    });
 
     /** Starts one row without disabling unrelated lifecycle controls. */
     const start = (agent: Agent) => {
-        setMutations((state) => ({ ...state, [agent.id]: "start" }));
-        setMutationErrors((state) => ({ ...state, [agent.id]: undefined }));
-        void agent
-            .start()
-            .then(() => router.invalidate())
-            .catch((error: unknown) => {
-                setMutationErrors((state) => ({
-                    ...state,
-                    [agent.id]:
-                        error instanceof Error
-                            ? error.message
-                            : "Failed to start agent",
-                }));
-            })
-            .finally(() => {
-                setMutations((state) => ({ ...state, [agent.id]: undefined }));
-            });
+        startMutation.mutate(agent);
     };
 
     /** Confirms child cleanup before clearing the row-level shutdown state. */
     const confirmShutdown = () => {
         if (shutdownAgent === null) return;
-        const agent = shutdownAgent;
-        setMutations((state) => ({ ...state, [agent.id]: "shutdown" }));
-        setMutationErrors((state) => ({ ...state, [agent.id]: undefined }));
-        void agent
-            .shutdown()
-            .then(() => {
-                setShutdownAgent(null);
-                return router.invalidate();
-            })
-            .catch((error: unknown) => {
-                setMutationErrors((state) => ({
-                    ...state,
-                    [agent.id]:
-                        error instanceof Error
-                            ? error.message
-                            : "Failed to shut down agent",
-                }));
-            })
-            .finally(() => {
-                setMutations((state) => ({ ...state, [agent.id]: undefined }));
-            });
+        shutdownMutation.mutate(shutdownAgent);
     };
 
     return (
@@ -122,6 +138,7 @@ function AgentManagement() {
                 agent={actionsAgent}
                 api={api}
                 router={router}
+                queryClient={queryClient}
                 anchorRef={actionsButtonRef}
                 onClose={() => setActionsAgent(null)}
                 onStart={start}
@@ -266,6 +283,7 @@ function AgentActionsDialog(props: {
     agent: Agent | null;
     api: ReturnType<typeof RootRoute.useRouteContext>["api"];
     router: ReturnType<typeof useRouter>;
+    queryClient: ReturnType<typeof useQueryClient>;
     anchorRef: React.RefObject<HTMLButtonElement | null>;
     onClose: () => void;
     onStart: (agent: Agent) => void;
@@ -304,7 +322,10 @@ function AgentActionsDialog(props: {
                             waitUntilReady={() =>
                                 waitForRestart(async () => {
                                     const restartedAgent = (
-                                        await props.api.listAgents()
+                                        await props.queryClient.fetchQuery({
+                                            ...agentsQueryOptions(props.api),
+                                            staleTime: 0,
+                                        })
                                     ).find(
                                         (entry: Agent) =>
                                             entry.id === agent.id &&

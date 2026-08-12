@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
@@ -40,35 +41,36 @@ function LoginPage() {
     const search = Route.useSearch();
     const [username, setUsername] = React.useState("");
     const [password, setPassword] = React.useState("");
-    const [error, setError] = React.useState<string | null>(null);
-    const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [firstRunMessage, setFirstRunMessage] = React.useState<string | null>(
         null,
     );
+    const loginMutation = useMutation({
+        mutationFn: (credentials: { username: string; password: string }) =>
+            api.login(credentials.username, credentials.password),
+        onSuccess: () => {
+            window.location.replace(safeRedirectPath(search.redirect));
+        },
+        onSettled: () => {
+            setPassword("");
+        },
+    });
 
     React.useEffect(() => {
         setFirstRunMessage(messageFromLocationHash());
     }, []);
 
     /** Keeps the password out of URLs and clears it immediately after either outcome. */
-    const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    const submit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        setError(null);
-        setIsSubmitting(true);
-        try {
-            await api.login(username, password);
-            setPassword("");
-            window.location.replace(safeRedirectPath(search.redirect));
-        } catch (submitError) {
-            setPassword("");
-            setError(
-                submitError instanceof Error
-                    ? submitError.message
-                    : "Login failed",
-            );
-            setIsSubmitting(false);
-        }
+        loginMutation.mutate({ username, password });
     };
+
+    const error = loginMutation.isError
+        ? loginMutation.error instanceof Error
+            ? loginMutation.error.message
+            : "Login failed"
+        : null;
+    const isSubmitting = loginMutation.isPending;
 
     return (
         <main className="flex min-h-screen items-center justify-center bg-[#0b0d12] p-6">

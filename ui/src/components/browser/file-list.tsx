@@ -1,4 +1,5 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -17,11 +18,7 @@ import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
 import { Tooltip } from "#ui/components/tooltip";
-import {
-    FILE_SEARCH_RESULT_EVENT,
-    FileSearcher,
-    type FileSearchState,
-} from "#ui/file-searcher";
+import type { FileSearchEntry, FileSearchResponse } from "#ui/api-client";
 import {
     selectedFileKeysAtom,
     toggleSelectedFileAtom,
@@ -34,9 +31,55 @@ import {
     joinBrowserPath,
 } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
+import { fileSearchQueryOptions } from "#ui/queries";
 
 /** Identifies the destination that should restore filter focus after Enter navigation. */
 const filterFocusPathAtom = atom<string | null>(null);
+
+type FileSearchState =
+    | { status: "idle" }
+    | {
+          status: "searching" | "success";
+          query: string;
+          results: Array<FileSearchEntry>;
+          timedOut: boolean;
+      }
+    | { status: "error"; query: string; message: string };
+
+/** Maps Query's transport state into the existing recursive-search presentation. */
+function getFileSearchState(props: {
+    filter: string;
+    query: string;
+    search: ReturnType<typeof useQuery<FileSearchResponse>>;
+}): FileSearchState {
+    if (props.filter.trim() === "") {
+        return { status: "idle" };
+    }
+    if (props.search.isError) {
+        return {
+            status: "error",
+            query: props.query,
+            message:
+                props.search.error instanceof Error
+                    ? props.search.error.message
+                    : "File search failed",
+        };
+    }
+    if (props.search.data) {
+        return {
+            status: props.search.isFetching ? "searching" : "success",
+            query: props.query,
+            results: props.search.data.results,
+            timedOut: props.search.data.timed_out,
+        };
+    }
+    return {
+        status: "searching",
+        query: props.query,
+        results: [],
+        timedOut: false,
+    };
+}
 
 /** Switches between immediate directory filtering and remote recursive search. */
 export function FileList(props: {
@@ -53,9 +96,7 @@ export function FileList(props: {
     const filterInputRef = React.useRef<HTMLInputElement>(null);
     const [filter, setFilter] = React.useState("");
     const [searchRecursively, setSearchRecursively] = React.useState(false);
-    const [searchState, setSearchState] = React.useState<FileSearchState>({
-        status: "idle",
-    });
+    const [debouncedFilter, setDebouncedFilter] = React.useState("");
     const [sort, setSort] = React.useState<{
         column: FileSortColumn;
         direction: FileSortDirection;
@@ -70,6 +111,18 @@ export function FileList(props: {
               return sort.direction === "ascending" ? comparison : -comparison;
           })
         : filteredFiles;
+    const recursiveSearch = useQuery(
+        fileSearchQueryOptions(
+            agent,
+            props.directoryPath,
+            searchRecursively ? debouncedFilter : "",
+        ),
+    );
+    const searchState = getFileSearchState({
+        filter,
+        query: debouncedFilter,
+        search: recursiveSearch,
+    });
 
     const changeSort = (column: FileSortColumn) => {
         setSort((current) => ({
@@ -91,30 +144,13 @@ export function FileList(props: {
     }, [filterFocusPath, props.directoryPath, setFilterFocusPath]);
 
     React.useEffect(() => {
-        const inputElement = filterInputRef.current;
-        if (!searchRecursively || !inputElement) {
+        if (!searchRecursively) {
+            setDebouncedFilter("");
             return;
         }
-
-        const searcher = new FileSearcher(agent, props.directoryPath);
-        const handleResult = (event: Event) => {
-            if (event instanceof CustomEvent) {
-                setSearchState(event.detail);
-            }
-        };
-        searcher.addEventListener(FILE_SEARCH_RESULT_EVENT, handleResult, {
-            passive: true,
-        });
-        searcher.listenTo(inputElement);
-
-        return () => {
-            searcher.removeEventListener(
-                FILE_SEARCH_RESULT_EVENT,
-                handleResult,
-            );
-            searcher.dispose();
-        };
-    }, [agent, props.directoryPath, searchRecursively]);
+        const timer = window.setTimeout(() => setDebouncedFilter(filter), 200);
+        return () => window.clearTimeout(timer);
+    }, [filter, searchRecursively]);
 
     const handleFilterKeyDown = async (
         event: React.KeyboardEvent<HTMLInputElement>,
@@ -165,9 +201,6 @@ export function FileList(props: {
                         checked={searchRecursively}
                         onCheckedChange={(checked) => {
                             setSearchRecursively(checked);
-                            if (!checked) {
-                                setSearchState({ status: "idle" });
-                            }
                         }}
                     >
                         Search recursively

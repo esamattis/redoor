@@ -1,4 +1,5 @@
 import React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Check, Copy, Download, File, Folder } from "lucide-react";
 import type {
     Agent,
@@ -9,11 +10,6 @@ import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
-
-type ShareableLinkState =
-    | { type: "idle" }
-    | { type: "creating" }
-    | { type: "error"; message: string };
 
 /** Converts permission bits to the compact notation people expect from Unix tools. */
 function formatSymbolicPermissions(permissions: number): string {
@@ -327,12 +323,16 @@ export function FileDetailView(props: {
     const [oneTimeTokens, setOneTimeTokens] = React.useState(
         props.initialOneTimeTokens,
     );
-    const [shareableLinkState, setShareableLinkState] =
-        React.useState<ShareableLinkState>({ type: "idle" });
+    const createShareableLinkMutation = useMutation({
+        mutationFn: () => props.agent.createOneTimeToken(props.lsResult.path),
+        onSuccess: (response) => {
+            setOneTimeTokens((tokens) => [...tokens, response.one_time_token]);
+        },
+    });
 
     React.useEffect(() => {
         setOneTimeTokens(props.initialOneTimeTokens);
-        setShareableLinkState({ type: "idle" });
+        createShareableLinkMutation.reset();
     }, [props.path, props.initialOneTimeTokens]);
 
     const copyToClipboard = async (text: string, commandType: string) => {
@@ -342,26 +342,6 @@ export function FileDetailView(props: {
             setTimeout(() => setCopiedCommand(null), 2000);
         } catch (err) {
             console.error("Failed to copy:", err);
-        }
-    };
-
-    const handleCreateShareableLink = async () => {
-        setShareableLinkState({ type: "creating" });
-
-        try {
-            const response = await props.agent.createOneTimeToken(
-                props.lsResult.path,
-            );
-            setOneTimeTokens((tokens) => [...tokens, response.one_time_token]);
-            setShareableLinkState({ type: "idle" });
-        } catch (error) {
-            setShareableLinkState({
-                type: "error",
-                message: getErrorMessage(
-                    error,
-                    "Could not create a shareable link",
-                ),
-            });
         }
     };
 
@@ -396,9 +376,17 @@ export function FileDetailView(props: {
                 <ShareableLinksSection
                     downloadUrl={props.downloadUrl}
                     oneTimeTokens={oneTimeTokens}
-                    state={shareableLinkState}
+                    isCreating={createShareableLinkMutation.isPending}
+                    errorMessage={
+                        createShareableLinkMutation.isError
+                            ? getErrorMessage(
+                                  createShareableLinkMutation.error,
+                                  "Could not create a shareable link",
+                              )
+                            : null
+                    }
                     copiedCommand={copiedCommand}
-                    onCreate={handleCreateShareableLink}
+                    onCreate={() => createShareableLinkMutation.mutate()}
                     onCopy={copyToClipboard}
                 />
             </article>
@@ -410,7 +398,8 @@ export function FileDetailView(props: {
 function ShareableLinksSection(props: {
     downloadUrl: string;
     oneTimeTokens: Array<string>;
-    state: ShareableLinkState;
+    isCreating: boolean;
+    errorMessage: string | null;
     copiedCommand: string | null;
     onCreate: () => void;
     onCopy: (text: string, commandType: string) => void;
@@ -435,22 +424,22 @@ function ShareableLinksSection(props: {
                 <button
                     type="button"
                     onClick={props.onCreate}
-                    disabled={props.state.type === "creating"}
+                    disabled={props.isCreating}
                     className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     <Download className="h-4 w-4" />
-                    {props.state.type === "creating"
+                    {props.isCreating
                         ? "Creating link..."
                         : "Create shareable link"}
                 </button>
             </div>
 
-            {props.state.type === "error" ? (
+            {props.errorMessage ? (
                 <p
                     role="alert"
                     className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
                 >
-                    {props.state.message}
+                    {props.errorMessage}
                 </p>
             ) : null}
 

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
     createFileRoute,
     Link,
@@ -38,6 +39,7 @@ import { CopyablePath } from "#ui/components/copyable-code-row";
 import { RouteError } from "#ui/components/route-error";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { UpgradeButton } from "#ui/components/upgrade-button";
+import { agentsQueryOptions } from "#ui/queries";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { Route as RootRoute } from "./__root";
 
@@ -93,29 +95,42 @@ function AgentLifecycle(props: { agent: Agent }) {
     const shouldAppearStarting =
         props.agent.status === "starting" || state?.starting === true;
 
-    const start = React.useCallback(() => {
-        setStartStates((states) => ({
-            ...states,
-            [props.agent.id]: {
-                starting: true,
-                error: null,
-                autoRedirect: true,
-            },
-        }));
-        void props.agent
-            .start()
-            .then(() => router.invalidate())
-            .catch((error: unknown) => {
-                setStartStates((states) => ({
-                    ...states,
-                    [props.agent.id]: {
-                        starting: false,
-                        error: getStartErrorMessage(error),
-                        autoRedirect: true,
-                    },
-                }));
+    const startMutation = useMutation({
+        mutationFn: () => props.agent.start(),
+        onMutate: () => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: true,
+                    error: null,
+                    autoRedirect: true,
+                },
+            }));
+        },
+        onSuccess: () => router.invalidate(),
+        onError: (error) => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: false,
+                    error: getStartErrorMessage(error),
+                    autoRedirect: true,
+                },
+            }));
+        },
+    });
+    const shutdownMutation = useMutation({
+        mutationFn: () => props.agent.shutdown(),
+        onSuccess: async () => {
+            setStartStates((states) => {
+                const next = { ...states };
+                delete next[props.agent.id];
+                return next;
             });
-    }, [props.agent, router, setStartStates]);
+            await router.invalidate();
+        },
+    });
+    const start = startMutation.mutate;
 
     React.useEffect(() => {
         if (
@@ -134,17 +149,6 @@ function AgentLifecycle(props: { agent: Agent }) {
         state?.error,
         state?.starting,
     ]);
-
-    const shutdown = () => {
-        void props.agent.shutdown().then(() => {
-            setStartStates((states) => {
-                const next = { ...states };
-                delete next[props.agent.id];
-                return next;
-            });
-            return router.invalidate();
-        });
-    };
 
     return (
         <div className="flex h-full items-center justify-center p-8">
@@ -189,7 +193,7 @@ function AgentLifecycle(props: { agent: Agent }) {
                     <div className="mt-6 flex justify-center gap-3">
                         <button
                             type="button"
-                            onClick={start}
+                            onClick={() => start()}
                             disabled={state?.starting === true}
                             className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:opacity-50"
                         >
@@ -198,7 +202,8 @@ function AgentLifecycle(props: { agent: Agent }) {
                         {shouldAppearStarting ? (
                             <button
                                 type="button"
-                                onClick={shutdown}
+                                onClick={() => shutdownMutation.mutate()}
+                                disabled={shutdownMutation.isPending}
                                 className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
                             >
                                 Shutdown
@@ -214,6 +219,7 @@ function AgentLifecycle(props: { agent: Agent }) {
 /** Preserves the existing connected detail cards while displaying live connection duration. */
 function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     const router = useRouter();
+    const queryClient = useQueryClient();
     const { api } = Route.useRouteContext();
     const { serverInfo } = RootRoute.useLoaderData();
     const startStates = useAtomValue(agentStartStatesAtom);
@@ -371,7 +377,10 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             ) =>
                                 waitForRestart(async () => {
                                     const upgradedAgent = (
-                                        await api.listAgents()
+                                        await queryClient.fetchQuery({
+                                            ...agentsQueryOptions(api),
+                                            staleTime: 0,
+                                        })
                                     ).find(
                                         (agent) =>
                                             agent.id === props.agent.id &&
@@ -415,6 +424,7 @@ function AgentDetailsHeader(props: {
     details: AgentDetailsResponse;
 }) {
     const router = useRouter();
+    const queryClient = useQueryClient();
     const { api } = Route.useRouteContext();
 
     return (
@@ -435,7 +445,10 @@ function AgentDetailsHeader(props: {
                         waitUntilReady={() =>
                             waitForRestart(async () => {
                                 const restartedAgent = (
-                                    await api.listAgents()
+                                    await queryClient.fetchQuery({
+                                        ...agentsQueryOptions(api),
+                                        staleTime: 0,
+                                    })
                                 ).find(
                                     (agent) =>
                                         agent.id === props.agent.id &&

@@ -1,15 +1,10 @@
 import React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { GitCompareArrows } from "lucide-react";
 import type { ApiClient, Agent } from "#ui/api-client";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { AgentPathFields } from "#ui/components/browser/sync";
 import { getErrorMessage } from "#ui/components/browser/utils";
-
-type FileDiffState =
-    | { type: "idle" }
-    | { type: "loading" }
-    | { type: "success"; diff: string }
-    | { type: "error"; message: string };
 
 /** Compares the selected file against an editable file on any connected agent. */
 export function FileDiffView(props: {
@@ -32,27 +27,21 @@ export function FileDiffView(props: {
         defaultAgent?.id ?? "",
     );
     const [selectedPath, setSelectedPath] = React.useState(props.filePath);
-    const [state, setState] = React.useState<FileDiffState>({ type: "idle" });
+    const diffMutation = useMutation({
+        mutationFn: () =>
+            props.api.diffFiles(
+                { agent: props.agentId, path: props.filePath },
+                { agent: selectedAgentId, path: selectedPath },
+            ),
+    });
 
-    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         if (!selectedAgentId) {
             return;
         }
 
-        setState({ type: "loading" });
-        try {
-            const response = await props.api.diffFiles(
-                { agent: props.agentId, path: props.filePath },
-                { agent: selectedAgentId, path: selectedPath },
-            );
-            setState({ type: "success", diff: response.unified_diff });
-        } catch (error) {
-            setState({
-                type: "error",
-                message: getErrorMessage(error, "Failed to generate diff"),
-            });
-        }
+        diffMutation.mutate();
     };
 
     return (
@@ -85,7 +74,7 @@ export function FileDiffView(props: {
                         agentId={selectedAgentId}
                         path={selectedPath}
                         operation="Diff"
-                        disabled={state.type === "loading"}
+                        disabled={diffMutation.isPending}
                         onAgentChange={setSelectedAgentId}
                         onPathChange={setSelectedPath}
                     />
@@ -93,33 +82,36 @@ export function FileDiffView(props: {
                         <button
                             type="submit"
                             disabled={
-                                state.type === "loading" || !selectedAgentId
+                                diffMutation.isPending || !selectedAgentId
                             }
                             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <GitCompareArrows className="h-4 w-4" />
-                            {state.type === "loading"
+                            {diffMutation.isPending
                                 ? "Generating diff..."
                                 : "Generate diff"}
                         </button>
                     </div>
                 </form>
 
-                {state.type === "error" ? (
+                {diffMutation.isError ? (
                     <p
                         role="alert"
                         className="border-t border-slate-800 p-6 text-sm text-red-300 md:p-8"
                     >
-                        {state.message}
+                        {getErrorMessage(
+                            diffMutation.error,
+                            "Failed to generate diff",
+                        )}
                     </p>
-                ) : state.type === "success" ? (
+                ) : diffMutation.isSuccess ? (
                     <section
                         aria-label="File diff"
                         className="border-t border-slate-800 p-4 md:p-6"
                     >
-                        {state.diff ? (
+                        {diffMutation.data.unified_diff ? (
                             <pre className="max-h-[70vh] overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-sm leading-6 text-slate-200">
-                                <code>{state.diff}</code>
+                                <code>{diffMutation.data.unified_diff}</code>
                             </pre>
                         ) : (
                             <p className="text-sm text-slate-400">

@@ -1,4 +1,5 @@
 import React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import type { Agent } from "#ui/api-client";
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
@@ -239,6 +240,24 @@ export function UploadQueueManager(props: {
     const agentsRef = React.useRef(props.agents);
     const preparedDirectories = React.useRef(new Map<string, Promise<void>>());
     const hadActiveUploads = React.useRef(false);
+    const uploadMutation = useMutation({
+        mutationFn: async (
+            operation:
+                | { type: "directory"; agent: Agent; path: string }
+                | {
+                      type: "file";
+                      agent: Agent;
+                      path: string;
+                      file: File;
+                  },
+        ) => {
+            if (operation.type === "directory") {
+                await operation.agent.createDirectory(operation.path);
+                return;
+            }
+            await operation.agent.upload(operation.path, operation.file);
+        },
+    });
 
     agentsRef.current = props.agents;
 
@@ -249,7 +268,11 @@ export function UploadQueueManager(props: {
             if (existing) {
                 return existing;
             }
-            const request = agent.createDirectory(path).then(() => undefined);
+            const request = uploadMutation.mutateAsync({
+                type: "directory",
+                agent,
+                path,
+            });
             preparedDirectories.current.set(key, request);
             return request;
         };
@@ -277,13 +300,15 @@ export function UploadQueueManager(props: {
             );
             const operation = agent
                 ? prepareDirectory(agent, getUploadParentPath(item)).then(() =>
-                      agent.upload(
-                          joinBrowserPath(
+                      uploadMutation.mutateAsync({
+                          type: "file",
+                          agent,
+                          path: joinBrowserPath(
                               item.destinationPath,
                               item.relativePath,
                           ),
-                          item.file,
-                      ),
+                          file: item.file,
+                      }),
                   )
                 : Promise.reject(new Error("Upload agent is unavailable."));
 
@@ -302,6 +327,7 @@ export function UploadQueueManager(props: {
         finishDirectory,
         finishUpload,
         queue,
+        uploadMutation,
     ]);
 
     React.useEffect(() => {

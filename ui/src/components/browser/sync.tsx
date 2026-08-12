@@ -1,22 +1,12 @@
 import React from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Info, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
+import { transfersQueryOptions } from "#ui/queries";
 import { formatSize } from "#ui/utils/path";
-
-type SyncState =
-    | { type: "idle" }
-    | { type: "starting" }
-    | {
-          type: "active";
-          requestId: number;
-          transferredBytes: number;
-          totalBytes: number;
-      }
-    | { type: "success"; transferredBytes: number }
-    | { type: "error"; message: string };
 
 /** Reuses the agent and absolute-path controls for cross-agent file operations. */
 export function AgentPathFields(props: {
@@ -218,73 +208,9 @@ export function SyncView(props: {
         React.useState<CopyExistingMode>("error");
     const [overrideExistingFile, setOverrideExistingFile] =
         React.useState(false);
-    const [state, setState] = React.useState<SyncState>({ type: "idle" });
-    const activeRequestId = state.type === "active" ? state.requestId : null;
-
-    React.useEffect(() => {
-        if (activeRequestId === null) return;
-
-        let cancelled = false;
-        let polling = false;
-        const pollProgress = async () => {
-            if (polling) return;
-            polling = true;
-            try {
-                const response = await props.api.getTransferProgress();
-                if (cancelled) return;
-                const transfer = response.transfers.find(
-                    (entry) => entry.request_id === activeRequestId,
-                );
-                if (!transfer) return;
-                if (transfer.state === "completed") {
-                    setState({
-                        type: "success",
-                        transferredBytes: transfer.transferred_bytes,
-                    });
-                } else if (transfer.state === "errored") {
-                    setState({
-                        type: "error",
-                        message: transfer.error ?? "Sync failed",
-                    });
-                } else {
-                    setState({
-                        type: "active",
-                        requestId: activeRequestId,
-                        transferredBytes: transfer.transferred_bytes,
-                        totalBytes: transfer.total_bytes,
-                    });
-                }
-            } catch (error) {
-                if (!cancelled) {
-                    setState({
-                        type: "error",
-                        message: getErrorMessage(
-                            error,
-                            "Failed to read sync progress",
-                        ),
-                    });
-                }
-            } finally {
-                polling = false;
-            }
-        };
-
-        void pollProgress();
-        const timer = window.setInterval(() => void pollProgress(), 500);
-        return () => {
-            cancelled = true;
-            window.clearInterval(timer);
-        };
-    }, [activeRequestId, props.api]);
-
-    const isBusy = state.type === "starting" || state.type === "active";
-    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        if (!selectedAgentId) return;
-
-        setState({ type: "starting" });
-        try {
-            const response = await props.sourceAgent.copyTo(
+    const syncMutation = useMutation({
+        mutationFn: () =>
+            props.sourceAgent.copyTo(
                 { agent: selectedAgentId, path: selectedPath },
                 props.sourcePath,
                 {
@@ -295,19 +221,39 @@ export function SyncView(props: {
                                 : "error"
                             : existingMode,
                 },
+            ),
+    });
+    const activeRequestId = syncMutation.data?.copy_request_id ?? null;
+    const transferQuery = useQuery({
+        ...transfersQueryOptions(props.api),
+        enabled: activeRequestId !== null,
+        retry: false,
+        select: (response) =>
+            response.transfers.find(
+                (entry) => entry.request_id === activeRequestId,
+            ),
+        refetchInterval: (query) => {
+            const transfer = query.state.data?.transfers.find(
+                (entry) => entry.request_id === activeRequestId,
             );
-            setState({
-                type: "active",
-                requestId: response.copy_request_id,
-                transferredBytes: 0,
-                totalBytes: 0,
-            });
-        } catch (error) {
-            setState({
-                type: "error",
-                message: getErrorMessage(error, "Failed to start sync"),
-            });
-        }
+            return transfer?.state === "completed" ||
+                transfer?.state === "errored"
+                ? false
+                : 500;
+        },
+    });
+    const transfer = transferQuery.data;
+    const isActive =
+        syncMutation.isSuccess &&
+        transfer?.state !== "completed" &&
+        transfer?.state !== "errored" &&
+        !transferQuery.isError;
+    const isBusy = syncMutation.isPending || isActive;
+    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (!selectedAgentId) return;
+
+        syncMutation.mutate();
     };
 
     const entryLabel = props.entryType === "file" ? "file" : "directory";
@@ -357,38 +303,49 @@ export function SyncView(props: {
                         ) : (
                             <RefreshCw className="h-4 w-4" />
                         )}
-                        {state.type === "starting"
+                        {syncMutation.isPending
                             ? "Starting sync..."
-                            : state.type === "active"
+                            : isActive
                               ? "Syncing..."
                               : "Sync"}
                     </button>
-                    {state.type === "active" ? (
+                    {isActive ? (
                         <span role="status" className="text-sm text-slate-400">
-                            {formatSize(state.transferredBytes)} transferred
-                            {state.totalBytes > 0
-                                ? ` of ${formatSize(state.totalBytes)}`
+                            {formatSize(transfer?.transferred_bytes ?? 0)}{" "}
+                            transferred
+                            {(transfer?.total_bytes ?? 0) > 0
+                                ? ` of ${formatSize(transfer?.total_bytes ?? 0)}`
                                 : ""}
                         </span>
                     ) : null}
                 </div>
             </form>
 
-            {state.type === "success" ? (
+            {transfer?.state === "completed" ? (
                 <p
                     role="status"
                     className="border-t border-slate-800 p-6 text-sm text-emerald-300 md:p-8"
                 >
                     Sync completed successfully.{" "}
-                    {formatSize(state.transferredBytes)} transferred to{" "}
+                    {formatSize(transfer.transferred_bytes)} transferred to{" "}
                     {selectedPath}.
                 </p>
-            ) : state.type === "error" ? (
+            ) : syncMutation.isError ||
+              transferQuery.isError ||
+              transfer?.state === "errored" ? (
                 <p
                     role="alert"
                     className="border-t border-slate-800 p-6 text-sm text-red-300 md:p-8"
                 >
-                    Sync failed: {state.message}
+                    Sync failed:{" "}
+                    {transfer?.state === "errored"
+                        ? (transfer.error ?? "Sync failed")
+                        : getErrorMessage(
+                              syncMutation.error ?? transferQuery.error,
+                              transferQuery.isError
+                                  ? "Failed to read sync progress"
+                                  : "Failed to start sync",
+                          )}
                 </p>
             ) : null}
         </article>

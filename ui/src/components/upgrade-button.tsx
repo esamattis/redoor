@@ -1,13 +1,9 @@
 import * as React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { PackageOpen } from "lucide-react";
 
 import type { ServerInfoResponse } from "#ui/api-client";
 import { ConfirmationDialog } from "./confirmation-dialog";
-
-type UpgradeState =
-    | { type: "idle" }
-    | { type: "upgrading" }
-    | { type: "error"; message: string };
 
 type UpgradeAction = "published_release" | "running_server";
 
@@ -61,7 +57,6 @@ function UpgradeConfirmationDescription(props: { targetDescription: string }) {
 /** Presents upgrade identity and availability before confirming the disruptive action. */
 export function UpgradeButton(props: UpgradeButtonProps) {
     const [action, setAction] = React.useState<UpgradeAction | null>(null);
-    const [state, setState] = React.useState<UpgradeState>({ type: "idle" });
     const [targetVersion, setTargetVersion] = React.useState(
         props.serverInfo.version,
     );
@@ -79,29 +74,28 @@ export function UpgradeButton(props: UpgradeButtonProps) {
         action === "running_server"
             ? `Force install the exact Redoor ${props.serverInfo.version} executable currently running this server.`
             : `Download and install Redoor ${normalizedTargetVersion} for ${props.agentOs}/${props.agentArch}.`;
-
-    const close = () => {
-        if (state.type === "upgrading") return;
-        setAction(null);
-        setState({ type: "idle" });
-    };
-
-    const upgrade = async () => {
-        if (action === null) return;
-        setState({ type: "upgrading" });
-        try {
-            if (action === "running_server") {
+    const upgradeMutation = useMutation({
+        mutationFn: async (selectedAction: UpgradeAction) => {
+            if (selectedAction === "running_server") {
                 await props.forceInstallRunningBinary();
                 await props.waitUntilReady(props.serverInfo.version, true);
-            } else {
-                await props.upgrade(normalizedTargetVersion);
-                await props.waitUntilReady(normalizedTargetVersion, false);
+                return;
             }
-            setAction(null);
-            setState({ type: "idle" });
-        } catch (error) {
-            setState({ type: "error", message: upgradeErrorMessage(error) });
-        }
+            await props.upgrade(normalizedTargetVersion);
+            await props.waitUntilReady(normalizedTargetVersion, false);
+        },
+        onSuccess: () => setAction(null),
+    });
+
+    const close = () => {
+        if (upgradeMutation.isPending) return;
+        setAction(null);
+        upgradeMutation.reset();
+    };
+
+    const upgrade = () => {
+        if (action === null) return;
+        upgradeMutation.mutate(action);
     };
 
     return (
@@ -136,7 +130,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         id="agent-upgrade-target-version"
                         type="text"
                         value={targetVersion}
-                        disabled={state.type === "upgrading"}
+                        disabled={upgradeMutation.isPending}
                         spellCheck={false}
                         autoComplete="off"
                         onChange={(event) =>
@@ -175,7 +169,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         type="button"
                         disabled={
                             unavailableReason !== null ||
-                            state.type === "upgrading" ||
+                            upgradeMutation.isPending ||
                             normalizedTargetVersion.length === 0
                         }
                         aria-describedby={
@@ -184,7 +178,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                                 : undefined
                         }
                         onClick={() => {
-                            setState({ type: "idle" });
+                            upgradeMutation.reset();
                             setAction("published_release");
                         }}
                         className="inline-flex items-center justify-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
@@ -196,7 +190,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         type="button"
                         disabled={
                             runningBinaryUnavailableReason !== null ||
-                            state.type === "upgrading"
+                            upgradeMutation.isPending
                         }
                         aria-describedby={
                             runningBinaryUnavailableReason
@@ -207,7 +201,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                                 : undefined
                         }
                         onClick={() => {
-                            setState({ type: "idle" });
+                            upgradeMutation.reset();
                             setAction("running_server");
                         }}
                         className="inline-flex items-center justify-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:border-slate-700 disabled:bg-slate-800 disabled:text-slate-500"
@@ -242,10 +236,14 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                     action === "running_server" ? "Force install" : "Upgrade"
                 }
                 busyLabel="Installing..."
-                isBusy={state.type === "upgrading"}
-                errorMessage={state.type === "error" ? state.message : null}
+                isBusy={upgradeMutation.isPending}
+                errorMessage={
+                    upgradeMutation.isError
+                        ? upgradeErrorMessage(upgradeMutation.error)
+                        : null
+                }
                 onClose={close}
-                onConfirm={() => void upgrade()}
+                onConfirm={upgrade}
             />
         </section>
     );

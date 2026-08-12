@@ -1,12 +1,8 @@
 import * as React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 
 import { ConfirmationDialog } from "./confirmation-dialog";
-
-type RestartState =
-    | { type: "idle" }
-    | { type: "restarting" }
-    | { type: "error"; message: string };
 
 /** Normalizes failures from both API requests and readiness polling. */
 function restartErrorMessage(error: unknown): string {
@@ -21,24 +17,20 @@ export function RestartButton(props: {
     waitUntilReady: () => Promise<void>;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
-    const [state, setState] = React.useState<RestartState>({ type: "idle" });
-
-    const close = () => {
-        if (state.type === "restarting") return;
-        setIsOpen(false);
-        setState({ type: "idle" });
-    };
-
-    const restart = async () => {
-        setState({ type: "restarting" });
-        try {
+    const restartMutation = useMutation({
+        mutationFn: async () => {
             await props.restart();
             await props.waitUntilReady();
+        },
+        onSuccess: () => {
             setIsOpen(false);
-            setState({ type: "idle" });
-        } catch (error) {
-            setState({ type: "error", message: restartErrorMessage(error) });
-        }
+        },
+    });
+
+    const close = () => {
+        if (restartMutation.isPending) return;
+        setIsOpen(false);
+        restartMutation.reset();
     };
 
     return (
@@ -46,7 +38,7 @@ export function RestartButton(props: {
             <button
                 type="button"
                 onClick={() => {
-                    setState({ type: "idle" });
+                    restartMutation.reset();
                     setIsOpen(true);
                 }}
                 className="inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
@@ -60,10 +52,14 @@ export function RestartButton(props: {
                 description={props.description}
                 confirmLabel="Restart"
                 busyLabel="Restarting..."
-                isBusy={state.type === "restarting"}
-                errorMessage={state.type === "error" ? state.message : null}
+                isBusy={restartMutation.isPending}
+                errorMessage={
+                    restartMutation.isError
+                        ? restartErrorMessage(restartMutation.error)
+                        : null
+                }
                 onClose={close}
-                onConfirm={() => void restart()}
+                onConfirm={() => restartMutation.mutate()}
             />
         </>
     );

@@ -34,6 +34,7 @@ import {
     type ServerInfoResponse,
 } from "#ui/api-client";
 import type { AnyRouter } from "@tanstack/react-router";
+import { useMutation, type QueryClient } from "@tanstack/react-query";
 
 import {
     selectedFilesAtom,
@@ -59,6 +60,11 @@ import {
     agentStartStatesAtom,
     getStartErrorMessage,
 } from "#ui/agent-start-state";
+import {
+    agentsQueryOptions,
+    serverInfoQueryOptions,
+    transfersQueryOptions,
+} from "#ui/queries";
 
 const uiEventSchema: z.ZodType<UiEvent> = z.object({
     type: z.literal("refresh"),
@@ -66,6 +72,7 @@ const uiEventSchema: z.ZodType<UiEvent> = z.object({
 
 interface AppRouterContext {
     api: ApiClient;
+    queryClient: QueryClient;
 }
 
 export const ding = () => {};
@@ -238,9 +245,9 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
         }
 
         const [agents, transferProgress, serverInfo] = await Promise.all([
-            context.api.listAgents(),
-            context.api.getTransferProgress(),
-            context.api.getServerInfo(),
+            context.queryClient.fetchQuery(agentsQueryOptions(context.api)),
+            context.queryClient.fetchQuery(transfersQueryOptions(context.api)),
+            context.queryClient.fetchQuery(serverInfoQueryOptions(context.api)),
         ]);
 
         return {
@@ -423,44 +430,46 @@ function TopTabStrip(props: {
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const router = useRouter();
     const { api } = Route.useRouteContext();
-    const [isLoggingOut, setIsLoggingOut] = React.useState(false);
     const [isMenuOpen, setIsMenuOpen] = React.useState(false);
     const menuButtonRef = React.useRef<HTMLButtonElement>(null);
+    const startMutation = useMutation({
+        mutationFn: (agent: RootLoaderData["agents"][number]) => agent.start(),
+        onMutate: (agent) => {
+            setStartStates((states) => ({
+                ...states,
+                [agent.id]: {
+                    starting: true,
+                    error: null,
+                    autoRedirect: true,
+                },
+            }));
+            void router.navigate({
+                to: "/agents/$agentId",
+                params: { agentId: agent.id },
+            });
+        },
+        onSuccess: () => router.invalidate(),
+        onError: (error, agent) => {
+            setStartStates((states) => ({
+                ...states,
+                [agent.id]: {
+                    starting: false,
+                    error: getStartErrorMessage(error),
+                    autoRedirect: true,
+                },
+            }));
+        },
+    });
+    const logoutMutation = useMutation({
+        mutationFn: () => api.logout(),
+        onSuccess: () => {
+            window.location.replace("/login");
+        },
+    });
 
     /** Opens status immediately, then starts the managed process without blocking navigation. */
     const openManagedAgent = (agent: RootLoaderData["agents"][number]) => {
-        setStartStates((states) => ({
-            ...states,
-            [agent.id]: { starting: true, error: null, autoRedirect: true },
-        }));
-        void router.navigate({
-            to: "/agents/$agentId",
-            params: { agentId: agent.id },
-        });
-        void agent
-            .start()
-            .then(() => router.invalidate())
-            .catch((error: unknown) => {
-                setStartStates((states) => ({
-                    ...states,
-                    [agent.id]: {
-                        starting: false,
-                        error: getStartErrorMessage(error),
-                        autoRedirect: true,
-                    },
-                }));
-            });
-    };
-
-    /** Removes the durable session before leaving authenticated application state. */
-    const logout = async () => {
-        setIsLoggingOut(true);
-        try {
-            await api.logout();
-            window.location.replace("/login");
-        } finally {
-            setIsLoggingOut(false);
-        }
+        startMutation.mutate(agent);
     };
 
     return (
@@ -544,19 +553,19 @@ function TopTabStrip(props: {
                 isOpen={isMenuOpen}
                 title="Menu"
                 closeAriaLabel="Close menu"
-                isBusy={isLoggingOut}
+                isBusy={logoutMutation.isPending}
                 anchorRef={menuButtonRef}
                 onClose={() => {
-                    if (!isLoggingOut) {
+                    if (!logoutMutation.isPending) {
                         setIsMenuOpen(false);
                     }
                 }}
             >
                 <ApplicationMenu
                     pathname={props.pathname}
-                    isLoggingOut={isLoggingOut}
+                    isLoggingOut={logoutMutation.isPending}
                     onClose={() => setIsMenuOpen(false)}
-                    onLogout={logout}
+                    onLogout={() => logoutMutation.mutate()}
                 />
             </Dialog>
         </header>
@@ -690,21 +699,16 @@ function RouteLoadingIndicator() {
     );
 }
 
-type DeleteState =
-    | { type: "idle" }
-    | { type: "deleting" }
-    | { type: "error"; message: string };
-
 /** Renders controls that operate on the complete selected-items list. */
 function SelectedFilesPanelActions(props: {
-    deleteState: DeleteState;
+    isDeleting: boolean;
     selectedFileCount: number;
     onOpenDeleteDialog: () => void;
     onClearSelectedFiles: () => void;
 }) {
     return (
         <div className="flex items-center gap-2">
-            {props.deleteState.type === "deleting" ? (
+            {props.isDeleting ? (
                 <span
                     className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500/10 text-red-400"
                     aria-label="Deleting selected items"
@@ -840,10 +844,57 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
     const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
-    const [deleteState, setDeleteState] = React.useState<DeleteState>({
-        type: "idle",
-    });
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+    const deleteMutation = useMutation({
+        mutationFn: async (files: SelectedPath[]) => {
+            const agentsById = new Map(
+                props.agents.map((agent) => [agent.id, agent]),
+            );
+            const results = await Promise.allSettled(
+                files.map((file) => {
+                    const agent = agentsById.get(file.agentId);
+                    if (!agent) {
+                        return Promise.reject(
+                            new Error(
+                                `Agent unavailable for selected item: ${file.agentId}`,
+                            ),
+                        );
+                    }
+                    return agent.deleteFile(file.path);
+                }),
+            );
+            const successfulDeletes = files.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+            const failedDeletes = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successfulDeletes.length > 0) {
+                await router.invalidate();
+                await router.load();
+                successfulDeletes.forEach((file) => {
+                    unselectFile({ agentId: file.agentId, path: file.path });
+                });
+            }
+
+            if (failedDeletes.length > 0) {
+                const firstFailedDelete = failedDeletes[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedDelete ? firstFailedDelete.reason : undefined,
+                ).replace(/^Upload failed$/, "Delete failed");
+                throw new Error(
+                    successfulDeletes.length > 0
+                        ? `Deleted ${successfulDeletes.length} of ${files.length} items. ${failureMessage}`
+                        : failureMessage,
+                );
+            }
+        },
+        onSuccess: () => {
+            setIsDeleteDialogOpen(false);
+        },
+    });
 
     if (selectedFiles.length === 0) {
         return null;
@@ -864,91 +915,19 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
 
     /** Keeps destructive confirmation visible while its request is in flight. */
     const closeDeleteDialog = () => {
-        if (deleteState.type === "deleting") {
+        if (deleteMutation.isPending) {
             return;
         }
 
         setIsDeleteDialogOpen(false);
-        setDeleteState({ type: "idle" });
+        deleteMutation.reset();
     };
 
-    const handleDeleteSelectedFiles = async () => {
+    const handleDeleteSelectedFiles = () => {
         if (selectedFiles.length === 0) {
             return;
         }
-
-        setDeleteState({ type: "deleting" });
-
-        try {
-            const agentsById = new Map(
-                props.agents.map((agent) => [agent.id, agent]),
-            );
-
-            const results = await Promise.allSettled(
-                selectedFiles.map((file) => {
-                    const agent = agentsById.get(file.agentId);
-
-                    if (!agent) {
-                        return Promise.reject(
-                            new Error(
-                                `Agent unavailable for selected item: ${file.agentId}`,
-                            ),
-                        );
-                    }
-
-                    return agent.deleteFile(file.path);
-                }),
-            );
-
-            const successfulDeletes = selectedFiles.filter(
-                (_file, index) => results[index]?.status === "fulfilled",
-            );
-            const failedDeletes = results.filter(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successfulDeletes.length > 0) {
-                await router.invalidate();
-                // Force the active route loaders to run now so the directory listing
-                // reflects the deleted files before we assert on the updated UI state.
-                await router.load();
-
-                successfulDeletes.forEach((file) => {
-                    unselectFile({
-                        agentId: file.agentId,
-                        path: file.path,
-                    });
-                });
-            }
-
-            if (failedDeletes.length > 0) {
-                const firstFailedDelete = failedDeletes[0];
-                const failureMessage = getErrorMessage(
-                    firstFailedDelete ? firstFailedDelete.reason : undefined,
-                ).replace(/^Upload failed$/, "Delete failed");
-
-                setDeleteState({
-                    type: "error",
-                    message:
-                        successfulDeletes.length > 0
-                            ? `Deleted ${successfulDeletes.length} of ${selectedFiles.length} items. ${failureMessage}`
-                            : failureMessage,
-                });
-                return;
-            }
-
-            setIsDeleteDialogOpen(false);
-            setDeleteState({ type: "idle" });
-        } catch (error) {
-            setDeleteState({
-                type: "error",
-                message: getErrorMessage(error).replace(
-                    /^Upload failed$/,
-                    "Delete failed",
-                ),
-            });
-        }
+        deleteMutation.mutate([...selectedFiles]);
     };
 
     return (
@@ -965,10 +944,10 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                 }
                 actions={
                     <SelectedFilesPanelActions
-                        deleteState={deleteState}
+                        isDeleting={deleteMutation.isPending}
                         selectedFileCount={selectedFiles.length}
                         onOpenDeleteDialog={() => {
-                            setDeleteState({ type: "idle" });
+                            deleteMutation.reset();
                             setIsDeleteDialogOpen(true);
                         }}
                         onClearSelectedFiles={clearSelectedFiles}
@@ -992,9 +971,14 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
                         : `Delete ${selectedFiles.length} items`
                 }
                 busyLabel="Deleting..."
-                isBusy={deleteState.type === "deleting"}
+                isBusy={deleteMutation.isPending}
                 errorMessage={
-                    deleteState.type === "error" ? deleteState.message : null
+                    deleteMutation.isError
+                        ? getErrorMessage(deleteMutation.error).replace(
+                              /^Upload failed$/,
+                              "Delete failed",
+                          )
+                        : null
                 }
                 onClose={closeDeleteDialog}
                 onConfirm={handleDeleteSelectedFiles}

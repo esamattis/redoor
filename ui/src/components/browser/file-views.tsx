@@ -1,18 +1,9 @@
 import React from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "#ui/api-client";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { getErrorMessage } from "#ui/components/browser/utils";
-
-type FileEditLoadState =
-    | { type: "loading" }
-    | { type: "ready" }
-    | { type: "error"; message: string };
-
-type FileEditSaveState =
-    | { type: "idle" }
-    | { type: "saving" }
-    | { type: "saved" }
-    | { type: "error"; message: string };
+import { fileContentQueryOptions } from "#ui/queries";
 
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
@@ -75,104 +66,58 @@ export function FileEditView(props: {
     mimeType: string;
     downloadUrl: string;
 }) {
-    const agentRef = React.useRef(props.agent);
-    agentRef.current = props.agent;
-    const [loadState, setLoadState] = React.useState<FileEditLoadState>({
-        type: "loading",
+    const queryClient = useQueryClient();
+    const contentQuery = useQuery(
+        fileContentQueryOptions(props.agent, props.filePath),
+    );
+    const [content, setContent] = React.useState(contentQuery.data ?? "");
+    const saveMutation = useMutation({
+        mutationFn: (nextContent: string) =>
+            props.agent.upload(
+                props.filePath,
+                new globalThis.File([nextContent], props.fileName, {
+                    type: props.mimeType || "text/plain",
+                }),
+            ),
+        onSuccess: (_, nextContent) => {
+            queryClient.setQueryData(
+                fileContentQueryOptions(props.agent, props.filePath).queryKey,
+                nextContent,
+            );
+        },
     });
-    const [saveState, setSaveState] = React.useState<FileEditSaveState>({
-        type: "idle",
-    });
-    const [savedContent, setSavedContent] = React.useState("");
-    const [content, setContent] = React.useState("");
-
-    React.useEffect(() => {
-        let cancelled = false;
-
-        const loadContent = async () => {
-            setLoadState({ type: "loading" });
-            setSaveState({ type: "idle" });
-
-            try {
-                // Read through a ref so route loader identity changes do not wipe in-progress edits.
-                const response = await agentRef.current.download(
-                    props.filePath,
-                );
-                const text = await response.text();
-                if (cancelled) {
-                    return;
-                }
-                setSavedContent(text);
-                setContent(text);
-                setLoadState({ type: "ready" });
-            } catch (error) {
-                if (cancelled) {
-                    return;
-                }
-                setLoadState({
-                    type: "error",
-                    message: getErrorMessage(error, "Failed to load file"),
-                });
-            }
-        };
-
-        void loadContent();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [props.filePath]);
-
+    const savedContent = contentQuery.data ?? "";
     const isDirty = content !== savedContent;
-    const isSaving = saveState.type === "saving";
-    const canEdit = loadState.type === "ready" && !isSaving;
+    const canEdit = contentQuery.isSuccess && !saveMutation.isPending;
 
     const handleRestore = () => {
         if (!canEdit) {
             return;
         }
         setContent(savedContent);
-        setSaveState({ type: "idle" });
+        saveMutation.reset();
     };
 
-    const handleSave = async () => {
+    const handleSave = () => {
         if (!canEdit) {
             return;
         }
-
-        setSaveState({ type: "saving" });
-
-        try {
-            await agentRef.current.upload(
-                props.filePath,
-                new globalThis.File([content], props.fileName, {
-                    type: props.mimeType || "text/plain",
-                }),
-            );
-            setSavedContent(content);
-            setSaveState({ type: "saved" });
-        } catch (error) {
-            setSaveState({
-                type: "error",
-                message: getErrorMessage(error, "Failed to save file"),
-            });
-        }
+        saveMutation.mutate(content);
     };
 
-    const statusMessage =
-        loadState.type === "loading"
-            ? "Loading file..."
-            : loadState.type === "error"
-              ? loadState.message
-              : saveState.type === "saving"
-                ? "Saving..."
-                : saveState.type === "saved"
-                  ? "Saved"
-                  : saveState.type === "error"
-                    ? saveState.message
-                    : isDirty
-                      ? "Unsaved changes"
-                      : null;
+    const statusMessage = contentQuery.isPending
+        ? "Loading file..."
+        : contentQuery.isError
+          ? getErrorMessage(contentQuery.error, "Failed to load file")
+          : saveMutation.isPending
+            ? "Saving..."
+            : saveMutation.isSuccess
+              ? "Saved"
+              : saveMutation.isError
+                ? getErrorMessage(saveMutation.error, "Failed to save file")
+                : isDirty
+                  ? "Unsaved changes"
+                  : null;
 
     return (
         <div>
@@ -200,29 +145,31 @@ export function FileEditView(props: {
                         <FileEditActions
                             statusMessage={statusMessage}
                             hasError={
-                                loadState.type === "error" ||
-                                saveState.type === "error"
+                                contentQuery.isError || saveMutation.isError
                             }
-                            isSaved={saveState.type === "saved"}
+                            isSaved={saveMutation.isSuccess}
                             canEdit={canEdit}
                             isDirty={isDirty}
-                            isSaving={isSaving}
+                            isSaving={saveMutation.isPending}
                             onRestore={handleRestore}
                             onSave={() => {
-                                void handleSave();
+                                handleSave();
                             }}
                         />
                     </div>
                 </header>
 
                 <div className="p-4 md:p-6">
-                    {loadState.type === "loading" ? (
+                    {contentQuery.isPending ? (
                         <p className="text-sm text-slate-400">
                             Loading file...
                         </p>
-                    ) : loadState.type === "error" ? (
+                    ) : contentQuery.isError ? (
                         <p className="text-sm text-red-300">
-                            {loadState.message}
+                            {getErrorMessage(
+                                contentQuery.error,
+                                "Failed to load file",
+                            )}
                         </p>
                     ) : (
                         <textarea
@@ -230,8 +177,8 @@ export function FileEditView(props: {
                             value={content}
                             onChange={(event) => {
                                 setContent(event.target.value);
-                                if (saveState.type === "saved") {
-                                    setSaveState({ type: "idle" });
+                                if (saveMutation.isSuccess) {
+                                    saveMutation.reset();
                                 }
                             }}
                             disabled={!canEdit}

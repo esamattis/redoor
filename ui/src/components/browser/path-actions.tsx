@@ -1,4 +1,5 @@
 import React from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
     Download,
@@ -21,20 +22,6 @@ import {
     joinBrowserPath,
 } from "#ui/components/browser/utils";
 
-type DeleteState =
-    | { type: "idle" }
-    | { type: "deleting" }
-    | { type: "error"; message: string };
-type RenameState =
-    | { type: "idle" }
-    | { type: "renaming" }
-    | { type: "error"; message: string };
-type NativeOpenState =
-    | { type: "idle" }
-    | { type: "opening" }
-    | { type: "success"; message: string }
-    | { type: "error"; message: string };
-
 /** Renames the current entry in a focused workflow and follows its new URL. */
 function RenamePathDialog(props: {
     agent: Agent;
@@ -49,73 +36,35 @@ function RenamePathDialog(props: {
     const navigate = useNavigate();
     const router = useRouter();
     const [name, setName] = React.useState(props.currentName);
-    const [renameState, setRenameState] = React.useState<RenameState>({
-        type: "idle",
-    });
-    const parentPath = getImmediateParentPath(props.path);
-    const trimmedName = name.trim();
-    const isRenaming = renameState.type === "renaming";
-    const canRename =
-        parentPath !== null &&
-        trimmedName.length > 0 &&
-        trimmedName !== props.currentName &&
-        !trimmedName.includes("/") &&
-        trimmedName !== "." &&
-        trimmedName !== "..";
-
-    React.useEffect(() => {
-        setName(props.currentName);
-        setRenameState({ type: "idle" });
-    }, [props.currentName, props.isOpen, props.path]);
-
-    const handleRename = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-
-        if (parentPath === null) {
-            setRenameState({
-                type: "error",
-                message: "The filesystem root cannot be renamed",
-            });
-            return;
-        }
-        if (!trimmedName) {
-            setRenameState({
-                type: "error",
-                message: `${props.entryType === "file" ? "File" : "Directory"} name is required`,
-            });
-            return;
-        }
-        if (
-            trimmedName.includes("/") ||
-            trimmedName === "." ||
-            trimmedName === ".."
-        ) {
-            setRenameState({
-                type: "error",
-                message: "Name must be a single path component",
-            });
-            return;
-        }
-        if (trimmedName === props.currentName) {
-            return;
-        }
-
-        const destinationPath = joinBrowserPath(parentPath, trimmedName);
-        setRenameState({ type: "renaming" });
-
-        try {
-            await props.agent.renamePath(
+    const [validationError, setValidationError] = React.useState<string | null>(
+        null,
+    );
+    const renameMutation = useMutation({
+        mutationFn: (newName: string) => {
+            const parentPath = getImmediateParentPath(props.path);
+            if (parentPath === null) {
+                throw new Error("The filesystem root cannot be renamed");
+            }
+            return props.agent.renamePath(
                 parentPath,
                 props.currentName,
-                trimmedName,
+                newName,
             );
+        },
+        onSuccess: async (_, newName) => {
+            const parentPath = getImmediateParentPath(props.path);
+            if (parentPath === null) {
+                return;
+            }
             props.onClose();
             if (!props.navigateAfterRename) {
                 await router.invalidate();
                 return;
             }
             await navigate({
-                to: props.agent.getBrowserUrl(destinationPath),
+                to: props.agent.getBrowserUrl(
+                    joinBrowserPath(parentPath, newName),
+                ),
                 search:
                     props.view === "details"
                         ? { view: "details" }
@@ -127,12 +76,52 @@ function RenamePathDialog(props: {
                               ? { view: "sync" }
                               : {},
             });
-        } catch (error) {
-            setRenameState({
-                type: "error",
-                message: getErrorMessage(error, "Rename failed"),
-            });
+        },
+    });
+    const parentPath = getImmediateParentPath(props.path);
+    const trimmedName = name.trim();
+    const isRenaming = renameMutation.isPending;
+    const canRename =
+        parentPath !== null &&
+        trimmedName.length > 0 &&
+        trimmedName !== props.currentName &&
+        !trimmedName.includes("/") &&
+        trimmedName !== "." &&
+        trimmedName !== "..";
+
+    React.useEffect(() => {
+        setName(props.currentName);
+        setValidationError(null);
+        renameMutation.reset();
+    }, [props.currentName, props.isOpen, props.path]);
+
+    const handleRename = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (parentPath === null) {
+            setValidationError("The filesystem root cannot be renamed");
+            return;
         }
+        if (!trimmedName) {
+            setValidationError(
+                `${props.entryType === "file" ? "File" : "Directory"} name is required`,
+            );
+            return;
+        }
+        if (
+            trimmedName.includes("/") ||
+            trimmedName === "." ||
+            trimmedName === ".."
+        ) {
+            setValidationError("Name must be a single path component");
+            return;
+        }
+        if (trimmedName === props.currentName) {
+            return;
+        }
+
+        setValidationError(null);
+        renameMutation.mutate(trimmedName);
     };
 
     const label = `Rename ${props.entryType}`;
@@ -145,7 +134,10 @@ function RenamePathDialog(props: {
             closeAriaLabel={`Close rename ${props.entryType} dialog`}
             isBusy={isRenaming}
             errorMessage={
-                renameState.type === "error" ? renameState.message : null
+                validationError ??
+                (renameMutation.isError
+                    ? getErrorMessage(renameMutation.error, "Rename failed")
+                    : null)
             }
             onClose={props.onClose}
         >
@@ -163,9 +155,8 @@ function RenamePathDialog(props: {
                     value={name}
                     onChange={(event) => {
                         setName(event.target.value);
-                        if (renameState.type === "error") {
-                            setRenameState({ type: "idle" });
-                        }
+                        setValidationError(null);
+                        renameMutation.reset();
                     }}
                     aria-label={label}
                     disabled={isRenaming || parentPath === null}
@@ -307,34 +298,30 @@ export function PersistentPathActions(props: {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
     const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
-    const [deleteState, setDeleteState] = React.useState<DeleteState>({
-        type: "idle",
+    const deleteMutation = useMutation({
+        mutationFn: () => props.agent.deleteFile(props.path),
+        onSuccess: async () => {
+            if (parentPath === null) {
+                return;
+            }
+            setIsConfirmDeleteOpen(false);
+            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
+        },
     });
 
     const closeDeleteDialog = () => {
-        if (deleteState.type === "deleting") {
+        if (deleteMutation.isPending) {
             return;
         }
         setIsConfirmDeleteOpen(false);
-        setDeleteState({ type: "idle" });
+        deleteMutation.reset();
     };
 
     const handleDelete = async () => {
         if (parentPath === null) {
             return;
         }
-        setDeleteState({ type: "deleting" });
-        try {
-            await props.agent.deleteFile(props.path);
-            setIsConfirmDeleteOpen(false);
-            setDeleteState({ type: "idle" });
-            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
-        } catch (error) {
-            setDeleteState({
-                type: "error",
-                message: getErrorMessage(error, "Delete failed"),
-            });
-        }
+        deleteMutation.mutate();
     };
 
     const downloadLink = (
@@ -365,7 +352,7 @@ export function PersistentPathActions(props: {
                 entryType={props.entryType}
                 view={props.view}
                 onDelete={() => {
-                    setDeleteState({ type: "idle" });
+                    deleteMutation.reset();
                     setIsConfirmDeleteOpen(true);
                 }}
             />
@@ -383,9 +370,11 @@ export function PersistentPathActions(props: {
                 }
                 confirmLabel={`Delete ${props.entryType}`}
                 busyLabel="Deleting..."
-                isBusy={deleteState.type === "deleting"}
+                isBusy={deleteMutation.isPending}
                 errorMessage={
-                    deleteState.type === "error" ? deleteState.message : null
+                    deleteMutation.isError
+                        ? getErrorMessage(deleteMutation.error, "Delete failed")
+                        : null
                 }
                 onClose={closeDeleteDialog}
                 onConfirm={handleDelete}
@@ -400,53 +389,42 @@ export function PersistentPathActions(props: {
 
 /** Launches one remote path on the agent desktop while reporting the asynchronous result. */
 function NativeOpenButton(props: { agent: Agent; path: string }) {
-    const [openState, setOpenState] = React.useState<NativeOpenState>({
-        type: "idle",
+    const openMutation = useMutation({
+        mutationFn: () => props.agent.openPath(props.path),
     });
 
     if (!props.agent.supportsNativeOpen) {
         return null;
     }
 
-    const handleOpen = async () => {
-        setOpenState({ type: "opening" });
-        try {
-            await props.agent.openPath(props.path);
-            setOpenState({
-                type: "success",
-                message: "Opened on the agent computer",
-            });
-        } catch (error) {
-            setOpenState({
-                type: "error",
-                message: getErrorMessage(error, "Could not open the path"),
-            });
-        }
-    };
-
     return (
         <>
             <button
                 type="button"
-                disabled={openState.type === "opening"}
-                onClick={handleOpen}
+                disabled={openMutation.isPending}
+                onClick={() => openMutation.mutate()}
                 className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-wait disabled:opacity-60"
             >
-                {openState.type === "opening" ? (
+                {openMutation.isPending ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
                     <ExternalLink className="h-4 w-4" />
                 )}
-                {openState.type === "opening" ? "Opening..." : "Open natively"}
+                {openMutation.isPending ? "Opening..." : "Open natively"}
             </button>
-            {openState.type === "success" || openState.type === "error" ? (
+            {openMutation.isSuccess || openMutation.isError ? (
                 <Toast
-                    tone={openState.type === "error" ? "error" : "success"}
+                    tone={openMutation.isError ? "error" : "success"}
                     icon={<ExternalLink className="h-4 w-4" />}
                     dismissAriaLabel="Dismiss native open message"
-                    onDismiss={() => setOpenState({ type: "idle" })}
+                    onDismiss={() => openMutation.reset()}
                 >
-                    {openState.message}
+                    {openMutation.isError
+                        ? getErrorMessage(
+                              openMutation.error,
+                              "Could not open the path",
+                          )
+                        : "Opened on the agent computer"}
                 </Toast>
             ) : null}
         </>

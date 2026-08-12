@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
 import { Provider } from "jotai";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // Import the generated route tree
 import { routeTree } from "./routeTree.gen";
@@ -16,12 +17,14 @@ import { RouteError } from "#ui/components/route-error";
 // `/ws` to the redoor server. Either way, using the page's origin
 // keeps the client configuration trivial.
 export const api = new ApiClient(window.location.origin);
+export const queryClient = new QueryClient();
 
 // Create a new router instance
 const router = createRouter({
     routeTree,
     context: {
         api,
+        queryClient,
     },
     defaultPreload: "intent",
     scrollRestoration: true,
@@ -54,7 +57,9 @@ if (rootElement && !rootElement.innerHTML) {
     root.render(
         <StrictMode>
             <Provider>
-                <RouterProvider router={router} />
+                <QueryClientProvider client={queryClient}>
+                    <RouterProvider router={router} />
+                </QueryClientProvider>
             </Provider>
         </StrictMode>,
     );

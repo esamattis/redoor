@@ -34,6 +34,7 @@ import {
     getPathLoadError,
     sortFileEntries,
 } from "#ui/components/browser/utils";
+import { fileContentQueryOptions } from "#ui/queries";
 
 /** Keeps the hidden-file visibility preference consistent across reloads. */
 const showHiddenFilesAtom = atomWithLocalStorage(
@@ -55,7 +56,8 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 ? search.view
                 : undefined,
     }),
-    loader: async ({ params, parentMatchPromise }) => {
+    loaderDeps: ({ search }) => ({ view: search.view }),
+    loader: async ({ context, deps, params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
         const rootLoaderData = rootMatch.loaderData;
         if (!rootLoaderData) {
@@ -84,6 +86,15 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             const metadata = isLsFileResponse(lsResult)
                 ? await agent.metadata(lsResult.path)
                 : null;
+            if (
+                deps.view === "edit" &&
+                isLsFileResponse(lsResult) &&
+                metadata?.editable === true
+            ) {
+                await context.queryClient.fetchQuery(
+                    fileContentQueryOptions(agent, lsResult.path),
+                );
+            }
 
             return {
                 agent,
@@ -222,6 +233,7 @@ function FileBrowser() {
                     <div className="p-6">
                         <div className="mx-auto max-w-6xl">
                             <FileEditView
+                                key={`${agentId}:${lsResult.path}`}
                                 agent={agent}
                                 agentId={agentId}
                                 path={path}

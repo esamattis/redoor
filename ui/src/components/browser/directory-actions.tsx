@@ -1,5 +1,6 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
     ClipboardPaste,
@@ -24,21 +25,12 @@ import {
 } from "#ui/selected-files";
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
 import { enqueueUploadBatchAtom } from "#ui/upload-queue";
+import { transfersQueryOptions } from "#ui/queries";
 
 type CopySelectedFilesState =
     | { type: "idle" }
     | { type: "copying"; itemCount: number }
     | { type: "success"; message: string }
-    | { type: "error"; message: string };
-
-type CreateDirectoryState =
-    | { type: "idle" }
-    | { type: "creating" }
-    | { type: "error"; message: string };
-
-type CreateFileState =
-    | { type: "idle" }
-    | { type: "creating" }
     | { type: "error"; message: string };
 
 /**
@@ -60,6 +52,38 @@ function CopySelectedFilesAction(props: {
         type: "idle",
     });
     const activeCopyRef = React.useRef<AbortController | null>(null);
+    const queryClient = useQueryClient();
+    const copyStartsMutation = useMutation({
+        mutationFn: (filesToCopy: SelectedPath[]) => {
+            const agentsById = new Map(
+                props.agents.map((agent) => [agent.id, agent]),
+            );
+            return Promise.allSettled(
+                filesToCopy.map((file) => {
+                    const sourceAgent = agentsById.get(file.agentId);
+
+                    if (!sourceAgent) {
+                        return Promise.reject(
+                            new Error(
+                                `Source agent unavailable for selected item: ${file.agentId}`,
+                            ),
+                        );
+                    }
+
+                    return sourceAgent.copyTo(
+                        {
+                            agent: props.destinationAgent.id,
+                            path: joinBrowserPath(
+                                props.directoryPath,
+                                file.fileName,
+                            ),
+                        },
+                        file.path,
+                    );
+                }),
+            );
+        },
+    });
 
     React.useEffect(() => {
         return () => activeCopyRef.current?.abort();
@@ -92,33 +116,7 @@ function CopySelectedFilesAction(props: {
             itemCount: filesToCopy.length,
         });
 
-        const agentsById = new Map(
-            props.agents.map((agent) => [agent.id, agent]),
-        );
-        const results = await Promise.allSettled(
-            filesToCopy.map((file) => {
-                const sourceAgent = agentsById.get(file.agentId);
-
-                if (!sourceAgent) {
-                    return Promise.reject(
-                        new Error(
-                            `Source agent unavailable for selected item: ${file.agentId}`,
-                        ),
-                    );
-                }
-
-                return sourceAgent.copyTo(
-                    {
-                        agent: props.destinationAgent.id,
-                        path: joinBrowserPath(
-                            props.directoryPath,
-                            file.fileName,
-                        ),
-                    },
-                    file.path,
-                );
-            }),
-        );
+        const results = await copyStartsMutation.mutateAsync(filesToCopy);
         if (controller.signal.aborted) return;
 
         const completedFiles: SelectedPath[] = [];
@@ -138,7 +136,10 @@ function CopySelectedFilesAction(props: {
 
         try {
             while (pendingCopies.size > 0 && !controller.signal.aborted) {
-                const progress = await props.api.getTransferProgress();
+                const progress = await queryClient.fetchQuery({
+                    ...transfersQueryOptions(props.api),
+                    retry: false,
+                });
                 if (controller.signal.aborted) return;
 
                 for (const transfer of progress.transfers) {
@@ -338,21 +339,30 @@ function CreateDirectoryAction(props: {
     const navigate = useNavigate();
     const inputId = React.useId();
     const [directoryName, setDirectoryName] = React.useState("");
-    const [createDirectoryState, setCreateDirectoryState] =
-        React.useState<CreateDirectoryState>({
-            type: "idle",
-        });
+    const [validationError, setValidationError] = React.useState<string | null>(
+        null,
+    );
+    const createDirectoryMutation = useMutation({
+        mutationFn: (path: string) => props.agent.createDirectory(path),
+        onSuccess: async (_, path) => {
+            await navigate({
+                to: props.agent.getBrowserUrl(path),
+            });
+            resetDialog();
+        },
+    });
 
     const trimmedDirectoryName = directoryName.trim();
     const createDirectoryPath = trimmedDirectoryName
         ? joinBrowserPath(props.directoryPath, trimmedDirectoryName)
         : null;
-    const isCreating = createDirectoryState.type === "creating";
+    const isCreating = createDirectoryMutation.isPending;
 
     const resetDialog = () => {
         props.onClose();
         setDirectoryName("");
-        setCreateDirectoryState({ type: "idle" });
+        setValidationError(null);
+        createDirectoryMutation.reset();
     };
 
     const closeDialog = () => {
@@ -367,27 +377,12 @@ function CreateDirectoryAction(props: {
         event.preventDefault();
 
         if (!createDirectoryPath) {
-            setCreateDirectoryState({
-                type: "error",
-                message: "Directory name is required",
-            });
+            setValidationError("Directory name is required");
             return;
         }
 
-        setCreateDirectoryState({ type: "creating" });
-
-        try {
-            await props.agent.createDirectory(createDirectoryPath);
-            await navigate({
-                to: props.agent.getBrowserUrl(createDirectoryPath),
-            });
-            resetDialog();
-        } catch (error) {
-            setCreateDirectoryState({
-                type: "error",
-                message: getErrorMessage(error, "Create directory failed"),
-            });
-        }
+        setValidationError(null);
+        createDirectoryMutation.mutate(createDirectoryPath);
     };
 
     return (
@@ -398,9 +393,13 @@ function CreateDirectoryAction(props: {
             closeAriaLabel="Close create directory dialog"
             isBusy={isCreating}
             errorMessage={
-                createDirectoryState.type === "error"
-                    ? createDirectoryState.message
-                    : null
+                validationError ??
+                (createDirectoryMutation.isError
+                    ? getErrorMessage(
+                          createDirectoryMutation.error,
+                          "Create directory failed",
+                      )
+                    : null)
             }
             onClose={closeDialog}
         >
@@ -417,9 +416,8 @@ function CreateDirectoryAction(props: {
                     value={directoryName}
                     onChange={(event) => {
                         setDirectoryName(event.target.value);
-                        if (createDirectoryState.type === "error") {
-                            setCreateDirectoryState({ type: "idle" });
-                        }
+                        setValidationError(null);
+                        createDirectoryMutation.reset();
                     }}
                     placeholder="logs"
                     autoFocus
@@ -471,19 +469,37 @@ function CreateFileAction(props: {
     const navigate = useNavigate();
     const inputId = React.useId();
     const [fileName, setFileName] = React.useState("");
-    const [createFileState, setCreateFileState] =
-        React.useState<CreateFileState>({ type: "idle" });
+    const [validationError, setValidationError] = React.useState<string | null>(
+        null,
+    );
+    const createFileMutation = useMutation({
+        mutationFn: (file: { path: string; name: string }) =>
+            props.agent.upload(
+                file.path,
+                new globalThis.File([""], file.name, {
+                    type: "text/plain",
+                }),
+            ),
+        onSuccess: async (_, file) => {
+            await navigate({
+                to: props.agent.getBrowserUrl(file.path),
+                search: { view: "edit" },
+            });
+            resetDialog();
+        },
+    });
 
     const trimmedFileName = fileName.trim();
     const createFilePath = trimmedFileName
         ? joinBrowserPath(props.directoryPath, trimmedFileName)
         : null;
-    const isCreating = createFileState.type === "creating";
+    const isCreating = createFileMutation.isPending;
 
     const resetDialog = () => {
         props.onClose();
         setFileName("");
-        setCreateFileState({ type: "idle" });
+        setValidationError(null);
+        createFileMutation.reset();
     };
 
     const closeDialog = () => {
@@ -496,40 +512,19 @@ function CreateFileAction(props: {
         event.preventDefault();
 
         if (!createFilePath) {
-            setCreateFileState({
-                type: "error",
-                message: "File name is required",
-            });
+            setValidationError("File name is required");
             return;
         }
         if (trimmedFileName.includes("/")) {
-            setCreateFileState({
-                type: "error",
-                message: "File name cannot contain a slash",
-            });
+            setValidationError("File name cannot contain a slash");
             return;
         }
 
-        setCreateFileState({ type: "creating" });
-
-        try {
-            await props.agent.upload(
-                createFilePath,
-                new globalThis.File([""], trimmedFileName, {
-                    type: "text/plain",
-                }),
-            );
-            await navigate({
-                to: props.agent.getBrowserUrl(createFilePath),
-                search: { view: "edit" },
-            });
-            resetDialog();
-        } catch (error) {
-            setCreateFileState({
-                type: "error",
-                message: getErrorMessage(error, "Create file failed"),
-            });
-        }
+        setValidationError(null);
+        createFileMutation.mutate({
+            path: createFilePath,
+            name: trimmedFileName,
+        });
     };
 
     return (
@@ -540,9 +535,13 @@ function CreateFileAction(props: {
             closeAriaLabel="Close create file dialog"
             isBusy={isCreating}
             errorMessage={
-                createFileState.type === "error"
-                    ? createFileState.message
-                    : null
+                validationError ??
+                (createFileMutation.isError
+                    ? getErrorMessage(
+                          createFileMutation.error,
+                          "Create file failed",
+                      )
+                    : null)
             }
             onClose={closeDialog}
         >
@@ -559,9 +558,8 @@ function CreateFileAction(props: {
                     value={fileName}
                     onChange={(event) => {
                         setFileName(event.target.value);
-                        if (createFileState.type === "error") {
-                            setCreateFileState({ type: "idle" });
-                        }
+                        setValidationError(null);
+                        createFileMutation.reset();
                     }}
                     placeholder="notes.txt"
                     autoFocus

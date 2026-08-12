@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { FileCode2, Globe2, HardDrive, KeyRound, Server } from "lucide-react";
 
@@ -9,6 +10,7 @@ import {
     CopyablePath,
 } from "#ui/components/copyable-code-row";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { serverInfoQueryOptions } from "#ui/queries";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -62,6 +64,7 @@ function Index() {
     const { serverInfo } = RootRoute.useLoaderData();
     const { api } = RootRoute.useRouteContext();
     const router = useRouter();
+    const queryClient = useQueryClient();
     const serverProtocol =
         window.location.protocol === "https:" ? "https:" : "http:";
     const serverAddress = `${serverProtocol}//${window.location.host}`;
@@ -92,7 +95,10 @@ server = ${JSON.stringify(serverAddress)}
                             let oldServerClosed = false;
                             return waitForRestart(async () => {
                                 try {
-                                    await api.getServerInfo();
+                                    await queryClient.fetchQuery({
+                                        ...serverInfoQueryOptions(api),
+                                        staleTime: 0,
+                                    });
                                 } catch (error) {
                                     oldServerClosed = true;
                                     throw error;
