@@ -102,8 +102,19 @@ redoor agent systemd setup
 
 ## SSH relay
 
-When the redoor server cannot reach a SSH host, run `redoor agent relay` on a machine that can reach both.
+Add a named relay to `config.toml`:
+
+```toml
+agent_token = "secret"
+
+[[relays]]
+id = "production"
+target = "user@host"
+server = "http://redoor.internal:3000"
+```
 
 ```bash
-REDOOR_AGENT_TOKEN=secret redoor agent relay --server http://redoor.internal:3000 user@host
+redoor agent relay start production --daemon
 ```
+
+See [SSH relays](docs/relays.md) for lifecycle commands and configuration.

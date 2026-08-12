@@ -1,6 +1,6 @@
 # Configuration (`config.toml`)
 
-Server and agent share one TOML file. The same file can hold `[server]`, `[agent]`, and `[[agents]]`.
+Server, agent, and relays share one TOML file. The same file can hold `[server]`, `[agent]`, `[[agents]]`, and `[[relays]]`.
 
 ## Location
 
@@ -18,6 +18,7 @@ Pass an explicit path with:
 ```bash
 redoor server --config /path/to/config.toml
 redoor agent --config /path/to/config.toml
+redoor agent relay start production --config /path/to/config.toml
 ```
 
 ## Precedence
@@ -149,6 +150,35 @@ home = "/home/me/projects"
 log = "~/.local/share/redoor/log/local.log"
 ```
 
+## `[[relays]]`
+
+Optional named SSH relays started explicitly with `redoor agent relay start ID`. Configuring an entry does not start it.
+
+| Key | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Unique lifecycle ID. Allowed characters: ASCII letters, numbers, `.`, `_`, `-`. |
+| `target` | string | yes | SSH destination (`host` or `user@host`). |
+| `server` | string | yes | Redoor server URL reached by the relay machine (`http(s)://` or `ws(s)://`). |
+| `username` | string | no | SSH login via `ssh -l`. |
+| `ssh_port` | integer (u16) | no | SSH port; omission preserves OpenSSH configuration. |
+| `name` | string | no | Server-side agent name. Defaults to the host portion of `target`. |
+| `agent_app_name` | string | no | Remote agent process namespace. Defaults to `<local-app-name>-relay-<id>`. |
+| `remote_bin` | string | no | Remote Redoor binary path. |
+| `binary_source` | string | no | Local Redoor binary to upload unconditionally. |
+| `home` | string | no | Home directory published by the remote agent. |
+| `log` | string | no | Local relay and remote-agent log. Defaults to a per-ID path. |
+| `insecure` | bool | no | Disable routed TLS certificate verification. Requires a secure server URL. Default `false`. |
+
+```toml
+[[relays]]
+id = "production"
+target = "user@example.com"
+server = "https://redoor.example.com"
+name = "production-agent"
+```
+
+See [SSH relays](relays.md) for commands and runtime-file behavior.
+
 ## Full shared example
 
 ```toml
@@ -182,6 +212,12 @@ target = "user@example.com"
 name = "prod-server"
 home = "/srv/app"
 log = "/var/log/redoor/prod-agent.log"
+
+[[relays]]
+id = "production"
+target = "user@example.com"
+server = "https://redoor.example.com"
+name = "production-relay-agent"
 ```
 
 ## Related environment variables
@@ -198,5 +234,4 @@ These override matching config keys when set (CLI still wins):
 | `REDOOR_AGENT_NAME` | `[agent].name` |
 | `REDOOR_AGENT_HOME` | `[agent].home` |
 | `REDOOR_AGENT_LOG` | `[agent].log` |
-| `REDOOR_RELAY_LOG` | relay log path (`redoor agent relay`) |
 | `REDOOR_AGENT_NOTIFICATION` | desktop notification delay after connect (`off` disables) |

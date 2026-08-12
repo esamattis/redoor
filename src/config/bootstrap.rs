@@ -50,9 +50,13 @@ pub(crate) fn default_agent_log_path() -> Result<String> {
     default_process_log_path(crate::process_control::ProcessSlot::Agent)
 }
 
-/// Default persistent SSH-relay log used when no explicit path is set.
-pub(crate) fn default_relay_log_path() -> Result<String> {
-    default_process_log_path(crate::process_control::ProcessSlot::Relay)
+/// Default persistent SSH-relay log uses its stable ID to avoid cross-relay output mixing.
+pub(crate) fn default_relay_log_path(id: &str) -> Result<String> {
+    Ok(default_log_directory()?
+        .join("relays")
+        .join(format!("{id}.log"))
+        .display()
+        .to_string())
 }
 
 /// Whether the process effective UID is root (system-install / privileged path).

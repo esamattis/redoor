@@ -15,7 +15,7 @@ import { getAvailablePort, SERVER_PATH } from "./test-utils";
 const execFileAsync = promisify(execFile);
 
 /** Creates an isolated application namespace and guarantees daemon cleanup after a test. */
-function isolatedProcess(role: "agent" | "server" | "relay") {
+function isolatedProcess(role: "agent" | "server") {
     const home = mkdtempSync(join(tmpdir(), `redoor-${role}-lifecycle-`));
     const appName = `redoor-${role}-${process.pid}-${Date.now()}`;
     const env = {
@@ -25,8 +25,7 @@ function isolatedProcess(role: "agent" | "server" | "relay") {
         REDOOR_AGENT_NOTIFICATION: "off",
     };
     const pidFile = join(home, ".local", "share", appName, `${role}.pid`);
-    const stopArgs =
-        role === "relay" ? ["agent", "relay", "stop"] : [role, "stop"];
+    const stopArgs = [role, "stop"];
 
     onTestFinished(async () => {
         try {
@@ -168,25 +167,25 @@ port = ${port}
         });
     });
 
-    test("relay status and stop share the relay PID slot without startup flags", async () => {
-        const isolated = isolatedProcess("relay");
+    test("named relay status and stop need only the relay ID", async () => {
+        const isolated = isolatedProcess("agent");
 
         await expect(
-            execFileAsync(SERVER_PATH, ["agent", "relay", "status"], {
+            execFileAsync(SERVER_PATH, ["agent", "relay", "status", "production"], {
                 env: isolated.env,
             }),
         ).rejects.toMatchObject({
-            // Empty namespaces must report not-running instead of requiring SSH flags.
-            stderr: expect.stringContaining("relay is not running"),
+            // Empty namespaces must report the selected relay instead of requiring TOML startup fields.
+            stderr: expect.stringContaining("relay 'production' is not running"),
         });
 
         await expect(
-            execFileAsync(SERVER_PATH, ["agent", "relay", "stop"], {
+            execFileAsync(SERVER_PATH, ["agent", "relay", "stop", "production"], {
                 env: isolated.env,
             }),
         ).rejects.toMatchObject({
-            // Stop guidance for a missing relay must stay free of agent/server confusion.
-            stderr: expect.stringContaining("relay is not running"),
+            // Stop must use the same isolated runtime identity as status.
+            stderr: expect.stringContaining("relay 'production' is not running"),
         });
     });
 });

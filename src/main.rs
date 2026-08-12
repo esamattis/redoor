@@ -132,38 +132,60 @@ enum AgentCommand {
     Relay(Box<RelayCommandArgs>),
 }
 
-/// Preserves flat relay startup flags while exposing `agent relay stop|status|logs`.
+/// Requires an explicit lifecycle action for one configured relay.
 #[derive(Args)]
-#[command(args_conflicts_with_subcommands = true)]
 struct RelayCommandArgs {
-    /// Selects a utility action instead of starting the relay.
     #[command(subcommand)]
-    command: Option<RelayCommand>,
-    /// Existing relay startup settings remain accepted directly after `relay`.
-    #[command(flatten)]
-    run: ssh::RelayArgs,
+    command: RelayCommand,
 }
 
-/// Relay-specific utility commands sharing `relay.pid` / `relay.log`.
+/// Relay-specific lifecycle commands keyed by configured relay ID.
 #[derive(Subcommand)]
 enum RelayCommand {
-    /// Stop the relay recorded in the application PID file.
-    Stop,
-    /// Report whether the relay PID file lock is held.
-    Status,
-    /// Print the configured relay file log.
+    /// Start one configured relay in the foreground or background.
+    Start(RelayStartArgs),
+    /// Stop one named relay using its locked runtime file.
+    Stop(RelayIdArgs),
+    /// Report whether one named relay runtime-file lock is held.
+    Status(RelayIdArgs),
+    /// Print one named relay's file log.
     Logs(RelayLogsArgs),
+}
+
+/// Options required to start one configured relay.
+#[derive(Args)]
+struct RelayStartArgs {
+    /// Stable relay ID from a `[[relays]]` entry.
+    #[arg(value_parser = config::parse_relay_id)]
+    id: String,
+    /// Override the shared TOML config path.
+    #[arg(long)]
+    config: Option<String>,
+    /// Detach the relay from the terminal and continue in the background.
+    #[arg(long)]
+    daemon: bool,
+}
+
+/// Selects a named relay for a lifecycle operation that does not need TOML.
+#[derive(Args)]
+struct RelayIdArgs {
+    /// Stable relay ID used by its runtime file.
+    #[arg(value_parser = config::parse_relay_id)]
+    id: String,
 }
 
 /// Options used to locate and limit relay file logs.
 #[derive(Args)]
 struct RelayLogsArgs {
+    /// Stable relay ID from configuration or an existing runtime file.
+    #[arg(value_parser = config::parse_relay_id)]
+    id: String,
     /// Number of trailing lines to print.
     #[arg(short = 'n', default_value_t = 500)]
     lines: usize,
-    /// Override `REDOOR_RELAY_LOG` and the conventional relay log path.
-    #[arg(long, env = "REDOOR_RELAY_LOG")]
-    log: Option<String>,
+    /// Override the shared TOML config path when the relay is stopped.
+    #[arg(long)]
+    config: Option<String>,
 }
 
 /// Options used to locate and limit standalone-agent file logs.
@@ -242,29 +264,17 @@ async fn main() {
                 run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
             }
             Some(AgentCommand::Relay(relay)) => match relay.command {
-                Some(RelayCommand::Stop) => {
-                    run_utility(process_control::stop(process_control::ProcessSlot::Relay)).await;
+                RelayCommand::Start(start) => {
+                    run_named_relay(start).await;
                 }
-                Some(RelayCommand::Status) => {
-                    run_utility(process_control::status(process_control::ProcessSlot::Relay)).await;
+                RelayCommand::Stop(relay) => {
+                    run_utility(process_control::stop_relay(&relay.id)).await;
                 }
-                Some(RelayCommand::Logs(logs)) => {
-                    run_utility(process_logs::run(
-                        process_logs::LogRole::Relay,
-                        None,
-                        logs.log,
-                        logs.lines,
-                    ))
-                    .await;
+                RelayCommand::Status(relay) => {
+                    run_utility(process_control::status_relay(&relay.id)).await;
                 }
-                None => {
-                    let daemon = relay.run.daemon;
-                    run_role(process_control::ProcessSlot::Relay, daemon, || async move {
-                        ssh::run_relay(relay.run)
-                            .await
-                            .map_err(|error| anyhow::anyhow!("{error}"))
-                    })
-                    .await;
+                RelayCommand::Logs(logs) => {
+                    run_utility(process_logs::run_relay(&logs.id, logs.config, logs.lines)).await;
                 }
             },
             None => {
@@ -281,6 +291,70 @@ async fn main() {
             }
         },
     }
+}
+
+/// Loads one named relay, establishes its isolated runtime identity, and starts it.
+async fn run_named_relay(args: RelayStartArgs) {
+    let config_path = match args.config.map(PathBuf::from) {
+        Some(path) => path,
+        None => match config::default_config_path() {
+            Ok(path) => path,
+            Err(error) => return run_utility(async { Err(error) }).await,
+        },
+    };
+    let parsed = match config::parse_config_file(&config_path.to_string_lossy()).await {
+        Ok(config) => config,
+        Err(error) => return run_utility(async { Err(error) }).await,
+    };
+    let mut relay = match config::require_relay(&parsed, &args.id) {
+        Ok(relay) => relay.clone(),
+        Err(error) => return run_utility(async { Err(error) }).await,
+    };
+    let log = match relay.agent.log.clone() {
+        Some(log) => log,
+        None => match config::default_relay_log_path(&relay.id) {
+            Ok(log) => log,
+            Err(error) => return run_utility(async { Err(error) }).await,
+        },
+    };
+    relay.agent.log = Some(log.clone());
+    if args.daemon {
+        run_utility(process_control::spawn_relay_daemon(&relay.id)).await;
+        return;
+    }
+    let agent_name = relay
+        .agent
+        .name
+        .clone()
+        .unwrap_or_else(|| ssh::default_agent_name(&relay.agent.target));
+    let agent_app_name = relay
+        .agent_app_name
+        .clone()
+        .unwrap_or_else(|| format!("{}-relay-{}", app_name::app_name().unwrap(), relay.id));
+    let metadata = process_control::RelayPidMetadata {
+        pid: 0,
+        id: relay.id.clone(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        target: relay.agent.target.clone(),
+        server: relay.server.clone(),
+        agent_name,
+        agent_app_name: agent_app_name.clone(),
+        log,
+    };
+    let pid_file = match process_control::acquire_relay(metadata).await {
+        Ok(pid_file) => pid_file,
+        Err(error) => return run_utility(async { Err(error) }).await,
+    };
+    let token = std::env::var("REDOOR_AGENT_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+        .unwrap_or(parsed.agent_token);
+    if let Err(error) = ssh::run_relay(relay, token, agent_app_name).await {
+        eprintln!("{error}");
+        pid_file.remove().await;
+        std::process::exit(1);
+    }
+    pid_file.remove().await;
 }
 
 /// Applies daemon and PID-file behavior consistently around a long-lived role.
@@ -581,7 +655,7 @@ mod tests {
         );
     }
 
-    /// Keeps process status nested under each long-lived role, including relay.
+    /// Keeps process status nested under each long-lived role, including named relays.
     #[test]
     fn parses_process_status_commands() {
         assert!(
@@ -593,246 +667,66 @@ mod tests {
             "server status should parse without startup flags"
         );
         assert!(
-            Cli::try_parse_from(["redoor", "agent", "relay", "status"]).is_ok(),
-            "relay status should parse without SSH startup flags"
+            Cli::try_parse_from(["redoor", "agent", "relay", "status", "production"]).is_ok(),
+            "relay status should require only its stable ID"
         );
         assert!(
-            Cli::try_parse_from(["redoor", "agent", "relay", "stop"]).is_ok(),
-            "relay stop should parse without SSH startup flags"
+            Cli::try_parse_from(["redoor", "agent", "relay", "stop", "production"]).is_ok(),
+            "relay stop should require only its stable ID"
         );
         assert!(
-            Cli::try_parse_from(["redoor", "agent", "relay", "logs"]).is_ok(),
-            "relay logs should parse without SSH startup flags"
+            Cli::try_parse_from(["redoor", "agent", "relay", "logs", "production"]).is_ok(),
+            "relay logs should require only its stable ID"
         );
     }
 
-    /// Ensures relay leaves the SSH port unset unless the operator explicitly
-    /// overrides it, allowing host aliases to retain their configured ports.
+    /// Keeps relay startup aligned with other daemon-capable process commands.
     #[test]
-    fn agent_relay_preserves_ssh_config_port_by_default() {
-        let default_cli = Cli::try_parse_from([
+    fn agent_relay_start_accepts_id_config_and_daemon_only() {
+        let start_cli = Cli::try_parse_from([
             "redoor",
             "agent",
             "relay",
-            "--server",
-            "http://redoor.example:3000",
-            "--token",
-            "secret",
-            "configured-alias",
+            "start",
+            "production",
+            "--config",
+            "relay.toml",
+            "--daemon",
         ])
         .unwrap();
-        let Commands::Agent(default_agent) = default_cli.command else {
-            panic!("agent relay should parse into the agent command");
+        let Commands::Agent(start_agent) = start_cli.command else {
+            panic!("agent relay start should parse into the agent command");
         };
-        let Some(AgentCommand::Relay(default_relay)) = default_agent.command else {
-            panic!("agent relay should preserve its relay arguments");
+        let Some(AgentCommand::Relay(start_relay)) = start_agent.command else {
+            panic!("agent relay start should preserve its relay command wrapper");
         };
-        // Utility subcommands stay absent when the operator is starting a relay.
-        assert!(default_relay.command.is_none());
-        // `None` prevents the transport from emitting `-p 22` over an SSH alias.
-        assert_eq!(default_relay.run.ssh_port, None);
-
-        let override_cli = Cli::try_parse_from([
-            "redoor",
-            "agent",
-            "relay",
-            "-p",
-            "2200",
-            "--server",
-            "http://redoor.example:3000",
-            "--token",
-            "secret",
-            "configured-alias",
-        ])
-        .unwrap();
-        let Commands::Agent(override_agent) = override_cli.command else {
-            panic!("agent relay should parse into the agent command");
+        let RelayCommand::Start(start) = start_relay.command else {
+            panic!("relay start should select the configured relay");
         };
-        let Some(AgentCommand::Relay(override_relay)) = override_agent.command else {
-            panic!("agent relay should preserve its relay arguments");
-        };
-        // An explicit CLI port must still override the alias configuration.
-        assert_eq!(override_relay.run.ssh_port, Some(2200));
-
-        let binary_source_cli = Cli::try_parse_from([
-            "redoor",
-            "agent",
-            "relay",
-            "--server",
-            "http://redoor.example:3000",
-            "--token",
-            "secret",
-            "--binary-source",
-            "/tmp/redoor-aarch64",
-            "configured-alias",
-        ])
-        .unwrap();
-        let Commands::Agent(binary_source_agent) = binary_source_cli.command else {
-            panic!("agent relay should parse into the agent command");
-        };
-        let Some(AgentCommand::Relay(binary_source_relay)) = binary_source_agent.command else {
-            panic!("agent relay should preserve its relay arguments");
-        };
-        // The exact local path must reach provisioning without being interpreted as the SSH target.
-        assert_eq!(
-            binary_source_relay.run.binary_source.as_deref(),
-            Some(std::path::Path::new("/tmp/redoor-aarch64"))
-        );
+        // Daemon mode remains a start option rather than a separate lifecycle verb.
+        assert!(start.daemon);
+        assert_eq!(start.id, "production");
         assert!(
-            matches!(
-                Cli::try_parse_from([
-                    "redoor",
-                    "agent",
-                    "relay",
-                    "status",
-                    "--server",
-                    "http://redoor.example:3000",
-                ])
-                .err(),
-                Some(_)
-            ),
-            "utility subcommands must reject startup flags that would fight args_conflicts_with_subcommands"
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "relay",
+                "start",
+                "production",
+                "--server",
+                "http://redoor.example:3000",
+            ])
+            .is_err(),
+            "removed ad hoc relay flags must be rejected"
         );
-        let stop_cli = Cli::try_parse_from(["redoor", "agent", "relay", "stop"]).unwrap();
+        let stop_cli =
+            Cli::try_parse_from(["redoor", "agent", "relay", "stop", "production"]).unwrap();
         let Commands::Agent(stop_agent) = stop_cli.command else {
             panic!("agent relay stop should parse into the agent command");
         };
         let Some(AgentCommand::Relay(stop_relay)) = stop_agent.command else {
             panic!("agent relay stop should preserve its relay command wrapper");
         };
-        assert!(matches!(stop_relay.command, Some(RelayCommand::Stop)));
-    }
-
-    /// Keeps the SSH relay command focused on the topology where this machine
-    /// bridges an otherwise disconnected target and redoor server.
-    #[test]
-    fn agent_relay_requires_server() {
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--server",
-                "http://redoor.example:3000",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_ok(),
-            "a server URL and SSH target should be sufficient for the relay command"
-        );
-        // Missing --server still parses so utility subcommands can share RelayArgs;
-        // run_relay rejects the incomplete start at runtime.
-        let missing_server = Cli::try_parse_from([
-            "redoor",
-            "agent",
-            "relay",
-            "--token",
-            "secret",
-            "user@linux.example",
-        ])
-        .unwrap();
-        let Commands::Agent(missing_server_agent) = missing_server.command else {
-            panic!("agent relay should parse into the agent command");
-        };
-        let Some(AgentCommand::Relay(missing_server_relay)) = missing_server_agent.command else {
-            panic!("agent relay should preserve its relay arguments");
-        };
-        assert!(
-            missing_server_relay.run.server.is_none(),
-            "omitting --server must leave the start payload incomplete for runtime validation"
-        );
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--route",
-                "http://redoor.example:3000",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_err(),
-            "the relay command must reject the former route flag"
-        );
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "ssh",
-                "--server",
-                "http://redoor.example:3000",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_err(),
-            "the former top-level ssh command must no longer be accepted"
-        );
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--server",
-                "redoor.example:3000",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_err(),
-            "the relay command must reject bare host:port servers"
-        );
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--server",
-                "https://redoor.example.com",
-                "--wss",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_err(),
-            "the former --wss flag must no longer be accepted"
-        );
-    }
-
-    /// Prevents certificate verification from being disabled accidentally on a plain route.
-    #[test]
-    fn ssh_insecure_parses_with_secure_server_url() {
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--server",
-                "https://redoor.example.com",
-                "--insecure",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_ok(),
-            "insecure mode must remain available for https/wss server URLs"
-        );
-        // Clap still accepts --insecure with plain URLs; run_relay rejects that combination.
-        assert!(
-            Cli::try_parse_from([
-                "redoor",
-                "agent",
-                "relay",
-                "--server",
-                "http://redoor.example.com:443",
-                "--insecure",
-                "--token",
-                "secret",
-                "user@linux.example",
-            ])
-            .is_ok(),
-            "clap parsing alone cannot enforce scheme requirements on --insecure"
-        );
+        assert!(matches!(stop_relay.command, RelayCommand::Stop(_)));
     }
 }

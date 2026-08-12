@@ -12,7 +12,7 @@
 //! `remote_port:destination_host:destination_port`. SSH listens on
 //! `remote_port` on the remote host and asks the local SSH client to connect to
 //! the destination. Managed agents use the local redoor server, while
-//! standalone `redoor agent relay --server <url>` uses a server reachable from the
+//! a named standalone relay uses a server reachable from the
 //! machine running the command. The remote agent is given
 //! `ws://localhost:<remote_port>/ws`, so what looks like a local WebSocket
 //! connection to the agent actually reaches the server through that tunnel.
@@ -36,7 +36,6 @@ mod transport;
 
 use std::path::PathBuf;
 
-use clap::Args;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use redoor::{Level, log};
@@ -44,72 +43,6 @@ use redoor::{Level, log};
 use crate::server_address::ServerAddress;
 use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
 use transport::{SshHost, SshRunOptions};
-
-/// Starts a redoor agent on an SSH host that cannot reach the redoor server
-/// directly, routing its WebSocket connection through this machine.
-///
-/// The machine running this command must be able to reach both the SSH target
-/// and `--server`. Redoor provisions the agent binary on the SSH target, opens a
-/// reverse tunnel from a random dynamic port there to the server host/port here, and
-/// keeps the SSH session attached until it exits.
-#[derive(Args)]
-#[command(author, version, about)]
-pub(crate) struct RelayArgs {
-    /// Detach the relay from the terminal and continue running in the background.
-    #[arg(long)]
-    pub(crate) daemon: bool,
-    /// SSH login username. Forwarded to ssh via `-l`. Optional so that
-    /// ssh config (`~/.ssh/config`) or the `user@host` target syntax can
-    /// supply the username instead.
-    #[arg(short = 'l')]
-    pub(crate) username: Option<String>,
-    /// SSH server port override. When omitted, OpenSSH uses the matching host
-    /// configuration and otherwise defaults to port 22.
-    #[arg(short = 'p')]
-    pub(crate) ssh_port: Option<u16>,
-    /// Redoor server URL reached from the machine running this command
-    /// (`http(s)://` or `ws(s)://`). A random dynamic port on the SSH target
-    /// forwards to this host/port. `https`/`wss` enable TLS; the hostname is
-    /// retained for SNI and WebSocket HTTP authority. Path is optional and forced to `/ws`.
-    /// Optional at the clap layer so `agent relay stop|status|logs` can parse without it.
-    #[arg(long)]
-    pub(crate) server: Option<ServerAddress>,
-    /// Disable TLS certificate verification. This permits untrusted, expired,
-    /// or hostname-mismatched certificates and should be used only when necessary.
-    /// Requires an `https://` or `wss://` server URL.
-    #[arg(long)]
-    pub(crate) insecure: bool,
-    /// Name the remote agent registers with on the server. Defaults to the
-    /// host portion of the ssh target so multiple SSH-backed agents are naturally
-    /// distinguishable without requiring an explicit name.
-    #[arg(long)]
-    pub(crate) name: Option<String>,
-    /// Shared secret from top-level `agent_token` so the remote agent can register.
-    /// Optional at the clap layer so utility subcommands do not require a token.
-    #[arg(long, env = "REDOOR_AGENT_TOKEN")]
-    pub(crate) token: Option<String>,
-    /// Path to the redoor binary on the remote host. Defaults to the
-    /// XDG data layout (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`).
-    #[arg(long, env = "REDOOR_REMOTE_BIN")]
-    pub(crate) remote_bin: Option<String>,
-    /// Local redoor binary to upload unconditionally before starting the remote agent.
-    /// This bypasses release/debug binary selection while still using `--remote-bin`
-    /// as the destination when one is provided.
-    #[arg(long)]
-    pub(crate) binary_source: Option<PathBuf>,
-    /// Home directory the remote agent publishes for UI tab navigation.
-    #[arg(long, alias = "dir", short_alias = 'd')]
-    pub(crate) home: Option<String>,
-    /// Local log file for relay diagnostics and SSH-forwarded remote agent output.
-    /// Overrides `REDOOR_RELAY_LOG`. Defaults to `~/.local/share/<app-name>/relay.log`
-    /// for non-root users.
-    #[arg(long, env = "REDOOR_RELAY_LOG")]
-    pub(crate) log: Option<String>,
-    /// Remote ssh target in `user@host` form. Kept positional to mirror the
-    /// standard ssh CLI usage so existing muscle memory transfers.
-    /// Optional at the clap layer so utility subcommand names are not captured as targets.
-    pub(crate) target: Option<String>,
-}
 
 /// Derives a default agent name from the ssh target by stripping any
 /// `user@` prefix so the name reflects the host being connected to.
@@ -158,45 +91,35 @@ pub(crate) struct SshBackedAgentConfig {
 /// routes use the tunnel URL directly. WSS routes connect TCP through that same
 /// tunnel while retaining the route hostname for TLS and HTTP. Stdio is
 /// inherited so the user can observe agent logs while this command owns the SSH session.
-pub(crate) async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error::Error>> {
-    // Clap keeps these optional so `stop`/`status`/`logs` parse cleanly; start still requires them.
-    let server = args
-        .server
-        .ok_or("--server is required to start the relay")?;
-    let token = args
-        .token
-        .filter(|value| !value.is_empty())
-        .ok_or("--token is required to start the relay (or set REDOOR_AGENT_TOKEN)")?;
-    let target = args
-        .target
-        .filter(|value| !value.trim().is_empty())
-        .ok_or("a remote SSH target is required to start the relay")?;
-    if args.insecure && !server.is_secure() {
-        return Err("--insecure requires an https:// or wss:// --server URL".into());
+pub(crate) async fn run_relay(
+    relay: crate::config::RelayConfig,
+    token: String,
+    agent_app_name: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = relay.server.parse::<ServerAddress>()?;
+    if relay.insecure && !server.is_secure() {
+        return Err("relay insecure = true requires an https:// or wss:// server URL".into());
     }
-    if args.insecure {
+    if relay.insecure {
         eprintln!(
-            "WARNING: --insecure disables TLS certificate verification for the routed server"
+            "WARNING: relay insecure = true disables TLS certificate verification for the routed server"
         );
     }
-    // Always pin a file path so daemonized relays and `agent relay logs` share one sink.
-    let log = match args.log.filter(|path| !path.trim().is_empty()) {
-        Some(path) => path,
-        None => crate::config::default_relay_log_path()?,
-    };
+    let log = relay
+        .agent
+        .log
+        .clone()
+        .expect("relay startup resolves a log path");
     redoor::logging::init(Some(log.clone())).await?;
-    let config = SshBackedAgentConfig {
-        username: args.username,
-        ssh_port: args.ssh_port,
-        name: args.name,
-        // Keep None distinct so provisioning knows whether it may manage the default path.
-        remote_bin: args.remote_bin,
-        home: args.home,
-        target,
-        // SSH stdout/stderr carry remote agent logs; append them beside local diagnostics.
-        log: Some(log),
-    };
-    start_relay(config, server, &token, args.insecure, args.binary_source).await
+    start_relay(
+        relay.agent,
+        server,
+        &token,
+        relay.insecure,
+        relay.binary_source,
+        agent_app_name,
+    )
+    .await
 }
 
 /// Remembers the last random remote port so every retry necessarily chooses a
@@ -214,6 +137,19 @@ struct SecureRelayServer {
     authority: String,
     /// Whether the remote agent should deliberately skip certificate verification.
     insecure: bool,
+}
+
+/// Optional preparation controls used only when a standalone relay differs from managed SSH.
+#[derive(Default)]
+struct RelayPreparationOptions<'a> {
+    /// Enables OpenSSH forwarding-failure inspection for standalone retry behavior.
+    monitor_forward_failure: bool,
+    /// Retains TLS server identity while transport connects through the tunnel.
+    secure_server: Option<SecureRelayServer>,
+    /// Forces an operator-selected local binary onto the remote host.
+    binary_source: Option<&'a std::path::Path>,
+    /// Isolates a standalone relay's remote PID and application data namespace.
+    agent_app_name: Option<String>,
 }
 
 impl RandomRemotePort {
@@ -356,9 +292,7 @@ pub(crate) async fn prepare_ssh_backed_agent(
         "localhost".to_string(),
         redoor_port,
         agent_token,
-        false,
-        None,
-        None,
+        RelayPreparationOptions::default(),
     )
     .await
 }
@@ -370,9 +304,7 @@ async fn prepare_ssh_backed_agent_for_destination(
     destination_host: String,
     destination_port: u16,
     agent_token: &str,
-    monitor_forward_failure: bool,
-    secure_server: Option<SecureRelayServer>,
-    binary_source: Option<&std::path::Path>,
+    preparation: RelayPreparationOptions<'_>,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
@@ -395,7 +327,7 @@ async fn prepare_ssh_backed_agent_for_destination(
     // probing and (re)installing would clobber a binary the operator
     // intentionally placed at that path. Auto-install may redirect debug
     // uploads to the dedicated `debug` path instead of the versioned default.
-    let remote_bin = if let Some(binary_source) = binary_source {
+    let remote_bin = if let Some(binary_source) = preparation.binary_source {
         log!(
             Level::Info,
             "Force-uploading operator-provided binary before relay: target={}, binary_source={}, remote_bin={}",
@@ -431,7 +363,7 @@ async fn prepare_ssh_backed_agent_for_destination(
     if let Some(log) = &config.log {
         options = options.with_log_file(log);
     }
-    if monitor_forward_failure {
+    if preparation.monitor_forward_failure {
         options = options.with_piped_stderr();
     }
 
@@ -447,14 +379,17 @@ async fn prepare_ssh_backed_agent_for_destination(
     Ok(PreparedSshBackedAgent {
         host,
         agent_name,
-        app_name: crate::app_name::app_name()?,
+        app_name: match preparation.agent_app_name {
+            Some(app_name) => app_name,
+            None => crate::app_name::app_name()?,
+        },
         remote_bin,
         home: config.home.clone(),
         destination_host,
         destination_port,
         options,
         random_remote_port: RandomRemotePort::default(),
-        secure_server,
+        secure_server: preparation.secure_server,
     })
 }
 
@@ -613,6 +548,7 @@ pub(crate) async fn start_relay(
     agent_token: &str,
     insecure: bool,
     binary_source: Option<PathBuf>,
+    agent_app_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let secure_server = server.is_secure().then(|| SecureRelayServer {
         authority: server.authority(),
@@ -623,9 +559,12 @@ pub(crate) async fn start_relay(
         server.host().to_string(),
         server.port(),
         agent_token,
-        true,
-        secure_server,
-        binary_source.as_deref(),
+        RelayPreparationOptions {
+            monitor_forward_failure: true,
+            secure_server,
+            binary_source: binary_source.as_deref(),
+            agent_app_name: Some(agent_app_name),
+        },
     )
     .await?;
     run_relay_random(&prepared).await

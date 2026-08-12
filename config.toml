@@ -29,3 +29,11 @@ name = "local"
 local = true
 home = "/home/esamatti"
 log = "/home/esamatti/redoor-agent.log"    # optional; redirects the agent's stdout/stderr to this file
+
+# Named standalone relays are started explicitly with `redoor agent relay start ID`.
+# [[relays]]
+# id = "production"
+# target = "user@example.com"
+# server = "https://redoor.example.com"
+# name = "production-agent"
+# agent_app_name = "redoor-production-agent"

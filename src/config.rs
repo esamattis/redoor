@@ -3,7 +3,8 @@
 //! Top-level `agent_token` is the shared registration secret. Optional
 //! `[server]` holds listener and browser-auth settings; optional `[agent]`
 //! holds standalone agent connection settings; optional `[[agents]]` lists
-//! server-managed local/SSH-backed agents. Server mode requires `[server]`; agent
+//! server-managed local/SSH-backed agents; optional `[[relays]]` lists independently
+//! started SSH relays. Server mode requires `[server]`; agent
 //! mode resolves required fields from CLI > env > config > default.
 
 mod bootstrap;
@@ -11,6 +12,7 @@ mod import;
 mod local_agent;
 
 use anyhow::{Context, Result, bail};
+use std::path::PathBuf;
 use toml_edit::Document;
 
 #[cfg(target_os = "linux")]
@@ -104,6 +106,25 @@ pub(crate) struct RedoorConfig {
     pub(crate) agent: Option<AgentSection>,
     /// Server-managed local/SSH-backed agents (server mode only).
     pub(crate) agents: Vec<AgentConfig>,
+    /// Named SSH relays that operators start and stop independently.
+    pub(crate) relays: Vec<RelayConfig>,
+}
+
+/// Configuration for one independently managed SSH relay.
+#[derive(Debug, Clone)]
+pub(crate) struct RelayConfig {
+    /// Stable local identity used for lifecycle commands and runtime files.
+    pub(crate) id: String,
+    /// Redoor server URL reached from the machine running the relay.
+    pub(crate) server: String,
+    /// Whether routed TLS certificate verification is intentionally disabled.
+    pub(crate) insecure: bool,
+    /// Optional local binary that is uploaded before starting the remote agent.
+    pub(crate) binary_source: Option<PathBuf>,
+    /// Optional remote process namespace; defaults to one derived from the local app and relay ID.
+    pub(crate) agent_app_name: Option<String>,
+    /// SSH-backed agent settings shared with server-managed agents.
+    pub(crate) agent: SshBackedAgentConfig,
 }
 
 /// Reads and validates the shared config file used by both server and agent.
@@ -126,7 +147,7 @@ pub(crate) async fn parse_config_file(path: &str) -> Result<RedoorConfig> {
         .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
 
     // Reject unknown root keys so typos are not silently ignored.
-    const KNOWN_ROOT_KEYS: [&str; 4] = ["agent_token", "server", "agent", "agents"];
+    const KNOWN_ROOT_KEYS: [&str; 5] = ["agent_token", "server", "agent", "agents", "relays"];
     for (key, _) in doc.iter() {
         if !KNOWN_ROOT_KEYS.contains(&key) {
             bail!(
@@ -149,13 +170,40 @@ pub(crate) async fn parse_config_file(path: &str) -> Result<RedoorConfig> {
     let server = parse_server_section(&doc)?;
     let agent = parse_agent_section(&doc)?;
     let agents = parse_agents_array(&doc, path)?;
+    let relays = parse_relays_array(&doc)?;
 
     Ok(RedoorConfig {
         agent_token,
         server,
         agent,
         agents,
+        relays,
     })
+}
+
+/// Returns the named relay or an actionable error listing the missing identity.
+pub(crate) fn require_relay<'a>(config: &'a RedoorConfig, id: &str) -> Result<&'a RelayConfig> {
+    config
+        .relays
+        .iter()
+        .find(|relay| relay.id == id)
+        .with_context(|| format!("relay '{id}' is not configured"))
+}
+
+/// Restricts relay IDs to safe, portable runtime-file components.
+pub(crate) fn parse_relay_id(value: &str) -> Result<String, String> {
+    if value.is_empty() || value == "." || value == ".." {
+        return Err("relay ID must not be empty, '.' or '..'".to_string());
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(
+            "relay ID may contain only ASCII letters, numbers, '.', '_' and '-'".to_string(),
+        );
+    }
+    Ok(value.to_string())
 }
 
 /// Returns the `[server]` section or a clear error for server-only entry points.
@@ -374,6 +422,109 @@ fn parse_agents_array(doc: &ParsedDocument<'_>, _path: &str) -> Result<Vec<Agent
                 index, entry,
             )?));
         }
+    }
+    Ok(configs)
+}
+
+/// Parses named relays separately from server-managed agents because their lifecycle is manual.
+fn parse_relays_array(doc: &ParsedDocument<'_>) -> Result<Vec<RelayConfig>> {
+    let Some(relays) = doc.get("relays").and_then(|item| item.as_array_of_tables()) else {
+        return Ok(Vec::new());
+    };
+    let mut configs = Vec::new();
+    for (index, entry) in relays.iter().enumerate() {
+        const KNOWN_KEYS: [&str; 12] = [
+            "id",
+            "target",
+            "server",
+            "username",
+            "ssh_port",
+            "name",
+            "remote_bin",
+            "binary_source",
+            "home",
+            "log",
+            "insecure",
+            "agent_app_name",
+        ];
+        for (key, _) in entry.iter() {
+            if !KNOWN_KEYS.contains(&key) {
+                bail!(
+                    "unknown key 'relays[{}].{}' in config file; expected one of: {}",
+                    index,
+                    key,
+                    KNOWN_KEYS.join(", ")
+                );
+            }
+        }
+        let string = |key: &str, required: bool| -> Result<Option<String>> {
+            let Some(item) = entry.get(key) else {
+                if required {
+                    bail!("relays entry #{} is missing a '{}' string", index, key);
+                }
+                return Ok(None);
+            };
+            let value = item
+                .as_str()
+                .with_context(|| format!("relays entry #{} '{}' must be a string", index, key))?;
+            if value.trim().is_empty() {
+                bail!("relays entry #{} '{}' must be non-empty", index, key);
+            }
+            Ok(Some(value.to_string()))
+        };
+        let id = parse_relay_id(&string("id", true)?.expect("required relay ID"))
+            .map_err(anyhow::Error::msg)?;
+        if configs.iter().any(|relay: &RelayConfig| relay.id == id) {
+            bail!("duplicate relay ID '{id}'");
+        }
+        let target = string("target", true)?.expect("required relay target");
+        let server = string("server", true)?.expect("required relay server");
+        let server_address = server
+            .parse::<crate::server_address::ServerAddress>()
+            .map_err(|error| anyhow::anyhow!("invalid server in relay '{id}': {error}"))?;
+        let ssh_port = match entry.get("ssh_port") {
+            None => None,
+            Some(item) => {
+                let raw = item.as_integer().with_context(|| {
+                    format!("relays entry #{} 'ssh_port' must be an integer", index)
+                })?;
+                Some(u16::try_from(raw).with_context(|| {
+                    format!(
+                        "ssh_port '{raw}' in relays entry #{} does not fit in a u16",
+                        index
+                    )
+                })?)
+            }
+        };
+        let insecure = match entry.get("insecure") {
+            None => false,
+            Some(item) => item
+                .as_bool()
+                .with_context(|| format!("relays entry #{} 'insecure' must be a boolean", index))?,
+        };
+        if insecure && !server_address.is_secure() {
+            bail!("relay '{id}' insecure = true requires an https:// or wss:// server URL");
+        }
+        let agent_app_name = string("agent_app_name", false)?
+            .map(|value| crate::app_name::parse_app_name(&value))
+            .transpose()
+            .map_err(anyhow::Error::msg)?;
+        configs.push(RelayConfig {
+            id,
+            server,
+            insecure,
+            binary_source: string("binary_source", false)?.map(PathBuf::from),
+            agent_app_name,
+            agent: SshBackedAgentConfig {
+                username: string("username", false)?,
+                ssh_port,
+                name: string("name", false)?,
+                remote_bin: string("remote_bin", false)?,
+                home: string("home", false)?,
+                target,
+                log: string("log", false)?,
+            },
+        });
     }
     Ok(configs)
 }
@@ -1494,6 +1645,91 @@ password = "only-password"
                 result.is_err(),
                 "username and password must be provided together"
             );
+        }
+    }
+
+    /// Reads the complete named-relay schema into the shared SSH transport model.
+    #[tokio::test]
+    async fn test_parse_config_file_reads_named_relays() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-relays-test-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"agent_token = "test-agent-token"
+
+[[relays]]
+id = "production"
+target = "user@example.com"
+server = "https://redoor.example.com"
+username = "deploy"
+ssh_port = 2200
+name = "production-agent"
+agent_app_name = "redoor-production-agent"
+remote_bin = "/opt/redoor"
+binary_source = "/tmp/redoor"
+home = "/srv/app"
+log = "/tmp/relay.log"
+insecure = true
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+        let relay = require_relay(&config, "production").unwrap();
+        // Identity and connection fields prove lifecycle and transport settings stay associated.
+        assert_eq!(relay.id, "production");
+        assert_eq!(relay.agent.target, "user@example.com");
+        assert_eq!(relay.agent.ssh_port, Some(2200));
+        assert!(relay.insecure);
+        assert_eq!(
+            relay.agent_app_name.as_deref(),
+            Some("redoor-production-agent")
+        );
+        assert_eq!(
+            relay.binary_source.as_deref(),
+            Some(std::path::Path::new("/tmp/redoor"))
+        );
+    }
+
+    /// Rejects duplicate or path-like IDs before they can alias one runtime file.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_unsafe_and_duplicate_relay_ids() {
+        for content in [
+            r#"agent_token = "test-agent-token"
+[[relays]]
+id = "../production"
+target = "example.com"
+server = "http://redoor.example.com"
+"#,
+            r#"agent_token = "test-agent-token"
+[[relays]]
+id = "production"
+target = "one.example.com"
+server = "http://redoor.example.com"
+[[relays]]
+id = "production"
+target = "two.example.com"
+server = "http://redoor.example.com"
+"#,
+        ] {
+            let temp = std::env::temp_dir().join(format!(
+                "redoor-invalid-relays-test-{}.toml",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&temp, content).unwrap();
+            let result = parse_config_file(temp.to_str().unwrap()).await;
+            std::fs::remove_file(&temp).ok();
+            // Invalid identities must fail before any process or PID file is created.
+            assert!(result.is_err());
         }
     }
 }
