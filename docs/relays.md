@@ -41,6 +41,8 @@ Detach it:
 redoor agent relay start production --daemon
 ```
 
+Foreground and daemon relays both supervise their SSH session. Failed host preparation, remote-port conflicts, and later SSH exits are retried with bounded exponential backoff until the relay is stopped.
+
 Manage that relay without starting any other configured relay:
 
 ```bash

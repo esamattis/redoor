@@ -393,9 +393,12 @@ async fn prepare_ssh_backed_agent_for_destination(
     })
 }
 
-/// Number of random ports a standalone launch tries before surfacing a remote
-/// bind failure instead of risking an unbounded startup loop.
-const STANDALONE_FORWARD_BIND_ATTEMPTS: usize = 10;
+/// Initial delay keeps transient SSH failures responsive without spinning.
+const RELAY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// Maximum delay bounds how long a persistent relay remains unavailable between attempts.
+const RELAY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+/// A long-lived SSH session proves the route is healthy enough to reset retry escalation.
+const RELAY_STABLE_RUNTIME: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stable fragment emitted by OpenSSH when `ExitOnForwardFailure` rejects a
 /// remote listener, independent of the particular port that was occupied.
@@ -494,54 +497,13 @@ async fn run_relay_attempt(
     Ok((remote_port, status, forward_failed))
 }
 
-/// Retries only random remote-listener collisions; once SSH starts without
-/// that error, its eventual exit is returned directly instead of being watched.
-async fn run_relay_random(
-    prepared: &PreparedSshBackedAgent,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for attempt in 1..=STANDALONE_FORWARD_BIND_ATTEMPTS {
-        let (remote_port, status, forward_failed) = run_relay_attempt(prepared).await?;
-        if !forward_failed {
-            return ssh_exit_result(status);
-        }
-        if attempt == STANDALONE_FORWARD_BIND_ATTEMPTS {
-            return Err(format!(
-                "ssh could not bind a random remote port after {} attempts; last port was {}",
-                STANDALONE_FORWARD_BIND_ATTEMPTS, remote_port
-            )
-            .into());
-        }
-        log!(
-            Level::Warning,
-            "SSH remote port was occupied, retrying: remote_port={}, attempt={}/{}",
-            remote_port,
-            attempt,
-            STANDALONE_FORWARD_BIND_ATTEMPTS
-        );
-    }
-    unreachable!("standalone SSH retry loop always returns");
-}
-
-/// Converts the final SSH status into the command's existing success/error
-/// contract without applying any restart behavior after a successful bind.
-fn ssh_exit_result(status: std::process::ExitStatus) -> Result<(), Box<dyn std::error::Error>> {
-    if !status.success() {
-        return Err(format!(
-            "SSH-backed agent session exited with status {}",
-            status.code().unwrap_or(-1)
-        )
-        .into());
-    }
-    Ok(())
-}
-
 /// Standalone implementation for `redoor agent relay`: probes the remote host,
-/// installs the redoor binary if missing, then runs an agent through a reverse
-/// forward to the requested destination. It retries occupied random listener
-/// ports but intentionally does not supervise or restart a started agent.
+/// installs the redoor binary if missing, then persistently supervises an agent
+/// through a reverse forward to the requested destination.
 ///
-/// Returns an error rather than exiting directly so the CLI boundary remains
-/// responsible for presenting the failure and choosing the process status.
+/// Preparation is retried until the SSH host becomes available. Once prepared,
+/// every SSH exit or random remote-port collision starts a fresh session without
+/// repeating provisioning. Foreground and daemon launches both use this loop.
 pub(crate) async fn start_relay(
     config: SshBackedAgentConfig,
     server: ServerAddress,
@@ -554,20 +516,64 @@ pub(crate) async fn start_relay(
         authority: server.authority(),
         insecure,
     });
-    let prepared = prepare_ssh_backed_agent_for_destination(
-        &config,
-        server.host().to_string(),
-        server.port(),
-        agent_token,
-        RelayPreparationOptions {
-            monitor_forward_failure: true,
-            secure_server,
-            binary_source: binary_source.as_deref(),
-            agent_app_name: Some(agent_app_name),
-        },
-    )
-    .await?;
-    run_relay_random(&prepared).await
+    let destination_host = server.host().to_string();
+    let destination_port = server.port();
+    let mut prepared = None;
+    let mut backoff = RELAY_INITIAL_BACKOFF;
+    loop {
+        if prepared.is_none() {
+            match prepare_ssh_backed_agent_for_destination(
+                &config,
+                destination_host.clone(),
+                destination_port,
+                agent_token,
+                RelayPreparationOptions {
+                    monitor_forward_failure: true,
+                    secure_server: secure_server.clone(),
+                    binary_source: binary_source.as_deref(),
+                    agent_app_name: Some(agent_app_name.clone()),
+                },
+            )
+            .await
+            {
+                Ok(value) => prepared = Some(value),
+                Err(error) => {
+                    log!(Level::Error, "Relay preparation failed: {error}");
+                    wait_for_relay_retry(backoff).await;
+                    backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
+                    continue;
+                }
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let attempt = run_relay_attempt(prepared.as_ref().expect("relay prepared above")).await;
+        match attempt {
+            Ok((remote_port, status, true)) => log!(
+                Level::Warning,
+                "SSH remote port was occupied; relay will retry: remote_port={remote_port}, status={status}"
+            ),
+            Ok((remote_port, status, false)) => log!(
+                Level::Warning,
+                "Relay SSH session exited; relay will retry: remote_port={remote_port}, status={status}"
+            ),
+            Err(error) => log!(
+                Level::Error,
+                "Relay SSH attempt failed; relay will retry: {error}"
+            ),
+        }
+        if started.elapsed() >= RELAY_STABLE_RUNTIME {
+            backoff = RELAY_INITIAL_BACKOFF;
+        }
+        wait_for_relay_retry(backoff).await;
+        backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
+    }
+}
+
+/// Waits between failed relay attempts so unavailable SSH hosts do not consume a CPU core.
+async fn wait_for_relay_retry(backoff: std::time::Duration) {
+    log!(Level::Info, "Relay retry scheduled: backoff={backoff:?}");
+    tokio::time::sleep(backoff).await;
 }
 
 #[cfg(test)]

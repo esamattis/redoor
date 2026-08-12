@@ -441,6 +441,9 @@ async fn wait_for_child(
     diagnostic_log: Option<&Path>,
     diagnostic_log_offset: u64,
 ) -> CycleResult {
+    // Tokio closes Child::stdin when wait() is polled. Managed SSH agents retain
+    // that pipe so the remote process sees EOF only when this watchdog cycle ends.
+    let _retained_stdin = child.stdin.take();
     let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
     tokio::pin!(startup_timeout);
     let mut connected = false;
