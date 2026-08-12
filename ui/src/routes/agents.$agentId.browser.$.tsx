@@ -17,6 +17,7 @@ import {
 } from "#ui/components/browser/navigation";
 import { DirectoryFilesActions } from "#ui/components/browser/directory-actions";
 import { FileList } from "#ui/components/browser/file-list";
+import { UploadQueueView } from "#ui/components/browser/upload-queue";
 import {
     DirectoryDetailView,
     FileDetailView,
@@ -43,12 +44,15 @@ const showHiddenFilesAtom = atomWithLocalStorage(
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     validateSearch: (
         search,
-    ): { view?: "details" | "edit" | "diff" | "sync" } => ({
+    ): {
+        view?: "details" | "edit" | "diff" | "sync" | "upload_queue";
+    } => ({
         view:
             search.view === "details" ||
             search.view === "edit" ||
             search.view === "diff" ||
-            search.view === "sync"
+            search.view === "sync" ||
+            search.view === "upload_queue"
                 ? search.view
                 : undefined,
     }),
@@ -297,7 +301,7 @@ function DirectoryBrowserPage(props: {
     path: string;
     parentPath: string | null;
     lsResult: LsDirectoryResponse;
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "edit" | "diff" | "sync" | "upload_queue";
 }) {
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
     const visibleFiles = showHiddenFiles
@@ -314,7 +318,9 @@ function DirectoryBrowserPage(props: {
             ? "details"
             : props.view === "sync"
               ? "sync"
-              : "files";
+              : props.view === "upload_queue"
+                ? "upload_queue"
+                : "files";
 
     return (
         <div className="p-6">
@@ -343,6 +349,11 @@ function DirectoryBrowserPage(props: {
                         agents={props.agents}
                         sourcePath={props.lsResult.path}
                         entryType="directory"
+                    />
+                ) : activeView === "upload_queue" ? (
+                    <UploadQueueView
+                        agentId={props.agentId}
+                        destinationPath={props.path}
                     />
                 ) : (
                     <FileList

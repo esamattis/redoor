@@ -53,8 +53,15 @@ test.describe.serial("File Operations", () => {
                 .getByLabel("Choose files to upload")
                 .setInputFiles([firstUploadPath, secondUploadPath]);
 
-            // This checks the inline status feedback shown next to the upload action.
-            await expect(page.getByText("Uploaded 2 files")).toBeVisible();
+            // Bulk sources open the shared queue instead of hiding scheduling behind the toolbar.
+            await expect(page).toHaveURL(
+                `${uploadDestinationUrl}?view=upload_queue`,
+            );
+            // Both selected files must pass through the same visible page-lifetime queue.
+            await expect(page.getByText("uploaded-a.txt")).toBeVisible();
+            await expect(page.getByText("uploaded-b.txt")).toBeVisible();
+            // Terminal queue state proves both uploads completed before transfer history is inspected.
+            await expect(page.getByText("2 of 2 done")).toBeVisible();
 
             // Transfers live in the burger menu so agent tabs remain dedicated to agents.
             await page.getByRole("button", { name: "Open menu" }).click();
@@ -89,6 +96,129 @@ test.describe.serial("File Operations", () => {
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
+    });
+
+    test("should upload a selected directory with nested paths", async ({
+        page,
+    }) => {
+        const sourceParent = await fs.mkdtemp(
+            path.join(os.tmpdir(), "redoor-directory-upload-"),
+        );
+        const sourceDirectory = path.join(sourceParent, "selected-directory");
+        const nestedDirectory = path.join(sourceDirectory, "nested");
+        const destinationDirectory = path.join(
+            ctx.testDirPath,
+            "subdir3",
+            "selected-directory",
+        );
+        await fs.mkdir(nestedDirectory, { recursive: true });
+        await fs.writeFile(
+            path.join(sourceDirectory, "root.txt"),
+            "root content",
+        );
+        await fs.writeFile(
+            path.join(nestedDirectory, "nested.txt"),
+            "nested content",
+        );
+
+        try {
+            const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+            await page.goto(directoryUrl);
+            await page
+                .getByLabel("Choose directory to upload")
+                .setInputFiles(sourceDirectory);
+
+            // Directory selections use the same queue route as ordinary multi-file selections.
+            await expect(page).toHaveURL(`${directoryUrl}?view=upload_queue`);
+            // Relative paths remain visible so users can verify the preserved hierarchy.
+            await expect(
+                page.getByText("selected-directory/nested/nested.txt"),
+            ).toBeVisible();
+            await expect(page.getByText("2 of 2 done")).toBeVisible();
+            // Disk contents prove parent directories were created before individual file uploads.
+            await expect(
+                fs.readFile(
+                    path.join(destinationDirectory, "root.txt"),
+                    "utf8",
+                ),
+            ).resolves.toBe("root content");
+            await expect(
+                fs.readFile(
+                    path.join(destinationDirectory, "nested", "nested.txt"),
+                    "utf8",
+                ),
+            ).resolves.toBe("nested content");
+        } finally {
+            await fs.rm(sourceParent, { force: true, recursive: true });
+        }
+    });
+
+    test("should reject selections over 100 files", async ({ page }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        await page.goto(directoryUrl);
+        const files = Array.from({ length: 101 }, (_value, index) => ({
+            name: `over-limit-${index}.txt`,
+            mimeType: "text/plain",
+            buffer: Buffer.from(String(index)),
+        }));
+
+        await page.getByLabel("Choose files to upload").setInputFiles(files);
+
+        // The complete source is rejected so no partial upload begins unexpectedly.
+        await expect(
+            page.getByText("Upload queues are limited to 100 files."),
+        ).toBeVisible();
+        // Staying in the file view confirms rejection does not redirect to an empty queue.
+        await expect(page).toHaveURL(directoryUrl);
+    });
+
+    test("should upload at most five files concurrently", async ({ page }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        let activeUploads = 0;
+        let maximumActiveUploads = 0;
+        let enteredUploads = 0;
+        let releaseUploads = () => {};
+        const uploadGate = new Promise<void>((resolve) => {
+            releaseUploads = resolve;
+        });
+        await page.route("**/raw/**", async (route) => {
+            if (route.request().method() !== "PUT") {
+                await route.continue();
+                return;
+            }
+            activeUploads += 1;
+            enteredUploads += 1;
+            maximumActiveUploads = Math.max(
+                maximumActiveUploads,
+                activeUploads,
+            );
+            await uploadGate;
+            await route.fulfill({ status: 200, body: "{}" });
+            activeUploads -= 1;
+        });
+        await page.goto(directoryUrl);
+        const files = Array.from({ length: 6 }, (_value, index) => ({
+            name: `concurrency-${index}.txt`,
+            mimeType: "text/plain",
+            buffer: Buffer.from(String(index)),
+        }));
+
+        await page.getByLabel("Choose files to upload").setInputFiles(files);
+
+        // Five blocked requests prove the scheduler fills every available upload slot.
+        await expect.poll(() => enteredUploads).toBe(5);
+        // The sixth file must remain waiting until one of those upload slots is released.
+        await expect(page.getByText("concurrency-5.txt")).toBeVisible();
+        await expect(
+            page
+                .getByRole("listitem")
+                .filter({ hasText: "concurrency-5.txt" })
+                .getByText("waiting", { exact: true }),
+        ).toBeVisible();
+        releaseUploads();
+        await expect(page.getByText("6 of 6 done")).toBeVisible();
+        // Network interception verifies no scheduling race exceeded the configured cap.
+        expect(maximumActiveUploads).toBe(5);
     });
 
     test("should create directory from directory view", async ({ page }) => {

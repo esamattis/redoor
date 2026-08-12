@@ -1,8 +1,13 @@
 import React from "react";
-import { useRouter } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
+import { useSetAtom } from "jotai";
 import { ClipboardPaste, Upload } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
+import {
+    enqueueUploadBatchAtom,
+    type UploadSourceFile,
+} from "#ui/upload-queue";
 import { Dialog } from "./dialog";
 import { Toast } from "./toast";
 
@@ -17,20 +22,12 @@ type DirectoryDestination = {
 /** Represents user-visible progress for global file imports. */
 type ImportState =
     | { type: "idle" }
-    | { type: "uploading"; fileCount: number }
     | { type: "success"; message: string }
     | { type: "error"; message: string };
 
 /** Requests a clipboard import from controls outside the global handler. */
 export function requestClipboardPaste() {
     window.dispatchEvent(new Event(REQUEST_CLIPBOARD_PASTE_EVENT));
-}
-
-/** Joins one browser-safe filename to the directory currently being viewed. */
-function joinBrowserPath(directoryPath: string, fileName: string) {
-    return directoryPath.endsWith("/")
-        ? `${directoryPath}${fileName}`
-        : `${directoryPath}/${fileName}`;
 }
 
 /** Produces a useful message without exposing unknown thrown values to the UI. */
@@ -106,9 +103,93 @@ function getFileNameError(fileName: string) {
     return null;
 }
 
-/** Manages upload progress and refreshes the current directory after successful imports. */
+/** Reads every chunk because Chromium limits one directory-reader result batch. */
+async function readDirectoryEntries(entry: FileSystemDirectoryEntry) {
+    const reader = entry.createReader();
+    const entries: FileSystemEntry[] = [];
+    while (true) {
+        const chunk = await new Promise<FileSystemEntry[]>((resolve, reject) =>
+            reader.readEntries(resolve, reject),
+        );
+        if (chunk.length === 0) {
+            return entries;
+        }
+        entries.push(...chunk);
+    }
+}
+
+/** Narrows the legacy entry API before invoking its file-only operation. */
+function isDroppedFileEntry(
+    entry: FileSystemEntry,
+): entry is FileSystemFileEntry {
+    return entry.isFile;
+}
+
+/** Narrows the legacy entry API before enumerating directory children. */
+function isDroppedDirectoryEntry(
+    entry: FileSystemEntry,
+): entry is FileSystemDirectoryEntry {
+    return entry.isDirectory;
+}
+
+type DroppedManifest = {
+    files: UploadSourceFile[];
+    directories: string[];
+};
+
+/** Converts legacy drag entries into the same source manifest used by every importer. */
+async function traverseDroppedEntry(
+    entry: FileSystemEntry,
+    parentPath: string,
+    manifest: DroppedManifest,
+) {
+    const relativePath = parentPath
+        ? `${parentPath}/${entry.name}`
+        : entry.name;
+    if (isDroppedFileEntry(entry)) {
+        const file = await new Promise<File>((resolve, reject) =>
+            entry.file(resolve, reject),
+        );
+        manifest.files.push({ file, relativePath });
+        return;
+    }
+    if (!isDroppedDirectoryEntry(entry)) {
+        return;
+    }
+
+    manifest.directories.push(relativePath);
+    const children = await readDirectoryEntries(entry);
+    for (const child of children) {
+        await traverseDroppedEntry(child, relativePath, manifest);
+    }
+}
+
+/** Extracts directories when available and falls back to ordinary dropped files. */
+async function readDroppedFiles(dataTransfer: DataTransfer) {
+    const entries = Array.from(dataTransfer.items)
+        .map((item) => item.webkitGetAsEntry())
+        .filter((entry): entry is FileSystemEntry => entry !== null);
+    if (entries.length === 0) {
+        return {
+            files: Array.from(dataTransfer.files, (file) => ({
+                file,
+                relativePath: file.name,
+            })),
+            directories: [],
+        };
+    }
+
+    const manifest: DroppedManifest = { files: [], directories: [] };
+    for (const entry of entries) {
+        await traverseDroppedEntry(entry, "", manifest);
+    }
+    return manifest;
+}
+
+/** Enqueues source manifests and opens the queue view for the active destination. */
 function useFileUploader(props: { destination: DirectoryDestination | null }) {
-    const router = useRouter();
+    const navigate = useNavigate();
+    const enqueue = useSetAtom(enqueueUploadBatchAtom);
     const [importState, setImportState] = React.useState<ImportState>({
         type: "idle",
     });
@@ -122,8 +203,8 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
     }, []);
 
     const uploadFiles = React.useCallback(
-        async (files: File[]) => {
-            if (files.length === 0) {
+        async (files: UploadSourceFile[], directories: string[] = []) => {
+            if (files.length === 0 && directories.length === 0) {
                 return;
             }
             if (!props.destination) {
@@ -132,50 +213,29 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
             }
 
             const destination = props.destination;
-            setImportState({ type: "uploading", fileCount: files.length });
-            const results = await Promise.allSettled(
-                files.map((file) =>
-                    destination.agent.upload(
-                        joinBrowserPath(destination.path, file.name),
-                        file,
-                    ),
-                ),
-            );
-            const successCount = results.filter(
-                (result) => result.status === "fulfilled",
-            ).length;
-            const firstFailure = results.find(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successCount > 0) {
-                await router.invalidate();
-            }
-            if (firstFailure) {
-                const failureMessage = getErrorMessage(
-                    firstFailure.reason,
-                    "Upload failed",
-                );
+            const result = enqueue({
+                agentId: destination.agent.id,
+                destinationPath: destination.path,
+                files,
+                directories,
+            });
+            if (!result.ok) {
                 setImportState({
                     type: "error",
-                    message:
-                        successCount > 0
-                            ? `Uploaded ${successCount} of ${files.length} files. ${failureMessage}`
-                            : failureMessage,
+                    message: result.message,
                 });
                 return;
             }
-
             setImportState({
                 type: "success",
-                message:
-                    files.length === 1
-                        ? `Uploaded ${files[0]?.name ?? "file"}`
-                        : `Uploaded ${files.length} files`,
+                message: `Queued ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}.`,
+            });
+            await navigate({
+                to: destination.agent.getBrowserUrl(destination.path),
+                search: { view: "upload_queue" },
             });
         },
-        [props.destination, router, showMissingDirectoryError],
+        [enqueue, navigate, props.destination, showMissingDirectoryError],
     );
 
     return {
@@ -190,7 +250,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
 function usePastedTextImport(props: {
     destination: DirectoryDestination | null;
     showMissingDirectoryError: () => void;
-    uploadFiles: (files: File[]) => Promise<void>;
+    uploadFiles: (files: UploadSourceFile[]) => Promise<void>;
 }) {
     const [pastedText, setPastedText] = React.useState<string | null>(null);
     const [textFileName, setTextFileName] = React.useState("pasted-text.txt");
@@ -226,9 +286,10 @@ function usePastedTextImport(props: {
             }
 
             setPastedText(null);
-            await props.uploadFiles([
-                new File([pastedText], trimmedFileName, { type: "text/plain" }),
-            ]);
+            const file = new File([pastedText], trimmedFileName, {
+                type: "text/plain",
+            });
+            await props.uploadFiles([{ file, relativePath: file.name }]);
         },
         [pastedText, props.uploadFiles, textFileName],
     );
@@ -257,7 +318,7 @@ function useClipboardImporter(props: {
     openTextFileDialog: (text: string) => void;
     setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
     showMissingDirectoryError: () => void;
-    uploadFiles: (files: File[]) => Promise<void>;
+    uploadFiles: (files: UploadSourceFile[]) => Promise<void>;
 }) {
     return React.useCallback(async () => {
         if (!props.destination) {
@@ -275,7 +336,12 @@ function useClipboardImporter(props: {
                 const items = await navigator.clipboard.read();
                 const files = await readClipboardFiles(items);
                 if (files.length > 0) {
-                    await props.uploadFiles(files);
+                    await props.uploadFiles(
+                        files.map((file) => ({
+                            file,
+                            relativePath: file.name,
+                        })),
+                    );
                     return;
                 }
             }
@@ -314,7 +380,10 @@ function useGlobalImportEvents(props: {
     importFromClipboard: () => Promise<void>;
     openTextFileDialog: (text: string) => void;
     showMissingDirectoryError: () => void;
-    uploadFiles: (files: File[]) => Promise<void>;
+    uploadFiles: (
+        files: UploadSourceFile[],
+        directories?: string[],
+    ) => Promise<void>;
 }) {
     const dragDepthRef = React.useRef(0);
     const [isDraggingFiles, setIsDraggingFiles] = React.useState(false);
@@ -368,12 +437,19 @@ function useGlobalImportEvents(props: {
             event.preventDefault();
             dragDepthRef.current = 0;
             setIsDraggingFiles(false);
-            const files = Array.from(event.dataTransfer?.files ?? []);
             if (!props.destination) {
                 props.showMissingDirectoryError();
                 return;
             }
-            void props.uploadFiles(files);
+            const dataTransfer = event.dataTransfer;
+            if (!dataTransfer) {
+                return;
+            }
+            void readDroppedFiles(dataTransfer)
+                .then((manifest) =>
+                    props.uploadFiles(manifest.files, manifest.directories),
+                )
+                .catch(() => props.showMissingDirectoryError());
         };
 
         /** Imports pasted files, or asks for a name when plain text is pasted. */
@@ -394,7 +470,9 @@ function useGlobalImportEvents(props: {
                 return;
             }
             if (files.length > 0) {
-                void props.uploadFiles(files);
+                void props.uploadFiles(
+                    files.map((file) => ({ file, relativePath: file.name })),
+                );
                 return;
             }
 
@@ -476,11 +554,7 @@ function FileImportToast(props: {
     setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
 }) {
     const statusMessage =
-        props.importState.type === "uploading"
-            ? `Uploading ${props.importState.fileCount} ${props.importState.fileCount === 1 ? "file" : "files"}...`
-            : props.importState.type === "idle"
-              ? null
-              : props.importState.message;
+        props.importState.type === "idle" ? null : props.importState.message;
 
     if (!statusMessage) {
         return null;
@@ -488,26 +562,10 @@ function FileImportToast(props: {
 
     return (
         <Toast
-            tone={
-                props.importState.type === "error"
-                    ? "error"
-                    : props.importState.type === "uploading"
-                      ? "info"
-                      : "success"
-            }
-            icon={
-                props.importState.type === "uploading" ? (
-                    <Upload className="h-4 w-4 animate-pulse" />
-                ) : (
-                    <ClipboardPaste className="h-4 w-4" />
-                )
-            }
+            tone={props.importState.type === "error" ? "error" : "success"}
+            icon={<ClipboardPaste className="h-4 w-4" />}
             dismissAriaLabel="Dismiss file import message"
-            onDismiss={
-                props.importState.type === "uploading"
-                    ? undefined
-                    : () => props.setImportState({ type: "idle" })
-            }
+            onDismiss={() => props.setImportState({ type: "idle" })}
         >
             {statusMessage}
         </Toast>

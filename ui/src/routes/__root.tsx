@@ -49,6 +49,7 @@ import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel"
 import { TerminalPanel } from "#ui/components/terminal-panel";
 import { getParentPath } from "#ui/utils/path";
 import { GlobalFileImportHandler } from "#ui/components/global-file-import-handler";
+import { UploadQueueManager } from "#ui/upload-queue";
 import {
     agentTabLocationsAtom,
     getAgentTabLocation,
@@ -370,6 +371,10 @@ function RootLayout() {
         <div className="flex h-screen flex-col bg-[#0b0d12]">
             <RouteLoadingIndicator />
             <GlobalFileImportHandler destination={importDestination} />
+            <UploadQueueManager
+                agents={agents}
+                onUploadsChanged={() => router.invalidate()}
+            />
             <TopTabStrip agents={sortedAgents} pathname={location.pathname} />
             <div className="flex min-h-0 flex-1 flex-col">
                 <main className="flex-1 overflow-auto">

@@ -10,6 +10,7 @@ import {
     List,
     Pencil,
     RefreshCw,
+    Upload,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
@@ -109,7 +110,7 @@ export function BrowserHeader(props: {
     path: string;
     parentPath: string | null;
     directoryPath: string;
-    activeView: "files" | "details" | "sync";
+    activeView: "files" | "details" | "sync" | "upload_queue";
     pathUnavailable?: boolean;
 }) {
     const pathUnavailable = props.pathUnavailable === true;
@@ -196,6 +197,24 @@ export function BrowserHeader(props: {
                             >
                                 <RefreshCw className="h-4 w-4" />
                                 Sync
+                            </Link>
+                            <Link
+                                to={getBrowserPathHref(
+                                    props.agent,
+                                    props.directoryPath,
+                                )}
+                                search={{ view: "upload_queue" }}
+                                aria-current={
+                                    props.activeView === "upload_queue"
+                                        ? "page"
+                                        : undefined
+                                }
+                                className={getViewSwitchItemClass(
+                                    props.activeView === "upload_queue",
+                                )}
+                            >
+                                <Upload className="h-4 w-4" />
+                                Upload queue
                             </Link>
                         </ViewSwitch>
                     ) : null}

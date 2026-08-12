@@ -1,6 +1,6 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
     ClipboardPaste,
     Copy,
@@ -19,16 +19,11 @@ import { Tooltip } from "#ui/components/tooltip";
 import type { Agent } from "#ui/api-client";
 import { selectedFilesAtom, unselectFileAtom } from "#ui/selected-files";
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
+import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 
 type CopySelectedFilesState =
     | { type: "idle" }
     | { type: "copying"; itemCount: number }
-    | { type: "success"; message: string }
-    | { type: "error"; message: string };
-
-type UploadState =
-    | { type: "idle" }
-    | { type: "uploading"; fileCount: number }
     | { type: "success"; message: string }
     | { type: "error"; message: string };
 
@@ -178,126 +173,103 @@ function CopySelectedFilesAction(props: {
     );
 }
 
-/** Opens the local file picker and uploads chosen files into this directory. */
+/** Sends file and directory selections through the same bounded global queue. */
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
-    const router = useRouter();
-    const inputId = React.useId();
-    const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const [uploadState, setUploadState] = React.useState<UploadState>({
-        type: "idle",
-    });
+    const navigate = useNavigate();
+    const enqueue = useSetAtom(enqueueUploadBatchAtom);
+    const fileInputId = React.useId();
+    const directoryInputId = React.useId();
+    const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+    const directoryInputRef = React.useRef<HTMLInputElement | null>(null);
+    const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
-    const statusMessage =
-        uploadState.type === "uploading"
-            ? `Uploading ${uploadState.fileCount} ${uploadState.fileCount === 1 ? "file" : "files"}...`
-            : uploadState.type === "idle"
-              ? null
-              : uploadState.message;
-    const isUploading = uploadState.type === "uploading";
-
-    const openFilePicker = () => {
-        setUploadState({ type: "idle" });
-        inputRef.current?.click();
-    };
-
-    const handleFileSelection = async (
+    const handleFileSelection = (
         event: React.ChangeEvent<HTMLInputElement>,
     ) => {
         const selectedFiles = Array.from(event.target.files ?? []);
         if (selectedFiles.length === 0) {
             return;
         }
-
-        setUploadState({
-            type: "uploading",
-            fileCount: selectedFiles.length,
+        const result = enqueue({
+            agentId: props.agent.id,
+            destinationPath: props.directoryPath,
+            files: selectedFiles.map((file) => ({
+                file,
+                relativePath: file.webkitRelativePath || file.name,
+            })),
         });
-
-        try {
-            const results = await Promise.allSettled(
-                selectedFiles.map((file) =>
-                    props.agent.upload(
-                        joinBrowserPath(props.directoryPath, file.name),
-                        file,
-                    ),
-                ),
-            );
-            const successCount = results.filter(
-                (result) => result.status === "fulfilled",
-            ).length;
-            const failedUploads = results.filter(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successCount > 0) {
-                await router.invalidate();
-            }
-
-            if (failedUploads.length > 0) {
-                const firstFailedUpload = failedUploads[0];
-                const failureMessage = getErrorMessage(
-                    firstFailedUpload ? firstFailedUpload.reason : undefined,
-                    "Upload failed",
-                );
-                setUploadState({
-                    type: "error",
-                    message:
-                        successCount > 0
-                            ? `Uploaded ${successCount} of ${selectedFiles.length} files. ${failureMessage}`
-                            : failureMessage,
-                });
-                return;
-            }
-
-            setUploadState({
-                type: "success",
-                message:
-                    selectedFiles.length === 1
-                        ? `Uploaded ${selectedFiles[0] ? selectedFiles[0].name : "file"}`
-                        : `Uploaded ${selectedFiles.length} files`,
-            });
-        } catch (error) {
-            setUploadState({
-                type: "error",
-                message: getErrorMessage(error, "Upload failed"),
-            });
-        } finally {
-            event.target.value = "";
+        event.target.value = "";
+        if (!result.ok) {
+            setErrorMessage(result.message);
+            return;
         }
+        setErrorMessage(null);
+        void navigate({
+            to: props.agent.getBrowserUrl(props.directoryPath),
+            search: { view: "upload_queue" },
+        });
     };
 
     return (
-        <div className="flex items-center gap-3">
-            <label htmlFor={inputId} className="sr-only">
+        <div className="flex items-center gap-1">
+            <label htmlFor={fileInputId} className="sr-only">
                 Choose files to upload
             </label>
             <input
-                ref={inputRef}
-                id={inputId}
+                ref={fileInputRef}
+                id={fileInputId}
                 type="file"
                 multiple
                 className="sr-only"
                 onChange={handleFileSelection}
             />
-            <button
-                type="button"
-                onClick={openFilePicker}
-                aria-label="Upload files"
-                disabled={isUploading}
-                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-                <Upload className="h-4 w-4" />
-                {isUploading ? "Uploading..." : "Upload"}
-            </button>
-            {statusMessage ? (
-                <span
-                    role={uploadState.type === "error" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`text-sm ${uploadState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
+            <label htmlFor={directoryInputId} className="sr-only">
+                Choose directory to upload
+            </label>
+            <input
+                ref={(element) => {
+                    directoryInputRef.current = element;
+                    element?.setAttribute("webkitdirectory", "");
+                }}
+                id={directoryInputId}
+                type="file"
+                multiple
+                className="sr-only"
+                onChange={handleFileSelection}
+            />
+            <ActionMenu label="Upload" icon={<Upload className="h-4 w-4" />}>
+                {(close) => (
+                    <>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                fileInputRef.current?.click();
+                            }}
+                        >
+                            <Upload className="h-4 w-4 text-slate-400" />
+                            Upload files
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                directoryInputRef.current?.click();
+                            }}
+                        >
+                            <FolderPlus className="h-4 w-4 text-slate-400" />
+                            Upload directory
+                        </ActionMenuButton>
+                    </>
+                )}
+            </ActionMenu>
+            {errorMessage ? (
+                <Toast
+                    tone="error"
+                    icon={<Upload className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss upload error"
+                    onDismiss={() => setErrorMessage(null)}
                 >
-                    {statusMessage}
-                </span>
+                    {errorMessage}
+                </Toast>
             ) : null}
         </div>
     );
