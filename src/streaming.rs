@@ -7,7 +7,7 @@ pub const HEADER_SIZE: usize = 23;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 /// Keeps allocations and bounded queue residency small while allowing fair
 /// multiplexing among concurrent streams sharing one persistent transfer socket.
-pub const MAX_TRANSFER_FRAME_PAYLOAD_BYTES: usize = 8 * 1024;
+pub const MAX_TRANSFER_FRAME_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// Identifies how the chunk payload bytes should be interpreted by the receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(PROTOCOL_MAGIC, 0x52415844);
         assert_eq!(HEADER_SIZE, 23);
         assert_eq!(CHUNK_SIZE, 64 * 1024);
-        assert_eq!(MAX_TRANSFER_FRAME_PAYLOAD_BYTES, 8 * 1024);
+        assert_eq!(MAX_TRANSFER_FRAME_PAYLOAD_BYTES, 64 * 1024);
     }
 
     #[test]
