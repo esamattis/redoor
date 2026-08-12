@@ -41,6 +41,9 @@ import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
+import type { DiffEndpoint } from "#bindings/DiffEndpoint";
+import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
+import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
 import { z } from "zod";
 
 export type {
@@ -79,6 +82,9 @@ export type {
     RenamePathResponse,
     FileSearchResponse,
     FileSearchEntry,
+    DiffEndpoint,
+    DiffFilesRequest,
+    DiffFilesResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -761,6 +767,25 @@ export class ApiClient {
                 ...transfer,
             })),
         };
+    }
+
+    /** Generates a unified diff after both agents confirm their files are editable. */
+    async diffFiles(
+        left: DiffEndpoint,
+        right: DiffEndpoint,
+    ): Promise<DiffFilesResponse> {
+        encodeFilesystemPath(left.path);
+        encodeFilesystemPath(right.path);
+        const request: DiffFilesRequest = { left, right };
+        return apiRequest<DiffFilesResponse>(
+            `${this.baseUrl}/api/v1/diff`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
     }
 
     /** Returns server identity and agent bootstrap settings for the authenticated home page. */
