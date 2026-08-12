@@ -28,107 +28,18 @@ export function Dialog(props: {
     const descriptionId = React.useId();
     const dialogRef = React.useRef<HTMLDialogElement>(null);
     const panelRef = React.useRef<HTMLDivElement>(null);
-    const [anchorPosition, setAnchorPosition] = React.useState<{
-        top: number;
-        left: number;
-    } | null>(null);
     const isAnchored = props.anchorRef != null;
-
-    React.useEffect(() => {
-        if (!props.isOpen || !isAnchored || props.isBusy) {
-            return;
-        }
-
-        /** Closes an idle dialog from the keyboard for accessible dismissal. */
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                props.onClose();
-            }
-        };
-
-        document.addEventListener("keydown", handleKeyDown);
-        return () => document.removeEventListener("keydown", handleKeyDown);
-    }, [isAnchored, props.isBusy, props.isOpen, props.onClose]);
-
-    React.useEffect(() => {
-        const dialog = dialogRef.current;
-        if (!props.isOpen || isAnchored || !dialog) {
-            return;
-        }
-
-        if (!dialog.open) {
-            dialog.showModal();
-        }
-
-        // showModal() runs after React's autoFocus layout effect and focuses the
-        // first tabbable control (usually the close button). Prefer an explicit
-        // autofocus target, otherwise the first editable field in the body.
-        const autofocusTarget =
-            dialog.querySelector<HTMLElement>("[autofocus]") ??
-            dialog.querySelector<HTMLElement>(
-                "input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])",
-            );
-        autofocusTarget?.focus();
-
-        return () => {
-            if (dialog.open) {
-                dialog.close();
-            }
-        };
-    }, [isAnchored, props.isOpen]);
-
-    React.useLayoutEffect(() => {
-        if (!props.isOpen || !props.anchorRef) {
-            setAnchorPosition(null);
-            return;
-        }
-
-        /** Keeps the panel attached to the trigger across layout shifts. */
-        const updatePosition = () => {
-            const anchor = props.anchorRef?.current;
-            const panel = panelRef.current;
-            if (!anchor) {
-                return;
-            }
-
-            const anchorRect = anchor.getBoundingClientRect();
-            const panelWidth = panel?.offsetWidth ?? 224;
-            const panelHeight = panel?.offsetHeight ?? 0;
-            const gap = 8;
-            const viewportPadding = 8;
-
-            let top = anchorRect.bottom + gap;
-            // Flip above the trigger when there is not enough room below.
-            if (
-                panelHeight > 0 &&
-                top + panelHeight > window.innerHeight - viewportPadding &&
-                anchorRect.top - gap - panelHeight >= viewportPadding
-            ) {
-                top = anchorRect.top - gap - panelHeight;
-            }
-
-            let left = anchorRect.right - panelWidth;
-            left = Math.min(
-                left,
-                window.innerWidth - panelWidth - viewportPadding,
-            );
-            left = Math.max(viewportPadding, left);
-
-            setAnchorPosition({ top, left });
-        };
-
-        updatePosition();
-        // Second pass after paint so measured panel size is accurate.
-        const frameId = window.requestAnimationFrame(updatePosition);
-        window.addEventListener("resize", updatePosition);
-        window.addEventListener("scroll", updatePosition, true);
-
-        return () => {
-            window.cancelAnimationFrame(frameId);
-            window.removeEventListener("resize", updatePosition);
-            window.removeEventListener("scroll", updatePosition, true);
-        };
-    }, [props.anchorRef, props.isOpen, props.children, props.errorMessage]);
+    const anchorPosition = useDialogBehavior({
+        isOpen: props.isOpen,
+        isBusy: props.isBusy,
+        isAnchored,
+        anchorRef: props.anchorRef,
+        dialogRef,
+        panelRef,
+        onClose: props.onClose,
+        children: props.children,
+        errorMessage: props.errorMessage,
+    });
 
     if (!props.isOpen) {
         return null;
@@ -240,4 +151,126 @@ export function Dialog(props: {
             {panel}
         </dialog>
     );
+}
+
+/** Owns open/close lifecycle and anchor placement so Dialog stays presentation-focused. */
+function useDialogBehavior(props: {
+    isOpen: boolean;
+    isBusy?: boolean;
+    isAnchored: boolean;
+    anchorRef?: React.RefObject<HTMLElement | null>;
+    dialogRef: React.RefObject<HTMLDialogElement | null>;
+    panelRef: React.RefObject<HTMLDivElement | null>;
+    onClose: () => void;
+    children: React.ReactNode;
+    errorMessage?: string | null;
+}) {
+    const [anchorPosition, setAnchorPosition] = React.useState<{
+        top: number;
+        left: number;
+    } | null>(null);
+
+    React.useEffect(() => {
+        if (!props.isOpen || !props.isAnchored || props.isBusy) {
+            return;
+        }
+
+        /** Closes an idle dialog from the keyboard for accessible dismissal. */
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                props.onClose();
+            }
+        };
+
+        document.addEventListener("keydown", handleKeyDown);
+        return () => document.removeEventListener("keydown", handleKeyDown);
+    }, [props.isAnchored, props.isBusy, props.isOpen, props.onClose]);
+
+    React.useEffect(() => {
+        const dialog = props.dialogRef.current;
+        if (!props.isOpen || props.isAnchored || !dialog) {
+            return;
+        }
+
+        if (!dialog.open) {
+            dialog.showModal();
+        }
+
+        // showModal() runs after React's autoFocus layout effect and focuses the
+        // first tabbable control (usually the close button). Prefer an explicit
+        // autofocus target, otherwise the first editable field in the body.
+        const autofocusTarget =
+            dialog.querySelector<HTMLElement>("[autofocus]") ??
+            dialog.querySelector<HTMLElement>(
+                "input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])",
+            );
+        autofocusTarget?.focus();
+
+        return () => {
+            if (dialog.open) {
+                dialog.close();
+            }
+        };
+    }, [props.dialogRef, props.isAnchored, props.isOpen]);
+
+    React.useLayoutEffect(() => {
+        if (!props.isOpen || !props.anchorRef) {
+            setAnchorPosition(null);
+            return;
+        }
+
+        /** Keeps the panel attached to the trigger across layout shifts. */
+        const updatePosition = () => {
+            const anchor = props.anchorRef?.current;
+            const panel = props.panelRef.current;
+            if (!anchor) {
+                return;
+            }
+
+            const anchorRect = anchor.getBoundingClientRect();
+            const panelWidth = panel?.offsetWidth ?? 224;
+            const panelHeight = panel?.offsetHeight ?? 0;
+            const gap = 8;
+            const viewportPadding = 8;
+
+            let top = anchorRect.bottom + gap;
+            // Flip above the trigger when there is not enough room below.
+            if (
+                panelHeight > 0 &&
+                top + panelHeight > window.innerHeight - viewportPadding &&
+                anchorRect.top - gap - panelHeight >= viewportPadding
+            ) {
+                top = anchorRect.top - gap - panelHeight;
+            }
+
+            let left = anchorRect.right - panelWidth;
+            left = Math.min(
+                left,
+                window.innerWidth - panelWidth - viewportPadding,
+            );
+            left = Math.max(viewportPadding, left);
+
+            setAnchorPosition({ top, left });
+        };
+
+        updatePosition();
+        // Second pass after paint so measured panel size is accurate.
+        const frameId = window.requestAnimationFrame(updatePosition);
+        window.addEventListener("resize", updatePosition);
+        window.addEventListener("scroll", updatePosition, true);
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+            window.removeEventListener("resize", updatePosition);
+            window.removeEventListener("scroll", updatePosition, true);
+        };
+    }, [
+        props.anchorRef,
+        props.children,
+        props.errorMessage,
+        props.isOpen,
+        props.panelRef,
+    ]);
+
+    return anchorPosition;
 }

@@ -84,9 +84,6 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(
-            page.getByRole("status", { name: "Terminal count" }),
-        ).toHaveText("No terminals");
         // Rendering the empty tab strip must not eagerly open a terminal socket.
         expect(terminalSockets).toHaveLength(0);
 
@@ -204,9 +201,6 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(
-            page.getByRole("status", { name: "Terminal count" }),
-        ).toHaveText("No terminals");
 
         await page.getByRole("button", { name: "New terminal" }).click();
         await expect(
@@ -231,9 +225,6 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page.getByRole("tab", { name: /^Terminal / })).toHaveCount(
             0,
         );
-        await expect(
-            page.getByRole("status", { name: "Terminal count" }),
-        ).toHaveText("No terminals");
         expect(terminalSockets).toHaveLength(5);
 
         // Transfers live in the burger menu so agent tabs remain dedicated to agents.

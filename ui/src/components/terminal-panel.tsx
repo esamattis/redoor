@@ -21,6 +21,7 @@ import {
 } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
+import { Tooltip } from "#ui/components/tooltip";
 
 type TerminalState =
     | { type: "not_started" }
@@ -196,19 +197,8 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
     return (
         <CollapsibleBottomPanel
             title="Terminal"
-            description={`Shells on ${props.agent.name}`}
             icon={<SquareTerminal className="h-4 w-4" />}
-            badge={
-                <span
-                    role="status"
-                    aria-label="Terminal count"
-                    className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-400"
-                >
-                    {tabs.length === 0
-                        ? "No terminals"
-                        : `${tabs.length} terminal${tabs.length === 1 ? "" : "s"}`}
-                </span>
-            }
+            hideTitle
             actions={
                 <TerminalTabActions
                     tabs={tabs}
@@ -256,11 +246,11 @@ function TerminalTabActions(props: {
     ) => void;
 }) {
     return (
-        <div className="flex min-w-0 max-w-full items-center gap-1">
+        <div className="flex min-w-max max-w-none items-center gap-1">
             <div
                 role="tablist"
                 aria-label="Terminal tabs"
-                className="flex min-h-8 min-w-px flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain"
+                className="flex min-h-8 min-w-px items-center gap-1"
             >
                 {props.tabs.map((tab, tabIndex) => {
                     const status = getTerminalStatus(tab.state);
@@ -335,15 +325,16 @@ function TerminalTabActions(props: {
                     );
                 })}
             </div>
-            <button
-                type="button"
-                aria-label="New terminal"
-                title="New terminal"
-                onClick={props.onCreate}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-            >
-                <Plus className="h-4 w-4" />
-            </button>
+            <Tooltip content="New terminal">
+                <button
+                    type="button"
+                    aria-label="New terminal"
+                    onClick={props.onCreate}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                >
+                    <Plus className="h-4 w-4" />
+                </button>
+            </Tooltip>
         </div>
     );
 }

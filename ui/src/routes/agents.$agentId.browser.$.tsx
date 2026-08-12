@@ -1083,25 +1083,27 @@ function BrowserPageHeader(props: {
 }) {
     return (
         <header className="mb-4">
-            <div className="mb-3 flex items-center gap-3">
-                <Link
-                    to="/agents/$agentId"
-                    params={{ agentId: props.agentId }}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    <HardDrive className="h-3.5 w-3.5" />
-                    Agent
-                </Link>
-                <Tooltip content="Open agent home directory">
+            <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
+                <div className="flex w-max min-w-full items-center gap-3">
                     <Link
-                        to={props.agent.getBrowserUrl(props.agent.cwd ?? "/")}
-                        aria-label="Agent home"
-                        className="inline-flex shrink-0 items-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        to="/agents/$agentId"
+                        params={{ agentId: props.agentId }}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
-                        <Home className="h-4 w-4" aria-hidden="true" />
+                        <HardDrive className="h-3.5 w-3.5" />
+                        Agent
                     </Link>
-                </Tooltip>
-                <div className="min-w-0 flex-1">
+                    <Tooltip content="Open agent home directory">
+                        <Link
+                            to={props.agent.getBrowserUrl(
+                                props.agent.cwd ?? "/",
+                            )}
+                            aria-label="Agent home"
+                            className="inline-flex shrink-0 items-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        >
+                            <Home className="h-4 w-4" aria-hidden="true" />
+                        </Link>
+                    </Tooltip>
                     <Breadcrumbs
                         agent={props.agent}
                         path={props.path}
@@ -1480,11 +1482,11 @@ function Breadcrumbs(props: {
     };
 
     return (
-        <div className="flex min-w-0 w-full items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
             {isEditing ? (
                 <form
                     onSubmit={navigateToEditedPath}
-                    className="flex min-w-0 w-full items-center gap-1"
+                    className="flex min-w-0 flex-1 items-center gap-1"
                 >
                     <input
                         ref={pathInputRef}
@@ -1511,7 +1513,7 @@ function Breadcrumbs(props: {
                 <>
                     <nav
                         aria-label="Breadcrumbs"
-                        className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain text-sm"
+                        className="flex min-w-0 flex-1 items-center gap-2 text-sm"
                     >
                         {isAtRoot ? (
                             <span className="shrink-0 font-medium text-slate-100">
