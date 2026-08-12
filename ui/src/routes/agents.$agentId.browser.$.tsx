@@ -365,6 +365,7 @@ function DirectoryBrowserPage(props: {
                         files={[...directories, ...regularFiles]}
                         actions={
                             <DirectoryFilesActions
+                                api={props.api}
                                 agent={props.agent}
                                 agents={props.agents}
                                 directoryPath={props.path}

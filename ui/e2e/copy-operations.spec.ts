@@ -201,22 +201,10 @@ test.describe.serial("Copy Operations", () => {
 
         // An accepted API response proves the click reached the intended copy route.
         expect(copyResponse.ok()).toBe(true);
-
-        // Polling the filesystem is more reliable than waiting on UI messages because
-        // the selected-items panel disappears immediately after a successful copy.
-        await expect
-            .poll(
-                async () => {
-                    try {
-                        await fs.stat(copiedFilePath);
-                        return "exists";
-                    } catch {
-                        return "missing";
-                    }
-                },
-                { timeout: 30_000 },
-            )
-            .toBe("exists");
+        // Terminal success clears the copied item rather than clearing it on request acceptance.
+        await expect(
+            page.getByRole("heading", { name: "Selected items" }),
+        ).toHaveCount(0, { timeout: 30_000 });
 
         // Reload the page because the directory listing does not auto-refresh after copy.
         await page.reload();
@@ -274,18 +262,10 @@ test.describe.serial("Copy Operations", () => {
 
         await copyButton.click();
 
-        // Polling the filesystem is more reliable than waiting on UI messages because
-        // the selected-items panel disappears immediately after a successful copy.
-        await expect
-            .poll(async () => {
-                try {
-                    await fs.stat(crossAgentCopiedPath);
-                    return "exists";
-                } catch {
-                    return "missing";
-                }
-            })
-            .toBe("exists");
+        // Cross-agent copies use the same terminal transfer state before clearing selection.
+        await expect(
+            page.getByRole("heading", { name: "Selected items" }),
+        ).toHaveCount(0, { timeout: 30_000 });
 
         // Reload the page because the directory listing does not auto-refresh after copy.
         await page.reload();

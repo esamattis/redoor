@@ -16,8 +16,12 @@ import { Dialog } from "#ui/components/dialog";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
-import type { Agent } from "#ui/api-client";
-import { selectedFilesAtom, unselectFileAtom } from "#ui/selected-files";
+import type { Agent, ApiClient } from "#ui/api-client";
+import {
+    selectedFilesAtom,
+    unselectFileAtom,
+    type SelectedPath,
+} from "#ui/selected-files";
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
 import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 
@@ -42,6 +46,7 @@ type CreateFileState =
  * at the point where the action is performed.
  */
 function CopySelectedFilesAction(props: {
+    api: ApiClient;
     agents: Agent[];
     destinationAgent: Agent;
     directoryPath: string;
@@ -54,6 +59,11 @@ function CopySelectedFilesAction(props: {
     const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
         type: "idle",
     });
+    const activeCopyRef = React.useRef<AbortController | null>(null);
+
+    React.useEffect(() => {
+        return () => activeCopyRef.current?.abort();
+    }, []);
 
     const statusMessage =
         copyState.type === "copying"
@@ -72,16 +82,21 @@ function CopySelectedFilesAction(props: {
             return;
         }
 
+        const filesToCopy = [...selectedFiles];
+        const controller = new AbortController();
+        activeCopyRef.current?.abort();
+        activeCopyRef.current = controller;
+
         setCopyState({
             type: "copying",
-            itemCount: selectedFiles.length,
+            itemCount: filesToCopy.length,
         });
 
         const agentsById = new Map(
             props.agents.map((agent) => [agent.id, agent]),
         );
         const results = await Promise.allSettled(
-            selectedFiles.map((file) => {
+            filesToCopy.map((file) => {
                 const sourceAgent = agentsById.get(file.agentId);
 
                 if (!sourceAgent) {
@@ -104,33 +119,70 @@ function CopySelectedFilesAction(props: {
                 );
             }),
         );
-        const successfulCopies = selectedFiles.filter(
-            (_file, index) => results[index]?.status === "fulfilled",
-        );
-        const failedCopies = results.filter(
-            (result): result is PromiseRejectedResult =>
-                result.status === "rejected",
+        if (controller.signal.aborted) return;
+
+        const completedFiles: SelectedPath[] = [];
+        const failures: unknown[] = [];
+        const pendingCopies = new Map(
+            results.flatMap((result, index) => {
+                const file = filesToCopy[index];
+                if (result.status === "rejected") {
+                    failures.push(result.reason);
+                    return [];
+                }
+                return file
+                    ? [[result.value.copy_request_id, file] as const]
+                    : [];
+            }),
         );
 
-        successfulCopies.forEach((file) => {
+        try {
+            while (pendingCopies.size > 0 && !controller.signal.aborted) {
+                const progress = await props.api.getTransferProgress();
+                if (controller.signal.aborted) return;
+
+                for (const transfer of progress.transfers) {
+                    const file = pendingCopies.get(transfer.request_id);
+                    if (!file) continue;
+                    if (transfer.state === "completed") {
+                        completedFiles.push(file);
+                        pendingCopies.delete(transfer.request_id);
+                    } else if (transfer.state === "errored") {
+                        failures.push(transfer.error ?? "Copy failed");
+                        pendingCopies.delete(transfer.request_id);
+                    }
+                }
+
+                if (pendingCopies.size > 0) {
+                    await new Promise((resolve) =>
+                        window.setTimeout(resolve, 500),
+                    );
+                }
+            }
+        } catch (error) {
+            failures.push(error);
+        }
+        if (controller.signal.aborted) return;
+        activeCopyRef.current = null;
+
+        completedFiles.forEach((file) => {
             unselectFile({
                 agentId: file.agentId,
                 path: file.path,
             });
         });
 
-        if (failedCopies.length > 0) {
-            const firstFailedCopy = failedCopies[0];
+        if (failures.length > 0) {
             const failureMessage = getErrorMessage(
-                firstFailedCopy ? firstFailedCopy.reason : undefined,
+                failures[0],
                 "Copy failed",
             ).replace(/^Upload failed$/, "Copy failed");
 
             setCopyState({
                 type: "error",
                 message:
-                    successfulCopies.length > 0
-                        ? `Copied ${successfulCopies.length} of ${selectedFiles.length} items. ${failureMessage}`
+                    completedFiles.length > 0
+                        ? `Copied ${completedFiles.length} of ${filesToCopy.length} items. ${failureMessage}`
                         : failureMessage,
             });
             return;
@@ -139,9 +191,9 @@ function CopySelectedFilesAction(props: {
         setCopyState({
             type: "success",
             message:
-                selectedFiles.length === 1
-                    ? `Copied ${selectedFiles[0]?.fileName ?? "item"}`
-                    : `Copied ${selectedFiles.length} items`,
+                filesToCopy.length === 1
+                    ? `Copied ${filesToCopy[0]?.fileName ?? "item"}`
+                    : `Copied ${filesToCopy.length} items`,
         });
     };
 
@@ -161,7 +213,13 @@ function CopySelectedFilesAction(props: {
             </button>
             {statusMessage ? (
                 <Toast
-                    tone={copyState.type === "error" ? "error" : "success"}
+                    tone={
+                        copyState.type === "copying"
+                            ? "info"
+                            : copyState.type === "error"
+                              ? "error"
+                              : "success"
+                    }
                     icon={<Copy className="h-4 w-4" />}
                     dismissAriaLabel="Dismiss copy status"
                     onDismiss={() => setCopyState({ type: "idle" })}
@@ -598,6 +656,7 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
 
 /** Keeps controls that affect only the file-list representation inside that view. */
 export function DirectoryFilesActions(props: {
+    api: ApiClient;
     agent: Agent;
     agents: Agent[];
     directoryPath: string;
@@ -648,6 +707,7 @@ export function DirectoryFilesActions(props: {
                     directoryPath={props.directoryPath}
                 />
                 <CopySelectedFilesAction
+                    api={props.api}
                     agents={props.agents}
                     destinationAgent={props.agent}
                     directoryPath={props.directoryPath}
