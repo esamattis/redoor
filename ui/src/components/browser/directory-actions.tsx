@@ -1,0 +1,686 @@
+import React from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
+import {
+    ClipboardPaste,
+    Copy,
+    Eye,
+    EyeOff,
+    FilePlus,
+    FolderPlus,
+    Plus,
+    Upload,
+} from "lucide-react";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { Dialog } from "#ui/components/dialog";
+import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
+import { Toast } from "#ui/components/toast";
+import { Tooltip } from "#ui/components/tooltip";
+import type { Agent } from "#ui/api-client";
+import { selectedFilesAtom, unselectFileAtom } from "#ui/selected-files";
+import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
+
+type CopySelectedFilesState =
+    | { type: "idle" }
+    | { type: "copying"; itemCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+type UploadState =
+    | { type: "idle" }
+    | { type: "uploading"; fileCount: number }
+    | { type: "success"; message: string }
+    | { type: "error"; message: string };
+
+type CreateDirectoryState =
+    | { type: "idle" }
+    | { type: "creating" }
+    | { type: "error"; message: string };
+
+type CreateFileState =
+    | { type: "idle" }
+    | { type: "creating" }
+    | { type: "error"; message: string };
+
+/**
+ * Copies the global selection into this directory so the destination is clear
+ * at the point where the action is performed.
+ */
+function CopySelectedFilesAction(props: {
+    agents: Agent[];
+    destinationAgent: Agent;
+    directoryPath: string;
+}) {
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const isRoutePending = useRouterState({
+        select: (state) => state.status === "pending",
+    });
+    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
+        type: "idle",
+    });
+
+    const statusMessage =
+        copyState.type === "copying"
+            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
+            : copyState.type === "idle"
+              ? null
+              : copyState.message;
+    const isCopying = copyState.type === "copying";
+
+    if (selectedFiles.length === 0) {
+        return null;
+    }
+
+    const handleCopySelectedFiles = async () => {
+        if (selectedFiles.length === 0) {
+            return;
+        }
+
+        setCopyState({
+            type: "copying",
+            itemCount: selectedFiles.length,
+        });
+
+        const agentsById = new Map(
+            props.agents.map((agent) => [agent.id, agent]),
+        );
+        const results = await Promise.allSettled(
+            selectedFiles.map((file) => {
+                const sourceAgent = agentsById.get(file.agentId);
+
+                if (!sourceAgent) {
+                    return Promise.reject(
+                        new Error(
+                            `Source agent unavailable for selected item: ${file.agentId}`,
+                        ),
+                    );
+                }
+
+                return sourceAgent.copyTo(
+                    {
+                        agent: props.destinationAgent.id,
+                        path: joinBrowserPath(
+                            props.directoryPath,
+                            file.fileName,
+                        ),
+                    },
+                    file.path,
+                );
+            }),
+        );
+        const successfulCopies = selectedFiles.filter(
+            (_file, index) => results[index]?.status === "fulfilled",
+        );
+        const failedCopies = results.filter(
+            (result): result is PromiseRejectedResult =>
+                result.status === "rejected",
+        );
+
+        successfulCopies.forEach((file) => {
+            unselectFile({
+                agentId: file.agentId,
+                path: file.path,
+            });
+        });
+
+        if (failedCopies.length > 0) {
+            const firstFailedCopy = failedCopies[0];
+            const failureMessage = getErrorMessage(
+                firstFailedCopy ? firstFailedCopy.reason : undefined,
+                "Copy failed",
+            ).replace(/^Upload failed$/, "Copy failed");
+
+            setCopyState({
+                type: "error",
+                message:
+                    successfulCopies.length > 0
+                        ? `Copied ${successfulCopies.length} of ${selectedFiles.length} items. ${failureMessage}`
+                        : failureMessage,
+            });
+            return;
+        }
+
+        setCopyState({
+            type: "success",
+            message:
+                selectedFiles.length === 1
+                    ? `Copied ${selectedFiles[0]?.fileName ?? "item"}`
+                    : `Copied ${selectedFiles.length} items`,
+        });
+    };
+
+    return (
+        <>
+            <button
+                type="button"
+                onClick={handleCopySelectedFiles}
+                aria-label="Copy selected files here"
+                disabled={
+                    selectedFiles.length === 0 || isCopying || isRoutePending
+                }
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                <Copy className="h-3.5 w-3.5" />
+                {isCopying ? "Copying..." : `Copy ${selectedFiles.length} here`}
+            </button>
+            {statusMessage ? (
+                <Toast
+                    tone={copyState.type === "error" ? "error" : "success"}
+                    icon={<Copy className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss copy status"
+                    onDismiss={() => setCopyState({ type: "idle" })}
+                >
+                    {statusMessage}
+                </Toast>
+            ) : null}
+        </>
+    );
+}
+
+/** Opens the local file picker and uploads chosen files into this directory. */
+function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
+    const router = useRouter();
+    const inputId = React.useId();
+    const inputRef = React.useRef<HTMLInputElement | null>(null);
+    const [uploadState, setUploadState] = React.useState<UploadState>({
+        type: "idle",
+    });
+
+    const statusMessage =
+        uploadState.type === "uploading"
+            ? `Uploading ${uploadState.fileCount} ${uploadState.fileCount === 1 ? "file" : "files"}...`
+            : uploadState.type === "idle"
+              ? null
+              : uploadState.message;
+    const isUploading = uploadState.type === "uploading";
+
+    const openFilePicker = () => {
+        setUploadState({ type: "idle" });
+        inputRef.current?.click();
+    };
+
+    const handleFileSelection = async (
+        event: React.ChangeEvent<HTMLInputElement>,
+    ) => {
+        const selectedFiles = Array.from(event.target.files ?? []);
+        if (selectedFiles.length === 0) {
+            return;
+        }
+
+        setUploadState({
+            type: "uploading",
+            fileCount: selectedFiles.length,
+        });
+
+        try {
+            const results = await Promise.allSettled(
+                selectedFiles.map((file) =>
+                    props.agent.upload(
+                        joinBrowserPath(props.directoryPath, file.name),
+                        file,
+                    ),
+                ),
+            );
+            const successCount = results.filter(
+                (result) => result.status === "fulfilled",
+            ).length;
+            const failedUploads = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successCount > 0) {
+                await router.invalidate();
+            }
+
+            if (failedUploads.length > 0) {
+                const firstFailedUpload = failedUploads[0];
+                const failureMessage = getErrorMessage(
+                    firstFailedUpload ? firstFailedUpload.reason : undefined,
+                    "Upload failed",
+                );
+                setUploadState({
+                    type: "error",
+                    message:
+                        successCount > 0
+                            ? `Uploaded ${successCount} of ${selectedFiles.length} files. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
+            }
+
+            setUploadState({
+                type: "success",
+                message:
+                    selectedFiles.length === 1
+                        ? `Uploaded ${selectedFiles[0] ? selectedFiles[0].name : "file"}`
+                        : `Uploaded ${selectedFiles.length} files`,
+            });
+        } catch (error) {
+            setUploadState({
+                type: "error",
+                message: getErrorMessage(error, "Upload failed"),
+            });
+        } finally {
+            event.target.value = "";
+        }
+    };
+
+    return (
+        <div className="flex items-center gap-3">
+            <label htmlFor={inputId} className="sr-only">
+                Choose files to upload
+            </label>
+            <input
+                ref={inputRef}
+                id={inputId}
+                type="file"
+                multiple
+                className="sr-only"
+                onChange={handleFileSelection}
+            />
+            <button
+                type="button"
+                onClick={openFilePicker}
+                aria-label="Upload files"
+                disabled={isUploading}
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                <Upload className="h-4 w-4" />
+                {isUploading ? "Uploading..." : "Upload"}
+            </button>
+            {statusMessage ? (
+                <span
+                    role={uploadState.type === "error" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`text-sm ${uploadState.type === "error" ? "text-red-400" : "text-emerald-400"}`}
+                >
+                    {statusMessage}
+                </span>
+            ) : null}
+        </div>
+    );
+}
+
+/** Opens a focused dialog so directory creation does not crowd the toolbar. */
+function CreateDirectoryAction(props: {
+    agent: Agent;
+    directoryPath: string;
+    isOpen: boolean;
+    onClose: () => void;
+}) {
+    const navigate = useNavigate();
+    const inputId = React.useId();
+    const [directoryName, setDirectoryName] = React.useState("");
+    const [createDirectoryState, setCreateDirectoryState] =
+        React.useState<CreateDirectoryState>({
+            type: "idle",
+        });
+
+    const trimmedDirectoryName = directoryName.trim();
+    const createDirectoryPath = trimmedDirectoryName
+        ? joinBrowserPath(props.directoryPath, trimmedDirectoryName)
+        : null;
+    const isCreating = createDirectoryState.type === "creating";
+
+    const resetDialog = () => {
+        props.onClose();
+        setDirectoryName("");
+        setCreateDirectoryState({ type: "idle" });
+    };
+
+    const closeDialog = () => {
+        if (isCreating) {
+            return;
+        }
+
+        resetDialog();
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (!createDirectoryPath) {
+            setCreateDirectoryState({
+                type: "error",
+                message: "Directory name is required",
+            });
+            return;
+        }
+
+        setCreateDirectoryState({ type: "creating" });
+
+        try {
+            await props.agent.createDirectory(createDirectoryPath);
+            await navigate({
+                to: props.agent.getBrowserUrl(createDirectoryPath),
+            });
+            resetDialog();
+        } catch (error) {
+            setCreateDirectoryState({
+                type: "error",
+                message: getErrorMessage(error, "Create directory failed"),
+            });
+        }
+    };
+
+    return (
+        <Dialog
+            isOpen={props.isOpen}
+            title="Create directory"
+            description="Create a new directory in the current location."
+            closeAriaLabel="Close create directory dialog"
+            isBusy={isCreating}
+            errorMessage={
+                createDirectoryState.type === "error"
+                    ? createDirectoryState.message
+                    : null
+            }
+            onClose={closeDialog}
+        >
+            <form onSubmit={handleSubmit} className="mt-4">
+                <label
+                    htmlFor={inputId}
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    Directory name
+                </label>
+                <input
+                    id={inputId}
+                    type="text"
+                    value={directoryName}
+                    onChange={(event) => {
+                        setDirectoryName(event.target.value);
+                        if (createDirectoryState.type === "error") {
+                            setCreateDirectoryState({ type: "idle" });
+                        }
+                    }}
+                    placeholder="logs"
+                    autoFocus
+                    disabled={isCreating}
+                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
+                />
+
+                {createDirectoryPath ? (
+                    <div className="mt-4">
+                        <p className="mb-2 text-sm text-slate-400">
+                            Directory path
+                        </p>
+                        <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                            {createDirectoryPath}
+                        </p>
+                    </div>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={closeDialog}
+                        disabled={isCreating}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={isCreating}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <FolderPlus className="h-4 w-4" />
+                        {isCreating ? "Creating..." : "Create directory"}
+                    </button>
+                </div>
+            </form>
+        </Dialog>
+    );
+}
+
+/** Creates an empty text file and opens it immediately in the editor. */
+function CreateFileAction(props: {
+    agent: Agent;
+    directoryPath: string;
+    isOpen: boolean;
+    onClose: () => void;
+}) {
+    const navigate = useNavigate();
+    const inputId = React.useId();
+    const [fileName, setFileName] = React.useState("");
+    const [createFileState, setCreateFileState] =
+        React.useState<CreateFileState>({ type: "idle" });
+
+    const trimmedFileName = fileName.trim();
+    const createFilePath = trimmedFileName
+        ? joinBrowserPath(props.directoryPath, trimmedFileName)
+        : null;
+    const isCreating = createFileState.type === "creating";
+
+    const resetDialog = () => {
+        props.onClose();
+        setFileName("");
+        setCreateFileState({ type: "idle" });
+    };
+
+    const closeDialog = () => {
+        if (!isCreating) {
+            resetDialog();
+        }
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (!createFilePath) {
+            setCreateFileState({
+                type: "error",
+                message: "File name is required",
+            });
+            return;
+        }
+        if (trimmedFileName.includes("/")) {
+            setCreateFileState({
+                type: "error",
+                message: "File name cannot contain a slash",
+            });
+            return;
+        }
+
+        setCreateFileState({ type: "creating" });
+
+        try {
+            await props.agent.upload(
+                createFilePath,
+                new globalThis.File([""], trimmedFileName, {
+                    type: "text/plain",
+                }),
+            );
+            await navigate({
+                to: props.agent.getBrowserUrl(createFilePath),
+                search: { view: "edit" },
+            });
+            resetDialog();
+        } catch (error) {
+            setCreateFileState({
+                type: "error",
+                message: getErrorMessage(error, "Create file failed"),
+            });
+        }
+    };
+
+    return (
+        <Dialog
+            isOpen={props.isOpen}
+            title="Create file"
+            description="Create an empty text file and open it for editing."
+            closeAriaLabel="Close create file dialog"
+            isBusy={isCreating}
+            errorMessage={
+                createFileState.type === "error"
+                    ? createFileState.message
+                    : null
+            }
+            onClose={closeDialog}
+        >
+            <form onSubmit={handleSubmit} className="mt-4">
+                <label
+                    htmlFor={inputId}
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    File name
+                </label>
+                <input
+                    id={inputId}
+                    type="text"
+                    value={fileName}
+                    onChange={(event) => {
+                        setFileName(event.target.value);
+                        if (createFileState.type === "error") {
+                            setCreateFileState({ type: "idle" });
+                        }
+                    }}
+                    placeholder="notes.txt"
+                    autoFocus
+                    disabled={isCreating}
+                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
+                />
+
+                {createFilePath ? (
+                    <div className="mt-4">
+                        <p className="mb-2 text-sm text-slate-400">File path</p>
+                        <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                            {createFilePath}
+                        </p>
+                    </div>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={closeDialog}
+                        disabled={isCreating}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={isCreating}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <FilePlus className="h-4 w-4" />
+                        {isCreating ? "Creating..." : "Create file"}
+                    </button>
+                </div>
+            </form>
+        </Dialog>
+    );
+}
+
+/** Groups file and directory creation without mixing their modal workflows. */
+function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
+    const [dialogType, setDialogType] = React.useState<
+        "file" | "directory" | null
+    >(null);
+
+    return (
+        <>
+            <ActionMenu label="New" icon={<Plus className="h-4 w-4" />}>
+                {(close) => (
+                    <>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                setDialogType("file");
+                            }}
+                        >
+                            <FilePlus className="h-4 w-4 text-slate-400" />
+                            New file
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                setDialogType("directory");
+                            }}
+                        >
+                            <FolderPlus className="h-4 w-4 text-slate-400" />
+                            New directory
+                        </ActionMenuButton>
+                    </>
+                )}
+            </ActionMenu>
+            <CreateFileAction
+                agent={props.agent}
+                directoryPath={props.directoryPath}
+                isOpen={dialogType === "file"}
+                onClose={() => setDialogType(null)}
+            />
+            <CreateDirectoryAction
+                agent={props.agent}
+                directoryPath={props.directoryPath}
+                isOpen={dialogType === "directory"}
+                onClose={() => setDialogType(null)}
+            />
+        </>
+    );
+}
+
+/** Keeps controls that affect only the file-list representation inside that view. */
+export function DirectoryFilesActions(props: {
+    agent: Agent;
+    agents: Agent[];
+    directoryPath: string;
+    showHiddenFiles: boolean;
+    onToggleHiddenFiles: () => void;
+}) {
+    return (
+        <div
+            aria-label="Files view actions"
+            className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/35 p-2"
+        >
+            <button
+                type="button"
+                onClick={props.onToggleHiddenFiles}
+                aria-pressed={props.showHiddenFiles}
+                aria-label={
+                    props.showHiddenFiles
+                        ? "Hide hidden files"
+                        : "Show hidden files"
+                }
+                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
+            >
+                {props.showHiddenFiles ? (
+                    <EyeOff className="h-4 w-4" />
+                ) : (
+                    <Eye className="h-4 w-4" />
+                )}
+                {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
+            </button>
+            <div className="flex flex-wrap items-center gap-1">
+                <Tooltip content="Pasted text or images are created as new files in this directory.">
+                    <button
+                        type="button"
+                        onClick={requestClipboardPaste}
+                        aria-label="Paste files or text"
+                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                        <ClipboardPaste className="h-4 w-4 text-slate-400" />
+                        Paste
+                    </button>
+                </Tooltip>
+                <DirectoryNewAction
+                    agent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+                <UploadFilesAction
+                    agent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+                <CopySelectedFilesAction
+                    agents={props.agents}
+                    destinationAgent={props.agent}
+                    directoryPath={props.directoryPath}
+                />
+            </div>
+        </div>
+    );
+}
