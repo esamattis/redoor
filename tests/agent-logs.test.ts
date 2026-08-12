@@ -89,6 +89,20 @@ async function waitForClose(socket: WebSocket): Promise<void> {
     await new Promise<void>((resolve) => socket.once("close", () => resolve()));
 }
 
+/** Resolves on the server-originated control frame without adding application traffic. */
+async function waitForPing(socket: WebSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+            () => reject(new Error("idle log websocket did not receive a ping")),
+            15_000,
+        );
+        socket.once("ping", () => {
+            clearTimeout(timeout);
+            resolve();
+        });
+    });
+}
+
 describe.sequential("dedicated agent log tunnel", () => {
     it("requires browser authentication", async () => {
         const status = await new Promise<number>((resolve, reject) => {
@@ -153,6 +167,48 @@ describe.sequential("dedicated agent log tunnel", () => {
         // Every reconnect starts with replacement state rather than continuing a stale stream.
         expect(second.events[0]).toBe(secondSnapshot);
     });
+
+    it("keeps an idle browser-facing relay alive", async () => {
+        const opened = await openLogSocket();
+        await waitForEvent(
+            opened.events,
+            (event) => event.type === "snapshot",
+            "snapshot before idle log keepalive",
+        );
+        await waitForPing(opened.socket);
+
+        // Receiving a later keepalive without a close proves the idle browser leg stayed active.
+        expect(opened.socket.readyState).toBe(WebSocket.OPEN);
+    }, 20_000);
+
+    it("keeps idle UI refresh and server log sockets active", async () => {
+        const uiSocket = new WebSocket(apiClient.getUiWebSocketUrl(), {
+            headers: apiClient.getAuthHeaders(),
+        });
+        const serverLogsSocket = new WebSocket(
+            apiClient.getServerLogsWebSocketUrl(),
+            { headers: apiClient.getAuthHeaders() },
+        );
+        onTestFinished(() => uiSocket.close());
+        onTestFinished(() => serverLogsSocket.close());
+        await Promise.all([
+            new Promise<void>((resolve, reject) => {
+                uiSocket.once("open", resolve);
+                uiSocket.once("error", reject);
+            }),
+            new Promise<void>((resolve, reject) => {
+                serverLogsSocket.once("open", resolve);
+                serverLogsSocket.once("error", reject);
+            }),
+        ]);
+
+        await Promise.all([waitForPing(uiSocket), waitForPing(serverLogsSocket)]);
+
+        // The refresh socket must stay open without requiring a router event.
+        expect(uiSocket.readyState).toBe(WebSocket.OPEN);
+        // The log socket must keep writing even when no new log entry is available.
+        expect(serverLogsSocket.readyState).toBe(WebSocket.OPEN);
+    }, 20_000);
 
     it("releases agent and server resources when the browser disconnects", async () => {
         const opened = await openLogSocket();

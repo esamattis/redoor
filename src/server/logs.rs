@@ -7,6 +7,7 @@ use redoor::{
     Level, log,
     log_protocol::LogEvent,
     logging::{self, LogSubscription},
+    websocket::keepalive_interval,
 };
 use tokio::sync::broadcast;
 
@@ -38,8 +39,18 @@ async fn forward_live_entries(
     sender: &mut SocketSender,
     live_entries: &mut broadcast::Receiver<String>,
 ) {
+    let mut keepalive = keepalive_interval();
     loop {
-        match live_entries.recv().await {
+        let entry = tokio::select! {
+            _ = keepalive.tick() => {
+                if sender.send(WsMessage::Ping(bytes::Bytes::new())).await.is_err() {
+                    return;
+                }
+                continue;
+            }
+            entry = live_entries.recv() => entry,
+        };
+        match entry {
             Ok(entry) => {
                 if !send_event(sender, &LogEvent::Entry { entry }).await {
                     return;

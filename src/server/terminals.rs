@@ -21,6 +21,7 @@ use redoor::{
     },
     terminal_registry::TerminalRegistry,
     types::AgentId,
+    websocket::keepalive_interval,
 };
 use serde::Deserialize;
 use std::time::Duration;
@@ -276,12 +277,22 @@ async fn forward_browser_to_agent(
             return Ok(());
         }
     }
-    while let Some(frame) = browser.next().await {
+    let mut keepalive = keepalive_interval();
+    loop {
+        let frame = tokio::select! {
+            _ = keepalive.tick() => {
+                agent.send(WsMessage::Ping(bytes::Bytes::new())).await.map_err(|_| ())?;
+                continue;
+            }
+            frame = browser.next() => frame,
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
         if !forward_browser_frame(frame.map_err(|_| ())?, &mut agent).await? {
             return Ok(());
         }
     }
-    Ok(())
 }
 
 /// Validates and forwards one browser frame regardless of whether it arrived before pairing.
@@ -327,7 +338,18 @@ async fn forward_agent_to_browser(
     mut agent: SplitStream<WebSocket>,
     mut browser: SplitSink<WebSocket, WsMessage>,
 ) -> Result<(), ()> {
-    while let Some(frame) = agent.next().await {
+    let mut keepalive = keepalive_interval();
+    loop {
+        let frame = tokio::select! {
+            _ = keepalive.tick() => {
+                browser.send(WsMessage::Ping(bytes::Bytes::new())).await.map_err(|_| ())?;
+                continue;
+            }
+            frame = agent.next() => frame,
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
         match frame.map_err(|_| ())? {
             WsMessage::Binary(bytes) => browser
                 .send(WsMessage::Binary(bytes))
@@ -345,5 +367,4 @@ async fn forward_agent_to_browser(
             }
         }
     }
-    Ok(())
 }

@@ -11,6 +11,7 @@ pub mod terminal_registry;
 pub mod transfer_protocol;
 pub mod types;
 pub mod watchdog;
+pub mod websocket;
 
 pub use actors::router::RouterError;
 pub use actors::{router, session};

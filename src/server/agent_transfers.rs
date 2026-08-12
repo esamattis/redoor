@@ -180,9 +180,7 @@ async fn write_transfer_frames(
     receiver: &mut mpsc::Receiver<WsMessage>,
     shutdown: &mut watch::Receiver<bool>,
 ) {
-    let mut ping = tokio::time::interval(tokio::time::Duration::from_secs(10));
-    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    ping.tick().await;
+    let mut ping = redoor::websocket::keepalive_interval();
     loop {
         let message = tokio::select! {
             _ = shutdown.changed() => break,

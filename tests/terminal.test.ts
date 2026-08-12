@@ -142,7 +142,33 @@ function waitForMarker(socket: WebSocket, marker: string): Promise<string> {
     });
 }
 
+/** Resolves when the browser-facing relay writes its periodic control frame. */
+async function waitForPing(socket: WebSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+            () => reject(new Error("idle terminal websocket did not receive a ping")),
+            15_000,
+        );
+        socket.once("ping", () => {
+            clearTimeout(timeout);
+            resolve();
+        });
+    });
+}
+
 describe("dedicated terminal tunnel", () => {
+    it("keeps an idle terminal usable until normal disconnect cleanup", async () => {
+        const socket = await openTerminal();
+        await waitForPing(socket);
+        const marker = "__REDOOR_IDLE_TERMINAL__";
+        const outputPromise = waitForMarker(socket, marker);
+        socket.send(new TextEncoder().encode(`printf '${marker}'\n`));
+        const output = await outputPromise;
+
+        // Successful output after the keepalive proves no reconnect or terminal reset occurred.
+        expect(output).toContain(marker);
+    }, 20_000);
+
     it("starts concurrent shells in their requested working directories", async () => {
         const firstSocket = await openTerminal(agentCwd);
         const secondSocket = await openTerminal(alternateCwd);

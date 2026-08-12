@@ -18,6 +18,7 @@ use redoor::{
     log_protocol::{LogAgentHandshake, LogEvent, LogStreamId},
     log_registry::LogRegistry,
     types::AgentId,
+    websocket::keepalive_interval,
 };
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
@@ -234,7 +235,18 @@ async fn forward_agent_events(
     mut agent: SplitStream<WebSocket>,
     mut browser: SplitSink<WebSocket, WsMessage>,
 ) -> Result<(), ()> {
-    while let Some(frame) = agent.next().await {
+    let mut keepalive = keepalive_interval();
+    loop {
+        let frame = tokio::select! {
+            _ = keepalive.tick() => {
+                browser.send(WsMessage::Ping(bytes::Bytes::new())).await.map_err(|_| ())?;
+                continue;
+            }
+            frame = agent.next() => frame,
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
         match frame.map_err(|_| ())? {
             WsMessage::Text(text) => {
                 serde_json::from_str::<LogEvent>(&text).map_err(|_| ())?;
@@ -249,7 +261,6 @@ async fn forward_agent_events(
             WsMessage::Binary(_) => return Err(()),
         }
     }
-    Ok(())
 }
 
 /// Observes browser departure and owns the opposite sink so cancellation closes the agent socket.
@@ -257,7 +268,18 @@ async fn wait_for_browser_disconnect(
     mut browser: SplitStream<WebSocket>,
     mut agent: SplitSink<WebSocket, WsMessage>,
 ) -> Result<(), ()> {
-    while let Some(frame) = browser.next().await {
+    let mut keepalive = keepalive_interval();
+    loop {
+        let frame = tokio::select! {
+            _ = keepalive.tick() => {
+                agent.send(WsMessage::Ping(bytes::Bytes::new())).await.map_err(|_| ())?;
+                continue;
+            }
+            frame = browser.next() => frame,
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
         match frame.map_err(|_| ())? {
             WsMessage::Ping(bytes) => agent.send(WsMessage::Ping(bytes)).await.map_err(|_| ())?,
             WsMessage::Pong(bytes) => agent.send(WsMessage::Pong(bytes)).await.map_err(|_| ())?,
@@ -268,5 +290,4 @@ async fn wait_for_browser_disconnect(
             WsMessage::Text(_) | WsMessage::Binary(_) => return Err(()),
         }
     }
-    Ok(())
 }

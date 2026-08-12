@@ -20,13 +20,6 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     bool::from(left_digest.ct_eq(&right_digest))
 }
 
-/// Interval between websocket Ping frames sent by the server to proactively
-/// detect half-open connections. When the SSH tunnel drops without a clean
-/// TCP close, the read side may not notice for a long time. Periodic pings
-/// force a write that fails fast if the underlying connection is gone,
-/// allowing the session to clean up and free the agent name.
-const WEBSOCKET_PING_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(10);
-
 /// How often the session checks whether the WebSocket has gone silent.
 /// Independent of the ping interval so the stale check can use a multiple
 /// of the ping interval as its threshold.
@@ -319,11 +312,7 @@ pub async fn handle_websocket(
 
     let writer_task = tokio::spawn(async move {
         let mut text_closed = false;
-        let mut ping_interval = tokio::time::interval(WEBSOCKET_PING_INTERVAL);
-        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Consume the first immediate tick so the first ping fires one interval
-        // from now rather than immediately at session start.
-        ping_interval.tick().await;
+        let mut ping_interval = crate::websocket::keepalive_interval();
 
         loop {
             // `biased` keeps control-plane text messages responsive while binary streaming is active.

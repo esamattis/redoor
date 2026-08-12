@@ -8,6 +8,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use redoor::types::SocketId;
 use redoor::watchdog::WatchdogRegistry;
+use redoor::websocket::keepalive_interval;
 use redoor::{Level, actors, commands::UiEvent, log};
 use uuid::Uuid;
 
@@ -54,7 +55,20 @@ async fn forward_ui_events(
     sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
     rx_out: &mut tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
 ) {
-    while let Some(event) = rx_out.recv().await {
+    let mut keepalive = keepalive_interval();
+    loop {
+        let event = tokio::select! {
+            _ = keepalive.tick() => {
+                if sender.send(WsMessage::Ping(bytes::Bytes::new())).await.is_err() {
+                    return;
+                }
+                continue;
+            }
+            event = rx_out.recv() => event,
+        };
+        let Some(event) = event else {
+            return;
+        };
         let json = match serde_json::to_string(&event) {
             Ok(json) => json,
             Err(error) => {
@@ -68,7 +82,7 @@ async fn forward_ui_events(
         };
 
         if sender.send(WsMessage::Text(json.into())).await.is_err() {
-            break;
+            return;
         }
     }
 }
