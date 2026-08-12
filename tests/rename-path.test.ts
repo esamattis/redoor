@@ -7,6 +7,7 @@ import {
     TempFileManager,
     startServerAndAgent,
 } from "./test-utils";
+import { testPorts } from "#test-ports";
 
 const AGENT_NAME = "rename-path-test-agent";
 
@@ -42,12 +43,14 @@ describe("Rename Path API", () => {
         await fs.writeFile(path.join(sourceDirectory, "nested.txt"), "nested");
 
         const fileResponse = await testAgent.renamePath(
-            sourceFile,
-            renamedFile,
+            agentCwd,
+            "before.txt",
+            "after.txt",
         );
         const directoryResponse = await testAgent.renamePath(
-            sourceDirectory,
-            renamedDirectory,
+            agentCwd,
+            "before-directory",
+            "after-directory",
         );
 
         // Both response paths let clients replace stale routes without reconstructing the request.
@@ -72,5 +75,28 @@ describe("Rename Path API", () => {
         await expect(fs.stat(sourceDirectory)).rejects.toMatchObject({
             code: "ENOENT",
         });
+    });
+
+    it.each([
+        { dir: "relative", old: "before.txt", new: "after.txt" },
+        { dir: "/tmp", old: "nested/before.txt", new: "after.txt" },
+        { dir: "/tmp", old: "before.txt", new: "../after.txt" },
+        { dir: "/tmp", old: ".", new: "after.txt" },
+        { dir: "/tmp", old: "before.txt", new: ".." },
+    ])("rejects rename paths that are not names in one absolute directory", async (request) => {
+        const response = await fetch(
+            `http://127.0.0.1:${testPorts.vitest}/api/v1/agents/${encodeURIComponent(testAgent.id)}/rename`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...testAgent.getAuthHeaders(),
+                },
+                body: JSON.stringify(request),
+            },
+        );
+
+        // Invalid path shapes must be rejected before any filesystem command reaches the agent.
+        expect(response.status).toBe(400);
     });
 });

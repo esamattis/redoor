@@ -12,6 +12,7 @@ use redoor::{
     },
     types::AgentId,
 };
+use std::path::Path as FilePath;
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
@@ -123,14 +124,27 @@ pub(crate) async fn rename_path_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<RenamePathRequest>,
 ) -> impl IntoResponse {
-    let source_path = match require_absolute_path(request.source_path) {
+    let dir = match require_absolute_path(request.dir) {
         Ok(path) => path,
         Err(response) => return *response,
     };
-    let dest_path = match require_absolute_path(request.dest_path) {
-        Ok(path) => path,
-        Err(response) => return *response,
-    };
+    if !is_filename(&request.old) || !is_filename(&request.new) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Rename names must each be a single filename".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let source_path = FilePath::new(&dir)
+        .join(&request.old)
+        .to_string_lossy()
+        .into_owned();
+    let dest_path = FilePath::new(&dir)
+        .join(&request.new)
+        .to_string_lossy()
+        .into_owned();
     let agent_id = AgentId::from(agent);
 
     match state
@@ -139,8 +153,9 @@ pub(crate) async fn rename_path_handler(
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::RenamePath {
-                    source_path: source_path.clone(),
-                    dest_path: dest_path.clone(),
+                    dir: dir.clone(),
+                    old: request.old.clone(),
+                    new: request.new.clone(),
                 },
                 reply,
             })
@@ -174,4 +189,15 @@ pub(crate) async fn rename_path_handler(
         )
             .into_response(),
     }
+}
+
+/// Rejects path syntax so the REST boundary only accepts entry names within `dir`.
+fn is_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && name != "."
+        && name != ".."
+        && FilePath::new(name)
+            .file_name()
+            .is_some_and(|part| part == name)
 }

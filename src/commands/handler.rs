@@ -46,10 +46,7 @@ impl CommandHandler {
             ),
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::CreateDirectory { path } => self.create_directory(path).await,
-            Command::RenamePath {
-                source_path,
-                dest_path,
-            } => self.rename_path(source_path, dest_path).await,
+            Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,
             Command::OpenPath { .. } => CommandResult::error(
                 CommandErrorKind::InvalidInput,
@@ -250,8 +247,24 @@ impl CommandHandler {
         }
     }
 
-    /// Uses the platform rename primitive so files and directories move without copy/delete gaps.
-    async fn rename_path(&self, source_path: String, dest_path: String) -> CommandResult {
+    /// Derives both paths from one directory so rename cannot become a cross-directory move.
+    async fn rename_path(&self, dir: String, old: String, new: String) -> CommandResult {
+        let directory = std::path::Path::new(&dir);
+        if !directory.is_absolute() {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "Rename directory must be absolute",
+            );
+        }
+        if !is_filename(&old) || !is_filename(&new) {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "Rename names must each be a single filename",
+            );
+        }
+
+        let source_path = directory.join(old);
+        let dest_path = directory.join(new);
         match tokio::fs::rename(&source_path, &dest_path).await {
             Ok(()) => CommandResult::RenamePath,
             Err(error) => CommandResult::io_error("Failed to rename path", error),
@@ -339,6 +352,17 @@ impl CommandHandler {
             binary: current_binary_identity(),
         }))
     }
+}
+
+/// Rejects path syntax so a rename name cannot escape or change its directory.
+fn is_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && name != "."
+        && name != ".."
+        && std::path::Path::new(name)
+            .file_name()
+            .is_some_and(|part| part == name)
 }
 
 #[cfg(test)]

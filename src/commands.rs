@@ -167,8 +167,9 @@ pub enum Command {
         path: String,
     },
     RenamePath {
-        source_path: String,
-        dest_path: String,
+        dir: String,
+        old: String,
+        new: String,
     },
     Metadata {
         path: String,
@@ -236,10 +237,9 @@ impl Command {
             ),
             Self::RawDelete { path } => format!("RawDelete path={path}"),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
-            Self::RenamePath {
-                source_path,
-                dest_path,
-            } => format!("RenamePath source={source_path} dest={dest_path}"),
+            Self::RenamePath { dir, old, new } => {
+                format!("RenamePath dir={dir} old={old} new={new}")
+            }
             Self::Metadata { path } => format!("Metadata path={path}"),
             Self::OpenPath { path } => format!("OpenPath path={path}"),
             // Echo bodies can be large or sensitive, so only the command name is logged.
@@ -606,12 +606,13 @@ pub struct CreateDirectoryResponse {
     pub path: String,
 }
 
-/// Carries both absolute paths needed for one agent-side filesystem rename.
+/// Keeps rename inside one directory so the operation remains an atomic metadata change.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RenamePathRequest {
-    pub source_path: String,
-    pub dest_path: String,
+    pub dir: String,
+    pub old: String,
+    pub new: String,
 }
 
 /// Confirms the source path was atomically moved to the requested destination.
@@ -1105,8 +1106,9 @@ mod tests {
 
         let result = handler
             .execute(Command::RenamePath {
-                source_path: source_path.to_string_lossy().to_string(),
-                dest_path: dest_path.to_string_lossy().to_string(),
+                dir: temp_dir.to_string_lossy().to_string(),
+                old: "before.txt".to_string(),
+                new: "after.txt".to_string(),
             })
             .await;
 

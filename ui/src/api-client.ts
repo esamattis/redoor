@@ -550,16 +550,17 @@ export class Agent {
         return response.json();
     }
 
-    /** Renames one agent-side file or directory with the filesystem rename primitive. */
+    /** Atomically changes one entry's name without allowing a directory move. */
     async renamePath(
-        sourcePath: string,
-        destPath: string,
+        dir: string,
+        oldName: string,
+        newName: string,
     ): Promise<RenamePathResponse> {
-        encodeFilesystemPath(sourcePath);
-        encodeFilesystemPath(destPath);
+        encodeFilesystemPath(dir);
         const request: RenamePathRequest = {
-            source_path: sourcePath,
-            dest_path: destPath,
+            dir,
+            old: oldName,
+            new: newName,
         };
 
         return apiRequest<RenamePathResponse>(

@@ -104,7 +104,11 @@ function RenamePathDialog(props: {
         setRenameState({ type: "renaming" });
 
         try {
-            await props.agent.renamePath(props.path, destinationPath);
+            await props.agent.renamePath(
+                parentPath,
+                props.currentName,
+                trimmedName,
+            );
             props.onClose();
             if (!props.navigateAfterRename) {
                 await router.invalidate();
