@@ -8,10 +8,12 @@ type TooltipProps = {
 };
 
 /**
- * Shows a small tooltip for its child content on hover and keyboard focus.
+ * Shows a small tooltip for its child content on hover, keyboard focus, and touch.
  *
- * This wrapper is useful for disabled controls when the tooltip needs to be
- * attached to a non-disabled parent element instead of the control itself.
+ * On touch devices the tooltip opens on the trigger's touchstart and stays open
+ * until the next touchstart anywhere on the page, so users can read it without
+ * hover. This wrapper is also useful for disabled controls when the tooltip
+ * needs to be attached to a non-disabled parent element instead of the control.
  */
 export function Tooltip(props: TooltipProps) {
     const tooltipId = React.useId();
@@ -97,6 +99,27 @@ export function Tooltip(props: TooltipProps) {
         };
     }, [isOpen, props.content]);
 
+    React.useEffect(() => {
+        if (!isOpen) {
+            return;
+        }
+
+        /** Dismisses a touch-opened tooltip on the next touch anywhere on the page. */
+        const hideOnTouchStart = () => {
+            setIsOpen(false);
+        };
+
+        // Defer so the opening touchstart does not immediately dismiss the tooltip.
+        const timeoutId = window.setTimeout(() => {
+            document.addEventListener("touchstart", hideOnTouchStart);
+        }, 0);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+            document.removeEventListener("touchstart", hideOnTouchStart);
+        };
+    }, [isOpen]);
+
     const tooltip = isOpen ? (
         <span
             ref={tooltipRef}
@@ -129,6 +152,7 @@ export function Tooltip(props: TooltipProps) {
             onMouseLeave={() => setIsOpen(false)}
             onFocus={() => setIsOpen(true)}
             onBlur={() => setIsOpen(false)}
+            onTouchStart={() => setIsOpen(true)}
         >
             <span
                 aria-describedby={isOpen ? tooltipId : undefined}
