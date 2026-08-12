@@ -463,6 +463,54 @@ test.describe.serial("File Browser Navigation", () => {
         ).not.toBeVisible();
     });
 
+    test("should sync a directory with the selected existing policy", async ({
+        page,
+    }) => {
+        const sourcePath = path.join(ctx.testDirPath, "subdir1");
+        const destinationPath = path.join(ctx.testDirPath, "sync-directory");
+        await fs.mkdir(destinationPath);
+        await fs.writeFile(
+            path.join(destinationPath, "nested1.txt"),
+            "old nested content",
+        );
+        await fs.writeFile(
+            path.join(destinationPath, "destination-only.txt"),
+            "preserved",
+        );
+        const sourceUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}`;
+        await page.goto(sourceUrl);
+
+        await page.getByRole("link", { name: "Sync", exact: true }).click();
+        await page.getByLabel("Sync path").fill(destinationPath);
+        await page.getByRole("radio", { name: "Merge" }).check();
+        await page.getByLabel("Merge behavior").hover();
+        // The tooltip explains that merge preserves destination-only entries.
+        await expect(page.getByRole("tooltip")).toContainText(
+            "preserving entries that exist only at the destination",
+        );
+        await page.getByRole("button", { name: "Sync", exact: true }).click();
+
+        // A terminal success confirms the selected policy completed on the destination agent.
+        await expect(page.getByRole("status")).toContainText(
+            "Sync completed successfully",
+        );
+        await expect(
+            fs.readFile(path.join(destinationPath, "nested1.txt"), "utf8"),
+        ).resolves.toBe("nested1");
+        await expect(
+            fs.readFile(
+                path.join(destinationPath, "destination-only.txt"),
+                "utf8",
+            ),
+        ).resolves.toBe("preserved");
+        await expect(page).toHaveURL(`${sourceUrl}?view=sync`);
+        await expect(
+            page
+                .getByLabel("Directory view")
+                .getByRole("link", { name: "Sync", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+    });
+
     test("should rename a directory and retain its details URL", async ({
         page,
     }) => {

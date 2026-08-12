@@ -115,6 +115,49 @@ test.describe.serial("File Detail View", () => {
         ).toHaveAttribute("aria-current", "page");
     });
 
+    test("should sync a file with explicit override", async ({ page }) => {
+        const sourcePath = path.join(ctx.testDirPath, "file1.txt");
+        const destinationPath = path.join(
+            ctx.testDirPath,
+            `synced-file-${Date.now()}.txt`,
+        );
+        await fs.writeFile(destinationPath, "old content");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}`,
+        );
+
+        await page.getByRole("link", { name: "Sync", exact: true }).click();
+
+        // The sync target defaults consistently with Diff while remaining editable.
+        await expect(page.getByLabel("Sync agent")).toHaveValue(ctx.agent2Id);
+        await page.getByLabel("Sync path").fill(destinationPath);
+        await page.getByRole("button", { name: "Sync", exact: true }).click();
+        // Existing files remain untouched unless replacement is explicitly enabled.
+        await expect(page.getByRole("alert")).toContainText(
+            "Destination already exists",
+        );
+        await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe(
+            "old content",
+        );
+
+        await page.getByRole("checkbox", { name: "Override existing" }).check();
+        await page.getByRole("button", { name: "Sync", exact: true }).click();
+
+        // Final transfer progress, rather than copy acceptance, drives the success report.
+        await expect(page.getByRole("status")).toContainText(
+            "Sync completed successfully",
+        );
+        await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe(
+            "content1",
+        );
+        await expect(page).toHaveURL(/\?view=sync$/);
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "Sync", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+    });
+
     test("should rename a file and update the detail URL", async ({ page }) => {
         const originalName = `rename-file-${Date.now()}.txt`;
         const renamedName = `renamed-file-${Date.now()}.txt`;
