@@ -395,6 +395,20 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             directoryView.getByRole("link", { name: "Files", exact: true }),
         ).toHaveAttribute("aria-current", "page");
+        // Upload scheduling is inline and has no dedicated directory representation.
+        await expect(
+            directoryView.getByRole("link", {
+                name: "Upload queue",
+                exact: true,
+            }),
+        ).toHaveCount(0);
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        const moreMenu = page.getByRole("dialog", { name: "More" });
+        // The removed queue route is no longer exposed through the secondary action menu either.
+        await expect(
+            moreMenu.getByRole("link", { name: "Upload queue", exact: true }),
+        ).toHaveCount(0);
+        await page.getByRole("button", { name: "Close more menu" }).click();
         await page.getByRole("link", { name: "Details", exact: true }).click();
 
         // The query parameter makes the alternate view directly addressable and reload-safe.

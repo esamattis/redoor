@@ -53,15 +53,21 @@ test.describe.serial("File Operations", () => {
                 .getByLabel("Choose files to upload")
                 .setInputFiles([firstUploadPath, secondUploadPath]);
 
-            // Bulk sources open the shared queue instead of hiding scheduling behind the toolbar.
-            await expect(page).toHaveURL(
-                `${uploadDestinationUrl}?view=upload_queue`,
-            );
-            // Both selected files must pass through the same visible page-lifetime queue.
-            await expect(page.getByText("uploaded-a.txt")).toBeVisible();
-            await expect(page.getByText("uploaded-b.txt")).toBeVisible();
-            // Terminal queue state proves both uploads completed before transfer history is inspected.
-            await expect(page.getByText("2 of 2 done")).toBeVisible();
+            // Uploads remain in directory context instead of switching to a dedicated queue route.
+            await expect(page).toHaveURL(uploadDestinationUrl);
+            // Both files appearing in the refreshed list proves the uploads completed in place.
+            await expect(
+                page.getByRole("link", {
+                    name: "uploaded-a.txt",
+                    exact: true,
+                }),
+            ).toBeVisible();
+            await expect(
+                page.getByRole("link", {
+                    name: "uploaded-b.txt",
+                    exact: true,
+                }),
+            ).toBeVisible();
 
             // Transfers live in the burger menu so agent tabs remain dedicated to agents.
             await page.getByRole("button", { name: "Open menu" }).click();
@@ -98,6 +104,55 @@ test.describe.serial("File Operations", () => {
         }
     });
 
+    test("should keep a single-file upload in the directory view", async ({
+        page,
+    }) => {
+        const directoryPath = path.join(ctx.testDirPath, "subdir3");
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        const uploadName = `single-upload-${Date.now()}.txt`;
+        let releaseUpload = () => {};
+        let notifyUploadStarted = () => {};
+        const uploadStarted = new Promise<void>((resolve) => {
+            notifyUploadStarted = resolve;
+        });
+        const uploadGate = new Promise<void>((resolve) => {
+            releaseUpload = resolve;
+        });
+        await page.route("**/raw/**", async (route) => {
+            if (route.request().method() !== "PUT") {
+                await route.continue();
+                return;
+            }
+            notifyUploadStarted();
+            await uploadGate;
+            await route.continue();
+        });
+        await page.goto(directoryUrl);
+
+        await page.getByLabel("Choose files to upload").setInputFiles({
+            name: uploadName,
+            mimeType: "text/plain",
+            buffer: Buffer.from("single uploaded content"),
+        });
+
+        await uploadStarted;
+        // A file that immediately claimed a scheduler slot never appears as waiting.
+        await expect(
+            page.getByRole("heading", { name: /Upload queue/ }),
+        ).toHaveCount(0);
+        releaseUpload();
+        // A single upload remains in context instead of opening queue details unnecessarily.
+        await expect(page).toHaveURL(directoryUrl);
+        // The refreshed listing confirms the background upload completed without requiring the queue view.
+        await expect(
+            page.getByRole("link", { name: uploadName, exact: true }),
+        ).toBeVisible();
+        // Disk contents verify that remaining in the directory did not interrupt the upload.
+        await expect(
+            fs.readFile(path.join(directoryPath, uploadName), "utf8"),
+        ).resolves.toBe("single uploaded content");
+    });
+
     test("should upload a selected directory with nested paths", async ({
         page,
     }) => {
@@ -128,26 +183,37 @@ test.describe.serial("File Operations", () => {
                 .getByLabel("Choose directory to upload")
                 .setInputFiles(sourceDirectory);
 
-            // Directory selections use the same queue route as ordinary multi-file selections.
-            await expect(page).toHaveURL(`${directoryUrl}?view=upload_queue`);
-            // Relative paths remain visible so users can verify the preserved hierarchy.
-            await expect(
-                page.getByText("selected-directory/nested/nested.txt"),
-            ).toBeVisible();
-            await expect(page.getByText("2 of 2 done")).toBeVisible();
-            // Disk contents prove parent directories were created before individual file uploads.
-            await expect(
-                fs.readFile(
-                    path.join(destinationDirectory, "root.txt"),
-                    "utf8",
-                ),
-            ).resolves.toBe("root content");
-            await expect(
-                fs.readFile(
-                    path.join(destinationDirectory, "nested", "nested.txt"),
-                    "utf8",
-                ),
-            ).resolves.toBe("nested content");
+            // Directory uploads remain in the current file-list route.
+            await expect(page).toHaveURL(directoryUrl);
+            // Polling disk contents proves parent directories were created before asynchronous uploads completed.
+            await expect
+                .poll(async () => {
+                    try {
+                        return await fs.readFile(
+                            path.join(destinationDirectory, "root.txt"),
+                            "utf8",
+                        );
+                    } catch {
+                        return null;
+                    }
+                })
+                .toBe("root content");
+            await expect
+                .poll(async () => {
+                    try {
+                        return await fs.readFile(
+                            path.join(
+                                destinationDirectory,
+                                "nested",
+                                "nested.txt",
+                            ),
+                            "utf8",
+                        );
+                    } catch {
+                        return null;
+                    }
+                })
+                .toBe("nested content");
         } finally {
             await fs.rm(sourceParent, { force: true, recursive: true });
         }
@@ -207,16 +273,18 @@ test.describe.serial("File Operations", () => {
 
         // Five blocked requests prove the scheduler fills every available upload slot.
         await expect.poll(() => enteredUploads).toBe(5);
+        // Uploads with active scheduler slots are omitted from the waiting queue.
+        await expect(
+            page.getByRole("heading", { name: "Upload queue (1 waiting)" }),
+        ).toBeVisible();
         // The sixth file must remain waiting until one of those upload slots is released.
         await expect(page.getByText("concurrency-5.txt")).toBeVisible();
-        await expect(
-            page
-                .getByRole("listitem")
-                .filter({ hasText: "concurrency-5.txt" })
-                .getByText("waiting", { exact: true }),
-        ).toBeVisible();
         releaseUploads();
-        await expect(page.getByText("6 of 6 done")).toBeVisible();
+        // The inline queue disappears as soon as the final file starts uploading.
+        await expect(
+            page.getByRole("heading", { name: /Upload queue/ }),
+        ).toHaveCount(0);
+        await expect.poll(() => enteredUploads).toBe(6);
         // Network interception verifies no scheduling race exceeded the configured cap.
         expect(maximumActiveUploads).toBe(5);
     });

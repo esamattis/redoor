@@ -233,7 +233,6 @@ function CopySelectedFilesAction(props: {
 
 /** Sends file and directory selections through the same bounded global queue. */
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
-    const navigate = useNavigate();
     const enqueue = useSetAtom(enqueueUploadBatchAtom);
     const fileInputId = React.useId();
     const directoryInputId = React.useId();
@@ -262,10 +261,6 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
             return;
         }
         setErrorMessage(null);
-        void navigate({
-            to: props.agent.getBrowserUrl(props.directoryPath),
-            search: { view: "upload_queue" },
-        });
     };
 
     return (

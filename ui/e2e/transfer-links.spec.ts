@@ -53,8 +53,13 @@ test.describe.serial("Transfer Path Links", () => {
                 .getByLabel("Choose files to upload")
                 .setInputFiles(uploadFilePath);
 
-            // Wait for the shared queue's terminal state before switching pages.
-            await expect(page.getByText("1 of 1 done")).toBeVisible();
+            // The refreshed listing proves the single upload completed while retaining directory context.
+            await expect(
+                page.getByRole("link", {
+                    name: uploadFileName,
+                    exact: true,
+                }),
+            ).toBeVisible();
 
             // Transfers live in the burger menu so agent tabs remain dedicated to agents.
             await page.getByRole("button", { name: "Open menu" }).click();

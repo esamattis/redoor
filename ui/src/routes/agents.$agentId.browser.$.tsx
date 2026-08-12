@@ -17,7 +17,7 @@ import {
 } from "#ui/components/browser/navigation";
 import { DirectoryFilesActions } from "#ui/components/browser/directory-actions";
 import { FileList } from "#ui/components/browser/file-list";
-import { UploadQueueView } from "#ui/components/browser/upload-queue";
+import { UploadQueue } from "#ui/components/browser/upload-queue";
 import {
     DirectoryDetailView,
     FileDetailView,
@@ -45,14 +45,13 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
     validateSearch: (
         search,
     ): {
-        view?: "details" | "edit" | "diff" | "sync" | "upload_queue";
+        view?: "details" | "edit" | "diff" | "sync";
     } => ({
         view:
             search.view === "details" ||
             search.view === "edit" ||
             search.view === "diff" ||
-            search.view === "sync" ||
-            search.view === "upload_queue"
+            search.view === "sync"
                 ? search.view
                 : undefined,
     }),
@@ -301,7 +300,7 @@ function DirectoryBrowserPage(props: {
     path: string;
     parentPath: string | null;
     lsResult: LsDirectoryResponse;
-    view?: "details" | "edit" | "diff" | "sync" | "upload_queue";
+    view?: "details" | "edit" | "diff" | "sync";
 }) {
     const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
     const visibleFiles = showHiddenFiles
@@ -318,9 +317,7 @@ function DirectoryBrowserPage(props: {
             ? "details"
             : props.view === "sync"
               ? "sync"
-              : props.view === "upload_queue"
-                ? "upload_queue"
-                : "files";
+              : "files";
 
     return (
         <div className="p-6">
@@ -350,32 +347,35 @@ function DirectoryBrowserPage(props: {
                         sourcePath={props.lsResult.path}
                         entryType="directory"
                     />
-                ) : activeView === "upload_queue" ? (
-                    <UploadQueueView
-                        agentId={props.agentId}
-                        destinationPath={props.path}
-                    />
                 ) : (
-                    <FileList
-                        key={props.path}
-                        agent={props.agent}
-                        agentId={props.agentId}
-                        agentName={props.agentName}
-                        directoryPath={props.path}
-                        files={[...directories, ...regularFiles]}
-                        actions={
-                            <DirectoryFilesActions
-                                api={props.api}
-                                agent={props.agent}
-                                agents={props.agents}
-                                directoryPath={props.path}
-                                showHiddenFiles={showHiddenFiles}
-                                onToggleHiddenFiles={() =>
-                                    setShowHiddenFiles((visible) => !visible)
-                                }
-                            />
-                        }
-                    />
+                    <>
+                        <UploadQueue
+                            agentId={props.agentId}
+                            destinationPath={props.path}
+                        />
+                        <FileList
+                            key={props.path}
+                            agent={props.agent}
+                            agentId={props.agentId}
+                            agentName={props.agentName}
+                            directoryPath={props.path}
+                            files={[...directories, ...regularFiles]}
+                            actions={
+                                <DirectoryFilesActions
+                                    api={props.api}
+                                    agent={props.agent}
+                                    agents={props.agents}
+                                    directoryPath={props.path}
+                                    showHiddenFiles={showHiddenFiles}
+                                    onToggleHiddenFiles={() =>
+                                        setShowHiddenFiles(
+                                            (visible) => !visible,
+                                        )
+                                    }
+                                />
+                            }
+                        />
+                    </>
                 )}
             </div>
         </div>

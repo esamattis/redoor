@@ -1,5 +1,4 @@
 import React from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { useSetAtom } from "jotai";
 import { ClipboardPaste, Upload } from "lucide-react";
 import type { Agent } from "#ui/api-client";
@@ -186,9 +185,8 @@ async function readDroppedFiles(dataTransfer: DataTransfer) {
     return manifest;
 }
 
-/** Enqueues source manifests and opens the queue view for the active destination. */
+/** Enqueues source manifests for the active destination. */
 function useFileUploader(props: { destination: DirectoryDestination | null }) {
-    const navigate = useNavigate();
     const enqueue = useSetAtom(enqueueUploadBatchAtom);
     const [importState, setImportState] = React.useState<ImportState>({
         type: "idle",
@@ -230,12 +228,8 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                 type: "success",
                 message: `Queued ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}.`,
             });
-            await navigate({
-                to: destination.agent.getBrowserUrl(destination.path),
-                search: { view: "upload_queue" },
-            });
         },
-        [enqueue, navigate, props.destination, showMissingDirectoryError],
+        [enqueue, props.destination, showMissingDirectoryError],
     );
 
     return {
