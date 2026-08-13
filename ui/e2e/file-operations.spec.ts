@@ -49,12 +49,28 @@ test.describe.serial("File Operations", () => {
                 page.getByRole("navigation", { name: "Breadcrumbs" }),
             ).toContainText("subdir3");
 
+            const uploadsCompleted = Promise.all([
+                page.waitForResponse(
+                    (response) =>
+                        response.request().method() === "PUT" &&
+                        response.url().includes("uploaded-a.txt") &&
+                        response.ok(),
+                ),
+                page.waitForResponse(
+                    (response) =>
+                        response.request().method() === "PUT" &&
+                        response.url().includes("uploaded-b.txt") &&
+                        response.ok(),
+                ),
+            ]);
             await page
                 .getByLabel("Choose files to upload")
                 .setInputFiles([firstUploadPath, secondUploadPath]);
+            await uploadsCompleted;
 
             // Uploads remain in directory context instead of switching to a dedicated queue route.
             await expect(page).toHaveURL(uploadDestinationUrl);
+            await page.reload();
             // Both files appearing in the refreshed list proves the uploads completed in place.
             await expect(
                 page.getByRole("link", {
