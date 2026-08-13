@@ -9,14 +9,24 @@ export const queryKeys = {
     serverInfo: () => [...queryKeys.all, "server-info"] as const,
     fileContent: (agentId: string, path: string) =>
         [...queryKeys.all, "agents", agentId, "file-content", path] as const,
-    fileSearch: (agentId: string, path: string, query: string) =>
+    fileSearch: (
+        agentId: string,
+        path: string,
+        search: {
+            query: string;
+            timeoutSeconds: number;
+            includeHidden: boolean;
+        },
+    ) =>
         [
             ...queryKeys.all,
             "agents",
             agentId,
             "file-search",
             path,
-            query,
+            search.query,
+            search.timeoutSeconds,
+            search.includeHidden,
         ] as const,
 };
 
@@ -61,12 +71,17 @@ export function fileContentQueryOptions(agent: Agent, path: string) {
 export function fileSearchQueryOptions(
     agent: Agent,
     path: string,
-    query: string,
+    search: { query: string; timeoutSeconds: number; includeHidden: boolean },
 ) {
     return queryOptions({
-        queryKey: queryKeys.fileSearch(agent.id, path, query),
-        queryFn: ({ signal }) => agent.searchFiles(path, query, signal),
-        enabled: query.trim() !== "",
+        queryKey: queryKeys.fileSearch(agent.id, path, search),
+        queryFn: ({ signal }) =>
+            agent.searchFiles(path, search.query, {
+                timeoutSeconds: search.timeoutSeconds,
+                includeHidden: search.includeHidden,
+                signal,
+            }),
+        enabled: search.query.trim() !== "",
         placeholderData: keepPreviousData,
     });
 }

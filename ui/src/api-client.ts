@@ -399,7 +399,11 @@ export class Agent {
     async searchFiles(
         path: string,
         query: string,
-        signal?: AbortSignal,
+        options: {
+            timeoutSeconds: number;
+            includeHidden: boolean;
+            signal?: AbortSignal;
+        },
     ): Promise<FileSearchResponse> {
         const url = new URL(
             `${this.baseUrl}${appendFilesystemPath(
@@ -408,9 +412,14 @@ export class Agent {
             )}`,
         );
         url.searchParams.set("query", query);
+        url.searchParams.set("timeout", options.timeoutSeconds.toString());
+        url.searchParams.set(
+            "include_hidden",
+            options.includeHidden.toString(),
+        );
         return apiRequest<FileSearchResponse>(
             url.toString(),
-            { signal },
+            { signal: options.signal },
             this.requestContext,
         );
     }

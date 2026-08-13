@@ -325,8 +325,8 @@ test.describe.serial("File Browser Navigation", () => {
         // The local filter shortcut moves focus without changing its search mode.
         await expect(filterInput).toBeFocused();
         await expect(
-            page.getByRole("checkbox", { name: "Search recursively" }),
-        ).not.toBeChecked();
+            page.getByRole("button", { name: "Search recursively" }),
+        ).toHaveAttribute("aria-pressed", "false");
 
         await page.keyboard.type("f");
         // Character shortcuts stay inactive while typing into an input.
@@ -339,20 +339,20 @@ test.describe.serial("File Browser Navigation", () => {
         await page.keyboard.press("s");
         // Recursive search is enabled before its shortcut focuses the query input.
         await expect(
-            page.getByRole("checkbox", { name: "Search recursively" }),
-        ).toBeChecked();
+            page.getByRole("button", { name: "Search recursively" }),
+        ).toHaveAttribute("aria-pressed", "true");
         await expect(filterInput).toBeFocused();
         await page.keyboard.press("Escape");
         // The first Escape only releases the active search input.
         await expect(
-            page.getByRole("checkbox", { name: "Search recursively" }),
-        ).toBeChecked();
+            page.getByRole("button", { name: "Search recursively" }),
+        ).toHaveAttribute("aria-pressed", "true");
         await expect(filterInput).not.toBeFocused();
         await page.keyboard.press("Escape");
         // A second Escape leaves recursive mode while retaining the query.
         await expect(
-            page.getByRole("checkbox", { name: "Search recursively" }),
-        ).not.toBeChecked();
+            page.getByRole("button", { name: "Search recursively" }),
+        ).toHaveAttribute("aria-pressed", "false");
 
         const firstFileEntry = page.getByRole("link", {
             name: "subdir1",
@@ -440,11 +440,11 @@ test.describe.serial("File Browser Navigation", () => {
         const filterInput = page.getByRole("searchbox", {
             name: "Filter files",
         });
-        const recursiveToggle = page.getByRole("checkbox", {
+        const recursiveToggle = page.getByRole("button", {
             name: "Search recursively",
         });
 
-        await recursiveToggle.check();
+        await recursiveToggle.click();
         await filterInput.fill("nested");
         await expect(
             page.getByText("3 results", { exact: true }),
@@ -460,7 +460,7 @@ test.describe.serial("File Browser Navigation", () => {
         // The first Escape leaves recursive search and its results intact for keyboard navigation.
         await expect(filterInput).not.toBeFocused();
         await expect(filterInput).toHaveValue("nested");
-        await expect(recursiveToggle).toBeChecked();
+        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "true");
         await page.keyboard.press("j");
         await expect(firstResult).toBeFocused();
         await page.keyboard.press("j");
@@ -471,7 +471,7 @@ test.describe.serial("File Browser Navigation", () => {
         await page.keyboard.press("Escape");
 
         // The second Escape returns to local filtering without discarding the query.
-        await expect(recursiveToggle).not.toBeChecked();
+        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "false");
         await expect(filterInput).toHaveValue("nested");
         await expect(page.locator("main tbody")).toHaveCount(1);
         await expect(page.locator("main tbody tr")).toHaveCount(0);
@@ -512,14 +512,32 @@ test.describe.serial("File Browser Navigation", () => {
         const filterInput = page.getByRole("searchbox", {
             name: "Filter files",
         });
+        const timeoutInput = page.getByRole("spinbutton", {
+            name: "Search timeout in seconds",
+        });
+        const hiddenToggle = page.getByRole("button", {
+            name: "Search hidden directories",
+        });
+        // Recursive-only controls do not occupy the local-filter toolbar.
+        await expect(timeoutInput).toHaveCount(0);
+        await expect(hiddenToggle).toHaveCount(0);
         await filterInput.fill("nested3txt");
 
         // Local filtering cannot discover a file below a child directory.
         await expect(page.locator("main tbody tr")).toHaveCount(0);
 
-        await page
-            .getByRole("checkbox", { name: "Search recursively" })
-            .check();
+        await page.getByRole("button", { name: "Search recursively" }).click();
+        // Recursive searches reveal their optional controls with safe defaults.
+        await expect(timeoutInput).toHaveValue("5");
+        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "false");
+        await timeoutInput.hover();
+        // The tooltip explains both the unit and accepted range at the control.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Maximum recursive search duration in seconds (1-60)",
+        );
+        await timeoutInput.fill("12");
+        await hiddenToggle.click();
+        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
         await filterInput.fill("nested");
         await filterInput.fill("nested3txt");
 
@@ -541,6 +559,12 @@ test.describe.serial("File Browser Navigation", () => {
         // Inputs inside one throttle window collapse into one request carrying the final keystrokes.
         expect(searchRequests).toHaveLength(1);
         expect(searchRequests[0]?.searchParams.get("query")).toBe("nested3txt");
+        // The chosen duration is sent with every recursive search request.
+        expect(searchRequests[0]?.searchParams.get("timeout")).toBe("12");
+        // Hidden-directory traversal is explicit rather than enabled by default.
+        expect(searchRequests[0]?.searchParams.get("include_hidden")).toBe(
+            "true",
+        );
 
         let notifyRequestStarted: (() => void) | undefined;
         let releaseRequest: (() => void) | undefined;

@@ -117,6 +117,12 @@ pub enum Command {
     FileSearch {
         path: String,
         query: String,
+        /// Keeps the deadline agent-local so traversal stops even if the REST caller disconnects.
+        #[serde(default = "default_file_search_timeout_seconds")]
+        timeout_seconds: u64,
+        /// Hidden directories are opt-in because they often contain large caches and metadata trees.
+        #[serde(default)]
+        include_hidden: bool,
     },
     Cat {
         path: String,
@@ -188,6 +194,11 @@ pub enum Command {
     },
 }
 
+/// Preserves the public REST default when a newer agent receives a command from an older server.
+fn default_file_search_timeout_seconds() -> u64 {
+    5
+}
+
 impl Command {
     /// Short operator-facing label without large or sensitive payloads.
     pub fn summary(&self) -> String {
@@ -196,8 +207,15 @@ impl Command {
                 Some(path) => format!("Ls path={path}"),
                 None => "Ls path=.".to_string(),
             },
-            Self::FileSearch { path, query } => {
-                format!("FileSearch path={path} query={query}")
+            Self::FileSearch {
+                path,
+                query,
+                timeout_seconds,
+                include_hidden,
+            } => {
+                format!(
+                    "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden}"
+                )
             }
             Self::Cat { path } => format!("Cat path={path}"),
             Self::RawDownload {

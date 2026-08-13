@@ -6,10 +6,61 @@ use nucleo_matcher::{
 use std::{collections::HashSet, os::unix::fs::MetadataExt, path::Path, time::Duration};
 use tokio::sync::watch;
 
-/// Prevents one broad or slow filesystem search from occupying an agent indefinitely.
-const TIMEOUT: Duration = Duration::from_secs(3);
 /// Bounds both response size and memory retained while traversing a large tree.
 const RESULT_LIMIT: usize = 100;
+
+/// Separates fuzzy terms from path fragments that must be skipped during traversal.
+struct SearchExpression {
+    include_patterns: Vec<Pattern>,
+    exclude_terms: Vec<String>,
+}
+
+impl SearchExpression {
+    /// Parses whitespace-separated Google-style terms while retaining spaces inside double quotes.
+    fn parse(query: &str) -> Self {
+        let mut terms = Vec::new();
+        let mut current = String::new();
+        let mut in_quotes = false;
+        let mut term_was_quoted = false;
+        for character in query.chars() {
+            match character {
+                '"' => {
+                    in_quotes = !in_quotes;
+                    term_was_quoted = true;
+                }
+                character if character.is_whitespace() && !in_quotes => {
+                    if !current.is_empty() {
+                        terms.push((std::mem::take(&mut current), term_was_quoted));
+                        term_was_quoted = false;
+                    }
+                }
+                _ => current.push(character),
+            }
+        }
+        if !current.is_empty() {
+            terms.push((current, term_was_quoted));
+        }
+
+        let mut include_patterns = Vec::new();
+        let mut exclude_terms = Vec::new();
+        for (term, was_quoted) in terms {
+            if !was_quoted && term.starts_with('-') && term.len() > 1 {
+                exclude_terms.push(term[1..].to_lowercase());
+            } else {
+                include_patterns.push(Pattern::new(
+                    &term,
+                    CaseMatching::Smart,
+                    Normalization::Smart,
+                    AtomKind::Fuzzy,
+                ));
+            }
+        }
+        Self {
+            include_patterns,
+            exclude_terms,
+        }
+    }
+}
 
 /// Retains the matcher score internally so the agent can rank a bounded result set.
 #[derive(Debug)]
@@ -40,15 +91,29 @@ fn directory_identity(metadata: &std::fs::Metadata) -> DirectoryIdentity {
 }
 
 /// Traverses incrementally so timeout returns useful partial results without retaining the tree.
-pub(super) async fn execute(path: String, query: String) -> CommandResult {
+pub(super) async fn execute(
+    path: String,
+    query: String,
+    timeout_seconds: u64,
+    include_hidden: bool,
+) -> CommandResult {
     let (_cancel_sender, cancel_receiver) = watch::channel(false);
-    execute_with_cancellation(path, query, cancel_receiver).await
+    execute_with_cancellation(
+        path,
+        query,
+        timeout_seconds,
+        include_hidden,
+        cancel_receiver,
+    )
+    .await
 }
 
 /// Preserves partial matches when a newer search supersedes this traversal.
 pub(super) async fn execute_with_cancellation(
     path: String,
     query: String,
+    timeout_seconds: u64,
+    include_hidden: bool,
     mut cancel_receiver: watch::Receiver<bool>,
 ) -> CommandResult {
     if query.trim().is_empty() {
@@ -58,11 +123,13 @@ pub(super) async fn execute_with_cancellation(
         );
     }
 
+    let expression = SearchExpression::parse(&query);
     let mut matches = Vec::with_capacity(RESULT_LIMIT);
     let result = {
-        let traversal = collect_matches(Path::new(&path), &query, &mut matches);
+        let traversal =
+            collect_matches(Path::new(&path), &expression, include_hidden, &mut matches);
         tokio::pin!(traversal);
-        let timeout = tokio::time::sleep(TIMEOUT);
+        let timeout = tokio::time::sleep(Duration::from_secs(timeout_seconds));
         tokio::pin!(timeout);
         tokio::select! {
             biased;
@@ -118,6 +185,8 @@ mod tests {
         let result = execute_with_cancellation(
             "/path-that-does-not-need-to-exist".to_string(),
             "query".to_string(),
+            5,
+            false,
             cancel_receiver,
         )
         .await;
@@ -153,6 +222,8 @@ mod tests {
         let result = execute(
             root.to_string_lossy().into_owned(),
             "visibletarget".to_string(),
+            5,
+            false,
         )
         .await;
 
@@ -191,6 +262,8 @@ mod tests {
         let result = execute(
             root.to_string_lossy().into_owned(),
             "searchabletarget".to_string(),
+            5,
+            false,
         )
         .await;
 
@@ -239,6 +312,8 @@ mod tests {
         let result = execute(
             root.to_string_lossy().into_owned(),
             "termuxvisibletarget".to_string(),
+            5,
+            false,
         )
         .await;
 
@@ -272,20 +347,127 @@ mod tests {
         // Completing promptly proves the backlink was detected rather than traversed recursively.
         assert!(!response.timed_out);
     }
+
+    /// Verifies unquoted minus terms exclude paths while quoted minus terms remain searchable.
+    #[tokio::test]
+    async fn exclusion_terms_prune_directories_and_quoted_terms_match() {
+        let root = test_root("excluded-paths");
+        let included = root.join("src").join("test-target.txt");
+        let excluded = root.join("node_modules").join("test-target.txt");
+        let quoted = root.join("contains-node_modules.txt");
+        tokio::fs::create_dir_all(included.parent().expect("included target has a parent"))
+            .await
+            .expect("included directory should be created");
+        tokio::fs::create_dir_all(excluded.parent().expect("excluded target has a parent"))
+            .await
+            .expect("excluded directory should be created");
+        tokio::fs::write(&included, b"included")
+            .await
+            .expect("included target should be created");
+        tokio::fs::write(&excluded, b"excluded")
+            .await
+            .expect("excluded target should be created");
+        tokio::fs::write(&quoted, b"quoted")
+            .await
+            .expect("quoted target should be created");
+
+        let excluded_result = execute(
+            root.to_string_lossy().into_owned(),
+            "-node_modules testtarget".to_string(),
+            5,
+            false,
+        )
+        .await;
+        let quoted_result = execute(
+            root.to_string_lossy().into_owned(),
+            "\"-node_modules\"".to_string(),
+            5,
+            false,
+        )
+        .await;
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("test tree should be removed");
+        let CommandResult::FileSearch(excluded_response) = excluded_result else {
+            panic!("an exclusion search should succeed");
+        };
+        // The matching file outside the excluded directory must remain discoverable.
+        assert_eq!(excluded_response.results.len(), 1);
+        // Pruning the excluded directory prevents its matching descendant from being returned.
+        assert_eq!(
+            excluded_response.results[0].path,
+            included.to_string_lossy()
+        );
+        let CommandResult::FileSearch(quoted_response) = quoted_result else {
+            panic!("a quoted leading-minus search should succeed");
+        };
+        // Quotes override exclusion syntax and make the leading minus part of the fuzzy term.
+        assert_eq!(quoted_response.results.len(), 1);
+        assert_eq!(quoted_response.results[0].path, quoted.to_string_lossy());
+    }
+
+    /// Verifies hidden directories are opt-in without hiding dotfiles in visible directories.
+    #[tokio::test]
+    async fn hidden_directories_are_skipped_by_default() {
+        let root = test_root("hidden-directories");
+        let hidden_target = root.join(".cache").join("hidden-target.txt");
+        let dotfile = root.join(".hidden-target.txt");
+        tokio::fs::create_dir_all(hidden_target.parent().expect("hidden target has a parent"))
+            .await
+            .expect("hidden directory should be created");
+        tokio::fs::write(&hidden_target, b"hidden")
+            .await
+            .expect("hidden target should be created");
+        tokio::fs::write(&dotfile, b"dotfile")
+            .await
+            .expect("dotfile should be created");
+
+        let default_result = execute(
+            root.to_string_lossy().into_owned(),
+            "hiddentarget".to_string(),
+            5,
+            false,
+        )
+        .await;
+        let included_result = execute(
+            root.to_string_lossy().into_owned(),
+            "hiddentarget".to_string(),
+            5,
+            true,
+        )
+        .await;
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("test tree should be removed");
+        let CommandResult::FileSearch(default_response) = default_result else {
+            panic!("a default hidden-directory search should succeed");
+        };
+        // Dotfiles remain searchable because only traversal into hidden directories is disabled.
+        assert_eq!(default_response.results.len(), 1);
+        assert_eq!(default_response.results[0].path, dotfile.to_string_lossy());
+        let CommandResult::FileSearch(included_response) = included_result else {
+            panic!("an opted-in hidden-directory search should succeed");
+        };
+        // Opting in exposes both the dotfile and the descendant of the hidden directory.
+        assert_eq!(included_response.results.len(), 2);
+        assert!(
+            included_response
+                .results
+                .iter()
+                .any(|entry| entry.path == hidden_target.to_string_lossy())
+        );
+    }
 }
 
 /// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
 async fn collect_matches(
     root: &Path,
-    query: &str,
+    expression: &SearchExpression,
+    include_hidden: bool,
     matches: &mut Vec<RankedEntry>,
 ) -> std::io::Result<()> {
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Smart,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut utf32_buffer = Vec::new();
     let root_entries = tokio::fs::read_dir(root).await?;
@@ -317,9 +499,28 @@ async fn collect_matches(
             Err(_) => continue,
         };
         let entry_path = entry.path();
+        let entry_name = entry.file_name();
+        let is_hidden = entry_name.to_string_lossy().starts_with('.');
+        let relative_path = entry_path
+            .strip_prefix(root)
+            .map(|path| path.to_string_lossy())
+            .unwrap_or_default();
+        let normalized_relative_path = relative_path.to_lowercase();
+        if expression
+            .exclude_terms
+            .iter()
+            .any(|term| normalized_relative_path.contains(term))
+        {
+            // Rejecting before metadata and read_dir ensures excluded directories are never opened.
+            continue;
+        }
         let Ok(file_type) = entry.file_type().await else {
             continue;
         };
+        if is_hidden && !include_hidden && file_type.is_dir() {
+            // Rejecting direct hidden directories here ensures metadata and read_dir are never called.
+            continue;
+        }
         let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
             tokio::fs::metadata(&entry_path).await.ok()
         } else {
@@ -329,16 +530,27 @@ async fn collect_matches(
             || followed_metadata
                 .as_ref()
                 .is_some_and(std::fs::Metadata::is_dir);
+        if is_hidden && !include_hidden && is_directory {
+            // Hidden symlink directories require metadata to identify, but are still never opened.
+            continue;
+        }
 
-        if let Ok(relative_path) = entry_path.strip_prefix(root) {
-            let relative_path = relative_path.to_string_lossy();
-            let haystack = Utf32Str::new(&relative_path, &mut utf32_buffer);
-            if let Some(score) = pattern.score(haystack, &mut matcher) {
+        if !relative_path.is_empty() {
+            let score = expression
+                .include_patterns
+                .iter()
+                .try_fold(0_u32, |score, pattern| {
+                    let haystack = Utf32Str::new(&relative_path, &mut utf32_buffer);
+                    pattern
+                        .score(haystack, &mut matcher)
+                        .map(|term_score| score.saturating_add(term_score))
+                });
+            if let Some(score) = score {
                 retain_match(
                     matches,
                     RankedEntry {
                         entry: FileSearchEntry {
-                            name: entry.file_name().to_string_lossy().into_owned(),
+                            name: entry_name.to_string_lossy().into_owned(),
                             path: entry_path.to_string_lossy().into_owned(),
                             file_type: if is_directory {
                                 "directory".to_string()

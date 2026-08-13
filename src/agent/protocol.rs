@@ -134,16 +134,32 @@ async fn handle_command_message(
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
-        Command::FileSearch { path, query } => {
+        Command::FileSearch {
+            path,
+            query,
+            timeout_seconds,
+            include_hidden,
+        } => {
             let result = match file_search_cancel {
                 Some(cancel_receiver) => {
                     CommandHandler::new()
-                        .execute_file_search(path, query, cancel_receiver)
+                        .execute_file_search(
+                            path,
+                            query,
+                            timeout_seconds,
+                            include_hidden,
+                            cancel_receiver,
+                        )
                         .await
                 }
                 None => {
                     CommandHandler::new()
-                        .execute(Command::FileSearch { path, query })
+                        .execute(Command::FileSearch {
+                            path,
+                            query,
+                            timeout_seconds,
+                            include_hidden,
+                        })
                         .await
                 }
             };

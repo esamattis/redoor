@@ -83,7 +83,7 @@ async function getConnectedTestAgent(): Promise<Agent> {
 async function searchAgentFiles(
     agent: Agent,
     root: string,
-    query: string,
+    search: { query: string; timeout?: number; includeHidden?: boolean },
 ): Promise<FileSearchResponse> {
     const encodedRoot = encodeFilesystemPath(root);
     const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
@@ -91,11 +91,29 @@ async function searchAgentFiles(
         `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
         apiClient.baseUrl,
     );
-    url.searchParams.set("query", query);
+    url.searchParams.set("query", search.query);
+    if (search.timeout !== undefined) {
+        url.searchParams.set("timeout", search.timeout.toString());
+    }
+    if (search.includeHidden !== undefined) {
+        url.searchParams.set("include_hidden", search.includeHidden.toString());
+    }
     const response = await fetch(url, { headers: agent.getAuthHeaders() });
     // Successful transport proves the REST route relayed the command to the connected agent.
     expect(response.status).toBe(200);
     return fileSearchResponseSchema.parse(await response.json());
+}
+
+/** Builds a search URL for validation cases that intentionally do not return a search response. */
+function getAgentSearchUrl(agent: Agent, root: string, query: string): URL {
+    const encodedRoot = encodeFilesystemPath(root);
+    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
+    const url = new URL(
+        `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
+        apiClient.baseUrl,
+    );
+    url.searchParams.set("query", query);
+    return url;
 }
 
 describe("Agents API", () => {
@@ -353,7 +371,7 @@ describe("Agents API", () => {
         const result = await searchAgentFiles(
             testAgent,
             searchRoot,
-            "nestedsourcetarget",
+            { query: "nestedsourcetarget" },
         );
         // A small local tree must complete without consuming the three-second allowance.
         expect(result.timed_out).toBe(false);
@@ -369,6 +387,89 @@ describe("Agents API", () => {
                 (entry) => entry.name === "unrelated-document.txt",
             ),
         ).toBe(false);
+    });
+
+    it("should exclude unquoted minus terms and search quoted minus terms", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({
+            suffix: "-excluded-file-search",
+        });
+        const includedTarget = path.join(searchRoot, "src", "test-target.txt");
+        const excludedTarget = path.join(
+            searchRoot,
+            "node_modules",
+            "test-target.txt",
+        );
+        const quotedTarget = path.join(searchRoot, "contains-node_modules.txt");
+        await fs.mkdir(path.dirname(includedTarget));
+        await fs.mkdir(path.dirname(excludedTarget));
+        await fs.writeFile(includedTarget, "included", "utf-8");
+        await fs.writeFile(excludedTarget, "excluded", "utf-8");
+        await fs.writeFile(quotedTarget, "quoted", "utf-8");
+
+        const excludedResult = await searchAgentFiles(
+            testAgent,
+            searchRoot,
+            { query: "-node_modules testtarget" },
+        );
+        // The positive term still finds files outside the excluded subtree.
+        expect(excludedResult.results.map((entry) => entry.path)).toEqual([
+            includedTarget,
+        ]);
+        const quotedResult = await searchAgentFiles(
+            testAgent,
+            searchRoot,
+            { query: '"-node_modules"' },
+        );
+        // Double quotes make a leading minus literal rather than exclusion syntax.
+        expect(quotedResult.results.map((entry) => entry.path)).toEqual([
+            quotedTarget,
+        ]);
+    });
+
+    it("should reject file search timeouts above 60 seconds", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const url = getAgentSearchUrl(testAgent, agentCwd, "target");
+        url.searchParams.set("timeout", "61");
+
+        const response = await fetch(url, {
+            headers: testAgent.getAuthHeaders(),
+        });
+
+        // Rejecting before command dispatch enforces the API's resource ceiling.
+        expect(response.status).toBe(400);
+        // A useful validation message lets API clients correct the supplied value.
+        await expect(response.json()).resolves.toEqual({
+            error: "File search timeout must be between 1 and 60 seconds",
+        });
+    });
+
+    it("should search hidden directories only when requested", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({
+            suffix: "-hidden-directory-search",
+        });
+        const hiddenTarget = path.join(
+            searchRoot,
+            ".cache",
+            "hidden-target.txt",
+        );
+        await fs.mkdir(path.dirname(hiddenTarget));
+        await fs.writeFile(hiddenTarget, "hidden", "utf-8");
+
+        const defaultResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: "hiddentarget",
+        });
+        // Omission preserves the safe default and avoids traversing hidden directories.
+        expect(defaultResult.results).toEqual([]);
+        const includedResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: "hiddentarget",
+            includeHidden: true,
+        });
+        // Explicit opt-in proves the REST option reaches agent traversal.
+        expect(includedResult.results.map((entry) => entry.path)).toEqual([
+            hiddenTarget,
+        ]);
     });
 
     it("should bound file search results", async () => {
@@ -392,7 +493,7 @@ describe("Agents API", () => {
         const result = await searchAgentFiles(
             testAgent,
             searchRoot,
-            "boundedsearchresult",
+            { query: "boundedsearchresult" },
         );
         // The fixed cap keeps one control-socket JSON response memory-safe on broad searches.
         expect(result.results).toHaveLength(100);

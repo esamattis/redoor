@@ -9,6 +9,9 @@ import {
     Download,
     File,
     Folder,
+    FolderSearch,
+    Eye,
+    EyeOff,
     LoaderCircle,
     Pencil,
     Search,
@@ -146,6 +149,9 @@ export function FileList(props: {
     const filterInputRef = React.useRef<HTMLInputElement>(null);
     const [filter, setFilter] = React.useState("");
     const [searchRecursively, setSearchRecursively] = React.useState(false);
+    const [searchTimeoutSeconds, setSearchTimeoutSeconds] = React.useState(5);
+    const [includeHiddenDirectories, setIncludeHiddenDirectories] =
+        React.useState(false);
     const [debouncedFilter, setDebouncedFilter] = React.useState("");
     const [sort, setSort] = React.useState<{
         column: FileSortColumn;
@@ -162,11 +168,11 @@ export function FileList(props: {
           })
         : filteredFiles;
     const recursiveSearch = useQuery(
-        fileSearchQueryOptions(
-            agent,
-            props.directoryPath,
-            searchRecursively ? debouncedFilter : "",
-        ),
+        fileSearchQueryOptions(agent, props.directoryPath, {
+            query: searchRecursively ? debouncedFilter : "",
+            timeoutSeconds: searchTimeoutSeconds,
+            includeHidden: includeHiddenDirectories,
+        }),
     );
     const searchState = getFileSearchState({
         filter,
@@ -252,17 +258,14 @@ export function FileList(props: {
                         className="w-full rounded-md border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                 </label>
-                <div className="shrink-0">
-                    <Checkbox
-                        role="checkbox"
-                        checked={searchRecursively}
-                        onCheckedChange={(checked) => {
-                            setSearchRecursively(checked);
-                        }}
-                    >
-                        Search recursively
-                    </Checkbox>
-                </div>
+                <RecursiveSearchControls
+                    active={searchRecursively}
+                    timeoutSeconds={searchTimeoutSeconds}
+                    includeHiddenDirectories={includeHiddenDirectories}
+                    onActiveChange={setSearchRecursively}
+                    onTimeoutChange={setSearchTimeoutSeconds}
+                    onIncludeHiddenChange={setIncludeHiddenDirectories}
+                />
             </div>
             {searchRecursively ? (
                 <FileSearchResults agent={agent} state={searchState} />
@@ -278,6 +281,86 @@ export function FileList(props: {
                 />
             )}
         </div>
+    );
+}
+
+/** Keeps optional recursive-search controls compact and absent from local filtering mode. */
+function RecursiveSearchControls(props: {
+    active: boolean;
+    timeoutSeconds: number;
+    includeHiddenDirectories: boolean;
+    onActiveChange: React.Dispatch<React.SetStateAction<boolean>>;
+    onTimeoutChange: React.Dispatch<React.SetStateAction<number>>;
+    onIncludeHiddenChange: React.Dispatch<React.SetStateAction<boolean>>;
+}) {
+    return (
+        <>
+            {props.active && (
+                <>
+                    <Tooltip content="Maximum recursive search duration in seconds (1-60)">
+                        <label>
+                            <span className="sr-only">
+                                Search timeout in seconds
+                            </span>
+                            <input
+                                type="number"
+                                aria-label="Search timeout in seconds"
+                                min={1}
+                                max={60}
+                                value={props.timeoutSeconds}
+                                onChange={(event) => {
+                                    const value = event.target.valueAsNumber;
+                                    if (Number.isInteger(value)) {
+                                        props.onTimeoutChange(
+                                            Math.min(60, Math.max(1, value)),
+                                        );
+                                    }
+                                }}
+                                className="w-16 rounded-md border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                            />
+                        </label>
+                    </Tooltip>
+                    <Tooltip content="Search inside hidden directories">
+                        <button
+                            type="button"
+                            aria-label="Search hidden directories"
+                            aria-pressed={props.includeHiddenDirectories}
+                            onClick={() =>
+                                props.onIncludeHiddenChange(
+                                    (current) => !current,
+                                )
+                            }
+                            className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                                props.includeHiddenDirectories
+                                    ? "border-blue-500 bg-blue-500/15 text-blue-300"
+                                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
+                            }`}
+                        >
+                            {props.includeHiddenDirectories ? (
+                                <Eye className="h-4 w-4" />
+                            ) : (
+                                <EyeOff className="h-4 w-4" />
+                            )}
+                        </button>
+                    </Tooltip>
+                </>
+            )}
+            <Tooltip content="Search recursively (s)">
+                <button
+                    type="button"
+                    aria-label="Search recursively"
+                    aria-pressed={props.active}
+                    onClick={() => props.onActiveChange((current) => !current)}
+                    className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                        props.active
+                            ? "border-blue-500 bg-blue-500/15 text-blue-300"
+                            : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
+                    }`}
+                >
+                    <FolderSearch className="h-4 w-4" />
+                </button>
+            </Tooltip>
+        </>
     );
 }
 

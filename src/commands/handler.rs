@@ -26,7 +26,12 @@ impl CommandHandler {
     pub async fn execute(&self, command: Command) -> CommandResult {
         match command {
             Command::Ls { path } => self.ls(path).await,
-            Command::FileSearch { path, query } => file_search::execute(path, query).await,
+            Command::FileSearch {
+                path,
+                query,
+                timeout_seconds,
+                include_hidden,
+            } => file_search::execute(path, query, timeout_seconds, include_hidden).await,
             Command::Cat { path } => self.cat(path).await,
             Command::RawDownload {
                 path,
@@ -74,9 +79,18 @@ impl CommandHandler {
         &self,
         path: String,
         query: String,
+        timeout_seconds: u64,
+        include_hidden: bool,
         cancel_receiver: watch::Receiver<bool>,
     ) -> CommandResult {
-        file_search::execute_with_cancellation(path, query, cancel_receiver).await
+        file_search::execute_with_cancellation(
+            path,
+            query,
+            timeout_seconds,
+            include_hidden,
+            cancel_receiver,
+        )
+        .await
     }
 
     /// Returns directory entries or file metadata from the requested path.

@@ -20,10 +20,19 @@ use crate::server::{
     state::ServerState,
 };
 
-/// Carries the fuzzy expression separately from the absolute search root in the route path.
+/// Carries search controls separately from the absolute search root in the route path.
 #[derive(Deserialize)]
 pub(crate) struct FileSearchQuery {
     query: String,
+    #[serde(default = "default_file_search_timeout_seconds")]
+    timeout: u64,
+    #[serde(default)]
+    include_hidden: bool,
+}
+
+/// Keeps omitted API timeouts useful while allowing callers to tune expensive searches.
+fn default_file_search_timeout_seconds() -> u64 {
+    5
 }
 
 /// Route: `GET /api/v1/agents/{agent}/ls/{*path}`
@@ -100,16 +109,29 @@ pub(crate) async fn file_search_agent_handler(
     Query(search): Query<FileSearchQuery>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    if !(1..=60).contains(&search.timeout) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "File search timeout must be between 1 and 60 seconds".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent);
+    let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
         .router_ref
-        .request(5000, |reply| {
+        .request(request_timeout_ms, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::FileSearch {
                     path,
                     query: search.query,
+                    timeout_seconds: search.timeout,
+                    include_hidden: search.include_hidden,
                 },
                 reply,
             })
