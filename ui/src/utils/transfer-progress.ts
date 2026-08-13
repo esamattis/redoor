@@ -1,8 +1,10 @@
 import type { TransferProgressEntry } from "#ui/api-client";
 
+/** Shares one projected snapshot so the pie, percent, and ETA cannot drift apart. */
 export type AnimatedTransferProgress = {
     transferredBytes: number;
     percentage: number;
+    remainingSeconds: number | null;
 };
 
 /** Uses a one-second floor because finalized API timestamps only have whole-second precision. */
@@ -39,6 +41,7 @@ export function getAnimatedTransferProgress(
         return {
             transferredBytes: transfer.total_bytes,
             percentage: 100,
+            remainingSeconds: null,
         };
     }
 
@@ -46,6 +49,7 @@ export function getAnimatedTransferProgress(
         return {
             transferredBytes: Math.max(0, transfer.transferred_bytes),
             percentage: 0,
+            remainingSeconds: null,
         };
     }
 
@@ -66,5 +70,67 @@ export function getAnimatedTransferProgress(
     return {
         transferredBytes,
         percentage: (transferredBytes / transfer.total_bytes) * 100,
+        remainingSeconds: getTransferRemainingSeconds(
+            transfer,
+            transferredBytes,
+            speed,
+        ),
     };
+}
+
+/** Uses projected bytes so the countdown shrinks with the same animation as the pie. */
+export function getTransferRemainingSeconds(
+    transfer: TransferProgressEntry,
+    transferredBytes: number,
+    speedBytesPerSecond: number | null,
+): number | null {
+    if (transfer.state !== "active") {
+        return null;
+    }
+
+    if (
+        transfer.total_bytes <= 0 ||
+        speedBytesPerSecond === null ||
+        speedBytesPerSecond <= 0
+    ) {
+        return null;
+    }
+
+    const remainingBytes = transfer.total_bytes - transferredBytes;
+    if (remainingBytes <= 0) {
+        return 0;
+    }
+
+    return remainingBytes / speedBytesPerSecond;
+}
+
+/** Keeps remaining time compact enough to sit on the same progress line as speed. */
+export function formatRemainingTime(seconds: number | null): string | null {
+    if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
+        return null;
+    }
+
+    if (seconds < 1) {
+        return "<1s";
+    }
+
+    const totalSeconds = Math.round(seconds);
+    const days = Math.floor(totalSeconds / 86_400);
+    const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const restSeconds = totalSeconds % 60;
+
+    if (days > 0) {
+        return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+    }
+
+    if (hours > 0) {
+        return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    }
+
+    if (minutes > 0) {
+        return restSeconds > 0 ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
+    }
+
+    return `${restSeconds}s`;
 }

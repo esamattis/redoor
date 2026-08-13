@@ -55,6 +55,58 @@ test.describe("Server home", () => {
         await expect(panel.getByRole("row")).toHaveCount(6);
     });
 
+    test("shows percent, speed, and remaining time on active transfers", async ({
+        page,
+    }) => {
+        const startedAt = Math.floor(Date.now() / 1000) - 10;
+        await page.route("**/api/v1/transfers/progress", async (route) => {
+            await route.fulfill({
+                json: {
+                    transfers: [
+                        {
+                            request_id: 1,
+                            agent_id: "agent-1",
+                            path: "/tmp/active.bin",
+                            source: null,
+                            dest: null,
+                            direction: "download",
+                            total_bytes: 100_000_000,
+                            transferred_bytes: 50_000_000,
+                            started_at: startedAt,
+                            ended_at: null,
+                            state: "active",
+                            error: null,
+                        },
+                    ],
+                },
+            });
+        });
+
+        await page.goto(`${WEB_BASE_URL}/`);
+        const panel = page
+            .getByRole("heading", { name: "Transfers" })
+            .locator("xpath=ancestor::section");
+        await panel
+            .getByRole("button", { name: "Expand Transfers" })
+            .press("Enter");
+
+        const progress = panel.getByRole("img", {
+            name: /Transfer progress \d+% .+\/s/,
+        });
+        // Percent comes first so the row reads as completion, then rate, then ETA.
+        await expect(progress).toHaveAttribute(
+            "aria-label",
+            /Transfer progress \d+% .+\/s .+ remaining$/,
+        );
+        await expect(panel.getByText(/\d+%/)).toBeVisible();
+        await expect(panel.getByText(/\/s/)).toBeVisible();
+        await expect(panel.getByText("remaining")).toBeVisible();
+        // Labels next to the rate made finished and in-flight rows harder to scan.
+        await expect(
+            panel.getByText(/Current speed|Final speed|Speed:/),
+        ).toHaveCount(0);
+    });
+
     test("renders a working hostname-defaulted agent config", async ({
         page,
     }) => {

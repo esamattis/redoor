@@ -9,6 +9,7 @@ import {
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
 import { formatSize, formatSpeed } from "#ui/utils/path";
 import {
+    formatRemainingTime,
     getAnimatedTransferProgress,
     getTransferSpeedBytesPerSecond,
 } from "#ui/utils/transfer-progress";
@@ -74,27 +75,31 @@ function TransferProgressCell(props: { transfer: TransferProgressEntry }) {
     );
     const displayedBytes = Math.floor(progress.transferredBytes);
     const pieDegrees = progress.percentage * 3.6;
+    const remainingTime = formatRemainingTime(progress.remainingSeconds);
+    const percentageLabel = `${Math.round(progress.percentage)}%`;
+    const speedLabel = formatSpeed(speed);
+    const remainingLabel =
+        remainingTime === null ? null : `${remainingTime} remaining`;
+    const progressLabel = [percentageLabel, speedLabel, remainingLabel]
+        .filter((part) => part !== null)
+        .join(" ");
 
     return (
-        <div className="flex items-center gap-3">
+        <div className="flex w-80 items-center gap-3">
             <span
                 className="h-9 w-9 shrink-0 rounded-full border border-slate-600/70"
                 style={{
-                    background: `conic-gradient(from -90deg, ${props.transfer.state === "completed" ? "#34d399" : "#60a5fa"} 0deg ${pieDegrees}deg, #334155 ${pieDegrees}deg 360deg)`,
+                    background: `conic-gradient(${props.transfer.state === "completed" ? "#34d399" : "#60a5fa"} 0deg ${pieDegrees}deg, #334155 ${pieDegrees}deg 360deg)`,
                 }}
                 role="img"
-                aria-label={`Transfer progress ${Math.round(progress.percentage)}%`}
+                aria-label={`Transfer progress ${progressLabel}`}
             />
-            <div className="flex flex-col gap-1 text-sm text-slate-300">
+            <div className="flex min-w-0 flex-1 flex-col gap-1 font-mono text-sm tabular-nums text-slate-300">
                 <span>
                     {formatSize(displayedBytes)} /{" "}
                     {formatSize(props.transfer.total_bytes)}
                 </span>
-                <span className="text-xs text-slate-500">
-                    {props.transfer.state === "active"
-                        ? `Current speed: ${formatSpeed(speed)}`
-                        : `Final speed: ${formatSpeed(speed)}`}
-                </span>
+                <span className="text-xs text-slate-500">{progressLabel}</span>
             </div>
         </div>
     );
@@ -113,7 +118,7 @@ function TransferTableHeader() {
                 <th className="text-left p-3 text-sm font-medium text-slate-400">
                     Path
                 </th>
-                <th className="text-left p-3 text-sm font-medium text-slate-400">
+                <th className="w-80 text-left p-3 text-sm font-medium text-slate-400">
                     Progress
                 </th>
                 <th className="text-left p-3 text-sm font-medium text-slate-400">
@@ -262,7 +267,7 @@ export function TransferList(props: {
                                         </div>
                                     )}
                                 </td>
-                                <td className="whitespace-nowrap p-3">
+                                <td className="w-80 whitespace-nowrap p-3">
                                     <TransferProgressCell transfer={transfer} />
                                 </td>
                                 <td className="whitespace-nowrap p-3">
