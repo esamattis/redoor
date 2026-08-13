@@ -656,3 +656,86 @@ log = "${agentLogPath}"
         expect(echo.message).toBe("managed-through-password-ssh");
     }, 120_000);
 });
+
+describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
+    "TOML-managed SSH authentication errors",
+    () => {
+        test("reports a missing password promptly and remains controllable", async () => {
+            const processManager = new ProcessManager();
+            const home = mkdtempSync(join(tmpdir(), "redoor-managed-ssh-no-password-"));
+            const suffix = `${process.pid}-${Date.now()}`;
+            const appName = `redoor-managed-ssh-no-password-${suffix}`;
+            const agentName = `managed-ssh-no-password-${suffix}`;
+            const remoteRoot = `/tmp/redoor-managed-ssh-no-password-${suffix}`;
+            const configPath = join(home, "config.toml");
+            writeFileSync(
+                configPath,
+                `agent_token = "${TEST_AGENT_TOKEN}"
+
+[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+port = ${VITEST_SERVER_PORT}
+
+[[agents]]
+target = "${SSH_TEST_HOST}"
+username = "${SSH_PASSWORD_USER}"
+name = "${agentName}"
+home = "${remoteRoot}"
+`,
+            );
+
+            onTestFinished(() => {
+                processManager.killAll();
+                rmSync(home, { recursive: true, force: true });
+            });
+
+            const serverPid = processManager.spawn(
+                SERVER_PATH,
+                ["server", "--config", configPath],
+                {
+                    env: {
+                        ...process.env,
+                        HOME: home,
+                        REDOOR_APP_NAME: appName,
+                    },
+                },
+            );
+            await waitForPort(VITEST_SERVER_PORT);
+            const apiClient = new ApiClient(`http://127.0.0.1:${VITEST_SERVER_PORT}`);
+            await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
+            const configuredAgent = await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listAgents()).find((agent) => agent.name === agentName),
+                description: "password-only agent inventory registration",
+            });
+
+            await configuredAgent.start();
+            const failed = await waitForValue({
+                predicate: async () => {
+                    const agent = (await apiClient.listAgents()).find(
+                        (entry) => entry.name === agentName,
+                    );
+                    return agent?.connectionIssue ? agent : undefined;
+                },
+                timeoutMs: 15_000,
+                description: "non-interactive SSH authentication issue",
+            });
+            // The REST issue must tell operators how to configure password-only hosts.
+            expect(failed.connectionIssue).toContain(
+                "Configure a password, SSH key, or ssh-agent credential",
+            );
+            // The failed startup remains desired-running so watchdog retries are visible.
+            expect(failed.status).toBe("starting");
+            const shutdown = await failed.shutdown();
+            // Shutdown proves an SSH preparation failure does not block lifecycle control.
+            expect(shutdown.agent.status).toBe("stopped");
+            const serverOutput = processManager.getStdout(serverPid);
+            // Neither the server token nor fixture password may leak into SSH diagnostics.
+            expect(serverOutput).not.toContain(TEST_AGENT_TOKEN);
+            if (process.env.REDOOR_SSH_TEST_PASSWORD) {
+                expect(serverOutput).not.toContain(process.env.REDOOR_SSH_TEST_PASSWORD);
+            }
+        }, 60_000);
+    },
+);

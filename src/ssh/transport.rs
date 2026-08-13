@@ -4,8 +4,14 @@ use std::path::Path;
 use std::process::Stdio;
 
 use redoor::{Level, log};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+
+/// Caps browser-bound SSH diagnostics while retaining the final, usually actionable lines.
+const MAX_SSH_DIAGNOSTIC_BYTES: usize = 8 * 1024;
+
+/// Bounds how long OpenSSH may spend establishing its transport before a retry.
+const SSH_CONNECT_TIMEOUT_SECONDS: u32 = 15;
 
 /// One reverse forward: SSH listens on `remote_port` at the remote host and
 /// asks the local SSH client to connect to `destination_host:destination_port`.
@@ -259,8 +265,8 @@ impl SshHost {
 
     /// Streams a script to `sh -s` on the remote host and captures stdout.
     /// Sending the script through stdin keeps multiline probes readable and
-    /// avoids embedding shell syntax in the SSH command argument. Stderr stays
-    /// inherited so authentication and remote-shell diagnostics remain visible.
+    /// avoids embedding shell syntax in the SSH command argument. Stderr is
+    /// captured so preparation failures can reach the lifecycle UI.
     pub(super) async fn run_script_captured(
         &self,
         script: &str,
@@ -269,7 +275,8 @@ impl SshHost {
         let mut ssh = build_ssh_command(self, "sh", &["-s"], options).await?;
         ssh.stdin(Stdio::piped());
         ssh.stdout(Stdio::piped());
-        ssh.stderr(Stdio::inherit());
+        ssh.stderr(Stdio::piped());
+        ssh.kill_on_drop(true);
 
         log!(
             Level::Debug,
@@ -279,15 +286,29 @@ impl SshHost {
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("script requires piped ssh stdin");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("script requires piped ssh stdout");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("script requires piped ssh stderr");
+        let stdout_handle = tokio::spawn(read_bounded_tail(stdout));
+        let stderr_handle = tokio::spawn(read_bounded_tail(stderr));
         let write_result = stdin.write_all(script.as_bytes()).await;
         // Closing stdin tells the remote shell that the complete script has arrived.
         drop(stdin);
 
-        let output = child.wait_with_output().await?;
-        if !output.status.success() {
-            return Err(std::io::Error::other(format!(
-                "ssh exited with status {} while running remote script",
-                output.status.code().unwrap_or(-1)
+        let status = child.wait().await?;
+        let stdout = join_diagnostic_reader(stdout_handle, "stdout").await?;
+        let stderr = join_diagnostic_reader(stderr_handle, "stderr").await?;
+        if !status.success() {
+            return Err(std::io::Error::other(format_ssh_failure(
+                self,
+                "remote host probe",
+                status,
+                &stderr,
             )));
         }
         write_result.map_err(|error| {
@@ -295,7 +316,7 @@ impl SshHost {
                 "failed to stream script through ssh stdin: {error}"
             ))
         })?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(String::from_utf8_lossy(&stdout).to_string())
     }
 
     /// Streams `local_path` to the remote host by piping it into
@@ -324,11 +345,15 @@ impl SshHost {
             ssh.arg("-p").arg(port.to_string());
         }
         // No TTY and stdin is the upload stream, so new hosts cannot be confirmed interactively.
+        ssh.arg("-T");
+        ssh.arg("-o").arg("ExitOnForwardFailure=yes");
         ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
+        ssh.arg("-o")
+            .arg(format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}"));
         // Compress the upload stream so large binaries transfer faster over
         // slow uplinks. ssh compression is cheap and transparent here.
         ssh.arg("-C");
-        apply_password_askpass(&mut ssh, self.password.as_deref())?;
+        apply_non_interactive_auth(&mut ssh, self.password.as_deref())?;
         ssh.arg(&self.target);
         ssh.arg(format!("cat > {}", remote_path));
 
@@ -337,6 +362,7 @@ impl SshHost {
         // Capture stderr so prepare/watchdog logs include the remote reason
         // instead of only the local Broken pipe that follows early cat exit.
         ssh.stderr(Stdio::piped());
+        ssh.kill_on_drop(true);
 
         log!(
             Level::Debug,
@@ -346,7 +372,7 @@ impl SshHost {
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
-        let mut stderr = child.stderr.take().expect("stderr was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
         let mut file = tokio::fs::File::open(local_path).await?;
 
         // Run the copy on a separate task so we can concurrently wait for
@@ -360,17 +386,11 @@ impl SshHost {
             Ok::<_, std::io::Error>(())
         });
         // Drain stderr while the child runs so a full pipe cannot block exit.
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf).await;
-            buf
-        });
+        let stderr_handle = tokio::spawn(read_bounded_tail(stderr));
 
         let status = child.wait().await?;
-        let stderr_bytes = stderr_handle
-            .await
-            .map_err(|e| std::io::Error::other(format!("stderr task panicked: {e}")))?;
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        let stderr_bytes = join_diagnostic_reader(stderr_handle, "stderr").await?;
+        let stderr = sanitized_ssh_text(self, &stderr_bytes);
         let stderr_trim = stderr.trim();
 
         // Prefer remote failure details over the copy-task Broken pipe that
@@ -380,15 +400,7 @@ impl SshHost {
             .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))?;
 
         if !status.success() {
-            let mut msg = format!(
-                "ssh upload to '{}' failed with status {}",
-                remote_path,
-                status.code().unwrap_or(-1)
-            );
-            if !stderr_trim.is_empty() {
-                msg.push_str(": ");
-                msg.push_str(stderr_trim);
-            }
+            let mut msg = format_ssh_failure(self, "binary upload", status, &stderr_bytes);
             if stderr_trim.contains("text file busy") || stderr_trim.contains("ETXTBSY") {
                 msg.push_str(
                     " (remote binary is currently executing; upload must replace via temp file + mv)",
@@ -405,6 +417,33 @@ impl SshHost {
         })?;
         Ok(())
     }
+}
+
+/// Drains a child pipe while retaining only the final diagnostic bytes in memory.
+async fn read_bounded_tail(mut reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, std::io::Error> {
+    let mut tail = Vec::with_capacity(MAX_SSH_DIAGNOSTIC_BYTES);
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(tail);
+        }
+        tail.extend_from_slice(&chunk[..read]);
+        if tail.len() > MAX_SSH_DIAGNOSTIC_BYTES {
+            let excess = tail.len() - MAX_SSH_DIAGNOSTIC_BYTES;
+            tail.drain(..excess);
+        }
+    }
+}
+
+/// Converts a diagnostic reader task into an I/O result with a useful stream name.
+async fn join_diagnostic_reader(
+    handle: tokio::task::JoinHandle<Result<Vec<u8>, std::io::Error>>,
+    stream: &str,
+) -> Result<Vec<u8>, std::io::Error> {
+    handle
+        .await
+        .map_err(|error| std::io::Error::other(format!("{stream} task panicked: {error}")))?
 }
 
 /// Sends a secret first line while retaining the pipe so detached stdin cannot stop the agent.
@@ -452,13 +491,16 @@ async fn build_ssh_command(
     // against a tunnel that will never come up.
     ssh.arg("-o").arg("ExitOnForwardFailure=yes");
     // Managed SSH has no TTY for host-key prompts; accept-new still rejects changed keys.
+    ssh.arg("-T");
     ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
+    ssh.arg("-o")
+        .arg(format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}"));
 
     for forward in &options.reverse_forwards {
         ssh.arg("-R").arg(forward.to_ssh_spec());
     }
 
-    apply_password_askpass(&mut ssh, host.password.as_deref())?;
+    apply_non_interactive_auth(&mut ssh, host.password.as_deref())?;
 
     ssh.arg(&host.target);
     if let Some((name, _)) = &options.secret_env {
@@ -553,8 +595,15 @@ fn ssh_command_argv_debug(ssh: &Command) -> String {
 
 /// Points OpenSSH at this binary as `SSH_ASKPASS` so password auth can use a
 /// separate process instead of the SSH stdin already reserved for secrets and uploads.
-fn apply_password_askpass(ssh: &mut Command, password: Option<&str>) -> Result<(), std::io::Error> {
+fn apply_non_interactive_auth(
+    ssh: &mut Command,
+    password: Option<&str>,
+) -> Result<(), std::io::Error> {
     let Some(password) = password else {
+        // BatchMode prevents OpenSSH from reading a password or keyboard-interactive
+        // answer from a terminal, so managed startup fails instead of hanging.
+        ssh.arg("-o").arg("BatchMode=yes");
+        ssh.arg("-o").arg("NumberOfPasswordPrompts=0");
         return Ok(());
     };
     let exe = std::env::current_exe().map_err(|error| {
@@ -563,6 +612,8 @@ fn apply_password_askpass(ssh: &mut Command, password: Option<&str>) -> Result<(
         ))
     })?;
     // A second identical askpass answer cannot succeed, so fail on the first attempt.
+    // Override host configuration that would otherwise disable askpass entirely.
+    ssh.arg("-o").arg("BatchMode=no");
     ssh.arg("-o").arg("NumberOfPasswordPrompts=1");
     ssh.env("SSH_ASKPASS", &exe);
     ssh.env("SSH_ASKPASS_REQUIRE", "force");
@@ -573,6 +624,81 @@ fn apply_password_askpass(ssh: &mut Command, password: Option<&str>) -> Result<(
         ssh.env("DISPLAY", ":0");
     }
     Ok(())
+}
+
+/// Removes terminal controls, misleading direction markers, and configured credentials from SSH text.
+fn sanitized_ssh_text(host: &SshHost, stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let mut safe: String = text
+        .chars()
+        .filter(|character| {
+            !matches!(
+                character,
+                '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+        })
+        .map(|character| {
+            if character == '\n' || character == '\t' || !character.is_control() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    if let Some(password) = host
+        .password
+        .as_deref()
+        .filter(|password| !password.is_empty())
+    {
+        safe = safe.replace(password, "[redacted]");
+    }
+    safe
+}
+
+/// Converts bounded OpenSSH stderr into actionable, sanitized operator guidance.
+fn format_ssh_failure(
+    host: &SshHost,
+    stage: &str,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
+    let diagnostic = sanitized_ssh_text(host, stderr);
+    let diagnostic = diagnostic.trim();
+    let lower = diagnostic.to_ascii_lowercase();
+    let summary = if lower.contains("permission denied") || lower.contains("authentication failed")
+    {
+        if host.password.is_some() {
+            "SSH authentication failed. The configured password or SSH key was rejected."
+        } else {
+            "SSH authentication requires credentials. Configure a password, SSH key, or ssh-agent credential for this managed agent."
+        }
+    } else if lower.contains("host key verification failed")
+        || lower.contains("remote host identification has changed")
+    {
+        "SSH host key verification failed. Verify the host key and update known_hosts before retrying."
+    } else if lower.contains("could not resolve hostname") {
+        "SSH could not resolve the target hostname."
+    } else if lower.contains("connection refused") {
+        "SSH connection was refused by the target."
+    } else if lower.contains("connection timed out") || lower.contains("operation timed out") {
+        "SSH connection to the target timed out."
+    } else if lower.contains("no route to host") || lower.contains("network is unreachable") {
+        "SSH target is unreachable from the server."
+    } else {
+        "SSH command failed."
+    };
+    let status = status.code().unwrap_or(-1);
+    if diagnostic.is_empty() {
+        format!(
+            "{summary} Target '{}', stage '{stage}', exit status {status}.",
+            sanitized_ssh_text(host, host.target.as_bytes())
+        )
+    } else {
+        format!(
+            "{summary} Target '{}', stage '{stage}', exit status {status}.\nOpenSSH: {diagnostic}",
+            sanitized_ssh_text(host, host.target.as_bytes())
+        )
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +794,8 @@ mod tests {
         assert!(!logged.contains("super-secret-password"));
         // A single prompt avoids three identical askpass failures for a wrong password.
         assert!(logged.contains("NumberOfPasswordPrompts=1"));
+        // Host-level BatchMode settings must not disable configured password authentication.
+        assert!(logged.contains("BatchMode=no"));
 
         let envs: Vec<(String, Option<String>)> = command
             .as_std()
@@ -702,6 +830,8 @@ mod tests {
         assert!(!format!("{configured_command:?}").contains("\"-p\""));
         // Non-interactive sessions must accept unknown hosts instead of prompting.
         assert!(format!("{configured_command:?}").contains("StrictHostKeyChecking=accept-new"));
+        // Missing managed credentials must fail rather than opening an interactive prompt.
+        assert!(format!("{configured_command:?}").contains("BatchMode=yes"));
 
         let overridden_host =
             super::SshHost::new("configured-alias".to_string()).ssh_port(Some(2222));
@@ -732,6 +862,128 @@ mod tests {
 
         // The Linux listener must route to the destination reached from this machine.
         assert!(debug_command.contains("3000:redoor.test:4000"));
+    }
+
+    /// Verifies common OpenSSH failures become concise operator guidance while retaining context.
+    #[tokio::test]
+    async fn authentication_failure_without_password_is_actionable() {
+        let host = super::SshHost::new("example.test".to_string());
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 255")
+            .status()
+            .await
+            .unwrap();
+        let issue = super::format_ssh_failure(
+            &host,
+            "remote host probe",
+            status,
+            b"user@example.test: Permission denied (publickey,password).",
+        );
+
+        // Operators need the available credential choices instead of an opaque exit code.
+        assert!(issue.contains("Configure a password, SSH key, or ssh-agent credential"));
+        // Host and OpenSSH context make the configuration problem identifiable.
+        assert!(issue.contains("example.test"));
+        assert!(issue.contains("Permission denied"));
+    }
+
+    /// Verifies a configured but rejected password is not misreported as a missing credential.
+    #[tokio::test]
+    async fn rejected_password_has_distinct_guidance() {
+        let host = super::SshHost::new("example.test".to_string())
+            .password(Some("never-render-this".to_string()));
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 255")
+            .status()
+            .await
+            .unwrap();
+        let issue = super::format_ssh_failure(
+            &host,
+            "remote host probe",
+            status,
+            b"Permission denied, please try again.",
+        );
+
+        // A rejected configured credential needs different remediation from an omitted password.
+        assert!(issue.contains("configured password or SSH key was rejected"));
+        // Browser diagnostics must never expose the configured secret.
+        assert!(!issue.contains("never-render-this"));
+    }
+
+    /// Verifies representative transport failures retain distinct browser guidance.
+    #[tokio::test]
+    async fn transport_failures_have_actionable_guidance() {
+        let host = super::SshHost::new("example.test".to_string());
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 255")
+            .status()
+            .await
+            .unwrap();
+        let cases = [
+            (
+                "Could not resolve hostname example.test",
+                "could not resolve",
+            ),
+            (
+                "connect to host example.test: Connection refused",
+                "was refused",
+            ),
+            (
+                "connect to host example.test: Connection timed out",
+                "timed out",
+            ),
+            (
+                "ssh: connect to host example.test: No route to host",
+                "is unreachable",
+            ),
+            (
+                "Host key verification failed.",
+                "host key verification failed",
+            ),
+        ];
+
+        for (diagnostic, expected) in cases {
+            let issue = super::format_ssh_failure(
+                &host,
+                "remote host probe",
+                status,
+                diagnostic.as_bytes(),
+            );
+            // Each common transport category should tell operators what failed, not only status 255.
+            assert!(
+                issue.to_ascii_lowercase().contains(expected),
+                "expected '{expected}' in '{issue}'"
+            );
+        }
+    }
+
+    /// Verifies remotely influenced diagnostics cannot inject controls or reveal credentials.
+    #[tokio::test]
+    async fn ssh_diagnostics_are_sanitized() {
+        let host = super::SshHost::new("example.test".to_string())
+            .password(Some("secret-password".to_string()));
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 255")
+            .status()
+            .await
+            .unwrap();
+        let issue = super::format_ssh_failure(
+            &host,
+            "remote host probe",
+            status,
+            "Permission denied: secret-password\u{1b}[31m\u{202e}".as_bytes(),
+        );
+
+        // Browser and log diagnostics must redact configured credentials even if echoed remotely.
+        assert!(!issue.contains("secret-password"));
+        // Terminal escapes and bidirectional controls must not alter how the issue is displayed.
+        assert!(!issue.contains('\u{1b}'));
+        assert!(!issue.contains('\u{202e}'));
+        assert!(issue.contains("[redacted]"));
     }
 
     /// Verifies IPv6 destinations retain unambiguous OpenSSH `-R` syntax.

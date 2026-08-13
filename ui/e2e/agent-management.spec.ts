@@ -9,6 +9,7 @@ const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
 const CREATED_SSH_AGENT = `playwright-ssh-test-${process.pid}`;
 const CREATED_SSH_PASSWORD_AGENT = `playwright-ssh-password-${process.pid}`;
+const CREATED_SSH_MISSING_PASSWORD_AGENT = `playwright-ssh-missing-password-${process.pid}`;
 const EDITED_AGENT = `playwright-edit-${process.pid}`;
 const RUNNING_EDIT_AGENT = `playwright-running-edit-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
@@ -33,6 +34,7 @@ test.describe.serial("Agent management", () => {
             FAILING_AGENT,
             CREATED_SSH_AGENT,
             CREATED_SSH_PASSWORD_AGENT,
+            CREATED_SSH_MISSING_PASSWORD_AGENT,
             EDITED_AGENT,
             `${EDITED_AGENT}-original`,
             RUNNING_EDIT_AGENT,
@@ -263,6 +265,59 @@ test.describe.serial("Agent management", () => {
         );
         expect(connected.managed).toBe(true);
         expect(connected.connection_id).not.toBeNull();
+    });
+
+    test("shows an actionable error when SSH needs an omitted password", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_SSH_TEST !== "1",
+            "redoor-ssh-test SSH fixture is not enabled",
+        );
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "redoor-ssh-test",
+                    username: "redoor-password",
+                    ssh_port: null,
+                    name: CREATED_SSH_MISSING_PASSWORD_AGENT,
+                    remote_bin: null,
+                    home: null,
+                    log: null,
+                    password: null,
+                },
+            },
+        );
+        // Creating the password-less entry must succeed because credentials may come from a key.
+        expect(createResponse.ok()).toBe(true);
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page
+            .getByRole("tab", {
+                name: `${CREATED_SSH_MISSING_PASSWORD_AGENT}, stopped`,
+            })
+            .click();
+
+        const lifecycleAlert = page.getByRole("alert").filter({
+            hasText: "Configure a password, SSH key, or ssh-agent credential",
+        });
+        // Clicking the tab must surface non-interactive authentication guidance promptly.
+        await expect(lifecycleAlert).toBeVisible({ timeout: 15_000 });
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await page.getByRole("link", { name: "Agents" }).click();
+        const row = page.getByRole("row", {
+            name: `Agent ${CREATED_SSH_MISSING_PASSWORD_AGENT}`,
+        });
+        // The retained watchdog issue must remain visible outside the lifecycle route.
+        await expect(row.getByRole("alert")).toContainText(
+            "Configure a password, SSH key, or ssh-agent credential",
+        );
+        // Responsive navigation proves password preparation is not blocking the server.
+        await page.getByRole("button", { name: "Open menu" }).click();
+        await page.getByRole("link", { name: "Server home" }).click();
+        await expect(
+            page.getByRole("heading", { name: "Server", exact: true }),
+        ).toBeVisible();
     });
 
     test("shows managed inventory before lazy startup", async ({ page }) => {
