@@ -114,21 +114,24 @@ type ActiveTerminalTarget = {
     cwd: string;
 };
 
-/** Reuses a live shell for the routed agent so t does not stack duplicate tabs. */
+/** Reuses a live shell only when it was opened in the same directory as the current browse path. */
 function findOpenTerminalForAgent(
     tabs: TerminalTab[],
     activeTabId: number | null,
-    agentId: string,
+    target: ActiveTerminalTarget,
 ): TerminalTab | undefined {
-    const agentTabs = tabs.filter(
-        (tab) => tab.agent.id === agentId && tab.state.type !== "disconnected",
+    const matchingTabs = tabs.filter(
+        (tab) =>
+            tab.agent.id === target.agent.id &&
+            tab.cwd === target.cwd &&
+            tab.state.type !== "disconnected",
     );
-    if (agentTabs.length === 0) {
+    if (matchingTabs.length === 0) {
         return undefined;
     }
     return (
-        agentTabs.find((tab) => tab.id === activeTabId) ??
-        agentTabs[agentTabs.length - 1]
+        matchingTabs.find((tab) => tab.id === activeTabId) ??
+        matchingTabs[matchingTabs.length - 1]
     );
 }
 
@@ -236,7 +239,7 @@ export function TerminalPanel(props: {
     };
 
     React.useEffect(() => {
-        /** Opens or focuses the routed agent's terminal without stealing shell input. */
+        /** Opens or focuses a shell for the routed agent's current directory without stealing input. */
         const handleShortcut = (event: KeyboardEvent) => {
             if (
                 event.key !== "t" ||
@@ -250,7 +253,7 @@ export function TerminalPanel(props: {
             const existingTab = findOpenTerminalForAgent(
                 tabs,
                 activeTabId,
-                props.activeTarget.agent.id,
+                props.activeTarget,
             );
             if (existingTab) {
                 setActiveTabId(existingTab.id);

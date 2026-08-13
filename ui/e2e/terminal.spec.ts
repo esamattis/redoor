@@ -335,6 +335,13 @@ test.describe.serial("Terminal panel lifecycle", () => {
     test("opens or focuses the current agent terminal with t", async ({
         page,
     }) => {
+        const terminalSockets: PlaywrightWebSocket[] = [];
+        page.on("websocket", (socket) => {
+            if (socket.url().includes("/terminal/ws")) {
+                terminalSockets.push(socket);
+            }
+        });
+
         await page.goto(ctx.agentBrowserUrl);
         await page
             .getByRole("button", { name: "New terminal", exact: true })
@@ -400,6 +407,42 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(1);
         await expect(firstTerminal).toBeFocused();
+
+        await page.keyboard.press("Escape");
+        await page
+            .getByRole("link", { name: ctx.testDirName, exact: true })
+            .click();
+        // The file listing proves the directory loader has committed before cwd is captured.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("t");
+        await expect(
+            page.getByRole("status", { name: "agent1_src 2: Connected" }),
+        ).toBeVisible();
+        // A different browse directory needs its own shell instead of refocusing the old cwd.
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(2);
+        expect(terminalSockets).toHaveLength(3);
+        expect(
+            new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
+        ).toBe(ctx.testDirPath);
+
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("t");
+        // A second press in the same directory still reuses that directory's live tab.
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(2);
+        await expect(
+            page.getByRole("tab", { name: "agent1_src 2" }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(
+            page.getByRole("textbox", {
+                name: `agent1_src 2 for ${ctx.agentName}`,
+            }),
+        ).toBeFocused();
     });
 
     test("does not invoke single-key shortcuts while the terminal is focused", async ({
