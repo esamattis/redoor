@@ -32,6 +32,8 @@ import {
 } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
 import { fileSearchQueryOptions } from "#ui/queries";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
+import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 
 /** Identifies the destination that should restore filter focus after Enter navigation. */
 const filterFocusPathAtom = atom<string | null>(null);
@@ -45,6 +47,54 @@ type FileSearchState =
           timedOut: boolean;
       }
     | { status: "error"; query: string; message: string };
+
+/** Handles shortcuts that only exist while the file list is mounted. */
+function useFileListShortcuts(props: {
+    filterInputRef: React.RefObject<HTMLInputElement | null>;
+    filter: string;
+    setFilter: React.Dispatch<React.SetStateAction<string>>;
+    searchRecursively: boolean;
+    setSearchRecursively: React.Dispatch<React.SetStateAction<boolean>>;
+}) {
+    React.useEffect(() => {
+        /** Keeps file-browser shortcuts from replacing text entered into form controls. */
+        const handleShortcut = (event: KeyboardEvent) => {
+            if (shouldIgnoreKeyboardShortcut(event, { shift: true })) {
+                return;
+            }
+
+            if (event.key === "Escape") {
+                if (props.searchRecursively) {
+                    props.setSearchRecursively(false);
+                } else if (props.filter !== "") {
+                    props.setFilter("");
+                }
+                return;
+            }
+
+            if (event.key === "f") {
+                event.preventDefault();
+                props.filterInputRef.current?.focus();
+                return;
+            }
+            if (event.key === "s") {
+                event.preventDefault();
+                props.setSearchRecursively(true);
+                props.filterInputRef.current?.focus();
+                return;
+            }
+        };
+
+        window.addEventListener("keydown", handleShortcut);
+        return () => window.removeEventListener("keydown", handleShortcut);
+    }, [
+        props.filterInputRef,
+        props.filter,
+        props.setFilter,
+        props.searchRecursively,
+        props.setSearchRecursively,
+    ]);
+}
 
 /** Maps Query's transport state into the existing recursive-search presentation. */
 function getFileSearchState(props: {
@@ -123,6 +173,13 @@ export function FileList(props: {
         query: debouncedFilter,
         search: recursiveSearch,
     });
+    useFileListShortcuts({
+        filterInputRef,
+        filter,
+        setFilter,
+        searchRecursively,
+        setSearchRecursively,
+    });
 
     const changeSort = (column: FileSortColumn) => {
         setSort((current) => ({
@@ -191,7 +248,7 @@ export function FileList(props: {
                         value={filter}
                         onChange={(event) => setFilter(event.target.value)}
                         onKeyDown={handleFilterKeyDown}
-                        placeholder="Filter files"
+                        placeholder="Filter files (f, s for recursive)"
                         className="w-full rounded-md border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                 </label>
@@ -210,70 +267,103 @@ export function FileList(props: {
             {searchRecursively ? (
                 <FileSearchResults agent={agent} state={searchState} />
             ) : (
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[55rem]">
-                        <thead>
-                            <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                                <th className="text-left p-3 text-sm font-medium text-slate-400">
-                                    Select
-                                </th>
-                                <SortableFileColumnHeader
-                                    label="Type"
-                                    column="type"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <SortableFileColumnHeader
-                                    label="Name"
-                                    column="name"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <SortableFileColumnHeader
-                                    label="Size"
-                                    column="size"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <SortableFileColumnHeader
-                                    label="Modified"
-                                    column="modified"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <SortableFileColumnHeader
-                                    label="Owner"
-                                    column="owner"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <SortableFileColumnHeader
-                                    label="Group"
-                                    column="group"
-                                    sort={sort}
-                                    onSort={changeSort}
-                                />
-                                <th className="text-right p-3 text-sm font-medium text-slate-400">
-                                    Actions
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {displayedFiles.map((entry) => (
-                                <FileEntry
-                                    key={entry.name}
-                                    agent={props.agent}
-                                    agentId={props.agentId}
-                                    agentName={props.agentName}
-                                    directoryPath={props.directoryPath}
-                                    entry={entry}
-                                    isParent={false}
-                                />
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                <FileTable
+                    agent={props.agent}
+                    agentId={props.agentId}
+                    agentName={props.agentName}
+                    directoryPath={props.directoryPath}
+                    files={displayedFiles}
+                    sort={sort}
+                    onSort={changeSort}
+                />
             )}
+        </div>
+    );
+}
+
+/** Owns keyboard focus for the currently visible local file entries. */
+function FileTable(props: {
+    agent: Agent;
+    agentId: string;
+    agentName: string;
+    directoryPath: string;
+    files: LsEntry[];
+    sort: { column: FileSortColumn; direction: FileSortDirection } | null;
+    onSort: (column: FileSortColumn) => void;
+}) {
+    const tableRef = React.useRef<HTMLTableElement>(null);
+    const getEntries = React.useEffectEvent(() =>
+        Array.from(
+            tableRef.current?.querySelectorAll<HTMLElement>(
+                '[data-keyboard-focus-entry="true"]',
+            ) ?? [],
+        ),
+    );
+    useArrayKeyboardFocus(getEntries);
+
+    return (
+        <div className="overflow-x-auto">
+            <table ref={tableRef} className="w-full min-w-[55rem]">
+                <thead>
+                    <tr className="border-b border-slate-800 bg-[#1a1f2a]">
+                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                            Select
+                        </th>
+                        <SortableFileColumnHeader
+                            label="Type"
+                            column="type"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <SortableFileColumnHeader
+                            label="Name"
+                            column="name"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <SortableFileColumnHeader
+                            label="Size"
+                            column="size"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <SortableFileColumnHeader
+                            label="Modified"
+                            column="modified"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <SortableFileColumnHeader
+                            label="Owner"
+                            column="owner"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <SortableFileColumnHeader
+                            label="Group"
+                            column="group"
+                            sort={props.sort}
+                            onSort={props.onSort}
+                        />
+                        <th className="text-right p-3 text-sm font-medium text-slate-400">
+                            Actions
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {props.files.map((entry) => (
+                        <FileEntry
+                            key={entry.name}
+                            agent={props.agent}
+                            agentId={props.agentId}
+                            agentName={props.agentName}
+                            directoryPath={props.directoryPath}
+                            entry={entry}
+                            isParent={false}
+                        />
+                    ))}
+                </tbody>
+            </table>
         </div>
     );
 }
@@ -316,6 +406,16 @@ function SortableFileColumnHeader(props: {
 
 /** Renders recursive matches independently from metadata-rich directory entries. */
 function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
+    const resultsRef = React.useRef<HTMLUListElement>(null);
+    const getEntries = React.useEffectEvent(() =>
+        Array.from(
+            resultsRef.current?.querySelectorAll<HTMLElement>(
+                '[data-keyboard-focus-entry="true"]',
+            ) ?? [],
+        ),
+    );
+    useArrayKeyboardFocus(getEntries);
+
     if (props.state.status === "idle") {
         return (
             <div className="px-5 py-10 text-center text-sm text-slate-500">
@@ -365,13 +465,14 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
                     &quot;.
                 </p>
             ) : (
-                <ul className="divide-y divide-slate-800/70">
+                <ul ref={resultsRef} className="divide-y divide-slate-800/70">
                     {props.state.results.map((entry) => {
                         const isDirectory = entry.type === "directory";
                         return (
                             <li key={entry.path}>
                                 <Link
                                     to={props.agent.getBrowserUrl(entry.path)}
+                                    data-keyboard-focus-entry="true"
                                     className="group flex items-start gap-3 px-4 py-3 transition-colors hover:bg-white/5"
                                 >
                                     {isDirectory ? (
@@ -447,6 +548,7 @@ function FileEntry(props: {
                 <div className="flex min-w-0 items-center gap-2">
                     <Link
                         to={agent.getBrowserUrl(fullPath)}
+                        data-keyboard-focus-entry="true"
                         className="min-w-0 truncate font-medium text-blue-400 hover:underline"
                     >
                         {entry.name}

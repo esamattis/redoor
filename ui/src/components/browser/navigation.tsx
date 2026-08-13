@@ -18,6 +18,7 @@ import {
     getBrowserPathHref,
     type PathLoadError,
 } from "#ui/components/browser/utils";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 
 /** Keeps location, navigation, view state, and object actions in a stable frame. */
 export function BrowserPageHeader(props: {
@@ -112,10 +113,41 @@ export function BrowserHeader(props: {
     activeView: "files" | "details" | "sync";
     pathUnavailable?: boolean;
 }) {
+    const navigate = useNavigate();
     const pathUnavailable = props.pathUnavailable === true;
     const directoryName = props.path.split("/").filter(Boolean).pop() ?? "/";
     const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
     const archiveUrl = props.agent.getRawUrl(props.path, { download: true });
+
+    React.useEffect(() => {
+        /** Returns alternate directory views to the list before moving to the parent. */
+        const handleBackspace = (event: KeyboardEvent) => {
+            if (
+                event.key !== "Backspace" ||
+                shouldIgnoreKeyboardShortcut(event)
+            ) {
+                return;
+            }
+
+            if (props.activeView !== "files" && !pathUnavailable) {
+                event.preventDefault();
+                void navigate({
+                    to: props.agent.getBrowserUrl(props.directoryPath),
+                    search: {},
+                });
+                return;
+            }
+            if (props.parentPath === null) {
+                return;
+            }
+
+            event.preventDefault();
+            void navigate({ to: props.agent.getBrowserUrl(props.parentPath) });
+        };
+
+        window.addEventListener("keydown", handleBackspace);
+        return () => window.removeEventListener("keydown", handleBackspace);
+    }, [navigate, pathUnavailable, props]);
 
     return (
         <BrowserPageHeader
@@ -126,21 +158,23 @@ export function BrowserHeader(props: {
             actionLabel="File browser actions"
             navigation={
                 <>
-                    <Link
-                        to={
-                            props.parentPath
-                                ? getBrowserPathHref(
-                                      props.agent,
-                                      props.parentPath,
-                                  )
-                                : props.agent.getBrowserUrl("/")
-                        }
-                        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-                        disabled={props.parentPath === null}
-                    >
-                        <ArrowUp className="h-4 w-4" />
-                        Up
-                    </Link>
+                    <Tooltip content="Go to the parent directory (Backspace)">
+                        <Link
+                            to={
+                                props.parentPath
+                                    ? getBrowserPathHref(
+                                          props.agent,
+                                          props.parentPath,
+                                      )
+                                    : props.agent.getBrowserUrl("/")
+                            }
+                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+                            disabled={props.parentPath === null}
+                        >
+                            <ArrowUp className="h-4 w-4" />
+                            Up
+                        </Link>
+                    </Tooltip>
                     {!pathUnavailable ? (
                         <ViewSwitch label="Directory view">
                             <Link

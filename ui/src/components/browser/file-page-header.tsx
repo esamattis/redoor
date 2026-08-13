@@ -1,6 +1,8 @@
-import { Link } from "@tanstack/react-router";
+import React from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUp, File, GitCompareArrows, Info, RefreshCw } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { Tooltip } from "#ui/components/tooltip";
 import {
     BrowserPageHeader,
     ViewSwitch,
@@ -11,6 +13,7 @@ import {
     getBrowserPathHref,
     getImmediateParentPath,
 } from "#ui/components/browser/utils";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 
 /** Keeps parent navigation and both file representations identical across views. */
 function FileViewNavigation(props: {
@@ -21,13 +24,18 @@ function FileViewNavigation(props: {
 }) {
     return (
         <>
-            <Link
-                to={getBrowserPathHref(props.agent, props.parentPath ?? "/")}
-                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-            >
-                <ArrowUp className="h-4 w-4" />
-                Up
-            </Link>
+            <Tooltip content="Go to the parent directory (Backspace)">
+                <Link
+                    to={getBrowserPathHref(
+                        props.agent,
+                        props.parentPath ?? "/",
+                    )}
+                    className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                >
+                    <ArrowUp className="h-4 w-4" />
+                    Up
+                </Link>
+            </Tooltip>
             <ViewSwitch label="File view">
                 <Link
                     to={getBrowserPathHref(props.agent, props.path)}
@@ -95,7 +103,27 @@ export function FilePageHeader(props: {
     downloadUrl: string;
     activeView: "details" | "view" | "diff" | "sync";
 }) {
+    const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
+
+    React.useEffect(() => {
+        /** Returns every file representation to its containing directory. */
+        const handleBackspace = (event: KeyboardEvent) => {
+            if (
+                event.key !== "Backspace" ||
+                shouldIgnoreKeyboardShortcut(event) ||
+                parentPath === null
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            void navigate({ to: props.agent.getBrowserUrl(parentPath) });
+        };
+
+        window.addEventListener("keydown", handleBackspace);
+        return () => window.removeEventListener("keydown", handleBackspace);
+    }, [navigate, parentPath, props.agent]);
 
     return (
         <BrowserPageHeader

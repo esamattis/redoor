@@ -309,6 +309,193 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should support file browser keyboard shortcuts", async ({ page }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        // The visible hint makes both search shortcuts discoverable before they are used.
+        await expect(filterInput).toHaveAttribute(
+            "placeholder",
+            "Filter files (f, s for recursive)",
+        );
+        await page.keyboard.press("f");
+        // The local filter shortcut moves focus without changing its search mode.
+        await expect(filterInput).toBeFocused();
+        await expect(
+            page.getByRole("checkbox", { name: "Search recursively" }),
+        ).not.toBeChecked();
+
+        await page.keyboard.type("f");
+        // Character shortcuts stay inactive while typing into an input.
+        await expect(filterInput).toHaveValue("f");
+        await page.keyboard.press("Escape");
+        // Escape globally releases text controls for immediate shortcut use.
+        await expect(filterInput).not.toBeFocused();
+        await filterInput.fill("");
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("s");
+        // Recursive search is enabled before its shortcut focuses the query input.
+        await expect(
+            page.getByRole("checkbox", { name: "Search recursively" }),
+        ).toBeChecked();
+        await expect(filterInput).toBeFocused();
+        await page.keyboard.press("Escape");
+        // The first Escape only releases the active search input.
+        await expect(
+            page.getByRole("checkbox", { name: "Search recursively" }),
+        ).toBeChecked();
+        await expect(filterInput).not.toBeFocused();
+        await page.keyboard.press("Escape");
+        // A second Escape leaves recursive mode while retaining the query.
+        await expect(
+            page.getByRole("checkbox", { name: "Search recursively" }),
+        ).not.toBeChecked();
+
+        const firstFileEntry = page.getByRole("link", {
+            name: "subdir1",
+            exact: true,
+        });
+        const secondFileEntry = page.getByRole("link", {
+            name: "subdir2",
+            exact: true,
+        });
+        await page.keyboard.press("j");
+        // The first movement starts at the first visible file-name link.
+        await expect(firstFileEntry).toBeFocused();
+        await page.keyboard.press("j");
+        // Repeated downward movement advances one entry at a time.
+        await expect(secondFileEntry).toBeFocused();
+        await page.keyboard.press("k");
+        // Upward movement returns to the preceding entry.
+        await expect(firstFileEntry).toBeFocused();
+
+        const upLink = page.getByRole("link", { name: "Up", exact: true });
+        await upLink.hover();
+        // Parent navigation advertises the equivalent keyboard shortcut.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Go to the parent directory (Backspace)",
+        );
+
+        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await expect(page).toHaveURL(`${directoryUrl}?view=details`);
+        await expect(
+            page.getByRole("heading", { name: "Directory name" }),
+        ).toBeVisible();
+        await page.keyboard.press("Backspace");
+        // Backspace first restores the file list from another directory view.
+        await expect(page).toHaveURL(directoryUrl);
+        await expect(firstFileEntry).toBeVisible();
+        await page.keyboard.press("Backspace");
+        // From the file list, Backspace navigates to the immediate parent directory.
+        await expect(page).not.toHaveURL(directoryUrl);
+    });
+
+    test("should navigate filtered results and clear the filter with a second Escape", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        const firstResult = page.getByRole("link", {
+            name: "subdir1",
+            exact: true,
+        });
+        const secondResult = page.getByRole("link", {
+            name: "subdir2",
+            exact: true,
+        });
+
+        await filterInput.fill("subdir");
+        await expect(page.locator("main tbody tr")).toHaveCount(3);
+        await page.keyboard.press("Escape");
+
+        // The first Escape preserves the query and visible filtered result set.
+        await expect(filterInput).not.toBeFocused();
+        await expect(filterInput).toHaveValue("subdir");
+        await expect(page.locator("main tbody tr")).toHaveCount(3);
+        await page.keyboard.press("j");
+        await expect(firstResult).toBeFocused();
+        await page.keyboard.press("j");
+        await expect(secondResult).toBeFocused();
+        await page.keyboard.press("k");
+        await expect(firstResult).toBeFocused();
+
+        await page.keyboard.press("Escape");
+
+        // Once the input is inactive, Escape clears local filtering and restores all entries.
+        await expect(filterInput).toHaveValue("");
+        await expect(page.locator("main tbody tr")).toHaveCount(5);
+    });
+
+    test("should navigate recursive results and leave search with a second Escape", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        const recursiveToggle = page.getByRole("checkbox", {
+            name: "Search recursively",
+        });
+
+        await recursiveToggle.check();
+        await filterInput.fill("nested");
+        await expect(
+            page.getByText("3 results", { exact: true }),
+        ).toBeVisible();
+        const firstResult = page.getByRole("link").filter({
+            hasText: "nested1.txt",
+        });
+        const secondResult = page.getByRole("link").filter({
+            hasText: "nested2.txt",
+        });
+        await page.keyboard.press("Escape");
+
+        // The first Escape leaves recursive search and its results intact for keyboard navigation.
+        await expect(filterInput).not.toBeFocused();
+        await expect(filterInput).toHaveValue("nested");
+        await expect(recursiveToggle).toBeChecked();
+        await page.keyboard.press("j");
+        await expect(firstResult).toBeFocused();
+        await page.keyboard.press("j");
+        await expect(secondResult).toBeFocused();
+        await page.keyboard.press("k");
+        await expect(firstResult).toBeFocused();
+
+        await page.keyboard.press("Escape");
+
+        // The second Escape returns to local filtering without discarding the query.
+        await expect(recursiveToggle).not.toBeChecked();
+        await expect(filterInput).toHaveValue("nested");
+        await expect(page.locator("main tbody")).toHaveCount(1);
+        await expect(page.locator("main tbody tr")).toHaveCount(0);
+    });
+
+    test("should start tab traversal at the first agent tab", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        const firstAgentTab = page.getByRole("tab").first();
+        // A rendered tab proves the authenticated layout and its global listener are mounted.
+        await expect(firstAgentTab).toBeVisible();
+        await page.evaluate(() => {
+            if (document.activeElement instanceof HTMLElement) {
+                document.activeElement.blur();
+            }
+        });
+
+        await page.keyboard.press("Tab");
+
+        // Global traversal skips branding so the first sorted agent is the first tab stop.
+        await expect(firstAgentTab).toBeFocused();
+    });
+
     test("should recursively search from the current directory", async ({
         page,
     }) => {

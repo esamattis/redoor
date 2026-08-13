@@ -65,6 +65,7 @@ import {
     serverInfoQueryOptions,
     transfersQueryOptions,
 } from "#ui/queries";
+import { isTextEntryElement } from "#ui/utils/keyboard";
 
 const uiEventSchema: z.ZodType<UiEvent> = z.object({
     type: z.literal("refresh"),
@@ -375,6 +376,24 @@ function RootLayout() {
         return () => window.clearInterval(timer);
     }, [agents, router]);
 
+    React.useEffect(() => {
+        /** Lets Escape leave text controls globally. */
+        const handleGlobalFocusKeys = (event: KeyboardEvent) => {
+            if (
+                event.key === "Escape" &&
+                isTextEntryElement(document.activeElement)
+            ) {
+                // Search inputs clear themselves on Escape unless the application owns the key.
+                event.preventDefault();
+                document.activeElement.blur();
+            }
+        };
+
+        window.addEventListener("keydown", handleGlobalFocusKeys);
+        return () =>
+            window.removeEventListener("keydown", handleGlobalFocusKeys);
+    }, []);
+
     return (
         <div className="flex h-screen flex-col bg-[#0b0d12]">
             <RouteLoadingIndicator />
@@ -650,6 +669,7 @@ function BrandMark() {
     return (
         <Link
             to="/"
+            tabIndex={-1}
             className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white"
         >
             <img

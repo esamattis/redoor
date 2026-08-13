@@ -216,6 +216,26 @@ test.describe.serial("File Detail View", () => {
         ).toBeVisible();
     });
 
+    test("should navigate from a file with Backspace", async ({ page }) => {
+        const filePath = path.join(ctx.testDirPath, "file1.txt");
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`;
+        await page.goto(fileUrl);
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+
+        await page.keyboard.press("Backspace");
+
+        // File-level Backspace returns to the containing directory rather than browser history.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+    });
+
     test("should navigate back to agent from file detail view", async ({
         page,
     }) => {
