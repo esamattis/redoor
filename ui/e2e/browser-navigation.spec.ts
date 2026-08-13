@@ -530,21 +530,57 @@ test.describe.serial("File Browser Navigation", () => {
         // Local filtering cannot discover a file below a child directory.
         await expect(page.locator("main tbody tr")).toHaveCount(0);
 
-        await page.getByRole("button", { name: "Search recursively" }).click();
+        const recursiveToggle = page.getByRole("button", {
+            name: "Search recursively",
+        });
+        await recursiveToggle.focus();
+        // Focus lands on the native button rather than a tooltip-only wrapper.
+        await expect(recursiveToggle).toBeFocused();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to search recursively (s)",
+        );
+        await page.keyboard.press("Enter");
+        // Native button activation with Enter enables recursive searching.
+        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "true");
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to search only this directory",
+        );
         // Recursive searches reveal their optional controls with safe defaults.
         await expect(timeoutInput).toHaveValue("5");
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "false");
         await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "true");
-        await timeoutInput.hover();
+        await timeoutInput.focus();
         // The tooltip explains both the unit and accepted range at the control.
         await expect(page.getByRole("tooltip")).toHaveText(
             "Maximum recursive search duration in seconds (1-60)",
         );
         await timeoutInput.fill("12");
-        await hiddenToggle.click();
+        await timeoutInput.focus();
+        await page.keyboard.press("Tab");
+        // Tooltip wrappers do not add a dead tab stop before the native toggle button.
+        await expect(hiddenToggle).toBeFocused();
+        // The tooltip describes the behavior of the next activation, not the current state.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to search from hidden directories",
+        );
+        await page.keyboard.press("Enter");
+        // Native button activation with Enter enables hidden-directory traversal.
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
-        await gitignoreToggle.click();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to exclude hidden directories from search",
+        );
+        await page.keyboard.press("Tab");
+        // Tab reaches the next native toggle without stopping on a tooltip wrapper.
+        await expect(gitignoreToggle).toBeFocused();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to search files ignored by .gitignore",
+        );
+        await page.keyboard.press("Space");
+        // Native button activation with Space disables .gitignore filtering.
         await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to exclude files ignored by .gitignore from search",
+        );
         await filterInput.fill("nested");
         await filterInput.fill("nested3txt");
 

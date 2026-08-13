@@ -1,9 +1,14 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+type TooltipChildProps = {
+    "aria-describedby"?: string;
+    tabIndex?: number;
+};
+
 type TooltipProps = {
     content: React.ReactNode;
-    children: React.ReactNode;
+    children: React.ReactElement<TooltipChildProps>;
     className?: string;
 };
 
@@ -143,6 +148,15 @@ export function Tooltip(props: TooltipProps) {
             />
         </span>
     ) : null;
+    const childProps = props.children.props;
+    const describedBy = [childProps["aria-describedby"], isOpen && tooltipId]
+        .filter(Boolean)
+        .join(" ");
+    const tooltipChildProps: TooltipChildProps = {
+        "aria-describedby": describedBy || undefined,
+        tabIndex: childProps.tabIndex ?? 0,
+    };
+    const child = React.cloneElement(props.children, tooltipChildProps);
 
     return (
         <span
@@ -154,13 +168,7 @@ export function Tooltip(props: TooltipProps) {
             onBlur={() => setIsOpen(false)}
             onTouchStart={() => setIsOpen(true)}
         >
-            <span
-                aria-describedby={isOpen ? tooltipId : undefined}
-                className="inline-flex"
-                tabIndex={0}
-            >
-                {props.children}
-            </span>
+            {child}
 
             {tooltip && globalThis.document
                 ? createPortal(tooltip, globalThis.document.body)

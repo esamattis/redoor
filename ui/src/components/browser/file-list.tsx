@@ -330,7 +330,13 @@ function RecursiveSearchControls(props: {
                             />
                         </label>
                     </Tooltip>
-                    <Tooltip content="Search inside hidden directories">
+                    <Tooltip
+                        content={
+                            props.includeHiddenDirectories
+                                ? "Click to exclude hidden directories from search"
+                                : "Click to search from hidden directories"
+                        }
+                    >
                         <button
                             type="button"
                             aria-label="Search hidden directories"
@@ -353,7 +359,13 @@ function RecursiveSearchControls(props: {
                             )}
                         </button>
                     </Tooltip>
-                    <Tooltip content="Respect .gitignore files">
+                    <Tooltip
+                        content={
+                            props.respectGitignore
+                                ? "Click to search files ignored by .gitignore"
+                                : "Click to exclude files ignored by .gitignore from search"
+                        }
+                    >
                         <button
                             type="button"
                             aria-label="Respect .gitignore files"
@@ -374,7 +386,13 @@ function RecursiveSearchControls(props: {
                     </Tooltip>
                 </>
             )}
-            <Tooltip content="Search recursively (s)">
+            <Tooltip
+                content={
+                    props.active
+                        ? "Click to search only this directory"
+                        : "Click to search recursively (s)"
+                }
+            >
                 <button
                     type="button"
                     aria-label="Search recursively"
