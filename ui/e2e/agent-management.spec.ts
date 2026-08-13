@@ -9,6 +9,8 @@ const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
 const CREATED_SSH_AGENT = `playwright-ssh-test-${process.pid}`;
 const CREATED_SSH_PASSWORD_AGENT = `playwright-ssh-password-${process.pid}`;
+const EDITED_AGENT = `playwright-edit-${process.pid}`;
+const RUNNING_EDIT_AGENT = `playwright-running-edit-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
 
 /** Reads one lifecycle snapshot through the same authenticated API as the UI. */
@@ -31,6 +33,10 @@ test.describe.serial("Agent management", () => {
             FAILING_AGENT,
             CREATED_SSH_AGENT,
             CREATED_SSH_PASSWORD_AGENT,
+            EDITED_AGENT,
+            `${EDITED_AGENT}-original`,
+            RUNNING_EDIT_AGENT,
+            `${RUNNING_EDIT_AGENT}-original`,
         ]) {
             const response = await request.get(`${WEB_BASE_URL}/api/v1/agents`);
             const body: AgentListResponse = await response.json();
@@ -62,6 +68,67 @@ test.describe.serial("Agent management", () => {
         ).toBeVisible();
     });
 
+    test("edits and deletes a managed SSH entry from its tab", async ({
+        page,
+    }) => {
+        const originalName = `${EDITED_AGENT}-original`;
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "edit-original-host",
+                    username: null,
+                    ssh_port: null,
+                    name: originalName,
+                    remote_bin: null,
+                    home: null,
+                    log: null,
+                    password: null,
+                },
+            },
+        );
+        expect(createResponse.ok()).toBe(true);
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.getByRole("link", { name: `Edit ${originalName}` }).click();
+
+        await expect(
+            page.getByRole("heading", { name: "Edit managed agent" }),
+        ).toBeVisible();
+        await expect(
+            page.getByText("Agent configuration will be saved to"),
+        ).toBeVisible();
+        // The footer must show the server's absolute TOML path rather than a relative hint.
+        await expect(
+            page.locator("code").filter({ hasText: /^\// }),
+        ).toBeVisible();
+        await page.getByLabel("SSH target").fill("edit-updated-host");
+        await page.getByLabel("Agent name").fill(EDITED_AGENT);
+        await page.getByRole("button", { name: "Save managed agent" }).click();
+
+        // Renaming replaces the tab identity and keeps the user on the editable entry.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${EDITED_AGENT}/edit$`),
+        );
+        await expect(
+            page.getByRole("link", { name: `Edit ${EDITED_AGENT}` }),
+        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Delete managed agent" })
+            .click();
+        const confirmation = page.getByRole("dialog", {
+            name: `Delete ${EDITED_AGENT}?`,
+        });
+        await confirmation
+            .getByRole("button", { name: "Delete managed agent" })
+            .click();
+
+        await expect(page).toHaveURL(/\/agents\/?$/);
+        // Permanent deletion must remove the managed tab as well as the TOML entry.
+        await expect(
+            page.getByRole("link", { name: `Edit ${EDITED_AGENT}` }),
+        ).toHaveCount(0);
+    });
+
     test("adds and connects an SSH-backed agent through redoor-ssh-test", async ({
         page,
     }) => {
@@ -70,17 +137,17 @@ test.describe.serial("Agent management", () => {
             "redoor-ssh-test SSH fixture is not enabled",
         );
         await page.goto(`${WEB_BASE_URL}/`);
-        await page.getByRole("link", { name: "Add SSH agent" }).click();
+        await page.getByRole("link", { name: "Add managed agent" }).click();
 
         // The trailing add control must navigate to a dedicated, labeled form route.
         await expect(page).toHaveURL(/\/agents\/new$/);
         await expect(
-            page.getByRole("heading", { name: "Add SSH agent" }),
+            page.getByRole("heading", { name: "Add managed agent" }),
         ).toBeVisible();
         await page.getByLabel("SSH target").fill("redoor-ssh-test");
         await page.getByLabel("SSH username").fill("redoor");
         await page.getByLabel("Agent name").fill(CREATED_SSH_AGENT);
-        await page.getByRole("button", { name: "Add SSH agent" }).click();
+        await page.getByRole("button", { name: "Add managed agent" }).click();
 
         // Submission dynamically adds and opens the managed tab without a server restart.
         await expect(
@@ -100,6 +167,64 @@ test.describe.serial("Agent management", () => {
         expect(connected.connection_id).not.toBeNull();
     });
 
+    test("stops a running agent before renaming and accessing it again", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_SSH_TEST !== "1",
+            "redoor-ssh-test SSH fixture is not enabled",
+        );
+        const originalName = `${RUNNING_EDIT_AGENT}-original`;
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "redoor-ssh-test",
+                    username: "redoor",
+                    ssh_port: null,
+                    name: originalName,
+                    remote_bin: null,
+                    home: null,
+                    log: null,
+                    password: null,
+                },
+            },
+        );
+        expect(createResponse.ok()).toBe(true);
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page
+            .getByRole("tab", { name: `${originalName}, stopped` })
+            .click();
+        await expect(
+            page.getByRole("tab", { name: `${originalName}, connected` }),
+        ).toBeVisible({ timeout: 60_000 });
+        await page.getByRole("link", { name: `Edit ${originalName}` }).click();
+
+        const saveButton = page.getByRole("button", { name: "Stop and Save" });
+        // The single submit action explains and owns the required shutdown before persistence.
+        await expect(saveButton).toBeEnabled();
+        await expect(
+            page.getByText(
+                "The agent must stop before its managed configuration can be changed. Saving will stop it automatically.",
+            ),
+        ).toBeVisible();
+        await page.getByLabel("Agent name").fill(RUNNING_EDIT_AGENT);
+        await saveButton.click();
+
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${RUNNING_EDIT_AGENT}/edit$`),
+        );
+        await page
+            .getByRole("tab", { name: `${RUNNING_EDIT_AGENT}, stopped` })
+            .click();
+        // Starting the renamed tab proves the edited configuration remains operational.
+        await expect(
+            page.getByRole("tab", {
+                name: `${RUNNING_EDIT_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+    });
+
     test("adds and connects an SSH agent with password auth", async ({
         page,
     }) => {
@@ -113,13 +238,13 @@ test.describe.serial("Agent management", () => {
             throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
         }
         await page.goto(`${WEB_BASE_URL}/`);
-        await page.getByRole("link", { name: "Add SSH agent" }).click();
+        await page.getByRole("link", { name: "Add managed agent" }).click();
 
         await page.getByLabel("SSH target").fill("redoor-ssh-test");
         await page.getByLabel("SSH username").fill("redoor-password");
         await page.getByLabel("Agent name").fill(CREATED_SSH_PASSWORD_AGENT);
         await page.getByLabel("SSH password").fill(password);
-        await page.getByRole("button", { name: "Add SSH agent" }).click();
+        await page.getByRole("button", { name: "Add managed agent" }).click();
 
         // Password auth must prepare and connect without a TTY or ssh-agent key.
         await expect(

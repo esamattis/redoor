@@ -13,17 +13,7 @@ pub(crate) async fn append_ssh_agent(path: &Path, config: &SshBackedAgentConfig)
     let mut document = content
         .parse::<DocumentMut>()
         .with_context(|| format!("Failed to parse config file '{}'", path.display()))?;
-    let mut table = Table::new();
-    table.insert("target", value(&config.target));
-    insert_optional_string(&mut table, "username", &config.username);
-    if let Some(ssh_port) = config.ssh_port {
-        table.insert("ssh_port", value(i64::from(ssh_port)));
-    }
-    insert_optional_string(&mut table, "name", &config.name);
-    insert_optional_string(&mut table, "remote_bin", &config.remote_bin);
-    insert_optional_string(&mut table, "home", &config.home);
-    insert_optional_string(&mut table, "log", &config.log);
-    insert_optional_string(&mut table, "password", &config.password);
+    let table = ssh_agent_table(config);
 
     match document.get_mut("agents") {
         Some(item) => item
@@ -38,6 +28,78 @@ pub(crate) async fn append_ssh_agent(path: &Path, config: &SshBackedAgentConfig)
     }
 
     replace_atomically(path, document.to_string().as_bytes()).await
+}
+
+/// Replaces one SSH entry selected by its effective managed-agent name.
+pub(crate) async fn replace_ssh_agent(
+    path: &Path,
+    agent_id: &str,
+    config: &SshBackedAgentConfig,
+) -> Result<()> {
+    edit_ssh_agent(path, agent_id, Some(config)).await
+}
+
+/// Removes one SSH entry selected by its effective managed-agent name.
+pub(crate) async fn delete_ssh_agent(path: &Path, agent_id: &str) -> Result<()> {
+    edit_ssh_agent(path, agent_id, None).await
+}
+
+/// Applies an in-place array edit while retaining unrelated document formatting.
+async fn edit_ssh_agent(
+    path: &Path,
+    agent_id: &str,
+    replacement: Option<&SshBackedAgentConfig>,
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read config file '{}'", path.display()))?;
+    let mut document = content
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse config file '{}'", path.display()))?;
+    let agents = document
+        .get_mut("agents")
+        .and_then(Item::as_array_of_tables_mut)
+        .context("top-level 'agents' must be an array of tables")?;
+    let index = agents
+        .iter()
+        .position(|table| ssh_agent_id(table).as_deref() == Some(agent_id))
+        .with_context(|| format!("Managed SSH agent '{agent_id}' was not found"))?;
+    agents.remove(index);
+    if let Some(config) = replacement {
+        agents.insert(index, ssh_agent_table(config));
+    }
+    replace_atomically(path, document.to_string().as_bytes()).await
+}
+
+/// Builds the persisted table in one place so create and update stay identical.
+fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
+    let mut table = Table::new();
+    table.insert("target", value(&config.target));
+    insert_optional_string(&mut table, "username", &config.username);
+    if let Some(ssh_port) = config.ssh_port {
+        table.insert("ssh_port", value(i64::from(ssh_port)));
+    }
+    insert_optional_string(&mut table, "name", &config.name);
+    insert_optional_string(&mut table, "remote_bin", &config.remote_bin);
+    insert_optional_string(&mut table, "home", &config.home);
+    insert_optional_string(&mut table, "log", &config.log);
+    insert_optional_string(&mut table, "password", &config.password);
+    table
+}
+
+/// Derives the runtime identity without treating local-agent entries as editable SSH entries.
+fn ssh_agent_id(table: &Table) -> Option<String> {
+    if table.get("local").and_then(Item::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let target = table.get("target")?.as_str()?;
+    Some(
+        table
+            .get("name")
+            .and_then(Item::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::ssh::default_agent_name(target)),
+    )
 }
 
 /// Omits absent values so OpenSSH and agent-side defaults remain effective.

@@ -359,6 +359,7 @@ describe("Raw Upload API", () => {
                 name: "fake",
                 cwd: "/tmp",
                 managed: false,
+                configuration_editable: false,
                 status: "disconnected",
                 connected_at: null,
                 connection_id: null,

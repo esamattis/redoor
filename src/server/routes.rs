@@ -5,7 +5,10 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 
 use super::{
-    agent_configuration::create_ssh_agent_handler,
+    agent_configuration::{
+        create_ssh_agent_handler, delete_ssh_agent_handler, get_ssh_agent_configuration_handler,
+        update_ssh_agent_handler,
+    },
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agent_transfers::agent_transfer_websocket_handler,
     agents::{
@@ -71,7 +74,16 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/transfers/progress",
             get(list_transfer_progress_handler),
         )
-        .route("/api/v1/agents/{agent}", get(get_agent_details_handler))
+        .route(
+            "/api/v1/agents/{agent}",
+            get(get_agent_details_handler)
+                .put(update_ssh_agent_handler)
+                .delete(delete_ssh_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/configuration",
+            get(get_ssh_agent_configuration_handler),
+        )
         .route("/api/v1/agents/{agent}/start", post(start_agent_handler))
         .route(
             "/api/v1/agents/{agent}/restart",

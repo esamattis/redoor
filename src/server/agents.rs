@@ -77,6 +77,7 @@ pub(super) async fn list_agent_snapshots(
             name: agent.name,
             cwd: agent.default_directory,
             managed: agent.managed,
+            configuration_editable: agent.configuration_editable,
             status: agent.status,
             connected_at: agent.connected_at,
             connection_id: agent.connection_id,
@@ -165,6 +166,9 @@ pub(crate) async fn start_agent_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    // Configuration edits hold this lock through shutdown and runtime replacement, so a
+    // delayed tab start cannot land behind shutdown and revive the old supervisor.
+    let _edit_guard = state.config_edit_lock.lock().await;
     let agent_id = AgentId::from(agent);
     let mut snapshot = match managed_agent_snapshot(&state, &agent_id).await {
         Ok(snapshot) => snapshot,

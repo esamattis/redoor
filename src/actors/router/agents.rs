@@ -3,7 +3,7 @@ use super::cleanup;
 use super::messages::{
     AgentListEntry, ApplyManagedLifecycleRequest, ExecuteCommandRequest, OpenAgentLogStreamRequest,
     OpenTerminalRequest, RegisterAgentRequest, RegisterManagedAgentRequest,
-    RegisterTransferConnectionRequest,
+    RegisterTransferConnectionRequest, UnregisterManagedAgentRequest,
 };
 use super::state::{AgentConnection, KnownAgent, RouterState, TransferConnection};
 use super::ui;
@@ -146,6 +146,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             name: name.clone(),
             default_directory: None,
             managed: false,
+            configuration_editable: false,
             status: AgentConnectionStatus::Disconnected,
             connected_at: None,
             last_seen_at: None,
@@ -425,6 +426,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             name: id.to_string(),
             default_directory: request.default_directory,
             managed: true,
+            configuration_editable: request.configuration_editable,
             status: AgentConnectionStatus::Stopped,
             connected_at: None,
             last_seen_at: None,
@@ -435,6 +437,24 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             supports_native_open: false,
         },
     );
+    ui::notify_agents_changed(state);
+    let _ = request.reply.send(());
+}
+
+/// Removes all retained state for a managed agent whose supervisor is already dormant.
+pub(crate) async fn unregister_managed(
+    state: &mut RouterState,
+    request: UnregisterManagedAgentRequest,
+) {
+    if let Some(connection) = state.agents.by_id.remove(&request.agent_id) {
+        connection.shutdown_transfer();
+    }
+    state.agents.known_by_id.remove(&request.agent_id);
+    cleanup::cleanup_agent_requests(state, &request.agent_id).await;
+    state
+        .terminal_registry
+        .remove_agent_pending(&request.agent_id);
+    state.log_registry.remove_agent(&request.agent_id);
     ui::notify_agents_changed(state);
     let _ = request.reply.send(());
 }
@@ -519,6 +539,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             name: info.name.clone(),
             default_directory: info.default_directory.clone(),
             managed: info.managed,
+            configuration_editable: info.configuration_editable,
             status: info.status.clone(),
             connected_at: info.connected_at,
             connection_id: info.socket_id.clone(),

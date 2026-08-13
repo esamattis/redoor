@@ -14,7 +14,7 @@ pub use messages::{
     RegisterManagedAgentRequest, RegisterTransferConnectionRequest, RegisterUiSubscriberRequest,
     RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg,
     SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
-    UploadStartOutcome,
+    UnregisterManagedAgentRequest, UploadStartOutcome,
 };
 pub use state::CopyContentKind;
 
@@ -185,6 +185,9 @@ impl RouterState {
                 }
                 RouterMsg::RegisterManagedAgent(request) => {
                     agents::register_managed(&mut self, request);
+                }
+                RouterMsg::UnregisterManagedAgent(request) => {
+                    agents::unregister_managed(&mut self, request).await;
                 }
                 RouterMsg::ApplyManagedLifecycle(request) => {
                     agents::apply_managed_lifecycle(&mut self, request).await;
@@ -502,6 +505,7 @@ mod tests {
                 name: "agent-1".to_string(),
                 default_directory: Some("/tmp".to_string()),
                 managed: false,
+                configuration_editable: false,
                 status: crate::commands::AgentConnectionStatus::Connected,
                 connected_at: list_agents[0].connected_at,
                 connection_id: list_agents[0].connection_id.clone(),

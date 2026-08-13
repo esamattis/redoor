@@ -67,6 +67,8 @@ pub struct KnownAgent {
     pub default_directory: Option<String>,
     /// Distinguishes TOML-owned supervisors from observation-only external agents.
     pub managed: bool,
+    /// Whether this entry is SSH-backed and supported by the configuration editor.
+    pub configuration_editable: bool,
     /// Current public lifecycle state.
     pub status: AgentConnectionStatus,
     /// Timestamp for the current authoritative connection only.

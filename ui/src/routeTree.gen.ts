@@ -17,6 +17,7 @@ import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
+import { Route as AgentsAgentIdEditRouteImport } from './routes/agents.$agentId.edit'
 import { Route as AgentsAgentIdLogsRouteImport } from './routes/agents.$agentId.logs'
 import { Route as AgentsAgentIdBrowserSplatRouteImport } from './routes/agents.$agentId.browser.$'
 
@@ -60,6 +61,11 @@ const AgentsAgentIdIndexRoute = AgentsAgentIdIndexRouteImport.update({
   path: '/agents/$agentId/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentsAgentIdEditRoute = AgentsAgentIdEditRouteImport.update({
+  id: '/agents/$agentId/edit',
+  path: '/agents/$agentId/edit',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsAgentIdLogsRoute = AgentsAgentIdLogsRouteImport.update({
   id: '/agents/$agentId/logs',
   path: '/agents/$agentId/logs',
@@ -80,6 +86,7 @@ export interface FileRoutesByFullPath {
   '/agents/new': typeof AgentsNewRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -92,6 +99,7 @@ export interface FileRoutesByTo {
   '/agents/new': typeof AgentsNewRoute
   '/agents': typeof AgentsIndexRoute
   '/transfers': typeof TransfersIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -105,6 +113,7 @@ export interface FileRoutesById {
   '/agents/new': typeof AgentsNewRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
     | '/agents/new'
     | '/agents/'
     | '/transfers/'
+    | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
@@ -131,6 +141,7 @@ export interface FileRouteTypes {
     | '/agents/new'
     | '/agents'
     | '/transfers'
+    | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
     | '/agents/$agentId'
     | '/agents/$agentId/browser/$'
@@ -143,6 +154,7 @@ export interface FileRouteTypes {
     | '/agents/new'
     | '/agents/'
     | '/transfers/'
+    | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
@@ -156,6 +168,7 @@ export interface RootRouteChildren {
   AgentsNewRoute: typeof AgentsNewRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   TransfersIndexRoute: typeof TransfersIndexRoute
+  AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
   AgentsAgentIdLogsRoute: typeof AgentsAgentIdLogsRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   AgentsAgentIdBrowserSplatRoute: typeof AgentsAgentIdBrowserSplatRoute
@@ -219,6 +232,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsAgentIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agents/$agentId/edit': {
+      id: '/agents/$agentId/edit'
+      path: '/agents/$agentId/edit'
+      fullPath: '/agents/$agentId/edit'
+      preLoaderRoute: typeof AgentsAgentIdEditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/$agentId/logs': {
       id: '/agents/$agentId/logs'
       path: '/agents/$agentId/logs'
@@ -244,6 +264,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsNewRoute: AgentsNewRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   TransfersIndexRoute: TransfersIndexRoute,
+  AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
   AgentsAgentIdLogsRoute: AgentsAgentIdLogsRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   AgentsAgentIdBrowserSplatRoute: AgentsAgentIdBrowserSplatRoute,

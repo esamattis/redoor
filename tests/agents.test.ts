@@ -670,6 +670,7 @@ describe("Agents API", () => {
                 name: "non-existent",
                 cwd: "/tmp",
                 managed: false,
+                configuration_editable: false,
                 status: "disconnected",
                 connected_at: null,
                 connection_id: null,

@@ -46,6 +46,9 @@ import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
 import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
 import type { CreateSshAgentResponse } from "#bindings/CreateSshAgentResponse";
+import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
+import type { UpdateSshAgentResponse } from "#bindings/UpdateSshAgentResponse";
+import type { DeleteManagedAgentResponse } from "#bindings/DeleteManagedAgentResponse";
 import type { UpdateUserStateRequest } from "#bindings/UpdateUserStateRequest";
 import type { UserStateResponse } from "#bindings/UserStateResponse";
 import { z } from "zod";
@@ -91,6 +94,9 @@ export type {
     DiffFilesResponse,
     CreateSshAgentRequest,
     CreateSshAgentResponse,
+    ManagedSshAgentConfigurationResponse,
+    UpdateSshAgentResponse,
+    DeleteManagedAgentResponse,
     UpdateUserStateRequest,
     UserStateResponse,
 };
@@ -268,6 +274,11 @@ export class Agent {
     /** Indicates whether lifecycle controls are backed by a TOML supervisor. */
     get managed(): boolean {
         return this.info.managed;
+    }
+
+    /** Indicates whether this managed entry is backed by editable SSH TOML fields. */
+    get configurationEditable(): boolean {
+        return this.info.configuration_editable;
     }
 
     /** Returns the retained public lifecycle state. */
@@ -789,6 +800,44 @@ export class ApiClient {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(request),
             },
+            this.requestContext(),
+        );
+    }
+
+    /** Loads persisted SSH settings for a managed-agent edit form. */
+    async getSshAgentConfiguration(
+        agentId: string,
+    ): Promise<ManagedSshAgentConfigurationResponse> {
+        return apiRequest<ManagedSshAgentConfigurationResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/configuration`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Replaces one stopped SSH-backed managed-agent configuration. */
+    async updateSshAgent(
+        agentId: string,
+        request: CreateSshAgentRequest,
+    ): Promise<UpdateSshAgentResponse> {
+        return apiRequest<UpdateSshAgentResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Permanently removes one stopped SSH-backed managed-agent entry. */
+    async deleteManagedAgent(
+        agentId: string,
+    ): Promise<DeleteManagedAgentResponse> {
+        return apiRequest<DeleteManagedAgentResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}`,
+            { method: "DELETE" },
             this.requestContext(),
         );
     }

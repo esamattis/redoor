@@ -8,7 +8,11 @@ import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 /**
  * Summarizes one known agent without requiring a current WebSocket connection.
  */
-export type AgentInfoResponse = { id: AgentId, name: string, cwd: string | null, managed: boolean, status: AgentConnectionStatus, connected_at: UnixTimestampSeconds | null, 
+export type AgentInfoResponse = { id: AgentId, name: string, cwd: string | null, managed: boolean, 
+/**
+ * Whether this managed entry is SSH-backed and supported by the configuration editor.
+ */
+configuration_editable: boolean, status: AgentConnectionStatus, connected_at: UnixTimestampSeconds | null, 
 /**
  * Current WebSocket generation; changes whenever this agent reconnects.
  */

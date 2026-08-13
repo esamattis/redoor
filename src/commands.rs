@@ -517,6 +517,42 @@ pub struct CreateSshAgentResponse {
     pub agent: AgentInfoResponse,
 }
 
+/// Returns the editable TOML fields for one SSH-backed managed agent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ManagedSshAgentConfigurationResponse {
+    /// SSH host, alias, or destination accepted by the local OpenSSH client.
+    pub target: String,
+    /// Optional explicit SSH username instead of the target or SSH config default.
+    pub username: Option<String>,
+    /// Optional explicit SSH port instead of the SSH config default.
+    pub ssh_port: Option<u16>,
+    /// Stable managed-agent name; defaults to the target hostname when omitted.
+    pub name: Option<String>,
+    /// Optional path where the remote Redoor binary is installed.
+    pub remote_bin: Option<String>,
+    /// Optional initial browser directory advertised before the first connection.
+    pub home: Option<String>,
+    /// Optional local path receiving SSH subprocess diagnostics.
+    pub log: Option<String>,
+    /// Optional SSH login password stored in plaintext in config.toml.
+    pub password: Option<String>,
+}
+
+/// Returns the replacement dormant inventory record after an SSH configuration edit.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateSshAgentResponse {
+    pub agent: AgentInfoResponse,
+}
+
+/// Confirms that a managed SSH entry and its dormant runtime registration were removed.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DeleteManagedAgentResponse {
+    pub deleted: bool,
+}
+
 /// Identifies the user-visible connection lifecycle independently from ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -536,6 +572,8 @@ pub struct AgentInfoResponse {
     pub name: String,
     pub cwd: Option<String>,
     pub managed: bool,
+    /// Whether this managed entry is SSH-backed and supported by the configuration editor.
+    pub configuration_editable: bool,
     pub status: AgentConnectionStatus,
     pub connected_at: Option<UnixTimestampSeconds>,
     /// Current WebSocket generation; changes whenever this agent reconnects.

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -95,6 +95,7 @@ pub type SnapshotCallback = Arc<dyn Fn(WatchdogSnapshot) + Send + Sync>;
 /// Commands are independent from the stale signal so shutdown remains selectable everywhere.
 enum SupervisorCommand {
     Start,
+    Remove,
     Shutdown {
         reply: oneshot::Sender<Result<(), String>>,
     },
@@ -133,9 +134,6 @@ impl WatchdogHandle {
         let should_publish = {
             let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
             if snapshot.desired_running {
-                self.commands
-                    .send(SupervisorCommand::Start)
-                    .map_err(|_| format!("Watchdog supervisor stopped: {}", self.key))?;
                 false
             } else {
                 self.commands
@@ -254,6 +252,23 @@ impl WatchdogRegistry {
             .cloned()
     }
 
+    /// Removes a dormant supervisor after callers verify it has no running intent.
+    pub fn remove_stopped(&self, key: &str) -> Result<()> {
+        let mut map = self.inner.lock().expect("watchdog registry poisoned");
+        let handle = map
+            .get(key)
+            .with_context(|| format!("Watchdog key is not registered: key={key}"))?;
+        if handle.snapshot().desired_running {
+            bail!("Managed agent must be stopped before its configuration can change");
+        }
+        handle
+            .commands
+            .send(SupervisorCommand::Remove)
+            .map_err(|_| anyhow::anyhow!("Watchdog supervisor stopped: {key}"))?;
+        map.remove(key);
+        Ok(())
+    }
+
     /// Registers all control primitives atomically before the supervisor task is spawned.
     fn register(
         &self,
@@ -297,6 +312,7 @@ async fn wait_until_running(
     while let Some(command) = commands.recv().await {
         match command {
             SupervisorCommand::Start => return true,
+            SupervisorCommand::Remove => return false,
             SupervisorCommand::Shutdown { reply } => {
                 watchdog.publish(WatchdogSnapshot {
                     desired_running: false,
@@ -426,9 +442,9 @@ async fn handle_pre_spawn_command(
             publish_connected(watchdog, socket_id);
             CommandAction::Continue
         }
-        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Disconnected(_)) => {
-            CommandAction::Continue
-        }
+        Some(SupervisorCommand::Start)
+        | Some(SupervisorCommand::Remove)
+        | Some(SupervisorCommand::Disconnected(_)) => CommandAction::Continue,
         None => CommandAction::Stop,
     }
 }
@@ -506,7 +522,7 @@ async fn handle_running_command(
             }
             CommandAction::Continue
         }
-        Some(SupervisorCommand::Start) => CommandAction::Continue,
+        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Remove) => CommandAction::Continue,
         None => {
             kill_and_reap(child).await;
             CommandAction::Stop
@@ -534,7 +550,7 @@ async fn wait_for_restart(
                     }
                     Some(SupervisorCommand::Connected(socket_id)) => publish_connected(watchdog, socket_id),
                     Some(SupervisorCommand::Disconnected(_)) => {},
-                    Some(SupervisorCommand::Start) => {}
+                    Some(SupervisorCommand::Start) | Some(SupervisorCommand::Remove) => {}
                     None => return false,
                 }
             }

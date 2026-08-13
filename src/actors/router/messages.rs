@@ -54,6 +54,8 @@ pub struct AgentListEntry {
     pub default_directory: Option<String>,
     /// Indicates whether the server owns a TOML supervisor for this id.
     pub managed: bool,
+    /// Whether this retained entry can be changed through the SSH configuration API.
+    pub configuration_editable: bool,
     /// Current public lifecycle state.
     pub status: AgentConnectionStatus,
     /// Start of the current authoritative connection.
@@ -78,7 +80,15 @@ pub struct RegisterManagedAgentRequest {
     pub agent_id: AgentId,
     /// Configured directory may be absent for an SSH target.
     pub default_directory: Option<String>,
+    /// Distinguishes SSH-backed entries supported by the managed-agent form from local entries.
+    pub configuration_editable: bool,
     /// Acknowledges inventory visibility before HTTP serving begins.
+    pub reply: RouterReply<()>,
+}
+
+/// Removes a stopped managed record after its TOML entry and supervisor are gone.
+pub struct UnregisterManagedAgentRequest {
+    pub agent_id: AgentId,
     pub reply: RouterReply<()>,
 }
 
@@ -337,6 +347,7 @@ pub enum RouterMsg {
         socket_id: SocketId,
     },
     RegisterManagedAgent(RegisterManagedAgentRequest),
+    UnregisterManagedAgent(UnregisterManagedAgentRequest),
     ApplyManagedLifecycle(ApplyManagedLifecycleRequest),
     UnregisterAgent {
         agent_id: AgentId,

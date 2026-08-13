@@ -136,4 +136,53 @@ describe("SSH agent configuration API", () => {
         // Rejected submissions must not modify the durable source of truth.
         expect(readFileSync(configPath, "utf8")).toBe(before);
     });
+
+    it("reads, updates, renames, and deletes a stopped SSH entry", async () => {
+        const configuration = await apiClient.getSshAgentConfiguration(AGENT_NAME);
+        // The edit view must receive every persisted value, including the existing password.
+        expect(configuration).toMatchObject({
+            target: "example-host",
+            username: "deploy",
+            ssh_port: 2222,
+            name: AGENT_NAME,
+            password: "ssh-secret",
+        });
+
+        const renamed = "updated-ssh-agent";
+        const configuredAgent = (await apiClient.listAgents()).find(
+            (agent) => agent.id === AGENT_NAME,
+        );
+        if (!configuredAgent) throw new Error("Created SSH agent missing");
+        await configuredAgent.start();
+        const update = await apiClient.updateSshAgent(AGENT_NAME, {
+            target: "updated-host",
+            username: "operator",
+            ssh_port: 2200,
+            name: renamed,
+            remote_bin: null,
+            home: "/srv/updated",
+            log: null,
+            password: "updated-secret",
+        });
+        // Save must settle a delayed restart before replacing the identity, rather than racing it.
+        expect(update.agent).toMatchObject({
+            id: renamed,
+            cwd: "/srv/updated",
+            status: "stopped",
+        });
+        const inventory = await apiClient.listAgents();
+        expect(inventory.some((agent) => agent.id === AGENT_NAME)).toBe(false);
+        expect(inventory.some((agent) => agent.id === renamed)).toBe(true);
+        const editedConfig = readFileSync(configPath, "utf8");
+        // Updating must preserve unrelated comments while replacing old SSH values.
+        expect(editedConfig).toContain("# This comment must survive the config edit.");
+        expect(editedConfig).toContain('target = "updated-host"');
+        expect(editedConfig).not.toContain('target = "example-host"');
+
+        const deletion = await apiClient.deleteManagedAgent(renamed);
+        expect(deletion.deleted).toBe(true);
+        // Deletion must remove both durable TOML and retained runtime inventory.
+        expect((await apiClient.listAgents()).some((agent) => agent.id === renamed)).toBe(false);
+        expect(readFileSync(configPath, "utf8")).not.toContain(`name = "${renamed}"`);
+    });
 });

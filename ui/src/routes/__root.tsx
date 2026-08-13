@@ -24,6 +24,7 @@ import {
     ScrollText,
     Users,
     Plus,
+    Pencil,
 } from "lucide-react";
 import {
     ApiClient,
@@ -410,42 +411,53 @@ function TopTabStrip(props: {
                             (agent.status === "stopped" ||
                                 agent.status === "disconnected");
                         return (
-                            <Link
+                            <div
                                 key={agent.id}
-                                to={target}
-                                onClick={(event) => {
-                                    if (shouldStart) {
-                                        event.preventDefault();
-                                        openManagedAgent(agent);
-                                    }
-                                }}
-                                role="tab"
-                                aria-label={`${agent.name}, ${agent.status}`}
-                                aria-selected={isActive}
-                                className={`group flex max-w-56 shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm transition-colors ${
-                                    isActive
-                                        ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]"
-                                        : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                                }`}
+                                className={`group flex max-w-64 shrink-0 items-center rounded-t-lg border border-b-0 text-sm transition-colors ${isActive ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]" : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"}`}
                             >
-                                <HardDrive
-                                    className={`h-4 w-4 shrink-0 ${
-                                        isActive
-                                            ? "text-blue-400"
-                                            : "text-slate-500 group-hover:text-slate-300"
-                                    }`}
-                                />
-                                <span className="truncate font-medium">
-                                    {agent.name}
-                                </span>
-                            </Link>
+                                <Link
+                                    to={target}
+                                    onClick={(event) => {
+                                        if (shouldStart) {
+                                            event.preventDefault();
+                                            openManagedAgent(agent);
+                                        }
+                                    }}
+                                    role="tab"
+                                    aria-label={`${agent.name}, ${agent.status}`}
+                                    aria-selected={isActive}
+                                    className="flex min-w-0 items-center gap-2 whitespace-nowrap py-2 pl-4 pr-2"
+                                >
+                                    <HardDrive
+                                        className={`h-4 w-4 shrink-0 ${isActive ? "text-blue-400" : "text-slate-500 group-hover:text-slate-300"}`}
+                                    />
+                                    <span className="truncate font-medium">
+                                        {agent.name}
+                                    </span>
+                                </Link>
+                                {agent.configurationEditable ? (
+                                    <Tooltip content={`Edit ${agent.name}`}>
+                                        <Link
+                                            to="/agents/$agentId/edit"
+                                            params={{ agentId: agent.id }}
+                                            aria-label={`Edit ${agent.name}`}
+                                            className="mr-1 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                                        >
+                                            <Pencil
+                                                className="h-3.5 w-3.5"
+                                                aria-hidden="true"
+                                            />
+                                        </Link>
+                                    </Tooltip>
+                                ) : null}
+                            </div>
                         );
                     })
                 )}
-                <Tooltip content="Add SSH agent">
+                <Tooltip content="Add managed agent">
                     <Link
                         to="/agents/new"
-                        aria-label="Add SSH agent"
+                        aria-label="Add managed agent"
                         className={`mb-1 flex shrink-0 items-center justify-center rounded-md border p-2 transition-colors ${
                             props.pathname === "/agents/new"
                                 ? "border-blue-500/60 bg-blue-500/15 text-blue-300"
