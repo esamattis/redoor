@@ -17,6 +17,7 @@ pub(crate) mod state;
 mod terminals;
 mod transfers;
 mod ui;
+mod user_state;
 mod watchdog;
 mod websocket_security;
 mod ws;

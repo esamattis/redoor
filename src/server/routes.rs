@@ -24,6 +24,7 @@ use super::{
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
     ui::ui_service,
+    user_state::{get_user_state_handler, update_user_state_handler},
     ws::{ui_websocket_handler, websocket_handler},
 };
 
@@ -62,6 +63,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(list_agents_handler).post(create_ssh_agent_handler),
         )
         .route("/api/v1/server", get(server_info_handler))
+        .route(
+            "/api/v1/user/state",
+            get(get_user_state_handler).post(update_user_state_handler),
+        )
         .route(
             "/api/v1/transfers/progress",
             get(list_transfer_progress_handler),

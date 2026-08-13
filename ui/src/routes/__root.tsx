@@ -63,6 +63,8 @@ import {
     serverInfoQueryOptions,
     transfersQueryOptions,
 } from "#ui/queries";
+import { userStateQueryOptions } from "#ui/user-state";
+import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
 import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 
@@ -117,6 +119,7 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
             context.queryClient.fetchQuery(agentsQueryOptions(context.api)),
             context.queryClient.fetchQuery(transfersQueryOptions(context.api)),
             context.queryClient.fetchQuery(serverInfoQueryOptions(context.api)),
+            context.queryClient.fetchQuery(userStateQueryOptions(context.api)),
         ]);
 
         return {
@@ -279,6 +282,7 @@ function RootLayout() {
     return (
         <div className="flex h-screen flex-col bg-[#0b0d12]">
             <RouteLoadingIndicator />
+            <UserStatePersistToast />
             <GlobalFileImportHandler destination={importDestination} />
             <UploadQueueManager
                 agents={agents}

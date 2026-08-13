@@ -192,6 +192,22 @@ pub(crate) fn require_relay<'a>(config: &'a RedoorConfig, id: &str) -> Result<&'
         .with_context(|| format!("relay '{id}' is not configured"))
 }
 
+/// Restricts login names to one portable path component so account files cannot escape the data dir.
+pub(crate) fn parse_server_username(value: &str) -> Result<String, String> {
+    if value.is_empty() || value == "." || value == ".." {
+        return Err("server.username must not be empty, '.' or '..'".to_string());
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(
+            "server.username may contain only ASCII letters, numbers, '.', '_' and '-'".to_string(),
+        );
+    }
+    Ok(value.to_string())
+}
+
 /// Restricts relay IDs to safe, portable runtime-file components.
 pub(crate) fn parse_relay_id(value: &str) -> Result<String, String> {
     if value.is_empty() || value == "." || value == ".." {
@@ -290,12 +306,8 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<Option<ServerSection
         Some(item) => {
             let value = item
                 .as_str()
-                .with_context(|| "server.username must be a string")?
-                .to_string();
-            if value.is_empty() {
-                bail!("server.username must be a non-empty string when set");
-            }
-            Some(value)
+                .with_context(|| "server.username must be a string")?;
+            Some(parse_server_username(value).map_err(anyhow::Error::msg)?)
         }
     };
     let password = match table.get("password") {
@@ -692,6 +704,34 @@ fn aliased_table_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ensures login names stay inside the same allowlist used for on-disk account directories.
+    #[test]
+    fn parse_server_username_allows_portable_path_components() {
+        for valid in ["test-user", "alice", "user.name", "user_1"] {
+            assert_eq!(
+                parse_server_username(valid).as_deref(),
+                Ok(valid),
+                "a portable login name should be accepted: {valid}"
+            );
+        }
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "alice/bob",
+            "alice\\bob",
+            "al\0ice",
+            "user name",
+            "user@host",
+            "ålice",
+        ] {
+            assert!(
+                parse_server_username(invalid).is_err(),
+                "a non-portable login name should be rejected: {invalid:?}"
+            );
+        }
+    }
 
     /// Adds required top-level token and server credentials without obscuring each test's payload.
     fn write_test_config(path: &std::path::Path, content: impl AsRef<str>) -> std::io::Result<()> {
@@ -1648,6 +1688,39 @@ password = "only-password"
                 "username and password must be provided together"
             );
         }
+    }
+
+    /// Rejects login names that would escape `users/<username>/` before the server starts.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_unsafe_username() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-unsafe-username-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &temp,
+            r#"agent_token = "test-agent-token"
+
+[server]
+username = "alice/../bob"
+password = "test-password"
+"#,
+        )
+        .unwrap();
+        let result = parse_config_file(temp.to_str().unwrap()).await;
+        std::fs::remove_file(&temp).ok();
+        assert!(
+            result.is_err(),
+            "a path-escaping server.username must not parse"
+        );
+        assert!(
+            format!("{:#}", result.unwrap_err())
+                .contains("server.username may contain only ASCII letters"),
+            "operators should see the allowlist rule rather than a later filesystem error"
+        );
     }
 
     /// Reads the complete named-relay schema into the shared SSH transport model.

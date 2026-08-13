@@ -7,6 +7,7 @@ export const queryKeys = {
     agents: () => [...queryKeys.all, "agents"] as const,
     transfers: () => [...queryKeys.all, "transfers"] as const,
     serverInfo: () => [...queryKeys.all, "server-info"] as const,
+    userState: () => [...queryKeys.all, "user-state"] as const,
     fileContent: (agentId: string, path: string) =>
         [...queryKeys.all, "agents", agentId, "file-content", path] as const,
     fileSearch: (

@@ -1,6 +1,4 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useAtom } from "jotai";
-import { atomWithLocalStorage } from "#ui/utils/local-storage-atom";
 import {
     type ApiClient,
     type Agent,
@@ -9,6 +7,7 @@ import {
     isLsFileResponse,
     type LsDirectoryResponse,
 } from "#ui/api-client";
+import { useUserState } from "#ui/user-state";
 import { RouteError } from "#ui/components/route-error";
 import {
     BrowserHeader,
@@ -35,12 +34,6 @@ import {
     sortFileEntries,
 } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
-
-/** Keeps the hidden-file visibility preference consistent across reloads. */
-const showHiddenFilesAtom = atomWithLocalStorage(
-    "redoor.browser.show-hidden-files",
-    true,
-);
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync";
@@ -314,7 +307,8 @@ function DirectoryBrowserPage(props: {
     lsResult: LsDirectoryResponse;
     view?: "details" | "edit" | "diff" | "sync";
 }) {
-    const [showHiddenFiles, setShowHiddenFiles] = useAtom(showHiddenFilesAtom);
+    const [userState, setUserState] = useUserState();
+    const showHiddenFiles = userState.showHiddenFiles;
     const visibleFiles = showHiddenFiles
         ? props.lsResult.files
         : props.lsResult.files.filter((file) => !file.name.startsWith("."));
@@ -380,9 +374,11 @@ function DirectoryBrowserPage(props: {
                                     directoryPath={props.path}
                                     showHiddenFiles={showHiddenFiles}
                                     onToggleHiddenFiles={() =>
-                                        setShowHiddenFiles(
-                                            (visible) => !visible,
-                                        )
+                                        setUserState((current) => ({
+                                            ...current,
+                                            showHiddenFiles:
+                                                !current.showHiddenFiles,
+                                        }))
                                     }
                                 />
                             }

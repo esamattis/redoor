@@ -46,6 +46,8 @@ import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
 import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
 import type { CreateSshAgentResponse } from "#bindings/CreateSshAgentResponse";
+import type { UpdateUserStateRequest } from "#bindings/UpdateUserStateRequest";
+import type { UserStateResponse } from "#bindings/UserStateResponse";
 import { z } from "zod";
 
 export type {
@@ -89,6 +91,8 @@ export type {
     DiffFilesResponse,
     CreateSshAgentRequest,
     CreateSshAgentResponse,
+    UpdateUserStateRequest,
+    UserStateResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -827,6 +831,30 @@ export class ApiClient {
         return apiRequest<ServerInfoResponse>(
             `${this.baseUrl}/api/v1/server`,
             undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Loads the opaque JSON document stored for the authenticated account. */
+    async getUserState(): Promise<UserStateResponse> {
+        return apiRequest<UserStateResponse>(
+            `${this.baseUrl}/api/v1/user/state`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Replaces the authenticated account's persisted JSON document. */
+    async updateUserState(
+        request: UpdateUserStateRequest,
+    ): Promise<UserStateResponse> {
+        return apiRequest<UserStateResponse>(
+            `${this.baseUrl}/api/v1/user/state`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
             this.requestContext(),
         );
     }

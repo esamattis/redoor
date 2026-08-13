@@ -242,6 +242,11 @@ impl AuthState {
         &self.agent_token
     }
 
+    /// Identifies the single login account so per-user files can be stored without parsing cookies.
+    pub(crate) fn username(&self) -> &str {
+        &self.username
+    }
+
     /// Maps a validated UUID to its one-file-per-session storage path.
     fn session_path(&self, session_id: &str) -> Option<PathBuf> {
         Uuid::parse_str(session_id).ok().map(|_| {
