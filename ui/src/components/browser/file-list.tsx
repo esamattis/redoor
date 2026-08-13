@@ -49,6 +49,7 @@ type FileSearchState =
           query: string;
           results: Array<FileSearchEntry>;
           timedOut: boolean;
+          durationMs: number;
       }
     | { status: "error"; query: string; message: string };
 
@@ -125,6 +126,7 @@ function getFileSearchState(props: {
             query: props.query,
             results: props.search.data.results,
             timedOut: props.search.data.timed_out,
+            durationMs: props.search.data.duration_ms,
         };
     }
     return {
@@ -132,6 +134,7 @@ function getFileSearchState(props: {
         query: props.query,
         results: [],
         timedOut: false,
+        durationMs: 0,
     };
 }
 
@@ -555,12 +558,24 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
                         Updating results...
                     </>
                 ) : (
-                    `${props.state.results.length} ${props.state.results.length === 1 ? "result" : "results"}`
+                    <span>
+                        Found{" "}
+                        <Tooltip content="100 is the maximum number of results a search can return.">
+                            <span>{props.state.results.length}</span>
+                        </Tooltip>{" "}
+                        {props.state.results.length === 1
+                            ? "result"
+                            : "results"}{" "}
+                        in{" "}
+                        <Tooltip content="Search duration was measured on the agent.">
+                            <span>{props.state.durationMs}ms</span>
+                        </Tooltip>
+                    </span>
                 )}
             </p>
             {props.state.timedOut && (
                 <p className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-xs text-amber-300">
-                    Search timed out. Showing the matches found so far.
+                    Search deadlined. Increase the search duration to see more.
                 </p>
             )}
             {props.state.status === "searching" &&

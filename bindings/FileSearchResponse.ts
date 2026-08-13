@@ -4,4 +4,4 @@ import type { FileSearchEntry } from "./FileSearchEntry";
 /**
  * Returns the best paths discovered before traversal completed or reached its deadline.
  */
-export type FileSearchResponse = { results: Array<FileSearchEntry>, timed_out: boolean, };
+export type FileSearchResponse = { results: Array<FileSearchEntry>, timed_out: boolean, duration_ms: number, };

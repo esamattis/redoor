@@ -37,6 +37,7 @@ const fileSearchResponseSchema: z.ZodType<FileSearchResponse> = z.object({
         }),
     ),
     timed_out: z.boolean(),
+    duration_ms: z.number().int().nonnegative(),
 });
 
 const processManager = new ProcessManager();
@@ -386,6 +387,8 @@ describe("Agents API", () => {
         );
         // A small local tree must complete without consuming the three-second allowance.
         expect(result.timed_out).toBe(false);
+        // Search timing comes from the agent that performed the filesystem traversal.
+        expect(result.duration_ms).toBeGreaterThanOrEqual(0);
         // Matching a separator-free query proves path components and filenames are fuzzy scored.
         expect(result.results[0]).toEqual({
             name: "file-search-target.txt",

@@ -319,6 +319,8 @@ pub struct FileSearchEntry {
 pub struct FileSearchResponse {
     pub results: Vec<FileSearchEntry>,
     pub timed_out: bool,
+    #[ts(type = "number")]
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,7 +4,12 @@ use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
-use std::{collections::HashSet, os::unix::fs::MetadataExt, path::Path, time::Duration};
+use std::{
+    collections::HashSet,
+    os::unix::fs::MetadataExt,
+    path::Path,
+    time::{Duration, Instant},
+};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     sync::watch,
@@ -131,6 +136,7 @@ pub(super) async fn execute_with_cancellation(
         );
     }
 
+    let started_at = Instant::now();
     let expression = SearchExpression::parse(&query);
     let mut matches = Vec::with_capacity(RESULT_LIMIT);
     let result = {
@@ -170,6 +176,7 @@ pub(super) async fn execute_with_cancellation(
     CommandResult::FileSearch(FileSearchResponse {
         results: matches.into_iter().map(|entry| entry.entry).collect(),
         timed_out,
+        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
 }
 
@@ -212,6 +219,8 @@ mod tests {
         assert!(response.results.is_empty());
         // Existing response schema marks every incomplete traversal with the timeout flag.
         assert!(response.timed_out);
+        // Even immediately cancelled searches report their agent-side execution duration.
+        assert!(response.duration_ms < 5_000);
     }
 
     /// Verifies one inaccessible subtree does not prevent traversal of its readable siblings.

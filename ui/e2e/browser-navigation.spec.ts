@@ -447,7 +447,7 @@ test.describe.serial("File Browser Navigation", () => {
         await recursiveToggle.click();
         await filterInput.fill("nested");
         await expect(
-            page.getByText("3 results", { exact: true }),
+            page.getByText(/^Found 3 results in \d+ms$/),
         ).toBeVisible();
         const firstResult = page.getByRole("link").filter({
             hasText: "nested1.txt",
@@ -553,8 +553,18 @@ test.describe.serial("File Browser Navigation", () => {
             .filter({ hasText: "nested3.txt" });
         // A nested match proves the checked mode uses the recursive API rather than the loaded listing.
         await expect(nestedResult).toBeVisible();
-        // Settled results keep the same header occupied with a useful count.
-        await expect(page.getByText("1 result", { exact: true })).toBeVisible();
+        // Settled results report both the bounded count and agent-side search duration.
+        await expect(page.getByText(/^Found 1 result in \d+ms$/)).toBeVisible();
+        await page.getByText("1", { exact: true }).hover();
+        // The count explains that recursive search returns a bounded result set.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "100 is the maximum number of results a search can return.",
+        );
+        await page.getByText(/^\d+ms$/).hover();
+        // Duration is measured beside the filesystem rather than around the REST request.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Search duration was measured on the agent.",
+        );
         // The dedicated result renderer exposes the full path and does not reuse directory table rows.
         await expect(
             page.getByText(
