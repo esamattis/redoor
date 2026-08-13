@@ -1,9 +1,11 @@
 import React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { GitCompareArrows } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { FileSearch, GitCompareArrows } from "lucide-react";
 import type { ApiClient, Agent } from "#ui/api-client";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { AgentPathFields } from "#ui/components/browser/sync";
+import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
 
 /** Compares the selected file against an editable file on any connected agent. */
@@ -17,6 +19,7 @@ export function FileDiffView(props: {
     filePath: string;
     downloadUrl: string;
 }) {
+    const navigate = useNavigate();
     const availableAgents = props.agents.filter(
         (agent) => agent.status === "connected",
     );
@@ -27,6 +30,12 @@ export function FileDiffView(props: {
         defaultAgent?.id ?? "",
     );
     const [selectedPath, setSelectedPath] = React.useState(props.filePath);
+    const selectedAgent = availableAgents.find(
+        (agent) => agent.id === selectedAgentId,
+    );
+    const canOpenTarget = Boolean(
+        selectedAgent && selectedPath.startsWith("/"),
+    );
     const diffMutation = useMutation({
         mutationFn: () =>
             props.api.diffFiles(
@@ -42,6 +51,18 @@ export function FileDiffView(props: {
         }
 
         diffMutation.mutate();
+    };
+
+    /** Opens the editable comparison endpoint without carrying over the source diff view. */
+    const handleOpenTarget = () => {
+        if (!selectedAgent || !selectedPath.startsWith("/")) {
+            return;
+        }
+
+        void navigate({
+            to: selectedAgent.getBrowserUrl(selectedPath),
+            search: {},
+        });
     };
 
     return (
@@ -78,7 +99,7 @@ export function FileDiffView(props: {
                         onAgentChange={setSelectedAgentId}
                         onPathChange={setSelectedPath}
                     />
-                    <div>
+                    <div className="flex flex-wrap items-center gap-3">
                         <button
                             type="submit"
                             disabled={
@@ -91,6 +112,17 @@ export function FileDiffView(props: {
                                 ? "Generating diff..."
                                 : "Generate diff"}
                         </button>
+                        <Tooltip content="Open the selected comparison file">
+                            <button
+                                type="button"
+                                disabled={!canOpenTarget}
+                                onClick={handleOpenTarget}
+                                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <FileSearch className="h-4 w-4" />
+                                Open target file
+                            </button>
+                        </Tooltip>
                     </div>
                 </form>
 

@@ -113,6 +113,17 @@ test.describe.serial("File Detail View", () => {
                 .getByLabel("File view")
                 .getByRole("link", { name: "Diff", exact: true }),
         ).toHaveAttribute("aria-current", "page");
+
+        await page
+            .getByRole("button", { name: "Open target file", exact: true })
+            .click();
+        // Target navigation uses the selected comparison agent and leaves the source diff view behind.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file2.txt"))}`,
+        );
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toHaveText("file2.txt");
     });
 
     test("should sync a file with explicit override", async ({ page }) => {
