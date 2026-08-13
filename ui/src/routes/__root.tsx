@@ -386,7 +386,9 @@ function TopTabStrip(props: {
                 ) : (
                     props.agents.map((agent) => {
                         const agentPrefix = `/agents/${encodeURIComponent(agent.id)}`;
-                        const isActive = props.pathname.startsWith(agentPrefix);
+                        const isActive =
+                            props.pathname === agentPrefix ||
+                            props.pathname.startsWith(`${agentPrefix}/`);
                         const canBrowse =
                             agent.status === "connected" && agent.cwd !== null;
                         const target = canBrowse
