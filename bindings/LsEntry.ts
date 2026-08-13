@@ -4,13 +4,4 @@ import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 /**
  * Describes one directory entry completely enough to render and sort a file list.
  */
-export type LsEntry = {
-    name: string;
-    type: string;
-    size: number;
-    owner: string | null;
-    group: string | null;
-    uid: number;
-    gid: number;
-    modified_at: UnixTimestampSeconds;
-};
+export type LsEntry = { name: string, type: string, size: number, owner: string | null, group: string | null, uid: number, gid: number, modified_at: UnixTimestampSeconds, };
