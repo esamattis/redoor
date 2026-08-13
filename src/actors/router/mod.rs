@@ -24,7 +24,7 @@ use crate::log_registry::LogRegistry;
 use crate::logging::Level;
 use crate::terminal_registry::TerminalRegistry;
 use crate::types::RequestId;
-use state::{CopyExecution, RouterState};
+use state::{CopyExecution, CopyRegistry, RouterState};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, error::Elapsed};
 
@@ -98,235 +98,221 @@ pub fn spawn_router(
 ) -> (RouterHandle, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel::<RouterMsg>(ROUTER_MAILBOX_CAPACITY);
     let router_handle = RouterHandle::new(sender);
-    let task_handle = tokio::spawn(run_router(
-        receiver,
-        router_handle.clone(),
-        terminal_registry,
-        log_registry,
-    ));
-    (router_handle, task_handle)
-}
-
-/// Checks whether an inbound stream chunk belongs to a remote copy flow.
-///
-/// TODO: This should be method of RouterState
-fn is_remote_copy_stream(state: &RouterState, request_id: RequestId) -> bool {
-    state
-        .copies
-        .public_id_for_internal(request_id)
-        .and_then(|public_request_id| state.copies.by_public_id.get(&public_request_id))
-        .map(|copy_request| matches!(copy_request.execution, CopyExecution::RemoteStream { .. }))
-        .unwrap_or(false)
-}
-
-/// Routes a final agent command response to one-shot, copy, or upload handlers.
-///
-/// TODO: This should be method of RouterState
-fn route_response(state: &mut RouterState, response: RouteResponse) {
-    if let Some((reply, stored_agent_id)) = state
-        .pending_rest
-        .by_request_id
-        .remove(&response.request_id)
-    {
-        let result_to_send = match (&response.result, state.agents.by_id.get(&stored_agent_id)) {
-            (CommandResult::GetAgentDetails(details), Some(agent_connection)) => {
-                // Registration owns the connection-scoped identity fields, so the
-                // router rewrites them from its authoritative registry snapshot.
-                let mut details = details.clone();
-                details.id = stored_agent_id.clone();
-                details.name = agent_connection.agent_name.clone();
-                details.cwd = agent_connection.default_directory.clone();
-                details.connected_at = agent_connection.connected_at;
-                details.os = agent_connection.os.clone();
-                details.arch = agent_connection.arch.clone();
-                details.hostname = agent_connection.hostname.clone();
-                details.username = agent_connection.username.clone();
-                details.binary = agent_connection.binary.clone();
-                CommandResult::GetAgentDetails(details)
-            }
-            _ => response.result.clone(),
-        };
-
-        let _ = reply.send(result_to_send);
-        return;
-    }
-
-    if transfers::copy::finish_transfer(
-        state,
-        response.agent_id.clone(),
-        response.request_id,
-        response.result.clone(),
-    ) {
-        return;
-    }
-
-    transfers::upload::finish_transfer(
-        state,
-        response.agent_id,
-        response.request_id,
-        response.result,
-    );
-}
-
-/// Runs the router event loop so all correlated routing state stays single-owner.
-///
-/// TODO: This should be method of RouterState
-async fn run_router(
-    mut receiver: mpsc::Receiver<RouterMsg>,
-    router_handle: RouterHandle,
-    terminal_registry: TerminalRegistry,
-    log_registry: LogRegistry,
-) {
-    log!(Level::Info, "Router task started");
-    let mut state = RouterState::new(
+    let state = RouterState::new(
         ui::start_refresh_check_task(router_handle.clone()),
         terminal_registry,
         log_registry,
     );
+    let task_handle = tokio::spawn(state.run(receiver, router_handle.clone()));
+    (router_handle, task_handle)
+}
 
-    while let Some(message) = receiver.recv().await {
-        match message {
-            RouterMsg::RegisterAgent(request) => {
-                agents::register(&mut state, request).await;
-            }
-            RouterMsg::RegisterTransferConnection(request) => {
-                agents::register_transfer(&mut state, request).await;
-            }
-            RouterMsg::UnregisterTransferConnection {
-                agent_id,
-                socket_id,
-            } => {
-                agents::unregister_transfer(&mut state, agent_id, socket_id).await;
-            }
-            RouterMsg::RegisterManagedAgent(request) => {
-                agents::register_managed(&mut state, request);
-            }
-            RouterMsg::ApplyManagedLifecycle(request) => {
-                agents::apply_managed_lifecycle(&mut state, request).await;
-            }
-            RouterMsg::UnregisterAgent {
-                agent_id,
-                socket_id,
-            } => {
-                // Only remove the entry if the socket_id matches the current
-                // connection. When a new agent replaces a stale one, the old
-                // session's eventual shutdown would otherwise evict the new
-                // connection simply because both share the same agent_id.
-                let is_current = state
-                    .agents
-                    .by_id
-                    .get(&agent_id)
-                    .map(|conn| conn.socket_id == socket_id)
-                    .unwrap_or(false);
+impl CopyRegistry {
+    /// Checks whether an inbound stream chunk belongs to a remote copy flow.
+    fn is_remote_copy_stream(&self, request_id: RequestId) -> bool {
+        self.public_id_for_internal(request_id)
+            .and_then(|public_request_id| self.by_public_id.get(&public_request_id))
+            .map(|copy_request| {
+                matches!(copy_request.execution, CopyExecution::RemoteStream { .. })
+            })
+            .unwrap_or(false)
+    }
+}
 
-                if is_current {
-                    log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
-                    if let Some(connection) = state.agents.by_id.remove(&agent_id) {
-                        connection.shutdown_transfer();
-                    }
-                    if let Some(known) = state.agents.known_by_id.get_mut(&agent_id) {
-                        known.connected_at = None;
-                        known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
-                            chrono::Utc::now().timestamp(),
-                        ));
-                        known.socket_id = None;
-                        known.status = if known.managed {
-                            crate::commands::AgentConnectionStatus::Starting
-                        } else {
-                            crate::commands::AgentConnectionStatus::Disconnected
-                        };
-                    }
-                    ui::notify_agents_changed(&mut state);
-                    cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
-                    state.terminal_registry.remove_agent_pending(&agent_id);
-                    state.log_registry.remove_agent(&agent_id);
-                } else {
-                    log!(
-                        Level::Debug,
-                        "Ignoring stale unregister: agent_id={}, socket_id={}",
-                        agent_id,
-                        socket_id
-                    );
+impl RouterState {
+    /// Routes a final agent command response to one-shot, copy, or upload handlers.
+    fn route_response(&mut self, response: RouteResponse) {
+        if let Some((reply, stored_agent_id)) =
+            self.pending_rest.by_request_id.remove(&response.request_id)
+        {
+            let result_to_send = match (&response.result, self.agents.by_id.get(&stored_agent_id)) {
+                (CommandResult::GetAgentDetails(details), Some(agent_connection)) => {
+                    // Registration owns the connection-scoped identity fields, so the
+                    // router rewrites them from its authoritative registry snapshot.
+                    let mut details = details.clone();
+                    details.id = stored_agent_id.clone();
+                    details.name = agent_connection.agent_name.clone();
+                    details.cwd = agent_connection.default_directory.clone();
+                    details.connected_at = agent_connection.connected_at;
+                    details.os = agent_connection.os.clone();
+                    details.arch = agent_connection.arch.clone();
+                    details.hostname = agent_connection.hostname.clone();
+                    details.username = agent_connection.username.clone();
+                    details.binary = agent_connection.binary.clone();
+                    CommandResult::GetAgentDetails(details)
                 }
-            }
-            RouterMsg::RouteResponse(response) => {
-                route_response(&mut state, response);
-            }
-            RouterMsg::RouteTransferReady(request) => {
-                transfers::upload::mark_ready(&mut state, request.agent_id, request.request_id);
-            }
-            RouterMsg::GetAgentList { reply } => {
-                let _ = reply.send(agents::list_agents(&state));
-            }
-            RouterMsg::GetTransferProgress { reply } => {
-                let _ = reply.send(progress::list_transfer_progress(&state));
-            }
-            RouterMsg::RegisterUiSubscriber(request) => {
-                ui::register_subscriber(&mut state, request);
-            }
-            RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
-                ui::unregister_subscriber(&mut state, &subscriber_id);
-            }
-            RouterMsg::ExecuteCommandRest(request) => {
-                agents::execute_command_rest(&mut state, request);
-            }
-            RouterMsg::RouteStreamChunk(request) => {
-                if is_remote_copy_stream(&state, request.chunk.request_id) {
-                    transfers::copy::route_chunk(&mut state, &router_handle, request);
-                } else {
-                    transfers::download::route_chunk(&mut state, &router_handle, request);
-                }
-            }
-            RouterMsg::FinishRoutedDownloadChunk(route) => {
-                transfers::download::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(());
-            }
-            RouterMsg::FinishRoutedUploadChunk(route) => {
-                let result = transfers::upload::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(result);
-            }
-            RouterMsg::FinishRoutedCopyChunk(route) => {
-                transfers::copy::finish_routed_chunk(&mut state, &route);
-                let _ = route.reply.send(());
-            }
-            RouterMsg::ExecuteStreamCommandRest(request) => {
-                transfers::download::start(&mut state, request);
-            }
-            RouterMsg::StartUploadStreamRest(request) => {
-                transfers::upload::start(&mut state, request);
-            }
-            RouterMsg::SendStreamChunkToAgent(request) => {
-                transfers::upload::route_chunk(&mut state, &router_handle, request);
-            }
-            RouterMsg::CancelTransfer {
-                agent_id,
-                request_id,
-            } => {
-                cleanup::cancel_transfer(&mut state, request_id, agent_id);
-            }
-            RouterMsg::StartCopyRest(request) => {
-                transfers::copy::start(&mut state, request);
-            }
-            RouterMsg::TransferProgressUpdate(request) => {
-                transfers::copy::update_progress(&mut state, request);
-            }
-            RouterMsg::OpenTerminal(request) => {
-                agents::open_terminal(&state, request);
-            }
-            RouterMsg::OpenAgentLogStream(request) => {
-                agents::open_log_stream(&state, request);
-            }
-            RouterMsg::CheckPendingUiRefresh => {
-                ui::check_pending_refresh(&mut state);
-            }
-            RouterMsg::Shutdown => {
-                break;
-            }
+                _ => response.result.clone(),
+            };
+
+            let _ = reply.send(result_to_send);
+            return;
         }
+
+        if transfers::copy::finish_transfer(
+            self,
+            response.agent_id.clone(),
+            response.request_id,
+            response.result.clone(),
+        ) {
+            return;
+        }
+
+        transfers::upload::finish_transfer(
+            self,
+            response.agent_id,
+            response.request_id,
+            response.result,
+        );
     }
 
-    state.ui.refresh_check_task.abort();
-    log!(Level::Info, "Router task stopped");
+    /// Runs the router event loop so all correlated routing state stays single-owner.
+    async fn run(mut self, mut receiver: mpsc::Receiver<RouterMsg>, router_handle: RouterHandle) {
+        log!(Level::Info, "Router task started");
+
+        while let Some(message) = receiver.recv().await {
+            match message {
+                RouterMsg::RegisterAgent(request) => {
+                    agents::register(&mut self, request).await;
+                }
+                RouterMsg::RegisterTransferConnection(request) => {
+                    agents::register_transfer(&mut self, request).await;
+                }
+                RouterMsg::UnregisterTransferConnection {
+                    agent_id,
+                    socket_id,
+                } => {
+                    agents::unregister_transfer(&mut self, agent_id, socket_id).await;
+                }
+                RouterMsg::RegisterManagedAgent(request) => {
+                    agents::register_managed(&mut self, request);
+                }
+                RouterMsg::ApplyManagedLifecycle(request) => {
+                    agents::apply_managed_lifecycle(&mut self, request).await;
+                }
+                RouterMsg::UnregisterAgent {
+                    agent_id,
+                    socket_id,
+                } => {
+                    // Only remove the entry if the socket_id matches the current
+                    // connection. When a new agent replaces a stale one, the old
+                    // session's eventual shutdown would otherwise evict the new
+                    // connection simply because both share the same agent_id.
+                    let is_current = self
+                        .agents
+                        .by_id
+                        .get(&agent_id)
+                        .map(|conn| conn.socket_id == socket_id)
+                        .unwrap_or(false);
+
+                    if is_current {
+                        log!(Level::Info, "Agent unregistered: agent_id={}", agent_id);
+                        if let Some(connection) = self.agents.by_id.remove(&agent_id) {
+                            connection.shutdown_transfer();
+                        }
+                        if let Some(known) = self.agents.known_by_id.get_mut(&agent_id) {
+                            known.connected_at = None;
+                            known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+                                chrono::Utc::now().timestamp(),
+                            ));
+                            known.socket_id = None;
+                            known.status = if known.managed {
+                                crate::commands::AgentConnectionStatus::Starting
+                            } else {
+                                crate::commands::AgentConnectionStatus::Disconnected
+                            };
+                        }
+                        ui::notify_agents_changed(&mut self);
+                        cleanup::cleanup_agent_requests(&mut self, &agent_id).await;
+                        self.terminal_registry.remove_agent_pending(&agent_id);
+                        self.log_registry.remove_agent(&agent_id);
+                    } else {
+                        log!(
+                            Level::Debug,
+                            "Ignoring stale unregister: agent_id={}, socket_id={}",
+                            agent_id,
+                            socket_id
+                        );
+                    }
+                }
+                RouterMsg::RouteResponse(response) => {
+                    self.route_response(response);
+                }
+                RouterMsg::RouteTransferReady(request) => {
+                    transfers::upload::mark_ready(&mut self, request.agent_id, request.request_id);
+                }
+                RouterMsg::GetAgentList { reply } => {
+                    let _ = reply.send(agents::list_agents(&self));
+                }
+                RouterMsg::GetTransferProgress { reply } => {
+                    let _ = reply.send(progress::list_transfer_progress(&self));
+                }
+                RouterMsg::RegisterUiSubscriber(request) => {
+                    ui::register_subscriber(&mut self, request);
+                }
+                RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
+                    ui::unregister_subscriber(&mut self, &subscriber_id);
+                }
+                RouterMsg::ExecuteCommandRest(request) => {
+                    agents::execute_command_rest(&mut self, request);
+                }
+                RouterMsg::RouteStreamChunk(request) => {
+                    if self.copies.is_remote_copy_stream(request.chunk.request_id) {
+                        transfers::copy::route_chunk(&mut self, &router_handle, request);
+                    } else {
+                        transfers::download::route_chunk(&mut self, &router_handle, request);
+                    }
+                }
+                RouterMsg::FinishRoutedDownloadChunk(route) => {
+                    transfers::download::finish_routed_chunk(&mut self, &route);
+                    let _ = route.reply.send(());
+                }
+                RouterMsg::FinishRoutedUploadChunk(route) => {
+                    let result = transfers::upload::finish_routed_chunk(&mut self, &route);
+                    let _ = route.reply.send(result);
+                }
+                RouterMsg::FinishRoutedCopyChunk(route) => {
+                    transfers::copy::finish_routed_chunk(&mut self, &route);
+                    let _ = route.reply.send(());
+                }
+                RouterMsg::ExecuteStreamCommandRest(request) => {
+                    transfers::download::start(&mut self, request);
+                }
+                RouterMsg::StartUploadStreamRest(request) => {
+                    transfers::upload::start(&mut self, request);
+                }
+                RouterMsg::SendStreamChunkToAgent(request) => {
+                    transfers::upload::route_chunk(&mut self, &router_handle, request);
+                }
+                RouterMsg::CancelTransfer {
+                    agent_id,
+                    request_id,
+                } => {
+                    cleanup::cancel_transfer(&mut self, request_id, agent_id);
+                }
+                RouterMsg::StartCopyRest(request) => {
+                    transfers::copy::start(&mut self, request);
+                }
+                RouterMsg::TransferProgressUpdate(request) => {
+                    transfers::copy::update_progress(&mut self, request);
+                }
+                RouterMsg::OpenTerminal(request) => {
+                    agents::open_terminal(&self, request);
+                }
+                RouterMsg::OpenAgentLogStream(request) => {
+                    agents::open_log_stream(&self, request);
+                }
+                RouterMsg::CheckPendingUiRefresh => {
+                    ui::check_pending_refresh(&mut self);
+                }
+                RouterMsg::Shutdown => {
+                    break;
+                }
+            }
+        }
+
+        self.ui.refresh_check_task.abort();
+        log!(Level::Info, "Router task stopped");
+    }
 }
 
 #[cfg(test)]
