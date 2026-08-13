@@ -130,7 +130,7 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-    ui::notify_refresh_immediately(state);
+    ui::notify_transfer_refresh_immediately(state);
 }
 
 /// Creates a progress entry and direct-upload state for a newly started upload.
@@ -165,7 +165,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-    ui::notify_refresh_immediately(state);
+    ui::notify_transfer_refresh_immediately(state);
 }
 
 /// Creates a progress entry for a newly started logical copy transfer.
@@ -195,7 +195,7 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-    ui::notify_refresh_immediately(state);
+    ui::notify_transfer_refresh_immediately(state);
 }
 
 /// Adds transferred bytes to an existing progress entry and clears stale errors.
@@ -207,7 +207,7 @@ pub(crate) fn increment_bytes(state: &mut RouterState, transfer_id: TransferId, 
         updated = true;
     }
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
     }
 }
 
@@ -229,7 +229,7 @@ pub(crate) fn set_copy_progress(
     }
 
     if updated {
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
     }
 }
 
@@ -241,6 +241,7 @@ pub(crate) fn set_copy_progress(
 /// progress row does not reset to zero.
 pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: TransferId) {
     let mut updated = false;
+    let mut routes_changed = false;
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Completed;
         if progress.total_bytes == 0 {
@@ -251,9 +252,13 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = None;
         updated = true;
+        routes_changed = matches!(progress.direction, TransferDirection::Upload);
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_transfer_refresh_immediately(state);
+        if routes_changed {
+            ui::notify_routes_changed(state);
+        }
     }
 }
 
@@ -275,7 +280,8 @@ pub(crate) fn mark_copy_transfer_completed(
         updated = true;
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_transfer_refresh_immediately(state);
+        ui::notify_routes_changed(state);
     }
 }
 
@@ -293,7 +299,7 @@ pub(crate) fn mark_transfer_errored(
         updated = true;
     }
     if updated {
-        ui::notify_refresh_immediately(state);
+        ui::notify_transfer_refresh_immediately(state);
     }
 }
 
@@ -349,12 +355,51 @@ mod tests {
             .await
             .expect("new transfers should trigger an immediate refresh");
         assert!(
-            matches!(start_event, UiEvent::Refresh),
+            matches!(start_event, UiEvent::TransfersChanged),
             "transfer creation should bypass the throttle so the persistent UI bar updates immediately"
         );
         assert!(
             !state.ui.refresh_pending,
             "an immediate start refresh should replace any older pending refresh"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_refresh_does_not_consume_transfer_throttle() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+
+        ui::notify_agents_changed(&mut state);
+
+        let agent_event = ui_rx
+            .recv()
+            .await
+            .expect("agent changes should reach UI subscribers");
+        assert!(
+            matches!(agent_event, UiEvent::AgentsChanged),
+            "agent changes should identify the affected cache domain"
+        );
+        assert!(
+            state.ui.last_refresh_sent_at.is_none(),
+            "agent events should not delay the next transfer progress event"
+        );
+
+        ui::notify_transfer_refresh(&mut state);
+        let transfer_event = ui_rx
+            .recv()
+            .await
+            .expect("the first transfer change should remain immediate");
+        assert!(
+            matches!(transfer_event, UiEvent::TransfersChanged),
+            "transfer changes should identify the affected cache domain"
         );
 
         state.ui.refresh_check_task.abort();
@@ -390,13 +435,13 @@ mod tests {
             },
         );
 
-        ui::notify_refresh(&mut state);
+        ui::notify_transfer_refresh(&mut state);
         let first_event = ui_rx
             .recv()
             .await
             .expect("initial refresh should reach subscribers");
         assert!(
-            matches!(first_event, UiEvent::Refresh),
+            matches!(first_event, UiEvent::TransfersChanged),
             "the setup refresh should confirm the subscriber wiring before the terminal-state assertion"
         );
 
@@ -410,7 +455,7 @@ mod tests {
             .await
             .expect("completed transfers should trigger an immediate refresh");
         assert!(
-            matches!(terminal_event, UiEvent::Refresh),
+            matches!(terminal_event, UiEvent::TransfersChanged),
             "terminal transfer updates should bypass the normal refresh throttle so the UI reflects completion immediately"
         );
         assert!(

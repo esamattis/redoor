@@ -1,15 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeftRight } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Route as RootRoute } from "./__root";
 import { TransferList } from "#ui/components/transfer-list";
+import { transfersQueryOptions } from "#ui/queries";
 
 export const Route = createFileRoute("/transfers/")({
     component: TransfersPage,
 });
 
 function TransfersPage() {
-    const { agents, transferProgress } = RootRoute.useLoaderData();
+    const { agents, transferProgress: initialTransferProgress } =
+        RootRoute.useLoaderData();
+    const { api } = RootRoute.useRouteContext();
+    const { data: transferProgress } = useQuery({
+        ...transfersQueryOptions(api),
+        initialData: initialTransferProgress,
+    });
 
     return (
         <div className="p-4 sm:p-8">

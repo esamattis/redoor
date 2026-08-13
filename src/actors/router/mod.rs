@@ -236,7 +236,7 @@ async fn run_router(
                             crate::commands::AgentConnectionStatus::Disconnected
                         };
                     }
-                    ui::notify_refresh(&mut state);
+                    ui::notify_agents_changed(&mut state);
                     cleanup::cleanup_agent_requests(&mut state, &agent_id).await;
                     state.terminal_registry.remove_agent_pending(&agent_id);
                     state.log_registry.remove_agent(&agent_id);

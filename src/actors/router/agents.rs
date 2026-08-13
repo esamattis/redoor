@@ -172,7 +172,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.binary = Some(binary);
     known.supports_self_exec = supports_self_exec;
     known.supports_native_open = supports_native_open;
-    ui::notify_refresh(state);
+    ui::notify_agents_changed(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
         token: transfer_token,
@@ -191,7 +191,7 @@ fn mark_agent_transfer_ready(state: &mut RouterState, agent_id: &AgentId) {
     }
     known.status = AgentConnectionStatus::Connected;
     known.connection_issue = None;
-    ui::notify_refresh(state);
+    ui::notify_agents_changed(state);
 }
 
 /// Registers a connected agent, replacing any existing connection that
@@ -501,7 +501,7 @@ pub(crate) async fn apply_managed_lifecycle(
         state.terminal_registry.remove_agent_pending(&agent_id);
         state.log_registry.remove_agent(&agent_id);
     }
-    ui::notify_refresh(state);
+    ui::notify_agents_changed(state);
     if let Some(reply) = reply {
         let _ = reply.send(());
     }

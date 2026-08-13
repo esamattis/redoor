@@ -690,7 +690,12 @@ pub struct TransferProgressUpdate {
 #[ts(rename_all = "snake_case")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
-    Refresh,
+    /// Agent inventory changed and agent-dependent route data may need reloading.
+    AgentsChanged,
+    /// Filesystem state changed and the active route may need reloading.
+    RoutesChanged,
+    /// Transfer progress changed without requiring unrelated route loaders to rerun.
+    TransfersChanged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

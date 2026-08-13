@@ -49,13 +49,13 @@ pub(crate) fn unregister_subscriber(state: &mut RouterState, subscriber_id: &str
     state.ui.subscribers.remove(subscriber_id);
 }
 
-/// Sends an immediate refresh when allowed or marks one trailing refresh as pending.
-pub(crate) fn notify_refresh(state: &mut RouterState) {
+/// Sends an immediate transfer refresh when allowed or marks one trailing refresh as pending.
+pub(crate) fn notify_transfer_refresh(state: &mut RouterState) {
     let now = Instant::now();
 
     match state.ui.last_refresh_sent_at {
         None => {
-            broadcast_event(state, UiEvent::Refresh);
+            broadcast_event(state, UiEvent::TransfersChanged);
             state.ui.last_refresh_sent_at = Some(now);
             state.ui.refresh_pending = false;
         }
@@ -63,7 +63,7 @@ pub(crate) fn notify_refresh(state: &mut RouterState) {
             let elapsed = now.saturating_duration_since(last_sent_at);
 
             if elapsed >= UI_REFRESH_THROTTLE_WINDOW {
-                broadcast_event(state, UiEvent::Refresh);
+                broadcast_event(state, UiEvent::TransfersChanged);
                 state.ui.last_refresh_sent_at = Some(now);
                 state.ui.refresh_pending = false;
             } else {
@@ -73,10 +73,10 @@ pub(crate) fn notify_refresh(state: &mut RouterState) {
     }
 }
 
-/// Broadcasts one refresh immediately and resets the trailing throttle state.
-pub(crate) fn notify_refresh_immediately(state: &mut RouterState) {
+/// Broadcasts one transfer refresh immediately and resets the trailing throttle state.
+pub(crate) fn notify_transfer_refresh_immediately(state: &mut RouterState) {
     let now = Instant::now();
-    broadcast_event(state, UiEvent::Refresh);
+    broadcast_event(state, UiEvent::TransfersChanged);
     state.ui.last_refresh_sent_at = Some(now);
     state.ui.refresh_pending = false;
 }
@@ -89,14 +89,24 @@ pub(crate) fn check_pending_refresh(state: &mut RouterState) {
 
     let now = Instant::now();
     let Some(last_sent_at) = state.ui.last_refresh_sent_at else {
-        notify_refresh_immediately(state);
+        notify_transfer_refresh_immediately(state);
         return;
     };
 
     let elapsed = now.saturating_duration_since(last_sent_at);
     if elapsed >= UI_REFRESH_THROTTLE_WINDOW {
-        notify_refresh_immediately(state);
+        notify_transfer_refresh_immediately(state);
     }
+}
+
+/// Broadcasts agent inventory changes without coupling them to transfer throttling.
+pub(crate) fn notify_agents_changed(state: &mut RouterState) {
+    broadcast_event(state, UiEvent::AgentsChanged);
+}
+
+/// Broadcasts changes that affect data loaded directly by the active route.
+pub(crate) fn notify_routes_changed(state: &mut RouterState) {
+    broadcast_event(state, UiEvent::RoutesChanged);
 }
 
 /// Broadcasts one UI event to all live subscribers and drops closed senders.

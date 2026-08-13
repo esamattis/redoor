@@ -33,6 +33,7 @@ export function transfersQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.transfers(),
         queryFn: () => api.getTransferProgress(),
+        staleTime: Number.POSITIVE_INFINITY,
     });
 }
 
@@ -41,6 +42,7 @@ export function serverInfoQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.serverInfo(),
         queryFn: () => api.getServerInfo(),
+        staleTime: Number.POSITIVE_INFINITY,
     });
 }
 

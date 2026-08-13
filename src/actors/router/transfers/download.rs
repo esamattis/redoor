@@ -211,7 +211,7 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                     request_id: route.request_id,
                 });
             }
-            ui::notify_refresh(state);
+            ui::notify_transfer_refresh(state);
         }
         return;
     }
@@ -244,7 +244,7 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
 
     if route.is_last || is_error {
         state.streams.downloads.remove(&route.request_id);
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
         log!(
             Level::Info,
             "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",

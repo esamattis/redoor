@@ -9,7 +9,6 @@ import {
     createRootRouteWithContext,
 } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
-import { z } from "zod";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
@@ -30,11 +29,9 @@ import {
     isLsDirectoryResponse,
     isLsFileResponse,
     type TransferProgressEntry,
-    type UiEvent,
     type ServerInfoResponse,
 } from "#ui/api-client";
-import type { AnyRouter } from "@tanstack/react-router";
-import { useMutation, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 
 import {
     selectedFilesAtom,
@@ -66,10 +63,7 @@ import {
     transfersQueryOptions,
 } from "#ui/queries";
 import { isTextEntryElement } from "#ui/utils/keyboard";
-
-const uiEventSchema: z.ZodType<UiEvent> = z.object({
-    type: z.literal("refresh"),
-});
+import { RefreshListener } from "#ui/refresh-listener";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -89,134 +83,6 @@ export function getAgentFromRootLoaderData(
     agentId: string,
 ) {
     return loaderData.agents.find((agent) => agent.id === agentId);
-}
-
-export class RefreshListener {
-    private api: ApiClient;
-    private router: AnyRouter;
-
-    constructor(api: ApiClient, router: AnyRouter) {
-        this.api = api;
-        this.router = router;
-    }
-    private reconnectTimer: number | null = null;
-    private websocket: WebSocket | null = null;
-    private invalidateInFlight: Promise<void> | null = null;
-    private invalidateQueued = false;
-    private unsubscribeFromResolved: (() => void) | null = null;
-    private started = false;
-
-    start() {
-        if (this.started) {
-            return;
-        }
-
-        this.started = true;
-        this.connect();
-    }
-
-    stop() {
-        this.started = false;
-
-        if (this.reconnectTimer !== null) {
-            window.clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-
-        this.websocket?.close();
-        this.websocket = null;
-        this.unsubscribeFromResolved?.();
-        this.unsubscribeFromResolved = null;
-        this.invalidateInFlight = null;
-        this.invalidateQueued = false;
-    }
-
-    private runInvalidate() {
-        if (!this.started) {
-            return;
-        }
-
-        if (this.invalidateInFlight) {
-            this.invalidateQueued = true;
-            return;
-        }
-
-        if (this.router.state.status === "pending") {
-            this.invalidateQueued = true;
-            if (!this.unsubscribeFromResolved) {
-                const unsubscribe = this.router.subscribe("onResolved", () => {
-                    unsubscribe();
-                    this.unsubscribeFromResolved = null;
-                    if (this.invalidateQueued && this.started) {
-                        // Let the user navigation commit before refreshing its destination loaders.
-                        this.invalidateQueued = false;
-                        this.runInvalidate();
-                    }
-                });
-                this.unsubscribeFromResolved = unsubscribe;
-            }
-            return;
-        }
-
-        this.invalidateInFlight = this.router
-            .invalidate()
-            .catch(() => {})
-            .then(
-                () => new Promise<void>((resolve) => setTimeout(resolve, 200)),
-            )
-            .finally(() => {
-                this.invalidateInFlight = null;
-
-                if (this.invalidateQueued && this.started) {
-                    // A refresh arrived while the previous invalidation was still running,
-                    // so immediately drain the queued follow-up pass once the current one settles.
-                    this.invalidateQueued = false;
-                    this.runInvalidate();
-                }
-            });
-    }
-
-    private connect() {
-        if (!this.started) {
-            return;
-        }
-
-        this.websocket = new WebSocket(this.api.getUiWebSocketUrl());
-
-        this.websocket.addEventListener("message", (event) => {
-            const frame = z.string().safeParse(event.data);
-            if (!frame.success) {
-                return;
-            }
-
-            let message: UiEvent;
-
-            try {
-                message = uiEventSchema.parse(JSON.parse(frame.data));
-            } catch {
-                return;
-            }
-
-            if (message.type === "refresh") {
-                this.runInvalidate();
-            }
-        });
-
-        this.websocket.addEventListener("error", () => {
-            this.websocket?.close();
-        });
-
-        this.websocket.addEventListener("close", () => {
-            this.websocket = null;
-
-            if (this.started) {
-                this.reconnectTimer = window.setTimeout(() => {
-                    this.reconnectTimer = null;
-                    this.connect();
-                }, 1000);
-            }
-        });
-    }
 }
 
 const emptyServerInfo: ServerInfoResponse = {
@@ -268,10 +134,15 @@ function RootRouteLayout() {
 }
 
 function RootLayout() {
-    const { agents, transferProgress } = Route.useLoaderData();
+    const { agents, transferProgress: initialTransferProgress } =
+        Route.useLoaderData();
     const location = useLocation();
     const router = useRouter();
-    const { api } = Route.useRouteContext();
+    const { api, queryClient } = Route.useRouteContext();
+    const { data: transferProgress } = useQuery({
+        ...transfersQueryOptions(api),
+        initialData: initialTransferProgress,
+    });
     const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
     const importLocation = useMatches({
         select: (matches) => {
@@ -337,10 +208,10 @@ function RootLayout() {
     });
 
     React.useEffect(() => {
-        const refreshListener = new RefreshListener(api, router);
+        const refreshListener = new RefreshListener(api, router, queryClient);
         refreshListener.start();
         return () => refreshListener.stop();
-    }, [api, router]);
+    }, [api, queryClient, router]);
 
     React.useEffect(() => {
         if (

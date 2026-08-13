@@ -139,6 +139,7 @@ function CopySelectedFilesAction(props: {
                 const progress = await queryClient.fetchQuery({
                     ...transfersQueryOptions(props.api),
                     retry: false,
+                    staleTime: 0,
                 });
                 if (controller.signal.aborted) return;
 

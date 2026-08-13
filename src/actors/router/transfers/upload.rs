@@ -59,7 +59,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
                     request_id.as_transfer_id(),
                     "Upload stream canceled by client".to_string(),
                 );
-                ui::notify_refresh(state);
+                ui::notify_transfer_refresh(state);
             }
             return;
         }
@@ -368,7 +368,7 @@ pub(crate) fn finish_transfer(
             matches!(result, CommandResult::Error { .. })
         );
         state.streams.uploads.remove(&request_id);
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
 
         if let Some(sender) = completion_sender {
             let _ = sender.send(Err(RouterError::ClientCanceledUpload));
@@ -422,7 +422,7 @@ pub(crate) fn finish_transfer(
     };
 
     state.streams.uploads.remove(&request_id);
-    ui::notify_refresh(state);
+    ui::notify_transfer_refresh(state);
 
     if let Some(sender) = ready_sender {
         // HTTP is still blocked on readiness when setup fails before TransferReady.

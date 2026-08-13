@@ -128,7 +128,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         || !orphaned_uploads.is_empty()
         || !orphaned_copy_ids.is_empty()
     {
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
     }
 }
 
@@ -231,7 +231,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
             upload_ids.len(),
             remote_copy_ids.len()
         );
-        ui::notify_refresh(state);
+        ui::notify_transfer_refresh(state);
     }
 }
 
