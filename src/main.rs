@@ -559,6 +559,8 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
         one_time_token_registry,
         auth,
         config_path,
+        config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),
+        port,
         auth_mode,
         shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
     });

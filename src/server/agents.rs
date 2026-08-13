@@ -61,7 +61,9 @@ pub(crate) async fn server_info_handler(
 }
 
 /// Loads and sorts retained inventory so every client receives stable ordering.
-async fn list_agent_snapshots(state: &ServerState) -> Result<Vec<AgentInfoResponse>, String> {
+pub(super) async fn list_agent_snapshots(
+    state: &ServerState,
+) -> Result<Vec<AgentInfoResponse>, String> {
     let mut agents = state
         .router_ref
         .request(5000, |reply| actors::router::RouterMsg::GetAgentList {

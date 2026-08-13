@@ -7,6 +7,7 @@ import { WEB_BASE_URL } from "./helpers";
 
 const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
+const CREATED_SSH_AGENT = `playwright-relay-dev-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
 
 /** Reads one lifecycle snapshot through the same authenticated API as the UI. */
@@ -24,16 +25,56 @@ async function getAgent(
 
 test.describe.serial("Agent management", () => {
     test.afterEach(async ({ request }) => {
-        for (const name of [VALID_AGENT, FAILING_AGENT]) {
-            const agent = await getAgent(request, name);
+        for (const name of [VALID_AGENT, FAILING_AGENT, CREATED_SSH_AGENT]) {
+            const response = await request.get(`${WEB_BASE_URL}/api/v1/agents`);
+            const body: AgentListResponse = await response.json();
+            const agent = body.agents.find((entry) => entry.name === name);
+            if (!agent) continue;
             if (agent.status !== "stopped") {
-                const response = await request.post(
+                const shutdownResponse = await request.post(
                     `${WEB_BASE_URL}/api/v1/agents/${name}/shutdown`,
                 );
                 // Per-test cleanup must leave both managed children stopped for later suites.
-                expect(response.ok()).toBe(true);
+                expect(shutdownResponse.ok()).toBe(true);
             }
         }
+    });
+
+    test("adds and connects an SSH-backed agent through relay-dev", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_RELAY_DEV !== "1",
+            "relay-dev SSH fixture is not enabled",
+        );
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.getByRole("link", { name: "Add SSH agent" }).click();
+
+        // The trailing add control must navigate to a dedicated, labeled form route.
+        await expect(page).toHaveURL(/\/agents\/new$/);
+        await expect(
+            page.getByRole("heading", { name: "Add SSH agent" }),
+        ).toBeVisible();
+        await page.getByLabel("SSH target").fill("relay-dev");
+        await page.getByLabel("Agent name").fill(CREATED_SSH_AGENT);
+        await page.getByRole("button", { name: "Add SSH agent" }).click();
+
+        // Submission dynamically adds and opens the managed tab without a server restart.
+        await expect(
+            page.getByRole("tab", {
+                name: new RegExp(`^${CREATED_SSH_AGENT}, `),
+            }),
+        ).toBeVisible({ timeout: 15_000 });
+
+        // A connected tab proves the form-created config can prepare and run on relay-dev.
+        await expect(
+            page.getByRole("tab", {
+                name: `${CREATED_SSH_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        const connected = await getAgent(page.request, CREATED_SSH_AGENT);
+        expect(connected.managed).toBe(true);
+        expect(connected.connection_id).not.toBeNull();
     });
 
     test("shows managed inventory before lazy startup", async ({ page }) => {

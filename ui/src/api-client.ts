@@ -44,6 +44,8 @@ import type { FileSearchEntry } from "#bindings/FileSearchEntry";
 import type { DiffEndpoint } from "#bindings/DiffEndpoint";
 import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
 import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
+import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
+import type { CreateSshAgentResponse } from "#bindings/CreateSshAgentResponse";
 import { z } from "zod";
 
 export type {
@@ -85,6 +87,8 @@ export type {
     DiffEndpoint,
     DiffFilesRequest,
     DiffFilesResponse,
+    CreateSshAgentRequest,
+    CreateSshAgentResponse,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -767,6 +771,21 @@ export class ApiClient {
         );
         return response.agents.map(
             (info) => new Agent(this.baseUrl, info, this.requestContext()),
+        );
+    }
+
+    /** Persists and dynamically registers one dormant SSH-backed managed agent. */
+    async createSshAgent(
+        request: CreateSshAgentRequest,
+    ): Promise<CreateSshAgentResponse> {
+        return apiRequest<CreateSshAgentResponse>(
+            `${this.baseUrl}/api/v1/agents`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
         );
     }
 

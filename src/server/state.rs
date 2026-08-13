@@ -31,6 +31,10 @@ pub(crate) struct ServerState {
     /// Absolute path of the TOML config loaded at process start (for the server
     /// home UI and so restart can re-validate the same file).
     pub(crate) config_path: PathBuf,
+    /// Serializes read-modify-write config edits so concurrent submissions cannot lose entries.
+    pub(crate) config_edit_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Effective listener port used when dynamically creating managed SSH supervisors.
+    pub(crate) port: u16,
     /// Login backend resolved from the TOML credentials (or their absence).
     pub(crate) auth_mode: ServerAuthMode,
     /// Signals axum graceful shutdown; restart fires this after a successful

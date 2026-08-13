@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as TestRouteImport } from './routes/test'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
+import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
 import { Route as AgentsAgentIdLogsRouteImport } from './routes/agents.$agentId.logs'
@@ -44,6 +45,11 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   path: '/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentsNewRoute = AgentsNewRouteImport.update({
+  id: '/agents/new',
+  path: '/agents/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TransfersIndexRoute = TransfersIndexRouteImport.update({
   id: '/transfers/',
   path: '/transfers/',
@@ -71,6 +77,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
+  '/agents/new': typeof AgentsNewRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
@@ -82,6 +89,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
+  '/agents/new': typeof AgentsNewRoute
   '/agents': typeof AgentsIndexRoute
   '/transfers': typeof TransfersIndexRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
@@ -94,6 +102,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/logs': typeof LogsRoute
   '/test': typeof TestRoute
+  '/agents/new': typeof AgentsNewRoute
   '/agents/': typeof AgentsIndexRoute
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/logs'
     | '/test'
+    | '/agents/new'
     | '/agents/'
     | '/transfers/'
     | '/agents/$agentId/logs'
@@ -118,6 +128,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/logs'
     | '/test'
+    | '/agents/new'
     | '/agents'
     | '/transfers'
     | '/agents/$agentId/logs'
@@ -129,6 +140,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/logs'
     | '/test'
+    | '/agents/new'
     | '/agents/'
     | '/transfers/'
     | '/agents/$agentId/logs'
@@ -141,6 +153,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   LogsRoute: typeof LogsRoute
   TestRoute: typeof TestRoute
+  AgentsNewRoute: typeof AgentsNewRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   TransfersIndexRoute: typeof TransfersIndexRoute
   AgentsAgentIdLogsRoute: typeof AgentsAgentIdLogsRoute
@@ -185,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agents/new': {
+      id: '/agents/new'
+      path: '/agents/new'
+      fullPath: '/agents/new'
+      preLoaderRoute: typeof AgentsNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/transfers/': {
       id: '/transfers/'
       path: '/transfers'
@@ -221,6 +241,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   LogsRoute: LogsRoute,
   TestRoute: TestRoute,
+  AgentsNewRoute: AgentsNewRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   TransfersIndexRoute: TransfersIndexRoute,
   AgentsAgentIdLogsRoute: AgentsAgentIdLogsRoute,

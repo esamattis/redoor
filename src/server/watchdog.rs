@@ -43,46 +43,58 @@ pub(crate) async fn register_agents(
         configs.len()
     );
     for config in configs.iter().cloned() {
-        let key = supervisor_key(&config);
-        let agent_id = AgentId::from(key.clone());
-        let default_directory = configured_directory(&config);
-        let callback_router = router.clone();
-        let callback_agent_id = agent_id.clone();
-        let (snapshot_sender, mut snapshot_receiver) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Some(snapshot) = snapshot_receiver.recv().await {
-                if callback_router
-                    .send_async(RouterMsg::ApplyManagedLifecycle(
-                        ApplyManagedLifecycleRequest {
-                            agent_id: callback_agent_id.clone(),
-                            snapshot,
-                            reply: None,
-                        },
-                    ))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let callback: SnapshotCallback = std::sync::Arc::new(move |snapshot| {
-            let _ = snapshot_sender.send(snapshot);
-        });
-        let spawn = make_spawn_fn(config, redoor_port, agent_token.to_string());
-        spawn_supervisor(key, spawn, registry, callback)?;
-        router
-            .request(5000, |reply| {
-                RouterMsg::RegisterManagedAgent(RegisterManagedAgentRequest {
-                    agent_id,
-                    default_directory,
-                    reply,
-                })
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("Failed to register managed inventory: {error:?}"))?;
+        register_agent(config, redoor_port, agent_token, registry, router).await?;
     }
     Ok(())
+}
+
+/// Registers one newly persisted agent without disturbing existing supervisors or connections.
+pub(crate) async fn register_agent(
+    config: AgentConfig,
+    redoor_port: u16,
+    agent_token: &str,
+    registry: &WatchdogRegistry,
+    router: &RouterHandle,
+) -> Result<AgentId> {
+    let key = supervisor_key(&config);
+    let agent_id = AgentId::from(key.clone());
+    let default_directory = configured_directory(&config);
+    let callback_router = router.clone();
+    let callback_agent_id = agent_id.clone();
+    let (snapshot_sender, mut snapshot_receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(snapshot) = snapshot_receiver.recv().await {
+            if callback_router
+                .send_async(RouterMsg::ApplyManagedLifecycle(
+                    ApplyManagedLifecycleRequest {
+                        agent_id: callback_agent_id.clone(),
+                        snapshot,
+                        reply: None,
+                    },
+                ))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let callback: SnapshotCallback = std::sync::Arc::new(move |snapshot| {
+        let _ = snapshot_sender.send(snapshot);
+    });
+    let spawn = make_spawn_fn(config, redoor_port, agent_token.to_string());
+    spawn_supervisor(key, spawn, registry, callback)?;
+    router
+        .request(5000, |reply| {
+            RouterMsg::RegisterManagedAgent(RegisterManagedAgentRequest {
+                agent_id: agent_id.clone(),
+                default_directory,
+                reply,
+            })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to register managed inventory: {error:?}"))?;
+    Ok(agent_id)
 }
 
 /// Extracts only the configured browser directory, leaving unknown SSH defaults nullable.
@@ -98,7 +110,7 @@ fn configured_directory(config: &AgentConfig) -> Option<String> {
 /// `AgentRegister` message. Falls back to the system hostname for
 /// local agents and the target hostname for SSH-backed agents when the
 /// config omits an explicit name.
-fn supervisor_key(config: &AgentConfig) -> String {
+pub(crate) fn supervisor_key(config: &AgentConfig) -> String {
     match config {
         AgentConfig::Local(c) => c.name.clone().unwrap_or_else(default_local_agent_name),
         AgentConfig::SshBacked(c) => c

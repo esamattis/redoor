@@ -1,3 +1,4 @@
+mod agent_configuration;
 mod agent_helpers;
 mod agent_logs;
 mod agent_transfers;

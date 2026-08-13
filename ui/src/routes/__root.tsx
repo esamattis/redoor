@@ -23,6 +23,7 @@ import {
     Menu,
     ScrollText,
     Users,
+    Plus,
 } from "lucide-react";
 import {
     ApiClient,
@@ -432,6 +433,19 @@ function TopTabStrip(props: {
                         );
                     })
                 )}
+                <Tooltip content="Add SSH agent">
+                    <Link
+                        to="/agents/new"
+                        aria-label="Add SSH agent"
+                        className={`mb-1 flex shrink-0 items-center justify-center rounded-md border p-2 transition-colors ${
+                            props.pathname === "/agents/new"
+                                ? "border-blue-500/60 bg-blue-500/15 text-blue-300"
+                                : "border-slate-700 text-slate-400 hover:border-slate-600 hover:bg-white/5 hover:text-slate-200"
+                        }`}
+                    >
+                        <Plus className="h-4 w-4" aria-hidden="true" />
+                    </Link>
+                </Tooltip>
             </div>
             <button
                 ref={menuButtonRef}

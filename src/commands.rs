@@ -470,6 +470,33 @@ pub struct AgentListResponse {
     pub agents: Vec<AgentInfoResponse>,
 }
 
+/// Describes one SSH-backed managed agent to persist and register at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateSshAgentRequest {
+    /// SSH host, alias, or destination accepted by the local OpenSSH client.
+    pub target: String,
+    /// Optional explicit SSH username instead of the target or SSH config default.
+    pub username: Option<String>,
+    /// Optional explicit SSH port instead of the SSH config default.
+    pub ssh_port: Option<u16>,
+    /// Stable managed-agent name; defaults to the target hostname when omitted.
+    pub name: Option<String>,
+    /// Optional path where the remote Redoor binary is installed.
+    pub remote_bin: Option<String>,
+    /// Optional initial browser directory advertised before the first connection.
+    pub home: Option<String>,
+    /// Optional local path receiving SSH subprocess diagnostics.
+    pub log: Option<String>,
+}
+
+/// Returns the newly visible dormant inventory record after persistence succeeds.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateSshAgentResponse {
+    pub agent: AgentInfoResponse,
+}
+
 /// Identifies the user-visible connection lifecycle independently from ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

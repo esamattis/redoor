@@ -435,6 +435,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             supports_native_open: false,
         },
     );
+    ui::notify_agents_changed(state);
     let _ = request.reply.send(());
 }
 

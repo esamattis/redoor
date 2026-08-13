@@ -8,6 +8,7 @@
 //! mode resolves required fields from CLI > env > config > default.
 
 mod bootstrap;
+mod edit;
 mod import;
 mod local_agent;
 
@@ -22,6 +23,7 @@ pub(crate) use bootstrap::{
     default_local_agent_name, default_process_log_path, default_relay_log_path,
     default_server_log_path,
 };
+pub(crate) use edit::append_ssh_agent;
 pub(crate) use import::import_agent_config_from_stdin;
 pub(crate) use local_agent::spawn_local_agent;
 
