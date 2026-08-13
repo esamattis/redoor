@@ -26,6 +26,7 @@ import {
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
 import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 
 type CopySelectedFilesState =
     | { type: "idle" }
@@ -313,6 +314,10 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
                             <FolderPlus className="h-4 w-4 text-slate-400" />
                             Upload directory
                         </ActionMenuButton>
+                        <p className="border-t border-slate-800 px-3 pt-3 text-xs leading-relaxed text-slate-400">
+                            You can also upload files by dragging and dropping
+                            them into this directory.
+                        </p>
                     </>
                 )}
             </ActionMenu>
@@ -606,6 +611,25 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
         "file" | "directory" | null
     >(null);
 
+    React.useEffect(() => {
+        /** Opens directory creation from the file list without intercepting text entry. */
+        const handleShortcut = (event: KeyboardEvent) => {
+            if (
+                event.key !== "d" ||
+                dialogType !== null ||
+                shouldIgnoreKeyboardShortcut(event)
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            setDialogType("directory");
+        };
+
+        window.addEventListener("keydown", handleShortcut);
+        return () => window.removeEventListener("keydown", handleShortcut);
+    }, [dialogType]);
+
     return (
         <>
             <ActionMenu label="New" icon={<Plus className="h-4 w-4" />}>
@@ -620,15 +644,20 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
                             <FilePlus className="h-4 w-4 text-slate-400" />
                             New file
                         </ActionMenuButton>
-                        <ActionMenuButton
-                            onClick={() => {
-                                close();
-                                setDialogType("directory");
-                            }}
+                        <Tooltip
+                            content="Create a new directory (d)"
+                            className="w-full"
                         >
-                            <FolderPlus className="h-4 w-4 text-slate-400" />
-                            New directory
-                        </ActionMenuButton>
+                            <ActionMenuButton
+                                onClick={() => {
+                                    close();
+                                    setDialogType("directory");
+                                }}
+                            >
+                                <FolderPlus className="h-4 w-4 text-slate-400" />
+                                New directory
+                            </ActionMenuButton>
+                        </Tooltip>
                     </>
                 )}
             </ActionMenu>

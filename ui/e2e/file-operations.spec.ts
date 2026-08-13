@@ -129,6 +129,15 @@ test.describe.serial("File Operations", () => {
         });
         await page.goto(directoryUrl);
 
+        await page.getByRole("button", { name: "Upload", exact: true }).click();
+        // The upload menu makes the existing drag-and-drop workflow discoverable.
+        await expect(
+            page.getByText(
+                "You can also upload files by dragging and dropping them into this directory.",
+            ),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+
         await page.getByLabel("Choose files to upload").setInputFiles({
             name: uploadName,
             mimeType: "text/plain",
@@ -310,9 +319,15 @@ test.describe.serial("File Operations", () => {
         await page.getByRole("button", { name: "New", exact: true }).click();
         await page
             .getByRole("button", { name: "New directory", exact: true })
-            .click();
+            .hover();
+        // The menu action advertises the equivalent keyboard shortcut.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Create a new directory (d)",
+        );
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("d");
 
-        // The dialog must open before submitting so the test exercises the browser action rather than the API directly.
+        // The shortcut opens the same dialog as the menu action.
         await expect(
             page.getByRole("dialog", { name: "Create directory" }),
         ).toBeVisible();
@@ -321,9 +336,13 @@ test.describe.serial("File Operations", () => {
             page.getByRole("textbox", { name: "Directory name" }),
         ).toBeFocused();
 
-        await page
-            .getByRole("textbox", { name: "Directory name" })
-            .fill(createdDirectoryName);
+        const directoryNameInput = page.getByRole("textbox", {
+            name: "Directory name",
+        });
+        await page.keyboard.type("d");
+        // Typing the shortcut key into an input must enter text instead of reopening the dialog.
+        await expect(directoryNameInput).toHaveValue("d");
+        await directoryNameInput.fill(createdDirectoryName);
 
         // The preview path confirms the UI targets the current directory instead of the agent root.
         await expect(page.getByText(createdDirectoryPath)).toBeVisible();
