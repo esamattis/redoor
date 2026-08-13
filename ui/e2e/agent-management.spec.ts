@@ -7,7 +7,7 @@ import { WEB_BASE_URL } from "./helpers";
 
 const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
-const CREATED_SSH_AGENT = `playwright-relay-dev-${process.pid}`;
+const CREATED_SSH_AGENT = `playwright-ssh-test-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
 
 /** Reads one lifecycle snapshot through the same authenticated API as the UI. */
@@ -40,12 +40,12 @@ test.describe.serial("Agent management", () => {
         }
     });
 
-    test("adds and connects an SSH-backed agent through relay-dev", async ({
+    test("adds and connects an SSH-backed agent through redoor-ssh-test", async ({
         page,
     }) => {
         test.skip(
-            process.env.REDOOR_RELAY_DEV !== "1",
-            "relay-dev SSH fixture is not enabled",
+            process.env.REDOOR_SSH_TEST !== "1",
+            "redoor-ssh-test SSH fixture is not enabled",
         );
         await page.goto(`${WEB_BASE_URL}/`);
         await page.getByRole("link", { name: "Add SSH agent" }).click();
@@ -55,7 +55,8 @@ test.describe.serial("Agent management", () => {
         await expect(
             page.getByRole("heading", { name: "Add SSH agent" }),
         ).toBeVisible();
-        await page.getByLabel("SSH target").fill("relay-dev");
+        await page.getByLabel("SSH target").fill("redoor-ssh-test");
+        await page.getByLabel("SSH username").fill("redoor");
         await page.getByLabel("Agent name").fill(CREATED_SSH_AGENT);
         await page.getByRole("button", { name: "Add SSH agent" }).click();
 
@@ -66,7 +67,7 @@ test.describe.serial("Agent management", () => {
             }),
         ).toBeVisible({ timeout: 15_000 });
 
-        // A connected tab proves the form-created config can prepare and run on relay-dev.
+        // A connected tab proves the form-created config can prepare and run as redoor.
         await expect(
             page.getByRole("tab", {
                 name: `${CREATED_SSH_AGENT}, connected`,

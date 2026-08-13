@@ -26,6 +26,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+const SSH_TEST_HOST = "redoor-ssh-test";
+const SSH_TEST_USER = "redoor";
+
 type RelayPidMetadata = {
     pid: number;
     id: string;
@@ -61,24 +64,29 @@ async function relayCommand(options: {
     });
 }
 
+/** Runs a command on the SSH test host as the required redoor user. */
+async function sshTestCommand(command: string): Promise<void> {
+    await execFileAsync("ssh", ["-l", SSH_TEST_USER, SSH_TEST_HOST, command]);
+}
+
 /** Stops any orphaned remote agent and removes only this test's isolated files. */
-async function cleanupRelayDev(options: {
+async function cleanupSshTest(options: {
     remoteRoot: string;
     agentAppNames: string[];
 }): Promise<void> {
     const appNames = options.agentAppNames.map(shellQuote).join(" ");
     const command = `for app in ${appNames}; do pid_file="$HOME/.local/share/$app/agent.pid"; if [ -f "$pid_file" ]; then pid=$(tr -d '[:space:]' < "$pid_file"); case "$pid" in *[!0-9]*|'') ;; *) kill "$pid" 2>/dev/null || true ;; esac; fi; rm -rf "$HOME/.local/share/$app"; done; rm -rf ${shellQuote(options.remoteRoot)}`;
-    await execFileAsync("ssh", ["relay-dev", command]);
+    await sshTestCommand(command);
 }
 
 /** Kills one remote relay agent so the owning local SSH process must reconnect it. */
 async function killRemoteAgent(agentAppName: string): Promise<void> {
     const appName = shellQuote(agentAppName);
     const command = `app=${appName}; pid_file="$HOME/.local/share/$app/agent.pid"; pid=$(tr -d '[:space:]' < "$pid_file"); kill -KILL "$pid"`;
-    await execFileAsync("ssh", ["relay-dev", command]);
+    await sshTestCommand(command);
 }
 
-describe.skipIf(process.env.REDOOR_RELAY_DEV !== "1")(
+describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
     "named SSH relays",
     () => {
         test("runs and controls multiple relays independently on one SSH host", async () => {
@@ -110,7 +118,8 @@ port = ${VITEST_SERVER_PORT}
 
 [[relays]]
 id = "${relayIds[0]}"
-target = "relay-dev"
+target = "${SSH_TEST_HOST}"
+username = "${SSH_TEST_USER}"
 server = "http://127.0.0.1:${VITEST_SERVER_PORT}"
 name = "${agentNames[0]}"
 agent_app_name = "${agentAppNames[0]}"
@@ -121,7 +130,8 @@ log = "${join(localLogDirectory, `${relayIds[0]}.log`)}"
 
 [[relays]]
 id = "${relayIds[1]}"
-target = "relay-dev"
+target = "${SSH_TEST_HOST}"
+username = "${SSH_TEST_USER}"
 server = "http://127.0.0.1:${VITEST_SERVER_PORT}"
 name = "${agentNames[1]}"
 agent_app_name = "${agentAppNames[1]}"
@@ -145,7 +155,7 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
                     }
                 }
                 try {
-                    await cleanupRelayDev({ remoteRoot, agentAppNames });
+                    await cleanupSshTest({ remoteRoot, agentAppNames });
                 } finally {
                     processManager.killAll();
                     rmSync(home, { recursive: true, force: true });
@@ -153,7 +163,7 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
             });
 
             // Remove artifacts from an interrupted run before starting remote processes.
-            await cleanupRelayDev({ remoteRoot, agentAppNames });
+            await cleanupSshTest({ remoteRoot, agentAppNames });
             processManager.spawnServer({ config: configPath });
             await waitForPort(VITEST_SERVER_PORT);
             const apiClient = new ApiClient(
@@ -351,10 +361,10 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
     },
 );
 
-describe.skipIf(process.env.REDOOR_RELAY_DEV !== "1")(
+describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
     "TOML-managed SSH agents",
     () => {
-        test("starts, controls, and restarts an [[agents]] entry through relay-dev", async () => {
+        test("starts, controls, and restarts an [[agents]] entry through redoor-ssh-test", async () => {
             const processManager = new ProcessManager();
             const home = mkdtempSync(
                 join(tmpdir(), "redoor-managed-ssh-integration-"),
@@ -375,7 +385,8 @@ password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
 
 [[agents]]
-target = "relay-dev"
+target = "${SSH_TEST_HOST}"
+username = "${SSH_TEST_USER}"
 name = "${agentName}"
 home = "${remoteRoot}"
 log = "${agentLogPath}"
@@ -385,7 +396,7 @@ log = "${agentLogPath}"
             onTestFinished(async () => {
                 processManager.killAll();
                 try {
-                    await cleanupRelayDev({
+                    await cleanupSshTest({
                         remoteRoot,
                         agentAppNames: [appName],
                     });
@@ -395,14 +406,11 @@ log = "${agentLogPath}"
             });
 
             // Clear artifacts from an interrupted run before the server can prepare the host.
-            await cleanupRelayDev({
+            await cleanupSshTest({
                 remoteRoot,
                 agentAppNames: [appName],
             });
-            await execFileAsync("ssh", [
-                "relay-dev",
-                `mkdir -p ${shellQuote(remoteRoot)}`,
-            ]);
+            await sshTestCommand(`mkdir -p ${shellQuote(remoteRoot)}`);
             const serverPid = processManager.spawn(
                 SERVER_PATH,
                 ["server", "--config", configPath],
