@@ -17,6 +17,7 @@
 - Always use async apis from tokio instead of sync apis instead
 - Always comments to functions, structs, enums and methods
     - The comments should try to answer the "why" question
+- When creating a function always consider first if it should be a method on a struct instead
 - Do not add one-line passthrough wrappers that only call another function or re-export a type. Call the real module directly.
 - When adding a retust api always create a dedicated struct for it's reponse with `#[ts(export)]` derive macro which genertes the related typescript interface.
 - Put behaviorally distinct REST endpoints in dedicated modules instead of adding them to an unrelated resource module. Group handlers only when they operate on the same domain and share a clear responsibility.
