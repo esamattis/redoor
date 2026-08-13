@@ -331,4 +331,124 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("button", { name: "Restart agent1_src 2" }),
         ).toHaveCount(0);
     });
+
+    test("opens or focuses the current agent terminal with t", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .hover();
+        // The plus action advertises the equivalent keyboard shortcut.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            `New terminal in ${ctx.agentName} (t)`,
+        );
+        await page.mouse.move(0, 0);
+
+        await page.keyboard.press("t");
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("tab", { name: "agent1_src 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+        const firstTerminal = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        // The shortcut must land in the shell so the user can type immediately.
+        await expect(firstTerminal).toBeFocused();
+
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("t");
+        // A second press reuses the live tab instead of creating another shell.
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(1);
+        await expect(firstTerminal).toBeFocused();
+
+        await page
+            .getByRole("button", { name: "Minimize Terminal" })
+            .press("Enter");
+        await page.keyboard.press("t");
+        // A collapsed live session is restored instead of opening a duplicate.
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(1);
+        await expect(firstTerminal).toBeFocused();
+
+        await page
+            .getByRole("tab", { name: "agent2_custom, connected" })
+            .click();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("t");
+        await expect(
+            page.getByRole("status", { name: "agent2_custom 1: Connected" }),
+        ).toBeVisible();
+        // A different agent still needs its own first terminal.
+        await expect(
+            page.getByRole("tab", { name: "agent1_src 1" }),
+        ).toBeVisible();
+
+        await page.getByRole("tab", { name: "agent1_src, connected" }).click();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("t");
+        // Returning to an agent focuses its existing live terminal.
+        await expect(
+            page.getByRole("tab", { name: "agent1_src 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(1);
+        await expect(firstTerminal).toBeFocused();
+    });
+
+    test("does not invoke single-key shortcuts while the terminal is focused", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+        await filterInput.focus();
+        await page.keyboard.type("t");
+        // Typing the shortcut key into an input must enter text instead of opening a terminal.
+        await expect(filterInput).toHaveValue("t");
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(0);
+
+        await page.keyboard.press("Escape");
+        await filterInput.fill("");
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("t");
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const terminalInput = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        await expect(terminalInput).toBeFocused();
+        await page.keyboard.type("tfdj");
+        // Shell input must not create tabs or trigger file-browser character shortcuts.
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(1);
+        await expect(terminalInput).toBeFocused();
+        await expect(filterInput).not.toBeFocused();
+        await expect(
+            page.getByRole("dialog", { name: "Create directory" }),
+        ).toHaveCount(0);
+        await expect(page).toHaveURL(directoryUrl);
+
+        await page.keyboard.press("Backspace");
+        await page.keyboard.press("Backspace");
+        await page.keyboard.press("Backspace");
+        await page.keyboard.press("Backspace");
+        // Backspace edits the shell instead of leaving the current directory.
+        await expect(page).toHaveURL(directoryUrl);
+        await expect(terminalInput).toBeFocused();
+    });
 });

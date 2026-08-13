@@ -26,6 +26,7 @@ import { initializeGhostty } from "#ui/terminal/ghostty";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
 import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 
 type TerminalState =
     | { type: "not_started" }
@@ -113,6 +114,24 @@ type ActiveTerminalTarget = {
     cwd: string;
 };
 
+/** Reuses a live shell for the routed agent so t does not stack duplicate tabs. */
+function findOpenTerminalForAgent(
+    tabs: TerminalTab[],
+    activeTabId: number | null,
+    agentId: string,
+): TerminalTab | undefined {
+    const agentTabs = tabs.filter(
+        (tab) => tab.agent.id === agentId && tab.state.type !== "disconnected",
+    );
+    if (agentTabs.length === 0) {
+        return undefined;
+    }
+    return (
+        agentTabs.find((tab) => tab.id === activeTabId) ??
+        agentTabs[agentTabs.length - 1]
+    );
+}
+
 /** Owns terminal tabs globally so route and agent navigation cannot destroy live shells. */
 export function TerminalPanel(props: {
     agents: Agent[];
@@ -121,6 +140,7 @@ export function TerminalPanel(props: {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
+    const [focusRequestId, setFocusRequestId] = React.useState(0);
     const nextTabIdRef = React.useRef(1);
     const nextAgentTerminalNumberRef = React.useRef(new Map<string, number>());
 
@@ -215,6 +235,36 @@ export function TerminalPanel(props: {
         event.preventDefault();
     };
 
+    React.useEffect(() => {
+        /** Opens or focuses the routed agent's terminal without stealing shell input. */
+        const handleShortcut = (event: KeyboardEvent) => {
+            if (
+                event.key !== "t" ||
+                !props.activeTarget ||
+                shouldIgnoreKeyboardShortcut(event, { shift: true })
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            const existingTab = findOpenTerminalForAgent(
+                tabs,
+                activeTabId,
+                props.activeTarget.agent.id,
+            );
+            if (existingTab) {
+                setActiveTabId(existingTab.id);
+                setIsCollapsed(false);
+            } else {
+                createTerminal(props.activeTarget);
+            }
+            setFocusRequestId((current) => current + 1);
+        };
+
+        window.addEventListener("keydown", handleShortcut);
+        return () => window.removeEventListener("keydown", handleShortcut);
+    }, [activeTabId, props.activeTarget, tabs]);
+
     return (
         <CollapsibleBottomPanel
             title="Terminal"
@@ -247,6 +297,7 @@ export function TerminalPanel(props: {
                         tab={tab}
                         isActive={tab.id === activeTabId}
                         isPanelCollapsed={isCollapsed}
+                        focusRequestId={focusRequestId}
                         onStateChange={updateTabState}
                     />
                 ))}
@@ -361,7 +412,7 @@ function TerminalTabActions(props: {
             </div>
             {props.activeTarget ? (
                 <Tooltip
-                    content={`New terminal in ${props.activeTarget.agent.name}`}
+                    content={`New terminal in ${props.activeTarget.agent.name} (t)`}
                 >
                     <button
                         type="button"
@@ -433,6 +484,7 @@ type TerminalSessionProps = {
     tab: TerminalTab;
     isActive: boolean;
     isPanelCollapsed: boolean;
+    focusRequestId: number;
     onStateChange: (tabId: number, state: TerminalState) => void;
 };
 
@@ -666,6 +718,7 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 "aria-label",
                 `${props.tab.title} for ${props.agent.name}`,
             );
+            host.setAttribute("data-terminal-input", "");
             fitAddon.fit();
             fitAddon.observeResize();
             if (generationRef.current !== generation) {
@@ -730,6 +783,25 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
     ]);
 
     React.useEffect(() => {
+        // Shortcut open/reuse must wait until the shell is connected; activation props may not change.
+        if (
+            props.focusRequestId === 0 ||
+            !props.isActive ||
+            props.isPanelCollapsed ||
+            props.tab.state.type !== "connected"
+        ) {
+            return;
+        }
+
+        resources.terminalRef.current?.focus();
+    }, [
+        props.focusRequestId,
+        props.isActive,
+        props.isPanelCollapsed,
+        props.tab.state.type,
+    ]);
+
+    React.useEffect(() => {
         return () => {
             generationRef.current += 1;
             disposeResources();
@@ -756,6 +828,7 @@ function TerminalSession(props: TerminalSessionProps) {
         >
             <div
                 ref={hostRef}
+                data-terminal-input
                 aria-label={`${props.tab.title} for ${props.agent.name}`}
                 className="h-full w-full overflow-hidden caret-transparent"
             />

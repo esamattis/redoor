@@ -63,7 +63,7 @@ import {
     serverInfoQueryOptions,
     transfersQueryOptions,
 } from "#ui/queries";
-import { isTextEntryElement } from "#ui/utils/keyboard";
+import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 
 interface AppRouterContext {
@@ -258,13 +258,16 @@ function RootLayout() {
     React.useEffect(() => {
         /** Lets Escape leave text controls globally. */
         const handleGlobalFocusKeys = (event: KeyboardEvent) => {
+            const activeElement = document.activeElement;
             if (
                 event.key === "Escape" &&
-                isTextEntryElement(document.activeElement)
+                (isTextEntryElement(activeElement) ||
+                    isTerminalInputTarget(activeElement)) &&
+                activeElement instanceof HTMLElement
             ) {
-                // Search inputs clear themselves on Escape unless the application owns the key.
+                // Search inputs and the shell keep Escape unless the application owns the key.
                 event.preventDefault();
-                document.activeElement.blur();
+                activeElement.blur();
             }
         };
 
