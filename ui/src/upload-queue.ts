@@ -314,10 +314,10 @@ export function UploadQueueManager(props: {
 
             void operation
                 .then(() => finishUpload({ id: item.id, error: null }))
-                .catch((error: unknown) =>
+                .catch((cause: unknown) =>
                     finishUpload({
                         id: item.id,
-                        error: getErrorMessage(error, "Upload failed"),
+                        error: getErrorMessage(cause, "Upload failed"),
                     }),
                 );
         });

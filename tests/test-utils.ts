@@ -9,6 +9,9 @@ import type Proxy from "toxiproxy-node-client/dist/Proxy";
 import { testPorts } from "#test-ports";
 import { isErrorCode } from "#error-utils";
 import type WebSocket from "ws";
+import { z } from "zod";
+
+const tcpAddressSchema = z.object({ port: z.number().int().positive() });
 
 /** Normalizes every WebSocket payload representation before tests decode its contents. */
 export function webSocketDataToString(data: WebSocket.RawData): string {
@@ -24,13 +27,13 @@ export async function getAvailablePort(): Promise<number> {
     return new Promise((resolve, reject) => {
         const server = createServer();
         server.listen(0, "127.0.0.1", () => {
-            const address = server.address();
-            if (!address || typeof address === "string") {
+            const address = tcpAddressSchema.safeParse(server.address());
+            if (!address.success) {
                 reject(new Error("Failed to get ephemeral port"));
                 return;
             }
 
-            server.close(() => resolve(address.port));
+            server.close(() => resolve(address.data.port));
         });
         server.on("error", reject);
     });

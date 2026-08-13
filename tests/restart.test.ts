@@ -106,16 +106,20 @@ describe("process restart APIs", () => {
 
         writeFileSync(configPath, "this is not valid toml [[[");
 
-        await expect(apiClient.restartServer()).rejects.toSatisfy(
-            (error: unknown) => {
-                // Invalid TOML must be rejected pre-restart so the operator keeps the running process.
-                return (
-                    error instanceof ApiError &&
-                    error.status === 400 &&
-                    error.message.includes("Invalid config")
-                );
-            },
-        );
+        let restartError: ApiError | undefined;
+        try {
+            await apiClient.restartServer();
+        } catch (error) {
+            if (!(error instanceof ApiError)) {
+                throw error;
+            }
+            restartError = error;
+        }
+        // Invalid TOML must be rejected pre-restart so the operator keeps the running process.
+        expect(restartError).toMatchObject({
+            status: 400,
+            message: expect.stringContaining("Invalid config"),
+        });
 
         // Server must still be serving the previous config (agent still listed).
         const agents = await apiClient.listAgents();

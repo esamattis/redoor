@@ -221,8 +221,8 @@ describe("Agents API", () => {
         expect(result.cwd).toBe(agentCwd);
         // Absolute binary path lets operators confirm which agent binary is running.
         expect(result.exe_path.startsWith("/")).toBe(true);
-        // Config path is a string; empty means the agent was launched without a TOML file.
-        expect(typeof result.config_path).toBe("string");
+        // Config path is empty without TOML, otherwise it must identify an absolute file.
+        expect(result.config_path).toMatch(/^$|^\//);
         // Verify OS, arch, hostname are non-empty strings
         expect(result.os).toBeDefined();
         expect(result.os.length).toBeGreaterThan(0);
@@ -230,25 +230,20 @@ describe("Agents API", () => {
         expect(result.arch.length).toBeGreaterThan(0);
         expect(result.hostname).toBeDefined();
         expect(result.hostname.length).toBeGreaterThan(0);
-        // Hosts without a default route may omit the local external address.
+        // When routing discovers an external address, it must not return an empty value.
         expect(
             result.external_ip === null ||
-                typeof result.external_ip === "string",
+                result.external_ip.length > 0,
         ).toBe(true);
-        // Verify load averages are numbers
-        expect(result.load_average_one).toBeDefined();
-        expect(typeof result.load_average_one).toBe("number");
-        expect(result.load_average_five).toBeDefined();
-        expect(typeof result.load_average_five).toBe("number");
-        expect(result.load_average_fifteen).toBeDefined();
-        expect(typeof result.load_average_fifteen).toBe("number");
+        // Load averages must be finite so clients can safely format and chart them.
+        expect(Number.isFinite(result.load_average_one)).toBe(true);
+        expect(Number.isFinite(result.load_average_five)).toBe(true);
+        expect(Number.isFinite(result.load_average_fifteen)).toBe(true);
         // Verify system uptime is a positive number
-        expect(result.system_uptime).toBeDefined();
-        expect(typeof result.system_uptime).toBe("number");
+        expect(Number.isFinite(result.system_uptime)).toBe(true);
         expect(result.system_uptime).toBeGreaterThan(0);
         // Verify connected_at is a positive number
-        expect(result.connected_at).toBeDefined();
-        expect(typeof result.connected_at).toBe("number");
+        expect(Number.isFinite(result.connected_at)).toBe(true);
         expect(result.connected_at).toBeGreaterThan(0);
         // Agent and server share one binary in tests, so list/details identity must match server info.
         const serverInfo = await apiClient.getServerInfo();
@@ -303,41 +298,38 @@ describe("Agents API", () => {
 
             // Looking up the created file proves the agent listed the cwd we prepared for this test.
             expect(firstFile).toBeDefined();
-            // Verify file entries contain metadata
-            expect(firstFile.name).toBeDefined();
-            expect(typeof firstFile.name).toBe("string");
-            expect(firstFile.type).toBeDefined();
-            expect(typeof firstFile.type).toBe("string");
+            // The deterministic fixture name proves file names survive transport unchanged.
+            expect(firstFile.name).toBe(listedFileName);
+            // File kinds must remain within the variants understood by browser clients.
             expect(firstFile.type).toMatch(/^(file|directory)$/);
-            expect(firstFile.size).toBeDefined();
-            expect(typeof firstFile.size).toBe("number");
+            // Sizes must be finite and non-negative for safe display and sorting.
+            expect(Number.isFinite(firstFile.size)).toBe(true);
             expect(firstFile.size).toBeGreaterThanOrEqual(0);
-            expect(firstFile.uid).toBeDefined();
-            expect(typeof firstFile.uid).toBe("number");
+            // Numeric ownership IDs must be finite positive Unix identifiers.
+            expect(Number.isFinite(firstFile.uid)).toBe(true);
             expect(firstFile.uid).toBeGreaterThan(0);
-            expect(firstFile.gid).toBeDefined();
-            expect(typeof firstFile.gid).toBe("number");
+            expect(Number.isFinite(firstFile.gid)).toBe(true);
             expect(firstFile.gid).toBeGreaterThan(0);
             // Modification time must travel with the listing so clients do not issue one request per row.
-            expect(typeof firstFile.modified_at).toBe("number");
+            expect(Number.isFinite(firstFile.modified_at)).toBe(true);
             // A real filesystem timestamp should be a positive Unix epoch value.
             expect(firstFile.modified_at).toBeGreaterThan(0);
-            expect(firstFile.owner).toBeDefined();
+            // Resolved owner names are non-empty while unknown numeric owners remain null.
             expect(
-                firstFile.owner === null || typeof firstFile.owner === "string",
-            );
-            expect(firstFile.group).toBeDefined();
+                firstFile.owner === null || firstFile.owner.length > 0,
+            ).toBe(true);
+            // Resolved group names follow the same nullable contract as owners.
             expect(
-                firstFile.group === null || typeof firstFile.group === "string",
-            );
+                firstFile.group === null || firstFile.group.length > 0,
+            ).toBe(true);
         }
 
         const fileResult = await testAgent.ls(listedFilePath);
         // A direct file lookup must expose permission bits so clients can explain who may access it.
         expect(isLsFileResponse(fileResult)).toBe(true);
         if (isLsFileResponse(fileResult)) {
-            // The mode is numeric so clients can derive both symbolic and octal permission displays.
-            expect(typeof fileResult.permissions).toBe("number");
+            // The mode must be finite so clients can derive symbolic and octal permission displays.
+            expect(Number.isFinite(fileResult.permissions)).toBe(true);
             // A newly created test file should expose at least one standard Unix permission bit.
             expect(fileResult.permissions).toBeGreaterThan(0);
             // Masking special and file-type bits keeps the API value limited to rwx permissions.

@@ -162,8 +162,8 @@ export function Tooltip(props: TooltipProps) {
                 {props.children}
             </span>
 
-            {tooltip && typeof document !== "undefined"
-                ? createPortal(tooltip, document.body)
+            {tooltip && globalThis.document
+                ? createPortal(tooltip, globalThis.document.body)
                 : null}
         </span>
     );

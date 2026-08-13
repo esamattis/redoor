@@ -9,6 +9,7 @@ import {
 import { mkdirSync } from "node:fs";
 import WebSocket from "ws";
 import { join } from "node:path";
+import { z } from "zod";
 import {
     ProcessManager,
     TempFileManager,
@@ -23,6 +24,17 @@ const agentCwd = tempFiles.tempDirectory({ suffix: "-terminal-agent" });
 const alternateCwd = join(agentCwd, "alternate");
 mkdirSync(alternateCwd);
 let testAgent: Agent;
+
+const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
+    z.discriminatedUnion("type", [
+        z.object({ type: z.literal("ready") }),
+        z.object({
+            type: z.literal("exit"),
+            code: z.number().nullable(),
+            signal: z.number().nullable(),
+        }),
+        z.object({ type: z.literal("error"), message: z.string() }),
+    ]);
 
 beforeAll(async () => {
     const started = await startServerAndAgent({
@@ -64,10 +76,13 @@ async function openTerminal(
             { once: true },
         );
         socket.addEventListener("message", (event) => {
-            if (typeof event.data !== "string") {
+            const controlFrame = z.string().safeParse(event.data);
+            if (!controlFrame.success) {
                 return;
             }
-            const message: TerminalServerMessage = JSON.parse(event.data);
+            const message = terminalServerMessageSchema.parse(
+                JSON.parse(controlFrame.data),
+            );
             if (message.type === "error") {
                 clearTimeout(timeout);
                 reject(new Error(message.message));
@@ -100,10 +115,13 @@ async function waitForReady(socket: WebSocket): Promise<void> {
             10_000,
         );
         socket.addEventListener("message", (event) => {
-            if (typeof event.data !== "string") {
+            const controlFrame = z.string().safeParse(event.data);
+            if (!controlFrame.success) {
                 return;
             }
-            const message: TerminalServerMessage = JSON.parse(event.data);
+            const message = terminalServerMessageSchema.parse(
+                JSON.parse(controlFrame.data),
+            );
             if (message.type === "error") {
                 clearTimeout(timeout);
                 reject(new Error(message.message));

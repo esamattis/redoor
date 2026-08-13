@@ -183,14 +183,15 @@ export class RefreshListener {
         this.websocket = new WebSocket(this.api.getUiWebSocketUrl());
 
         this.websocket.addEventListener("message", (event) => {
-            if (typeof event.data !== "string") {
+            const frame = z.string().safeParse(event.data);
+            if (!frame.success) {
                 return;
             }
 
             let message: UiEvent;
 
             try {
-                message = uiEventSchema.parse(JSON.parse(event.data));
+                message = uiEventSchema.parse(JSON.parse(frame.data));
             } catch {
                 return;
             }
@@ -828,9 +829,9 @@ function SelectedFilesTable(props: {
     );
 }
 
-function getErrorMessage(error: unknown) {
-    if (error instanceof Error) {
-        return error.message;
+function getErrorMessage(cause: unknown) {
+    if (cause instanceof Error) {
+        return cause.message;
     }
 
     return "Upload failed";

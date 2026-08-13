@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import { z } from "zod";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SERVER_PATH = path.join(PROJECT_ROOT, "target/debug/redoor");
@@ -12,6 +13,7 @@ const SERVER_PATH = path.join(PROJECT_ROOT, "target/debug/redoor");
 const LINUX_LOGIN_MESSAGE = "Log in with PAM (your Linux account credentials)";
 /** macOS first-run browser hint from `desktop::first_run_login_message`. */
 const MACOS_LOGIN_MESSAGE = "Log in with username redoor and password changeme";
+const tcpAddressSchema = z.object({ port: z.number().int().positive() });
 
 const FIRST_RUN_MESSAGE =
     process.platform === "darwin" ? MACOS_LOGIN_MESSAGE : LINUX_LOGIN_MESSAGE;
@@ -21,12 +23,12 @@ async function getAvailablePort(): Promise<number> {
     return await new Promise((resolve, reject) => {
         const server = createServer();
         server.listen(0, "127.0.0.1", () => {
-            const address = server.address();
-            if (!address || typeof address === "string") {
+            const address = tcpAddressSchema.safeParse(server.address());
+            if (!address.success) {
                 reject(new Error("Failed to allocate ephemeral port"));
                 return;
             }
-            server.close(() => resolve(address.port));
+            server.close(() => resolve(address.data.port));
         });
         server.on("error", reject);
     });

@@ -18,15 +18,15 @@ export type PathLoadError = {
 };
 
 /** Converts expected filesystem lookup failures into navigable in-page states. */
-export function getPathLoadError(error: unknown): PathLoadError | null {
-    if (!(error instanceof ApiError)) {
+export function getPathLoadError(cause: unknown): PathLoadError | null {
+    if (!(cause instanceof ApiError)) {
         return null;
     }
-    if (error.status === 404) {
-        return { type: "missing", message: error.message };
+    if (cause.status === 404) {
+        return { type: "missing", message: cause.message };
     }
-    if (error.status === 403) {
-        return { type: "unreadable", message: error.message };
+    if (cause.status === 403) {
+        return { type: "unreadable", message: cause.message };
     }
     return null;
 }
@@ -106,9 +106,9 @@ export function joinBrowserPath(directoryPath: string, fileName: string) {
     return `${directoryPath}/${fileName}`;
 }
 
-export function getErrorMessage(error: unknown, fallbackMessage: string) {
-    if (error instanceof Error) {
-        return error.message;
+export function getErrorMessage(cause: unknown, fallbackMessage: string) {
+    if (cause instanceof Error) {
+        return cause.message;
     }
 
     return fallbackMessage;

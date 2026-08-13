@@ -30,8 +30,8 @@ export function requestClipboardPaste() {
 }
 
 /** Produces a useful message without exposing unknown thrown values to the UI. */
-function getErrorMessage(error: unknown, fallbackMessage: string) {
-    return error instanceof Error ? error.message : fallbackMessage;
+function getErrorMessage(cause: unknown, fallbackMessage: string) {
+    return cause instanceof Error ? cause.message : fallbackMessage;
 }
 
 /** Avoids replacing the browser's normal paste behavior while the user is editing. */
@@ -54,14 +54,14 @@ function containsDraggedFiles(dataTransfer: DataTransfer | null) {
 
 /** Generates a recognizable filename when clipboard blobs do not provide one. */
 function getClipboardFileName(type: string, index: number) {
-    const extensionByType: Record<string, string> = {
-        "image/png": "png",
-        "image/jpeg": "jpg",
-        "image/gif": "gif",
-        "image/webp": "webp",
-        "application/pdf": "pdf",
-    };
-    const extension = extensionByType[type] ?? "bin";
+    const extensionByType = new Map([
+        ["image/png", "png"],
+        ["image/jpeg", "jpg"],
+        ["image/gif", "gif"],
+        ["image/webp", "webp"],
+        ["application/pdf", "pdf"],
+    ]);
+    const extension = extensionByType.get(type) ?? "bin";
     const suffix = index === 0 ? "" : `-${index + 1}`;
     return `pasted-file${suffix}.${extension}`;
 }

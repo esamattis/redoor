@@ -24,7 +24,11 @@ import {
 } from "./test-utils";
 
 const AGENT_NAME = "upgrade-external-agent";
-const jsonControlMessageSchema = z.record(z.string(), z.unknown());
+const transferSocketOpenSchema = z.object({
+    type: z.literal("transfer_socket_open"),
+    token: z.string().min(1),
+});
+const controlMessageSchema = z.object({ type: z.string() });
 
 /** Waits for a websocket to become writable without relying on timing delays. */
 async function waitForSocketOpen(socket: WebSocket): Promise<void> {
@@ -35,14 +39,14 @@ async function waitForSocketOpen(socket: WebSocket): Promise<void> {
 }
 
 /** Reads one JSON control message from a websocket fixture. */
-async function nextJsonMessage(
+async function nextTransferSocketOpenMessage(
     socket: WebSocket,
-): Promise<Record<string, unknown>> {
+): Promise<z.infer<typeof transferSocketOpenSchema>> {
     return new Promise((resolve, reject) => {
         socket.once("message", (data) => {
             try {
                 resolve(
-                    jsonControlMessageSchema.parse(
+                    transferSocketOpenSchema.parse(
                         JSON.parse(webSocketDataToString(data)),
                     ),
                 );
@@ -236,9 +240,11 @@ describe("connected external agent upgrade", () => {
                 // Deliberately omit supports_self_exec to model a pre-protocol agent.
             }),
         );
-        const transferOpen = await nextJsonMessage(control);
+        const transferOpen = await nextTransferSocketOpenMessage(control);
+        // The transfer socket must be opened before the fixture can authenticate it.
         expect(transferOpen.type).toBe("transfer_socket_open");
-        expect(typeof transferOpen.token).toBe("string");
+        // A non-empty one-time token binds the transfer socket to this control connection.
+        expect(transferOpen.token.length).toBeGreaterThan(0);
 
         transfer = new WebSocket(
             `ws://127.0.0.1:${serverPort}/api/v1/agent-transfer/ws`,
@@ -265,12 +271,12 @@ describe("connected external agent upgrade", () => {
         // An omitted capability must remain visible as unsupported metadata.
         expect(oldAgent.supportsSelfExec).toBe(false);
 
-        const receivedCommands: Array<Record<string, unknown>> = [];
+        const receivedCommandTypes: string[] = [];
         control.on("message", (data) => {
-            receivedCommands.push(
-                jsonControlMessageSchema.parse(
+            receivedCommandTypes.push(
+                controlMessageSchema.parse(
                     JSON.parse(webSocketDataToString(data)),
-                ),
+                ).type,
             );
         });
         let error: unknown;
@@ -288,6 +294,6 @@ describe("connected external agent upgrade", () => {
             ),
         });
         // No RawUpload command proves rejection happened before any remote mutation began.
-        expect(receivedCommands).toEqual([]);
+        expect(receivedCommandTypes).toEqual([]);
     });
 });

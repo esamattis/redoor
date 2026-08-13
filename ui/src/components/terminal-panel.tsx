@@ -13,6 +13,7 @@ import type {
     IDisposable,
     Terminal as GhosttyTerminal,
 } from "ghostty-web";
+import { z } from "zod";
 
 import {
     type Agent,
@@ -29,6 +30,20 @@ type TerminalState =
     | { type: "connecting" }
     | { type: "connected" }
     | { type: "disconnected"; message: string };
+
+const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
+    z.discriminatedUnion("type", [
+        z.object({ type: z.literal("ready") }),
+        z.object({
+            type: z.literal("error"),
+            message: z.string(),
+        }),
+        z.object({
+            type: z.literal("exit"),
+            code: z.number().nullable(),
+            signal: z.number().nullable(),
+        }),
+    ]);
 
 /** Keeps each tab's creation directory and lifecycle independent. */
 type TerminalTab = {
@@ -57,33 +72,6 @@ function getTerminalStatus(state: TerminalState) {
         label: "Connecting",
         color: "text-slate-400",
     };
-}
-
-/** Validates untrusted socket text before it enters the typed lifecycle. */
-function parseServerMessage(value: unknown): TerminalServerMessage | null {
-    if (typeof value !== "object" || value === null || !("type" in value)) {
-        return null;
-    }
-    if (value.type === "ready") {
-        return { type: "ready" };
-    }
-    if (
-        value.type === "error" &&
-        "message" in value &&
-        typeof value.message === "string"
-    ) {
-        return { type: "error", message: value.message };
-    }
-    if (
-        value.type === "exit" &&
-        "code" in value &&
-        (typeof value.code === "number" || value.code === null) &&
-        "signal" in value &&
-        (typeof value.signal === "number" || value.signal === null)
-    ) {
-        return { type: "exit", code: value.code, signal: value.signal };
-    }
-    return null;
 }
 
 /** Converts a server lifecycle notification into a useful terminal status. */
@@ -418,20 +406,18 @@ function connectTerminal(props: {
             props.terminal.write(new Uint8Array(event.data));
             return;
         }
-        if (typeof event.data !== "string") {
+        const textFrame = z.string().safeParse(event.data);
+        if (!textFrame.success) {
             socket.close(1002, "Unsupported terminal frame");
             return;
         }
 
-        let parsedMessage: unknown;
+        let message: TerminalServerMessage;
         try {
-            parsedMessage = JSON.parse(event.data);
+            message = terminalServerMessageSchema.parse(
+                JSON.parse(textFrame.data),
+            );
         } catch {
-            socket.close(1002, "Invalid terminal control message");
-            return;
-        }
-        const message = parseServerMessage(parsedMessage);
-        if (!message) {
             socket.close(1002, "Invalid terminal control message");
             return;
         }

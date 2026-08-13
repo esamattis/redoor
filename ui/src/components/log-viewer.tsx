@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ScrollText } from "lucide-react";
+import { z } from "zod";
 
 import type { LogEvent } from "#ui/api-client";
 
@@ -8,49 +9,20 @@ type LogEntry = { id: number; text: string };
 
 const MAX_LOG_ENTRIES = 500;
 
+const logEventSchema: z.ZodType<LogEvent> = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("snapshot"),
+        entries: z.array(z.string()),
+        file_logging_enabled: z.boolean(),
+    }),
+    z.object({ type: z.literal("entry"), entry: z.string() }),
+    z.object({ type: z.literal("lagged"), skipped: z.number() }),
+    z.object({ type: z.literal("error"), message: z.string() }),
+]);
+
 /** Rejects structurally invalid payloads before they can corrupt the displayed rolling window. */
 function parseLogEvent(data: string): LogEvent {
-    const parsed: unknown = JSON.parse(data);
-    if (!parsed || typeof parsed !== "object" || !("type" in parsed)) {
-        throw new Error("Server sent an invalid log event");
-    }
-
-    if (
-        parsed.type === "snapshot" &&
-        "entries" in parsed &&
-        Array.isArray(parsed.entries) &&
-        parsed.entries.every((entry) => typeof entry === "string") &&
-        "file_logging_enabled" in parsed &&
-        typeof parsed.file_logging_enabled === "boolean"
-    ) {
-        return {
-            type: "snapshot",
-            entries: parsed.entries,
-            file_logging_enabled: parsed.file_logging_enabled,
-        };
-    }
-    if (
-        parsed.type === "entry" &&
-        "entry" in parsed &&
-        typeof parsed.entry === "string"
-    ) {
-        return { type: "entry", entry: parsed.entry };
-    }
-    if (
-        parsed.type === "lagged" &&
-        "skipped" in parsed &&
-        typeof parsed.skipped === "number"
-    ) {
-        return { type: "lagged", skipped: parsed.skipped };
-    }
-    if (
-        parsed.type === "error" &&
-        "message" in parsed &&
-        typeof parsed.message === "string"
-    ) {
-        return { type: "error", message: parsed.message };
-    }
-    throw new Error("Server sent an invalid log event");
+    return logEventSchema.parse(JSON.parse(data));
 }
 
 /** Owns one reconnecting route-scoped log socket and a bounded browser rolling window. */
@@ -108,15 +80,12 @@ export function LogViewer(props: {
             socket = nextSocket;
 
             nextSocket.addEventListener("message", (event) => {
-                if (
-                    !active ||
-                    socket !== nextSocket ||
-                    typeof event.data !== "string"
-                ) {
+                if (!active || socket !== nextSocket) {
                     return;
                 }
                 try {
-                    const message = parseLogEvent(event.data);
+                    const frame = z.string().parse(event.data);
+                    const message = parseLogEvent(frame);
                     switch (message.type) {
                         case "snapshot":
                             setEntries(

@@ -42,12 +42,12 @@ const showHiddenFilesAtom = atomWithLocalStorage(
     true,
 );
 
+type BrowserSearch = {
+    view?: "details" | "edit" | "diff" | "sync";
+};
+
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
-    validateSearch: (
-        search,
-    ): {
-        view?: "details" | "edit" | "diff" | "sync";
-    } => ({
+    validateSearch: (search): BrowserSearch => ({
         view:
             search.view === "details" ||
             search.view === "edit" ||

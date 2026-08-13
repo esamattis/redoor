@@ -3,11 +3,11 @@ import { X } from "lucide-react";
 
 type ToastTone = "info" | "success" | "error";
 
-const toneClasses: Record<ToastTone, string> = {
+const toneClasses = {
     info: "border-blue-500/50 bg-blue-950 text-blue-100",
     success: "border-emerald-500/50 bg-emerald-950 text-emerald-100",
     error: "border-red-500/50 bg-red-950 text-red-100",
-};
+} satisfies Record<ToastTone, string>;
 
 /**
  * Keeps transient feedback non-modal so users can continue their current task.

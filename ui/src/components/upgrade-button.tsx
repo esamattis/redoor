@@ -23,8 +23,8 @@ type UpgradeButtonProps = {
 };
 
 /** Converts request and reconnection failures into dialog feedback. */
-function upgradeErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Upgrade failed";
+function upgradeErrorMessage(cause: unknown): string {
+    return cause instanceof Error ? cause.message : "Upgrade failed";
 }
 
 /** Explains a client-known condition that prevents the server from starting an upgrade. */

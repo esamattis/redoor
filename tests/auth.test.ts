@@ -100,18 +100,18 @@ describe("HTTP authentication", () => {
         expect(serverInfo.exe_path.startsWith("/")).toBe(true);
         // Test servers always pin username/password in TOML rather than PAM.
         expect(serverInfo.auth_mode).toBe("toml");
-        // Hosts without a default route may omit the local external address.
+        // When routing discovers an external address, it must not return an empty value.
         expect(
             serverInfo.external_ip === null ||
-                typeof serverInfo.external_ip === "string",
+                serverInfo.external_ip.length > 0,
         ).toBe(true);
         // Package version is baked at compile time for the home page identity card.
         expect(serverInfo.version).toMatch(/^\d+\.\d+\.\d+/);
         // Git revision comes from build.rs so operators can map a binary to source.
         expect(serverInfo.git_rev.length).toBeGreaterThan(0);
-        expect(typeof serverInfo.git_dirty).toBe("boolean");
+        expect([true, false]).toContain(serverInfo.git_dirty);
         // Version dirty means HEAD was not tagged v{version} at compile time.
-        expect(typeof serverInfo.version_dirty).toBe("boolean");
+        expect([true, false]).toContain(serverInfo.version_dirty);
         // Integration tests run against a debug cargo profile binary.
         expect(serverInfo.build_mode).toBe("debug");
         // Build date is UTC ISO-8601 so operators can tell rebuilds apart.

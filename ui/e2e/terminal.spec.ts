@@ -11,6 +11,11 @@ import {
     type TestContext,
 } from "./helpers";
 
+const terminalFrameSchema = z.union([
+    z.string(),
+    z.instanceof(Buffer).transform((payload) => payload.toString("utf8")),
+]);
+
 test.describe.serial("Terminal panel lifecycle", () => {
     let ctx: TestContext;
 
@@ -29,10 +34,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
                 return;
             }
             socket.on("framereceived", (event) => {
-                terminalOutput +=
-                    typeof event.payload === "string"
-                        ? event.payload
-                        : event.payload.toString("utf8");
+                terminalOutput += terminalFrameSchema.parse(event.payload);
             });
         });
 

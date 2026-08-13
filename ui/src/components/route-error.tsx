@@ -1,16 +1,17 @@
 import * as React from "react";
 import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
+import { z } from "zod";
 import { ApiError } from "#ui/api-client";
 
 /** True for browser network failures that never received an HTTP response. */
-function isNetworkError(error: unknown): boolean {
-    if (!(error instanceof Error)) {
+function isNetworkError(cause: unknown): boolean {
+    if (!(cause instanceof Error)) {
         return false;
     }
-    const message = error.message.toLowerCase();
+    const message = cause.message.toLowerCase();
     return (
-        error.name === "TypeError" ||
+        cause.name === "TypeError" ||
         message.includes("failed to fetch") ||
         message.includes("networkerror") ||
         message.includes("load failed") ||
@@ -19,9 +20,9 @@ function isNetworkError(error: unknown): boolean {
 }
 
 /** Maps common HTTP statuses to short titles so gateway failures read clearly. */
-function titleForError(error: unknown): string {
-    if (error instanceof ApiError) {
-        switch (error.status) {
+function titleForError(cause: unknown): string {
+    if (cause instanceof ApiError) {
+        switch (cause.status) {
             case 401:
                 return "Authentication required";
             case 403:
@@ -35,19 +36,19 @@ function titleForError(error: unknown): string {
             case 504:
                 return "Gateway timeout";
             default:
-                if (error.status >= 500) {
+                if (cause.status >= 500) {
                     return "Server error";
                 }
-                if (error.status >= 400) {
+                if (cause.status >= 400) {
                     return "Request failed";
                 }
         }
     }
-    if (isNetworkError(error)) {
+    if (isNetworkError(cause)) {
         return "Connection failed";
     }
-    if (error instanceof Error) {
-        const message = error.message.toLowerCase();
+    if (cause instanceof Error) {
+        const message = cause.message.toLowerCase();
         if (message.includes("agent not found")) {
             return "Agent not found";
         }
@@ -71,9 +72,9 @@ function titleForError(error: unknown): string {
 }
 
 /** Human-readable explanation for statuses that often need extra context. */
-function hintForError(error: unknown): string | null {
-    if (error instanceof ApiError) {
-        switch (error.status) {
+function hintForError(cause: unknown): string | null {
+    if (cause instanceof ApiError) {
+        switch (cause.status) {
             case 502:
                 return "The server or an upstream proxy returned a bad gateway response. The API may be restarting or unreachable.";
             case 503:
@@ -86,24 +87,25 @@ function hintForError(error: unknown): string | null {
                 return null;
         }
     }
-    if (isNetworkError(error)) {
+    if (isNetworkError(cause)) {
         return "The browser could not reach the API. Check that the server is running and that your network connection is up.";
     }
     return null;
 }
 
 /** Formats any thrown value into a stable message string for the detail panel. */
-function messageForError(error: unknown): string {
-    if (error instanceof Error) {
-        return error.message || error.name;
+function messageForError(cause: unknown): string {
+    if (cause instanceof Error) {
+        return cause.message || cause.name;
     }
-    if (typeof error === "string") {
-        return error;
+    const stringCause = z.string().safeParse(cause);
+    if (stringCause.success) {
+        return stringCause.data;
     }
     try {
-        return JSON.stringify(error, null, 2);
+        return JSON.stringify(cause, null, 2);
     } catch {
-        return String(error);
+        return String(cause);
     }
 }
 

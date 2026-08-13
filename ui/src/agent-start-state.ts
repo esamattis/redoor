@@ -10,7 +10,7 @@ export type AgentStartState = {
 /** Keeps fast local registrations from skipping the visible starting boundary. */
 export const agentStartStatesAtom = atom<Record<string, AgentStartState>>({});
 
-/** Converts unknown request failures into user-facing retry text. */
-export function getStartErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Failed to start agent";
+/** Converts request failure causes into user-facing retry text. */
+export function getStartErrorMessage(cause: unknown): string {
+    return cause instanceof Error ? cause.message : "Failed to start agent";
 }

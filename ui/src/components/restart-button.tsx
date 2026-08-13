@@ -5,8 +5,8 @@ import { RefreshCw } from "lucide-react";
 import { ConfirmationDialog } from "./confirmation-dialog";
 
 /** Normalizes failures from both API requests and readiness polling. */
-function restartErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Restart failed";
+function restartErrorMessage(cause: unknown): string {
+    return cause instanceof Error ? cause.message : "Restart failed";
 }
 
 /** Provides the same confirmed restart workflow for server and agent process homes. */
