@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -255,16 +255,14 @@ impl WatchdogRegistry {
     /// Removes a dormant supervisor after callers verify it has no running intent.
     pub fn remove_stopped(&self, key: &str) -> Result<()> {
         let mut map = self.inner.lock().expect("watchdog registry poisoned");
-        let handle = map
-            .get(key)
-            .with_context(|| format!("Watchdog key is not registered: key={key}"))?;
+        let Some(handle) = map.get(key) else {
+            // A retry after a persist-then-remove failure must complete remaining cleanup.
+            return Ok(());
+        };
         if handle.snapshot().desired_running {
             bail!("Managed agent must be stopped before its configuration can change");
         }
-        handle
-            .commands
-            .send(SupervisorCommand::Remove)
-            .map_err(|_| anyhow::anyhow!("Watchdog supervisor stopped: {key}"))?;
+        let _ = handle.commands.send(SupervisorCommand::Remove);
         map.remove(key);
         Ok(())
     }
@@ -304,15 +302,23 @@ pub fn spawn_supervisor(
     Ok(tokio::spawn(run_supervisor(key, spawn, watchdog, commands)))
 }
 
+/// Why the idle wait ended: start a cycle or drop the supervisor task.
+enum IdleWait {
+    /// A start command arrived while the supervisor was intentionally dormant.
+    Start,
+    /// Remove or channel close must drop the task so a replacement can reuse the key.
+    Exit,
+}
+
 /// Waits for start commands while acknowledging harmless shutdowns in the dormant state.
 async fn wait_until_running(
     watchdog: &WatchdogHandle,
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
-) -> bool {
+) -> IdleWait {
     while let Some(command) = commands.recv().await {
         match command {
-            SupervisorCommand::Start => return true,
-            SupervisorCommand::Remove => return false,
+            SupervisorCommand::Start => return IdleWait::Start,
+            SupervisorCommand::Remove => return IdleWait::Exit,
             SupervisorCommand::Shutdown { reply } => {
                 watchdog.publish(WatchdogSnapshot {
                     desired_running: false,
@@ -325,7 +331,7 @@ async fn wait_until_running(
             SupervisorCommand::Connected(_) | SupervisorCommand::Disconnected(_) => {}
         }
     }
-    false
+    IdleWait::Exit
 }
 
 /// Runs desired-running cycles while every long operation remains cancelable by commands.
@@ -335,10 +341,13 @@ async fn run_supervisor(
     watchdog: WatchdogHandle,
     mut commands: mpsc::UnboundedReceiver<SupervisorCommand>,
 ) {
-    while wait_until_running(&watchdog, &mut commands).await {
+    loop {
+        match wait_until_running(&watchdog, &mut commands).await {
+            IdleWait::Exit => break,
+            IdleWait::Start => {}
+        }
         let mut backoff = INITIAL_BACKOFF;
-        let mut desired_running = true;
-        while desired_running {
+        loop {
             watchdog.publish(WatchdogSnapshot {
                 desired_running: true,
                 status: AgentConnectionStatus::Starting,
@@ -347,22 +356,33 @@ async fn run_supervisor(
             });
             let started = Instant::now();
             let cycle = run_started_cycle(&spawn, &watchdog, &mut commands).await;
-            desired_running = cycle.desired_running;
-            if !desired_running {
-                break;
-            }
-            if started.elapsed() >= STABLE_RUNTIME && cycle.was_connected {
-                backoff = INITIAL_BACKOFF;
-            }
-            log!(
-                Level::Info,
-                "Watchdog retry scheduled: key={}, backoff={:?}",
-                key,
-                backoff
-            );
-            desired_running = wait_for_restart(&watchdog, &mut commands, backoff).await;
-            if desired_running {
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+            match cycle.action {
+                CommandAction::Exit => {
+                    publish_stopped(&watchdog);
+                    return;
+                }
+                CommandAction::Stop => break,
+                CommandAction::Continue => {
+                    if started.elapsed() >= STABLE_RUNTIME && cycle.was_connected {
+                        backoff = INITIAL_BACKOFF;
+                    }
+                    log!(
+                        Level::Info,
+                        "Watchdog retry scheduled: key={}, backoff={:?}",
+                        key,
+                        backoff
+                    );
+                    match wait_for_restart(&watchdog, &mut commands, backoff).await {
+                        CommandAction::Continue => {
+                            backoff = (backoff * 2).min(MAX_BACKOFF);
+                        }
+                        CommandAction::Stop => break,
+                        CommandAction::Exit => {
+                            publish_stopped(&watchdog);
+                            return;
+                        }
+                    }
+                }
             }
         }
         watchdog.publish(WatchdogSnapshot {
@@ -376,7 +396,7 @@ async fn run_supervisor(
 
 /// Captures the information needed to decide whether another cycle should run.
 struct CycleResult {
-    desired_running: bool,
+    action: CommandAction,
     was_connected: bool,
 }
 
@@ -393,8 +413,9 @@ async fn run_started_cycle(
         tokio::select! {
             result = &mut spawn_future => break result,
             command = commands.recv() => {
-                if handle_pre_spawn_command(watchdog, command).await == CommandAction::Stop {
-                    return CycleResult { desired_running: false, was_connected: false };
+                match handle_pre_spawn_command(watchdog, command).await {
+                    CommandAction::Continue => {}
+                    action => return CycleResult { action, was_connected: false },
                 }
             }
         }
@@ -420,7 +441,7 @@ async fn run_started_cycle(
             );
             publish_issue(watchdog, error);
             CycleResult {
-                desired_running: true,
+                action: CommandAction::Continue,
                 was_connected: false,
             }
         }
@@ -442,10 +463,14 @@ async fn handle_pre_spawn_command(
             publish_connected(watchdog, socket_id);
             CommandAction::Continue
         }
-        Some(SupervisorCommand::Start)
-        | Some(SupervisorCommand::Remove)
-        | Some(SupervisorCommand::Disconnected(_)) => CommandAction::Continue,
-        None => CommandAction::Stop,
+        Some(SupervisorCommand::Remove) => {
+            publish_stopped(watchdog);
+            CommandAction::Exit
+        }
+        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Disconnected(_)) => {
+            CommandAction::Continue
+        }
+        None => CommandAction::Exit,
     }
 }
 
@@ -470,12 +495,12 @@ async fn wait_for_child(
             status = child.wait() => {
                 let issue = format_exit_issue(status, diagnostic_log, diagnostic_log_offset).await;
                 publish_issue(watchdog, issue);
-                return CycleResult { desired_running: true, was_connected: connected };
+                return CycleResult { action: CommandAction::Continue, was_connected: connected };
             }
             _ = watchdog.stale_signal.notified() => {
                 kill_and_reap(&mut child).await;
                 publish_issue(watchdog, "Agent connection went stale".to_string());
-                return CycleResult { desired_running: true, was_connected: connected };
+                return CycleResult { action: CommandAction::Continue, was_connected: connected };
             }
             _ = &mut startup_timeout, if !connected && !timeout_reported => {
                 timeout_reported = true;
@@ -484,7 +509,7 @@ async fn wait_for_child(
             command = commands.recv() => {
                 match handle_running_command(watchdog, command, &mut child, &mut connected).await {
                     CommandAction::Continue => {}
-                    CommandAction::Stop => return CycleResult { desired_running: false, was_connected: connected },
+                    action => return CycleResult { action, was_connected: connected },
                 }
             }
         }
@@ -522,10 +547,15 @@ async fn handle_running_command(
             }
             CommandAction::Continue
         }
-        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Remove) => CommandAction::Continue,
+        Some(SupervisorCommand::Remove) => {
+            kill_and_reap(child).await;
+            publish_stopped(watchdog);
+            CommandAction::Exit
+        }
+        Some(SupervisorCommand::Start) => CommandAction::Continue,
         None => {
             kill_and_reap(child).await;
-            CommandAction::Stop
+            CommandAction::Exit
         }
     }
 }
@@ -535,26 +565,45 @@ async fn wait_for_restart(
     watchdog: &WatchdogHandle,
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
     backoff: Duration,
-) -> bool {
+) -> CommandAction {
     let delay = tokio::time::sleep(backoff);
     tokio::pin!(delay);
     loop {
         tokio::select! {
-            _ = &mut delay => return true,
+            _ = &mut delay => return CommandAction::Continue,
             command = commands.recv() => {
-                match command {
-                    Some(SupervisorCommand::Shutdown { reply }) => {
-                        publish_stopped(watchdog);
-                        let _ = reply.send(Ok(()));
-                        return false;
-                    }
-                    Some(SupervisorCommand::Connected(socket_id)) => publish_connected(watchdog, socket_id),
-                    Some(SupervisorCommand::Disconnected(_)) => {},
-                    Some(SupervisorCommand::Start) | Some(SupervisorCommand::Remove) => {}
-                    None => return false,
+                match apply_restart_command(watchdog, command) {
+                    CommandAction::Continue => {}
+                    action => return action,
                 }
             }
         }
+    }
+}
+
+/// Applies one idle-backoff command without growing the `tokio::select!` arm.
+fn apply_restart_command(
+    watchdog: &WatchdogHandle,
+    command: Option<SupervisorCommand>,
+) -> CommandAction {
+    match command {
+        Some(SupervisorCommand::Shutdown { reply }) => {
+            publish_stopped(watchdog);
+            let _ = reply.send(Ok(()));
+            CommandAction::Stop
+        }
+        Some(SupervisorCommand::Remove) => {
+            publish_stopped(watchdog);
+            CommandAction::Exit
+        }
+        Some(SupervisorCommand::Connected(socket_id)) => {
+            publish_connected(watchdog, socket_id);
+            CommandAction::Continue
+        }
+        Some(SupervisorCommand::Disconnected(_)) | Some(SupervisorCommand::Start) => {
+            CommandAction::Continue
+        }
+        None => CommandAction::Exit,
     }
 }
 
@@ -563,6 +612,8 @@ async fn wait_for_restart(
 enum CommandAction {
     Continue,
     Stop,
+    /// Configuration replacement must end the task, not just return it to idle.
+    Exit,
 }
 
 /// Settles intentional shutdown before acknowledging the management request.
@@ -689,6 +740,37 @@ mod tests {
         })
         .await
         .expect("watchdog condition should become observable");
+    }
+
+    #[tokio::test]
+    async fn remove_stopped_is_idempotent_and_exits_a_dormant_supervisor() {
+        crate::logging::init(None).await.unwrap();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "removed".into(),
+                SpawnFn::new(|| async {
+                    Command::new("sh")
+                        .arg("-c")
+                        .arg("cat")
+                        .kill_on_drop(true)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|error| error.to_string())
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+
+        // The first removal must drop the handle so replacement can register the same key.
+        registry.remove_stopped("removed").expect("first remove");
+        assert!(registry.lookup("removed").is_none());
+        // A retry after a partial persist-then-remove must not fail just because the handle is gone.
+        registry.remove_stopped("removed").expect("retry remove");
     }
 
     #[tokio::test]

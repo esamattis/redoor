@@ -211,6 +211,9 @@ pub(crate) async fn shutdown_agent_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
+    // Configuration replacement also mutates this supervisor; sharing the lock prevents
+    // shutdown from racing a persist-then-register and reviving the outgoing identity.
+    let _edit_guard = state.config_edit_lock.lock().await;
     let agent_id = AgentId::from(agent);
     let snapshot = match managed_agent_snapshot(&state, &agent_id).await {
         Ok(snapshot) => snapshot,

@@ -33,6 +33,6 @@ home: string | null,
  */
 log: string | null, 
 /**
- * Optional SSH login password stored in plaintext in config.toml.
+ * Always null on GET so the stored SSH password is never sent to the browser.
  */
 password: string | null, };

@@ -506,7 +506,7 @@ pub struct CreateSshAgentRequest {
     pub home: Option<String>,
     /// Optional local path receiving SSH subprocess diagnostics.
     pub log: Option<String>,
-    /// Optional SSH login password stored in plaintext in config.toml.
+    /// New password to persist; omit or send empty on update to keep the existing secret.
     pub password: Option<String>,
 }
 
@@ -535,7 +535,7 @@ pub struct ManagedSshAgentConfigurationResponse {
     pub home: Option<String>,
     /// Optional local path receiving SSH subprocess diagnostics.
     pub log: Option<String>,
-    /// Optional SSH login password stored in plaintext in config.toml.
+    /// Always null on GET so the stored SSH password is never sent to the browser.
     pub password: Option<String>,
 }
 

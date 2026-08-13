@@ -88,7 +88,9 @@ pub struct RegisterManagedAgentRequest {
 
 /// Removes a stopped managed record after its TOML entry and supervisor are gone.
 pub struct UnregisterManagedAgentRequest {
+    /// Selects the retained inventory row that must disappear with the supervisor.
     pub agent_id: AgentId,
+    /// Acknowledges cleanup so HTTP delete/replace can return only after inventory is gone.
     pub reply: RouterReply<()>,
 }
 

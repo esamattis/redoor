@@ -6,6 +6,7 @@ import { Trash2 } from "lucide-react";
 import type { CreateSshAgentRequest } from "#ui/api-client";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { ManagedAgentForm } from "#ui/components/managed-agent-form";
+import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions } from "#ui/queries";
 import { getAgentFromRootLoaderData, Route as RootRoute } from "./__root";
 
@@ -70,6 +71,7 @@ function EditManagedAgentPage() {
     return (
         <>
             <ManagedAgentForm
+                key={agentId}
                 mode="edit"
                 configuration={configuration}
                 configPath={serverInfo.config_path}
@@ -84,26 +86,43 @@ function EditManagedAgentPage() {
                         ? "The agent must stop before its managed configuration can be changed. Saving will stop it automatically."
                         : undefined
                 }
+                submitTooltip={
+                    isBusy
+                        ? "Wait for the current save or delete to finish"
+                        : isRunning
+                          ? "Stop the agent and save the new configuration"
+                          : "Save the managed SSH configuration"
+                }
                 mutationError={mutationError}
                 onSubmit={(request) => updateMutation.mutate(request)}
                 onChange={() => updateMutation.reset()}
             >
                 <div className="border-t border-red-950 pt-6">
-                    <button
-                        type="button"
-                        onClick={() => setIsDeleteOpen(true)}
-                        disabled={isBusy || isRunning}
-                        className="inline-flex items-center gap-2 rounded-md border border-red-800 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-950/30 disabled:opacity-60"
+                    <Tooltip
+                        content={
+                            isBusy
+                                ? "Wait for the current save or delete to finish"
+                                : isRunning
+                                  ? "Stop the agent if it is running, then permanently delete it"
+                                  : "Permanently delete this managed agent"
+                        }
                     >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        Delete managed agent
-                    </button>
+                        <button
+                            type="button"
+                            onClick={() => setIsDeleteOpen(true)}
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-2 rounded-md border border-red-800 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-950/30 disabled:opacity-60"
+                        >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            Delete managed agent
+                        </button>
+                    </Tooltip>
                 </div>
             </ManagedAgentForm>
             <ConfirmationDialog
                 isOpen={isDeleteOpen}
                 title={`Delete ${agentId}?`}
-                description="This permanently removes the managed agent entry from the TOML configuration."
+                description="This stops the agent if it is running, then permanently removes the managed entry from the TOML configuration."
                 confirmLabel="Delete managed agent"
                 busyLabel="Deleting agent..."
                 isBusy={deleteMutation.isPending}

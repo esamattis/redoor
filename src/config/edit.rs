@@ -30,22 +30,8 @@ pub(crate) async fn append_ssh_agent(path: &Path, config: &SshBackedAgentConfig)
     replace_atomically(path, document.to_string().as_bytes()).await
 }
 
-/// Replaces one SSH entry selected by its effective managed-agent name.
-pub(crate) async fn replace_ssh_agent(
-    path: &Path,
-    agent_id: &str,
-    config: &SshBackedAgentConfig,
-) -> Result<()> {
-    edit_ssh_agent(path, agent_id, Some(config)).await
-}
-
-/// Removes one SSH entry selected by its effective managed-agent name.
-pub(crate) async fn delete_ssh_agent(path: &Path, agent_id: &str) -> Result<()> {
-    edit_ssh_agent(path, agent_id, None).await
-}
-
 /// Applies an in-place array edit while retaining unrelated document formatting.
-async fn edit_ssh_agent(
+pub(crate) async fn edit_ssh_agent(
     path: &Path,
     agent_id: &str,
     replacement: Option<&SshBackedAgentConfig>,

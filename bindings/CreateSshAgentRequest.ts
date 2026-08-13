@@ -33,6 +33,6 @@ home: string | null,
  */
 log: string | null, 
 /**
- * Optional SSH login password stored in plaintext in config.toml.
+ * New password to persist; omit or send empty on update to keep the existing secret.
  */
 password: string | null, };

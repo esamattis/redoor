@@ -6,6 +6,7 @@ import type {
     ManagedSshAgentConfigurationResponse,
 } from "#ui/api-client";
 import { TextField } from "#ui/components/text-field";
+import { Tooltip } from "#ui/components/tooltip";
 
 type FormState = Record<
     | "target"
@@ -45,6 +46,7 @@ export function ManagedAgentForm(props: {
     submitLabel?: string;
     submittingLabel?: string;
     submitDescription?: string;
+    submitTooltip?: string;
     mutationError: string | null;
     onSubmit: (request: CreateSshAgentRequest) => void;
     onChange: () => void;
@@ -119,6 +121,7 @@ export function ManagedAgentForm(props: {
                 </div>
                 <form onSubmit={submit} className="space-y-7 p-6 sm:p-8">
                     <ConnectionFields
+                        mode={props.mode}
                         form={form}
                         disabled={isDisabled}
                         onChange={update}
@@ -148,27 +151,38 @@ export function ManagedAgentForm(props: {
                                 </span>
                             ) : null}
                         </p>
-                        <button
-                            type="submit"
-                            disabled={isDisabled}
-                            className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        <Tooltip
+                            content={
+                                props.submitTooltip ??
+                                (isDisabled
+                                    ? "Wait for the current save or delete to finish"
+                                    : isEdit
+                                      ? "Save the managed SSH configuration"
+                                      : "Add this SSH-backed agent to the server configuration")
+                            }
                         >
-                            {props.isSubmitting ? (
-                                <LoaderCircle
-                                    className="h-4 w-4 animate-spin"
-                                    aria-hidden="true"
-                                />
-                            ) : null}
-                            {props.isSubmitting
-                                ? (props.submittingLabel ??
-                                  (isEdit
-                                      ? "Saving agent..."
-                                      : "Adding agent..."))
-                                : (props.submitLabel ??
-                                  (isEdit
-                                      ? "Save managed agent"
-                                      : "Add managed agent"))}
-                        </button>
+                            <button
+                                type="submit"
+                                disabled={isDisabled}
+                                className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {props.isSubmitting ? (
+                                    <LoaderCircle
+                                        className="h-4 w-4 animate-spin"
+                                        aria-hidden="true"
+                                    />
+                                ) : null}
+                                {props.isSubmitting
+                                    ? (props.submittingLabel ??
+                                      (isEdit
+                                          ? "Saving agent..."
+                                          : "Adding agent..."))
+                                    : (props.submitLabel ??
+                                      (isEdit
+                                          ? "Save managed agent"
+                                          : "Add managed agent"))}
+                            </button>
+                        </Tooltip>
                     </div>
                     {props.children}
                 </form>
@@ -179,6 +193,7 @@ export function ManagedAgentForm(props: {
 
 /** Groups the SSH connection controls without owning form state. */
 function ConnectionFields(props: {
+    mode: "add" | "edit";
     form: FormState;
     disabled: boolean;
     onChange: (field: keyof FormState, value: string) => void;
@@ -231,8 +246,16 @@ function ConnectionFields(props: {
                 <TextField
                     label="SSH password"
                     value={props.form.password}
-                    placeholder="Leave empty for key auth"
-                    description="Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication."
+                    placeholder={
+                        props.mode === "edit"
+                            ? "Leave blank to keep the current password"
+                            : "Leave empty for key auth"
+                    }
+                    description={
+                        props.mode === "edit"
+                            ? "Stored as plaintext in config.toml. Leave blank to keep the current password."
+                            : "Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication."
+                    }
                     type="password"
                     autoComplete="current-password"
                     className="sm:col-span-2"

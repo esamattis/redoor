@@ -201,8 +201,13 @@ test.describe.serial("Agent management", () => {
         await page.getByRole("link", { name: `Edit ${originalName}` }).click();
 
         const saveButton = page.getByRole("button", { name: "Stop and Save" });
+        const deleteButton = page.getByRole("button", {
+            name: "Delete managed agent",
+        });
         // The single submit action explains and owns the required shutdown before persistence.
         await expect(saveButton).toBeEnabled();
+        // Delete uses the same auto-stop API, so a running agent must remain removable.
+        await expect(deleteButton).toBeEnabled();
         await expect(
             page.getByText(
                 "The agent must stop before its managed configuration can be changed. Saving will stop it automatically.",
