@@ -123,6 +123,9 @@ pub enum Command {
         /// Hidden directories are opt-in because they often contain large caches and metadata trees.
         #[serde(default)]
         include_hidden: bool,
+        /// Git ignore rules are enabled by default so searches match repository expectations.
+        #[serde(default = "default_true")]
+        respect_gitignore: bool,
     },
     Cat {
         path: String,
@@ -199,6 +202,11 @@ fn default_file_search_timeout_seconds() -> u64 {
     5
 }
 
+/// Preserves default-enabled command options when older senders omit them.
+fn default_true() -> bool {
+    true
+}
+
 impl Command {
     /// Short operator-facing label without large or sensitive payloads.
     pub fn summary(&self) -> String {
@@ -212,9 +220,10 @@ impl Command {
                 query,
                 timeout_seconds,
                 include_hidden,
+                respect_gitignore,
             } => {
                 format!(
-                    "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden}"
+                    "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
                 )
             }
             Self::Cat { path } => format!("Cat path={path}"),

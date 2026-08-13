@@ -28,11 +28,18 @@ pub(crate) struct FileSearchQuery {
     timeout: u64,
     #[serde(default)]
     include_hidden: bool,
+    #[serde(default = "default_true")]
+    respect_gitignore: bool,
 }
 
 /// Keeps omitted API timeouts useful while allowing callers to tune expensive searches.
 fn default_file_search_timeout_seconds() -> u64 {
     5
+}
+
+/// Keeps repository ignore handling enabled when the query parameter is omitted.
+fn default_true() -> bool {
+    true
 }
 
 /// Route: `GET /api/v1/agents/{agent}/ls/{*path}`
@@ -132,6 +139,7 @@ pub(crate) async fn file_search_agent_handler(
                     query: search.query,
                     timeout_seconds: search.timeout,
                     include_hidden: search.include_hidden,
+                    respect_gitignore: search.respect_gitignore,
                 },
                 reply,
             })

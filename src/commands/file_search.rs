@@ -1,10 +1,14 @@
 use super::{CommandErrorKind, CommandResult, FileSearchEntry, FileSearchResponse};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 use std::{collections::HashSet, os::unix::fs::MetadataExt, path::Path, time::Duration};
-use tokio::sync::watch;
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::watch,
+};
 
 /// Bounds both response size and memory retained while traversing a large tree.
 const RESULT_LIMIT: usize = 100;
@@ -80,6 +84,7 @@ struct DirectoryIdentity {
 struct TraversedDirectory {
     entries: tokio::fs::ReadDir,
     identity: Option<DirectoryIdentity>,
+    gitignore: Option<Gitignore>,
 }
 
 /// Uses filesystem identity rather than path spelling because multiple symlinks can reach one directory.
@@ -96,6 +101,7 @@ pub(super) async fn execute(
     query: String,
     timeout_seconds: u64,
     include_hidden: bool,
+    respect_gitignore: bool,
 ) -> CommandResult {
     let (_cancel_sender, cancel_receiver) = watch::channel(false);
     execute_with_cancellation(
@@ -103,6 +109,7 @@ pub(super) async fn execute(
         query,
         timeout_seconds,
         include_hidden,
+        respect_gitignore,
         cancel_receiver,
     )
     .await
@@ -114,6 +121,7 @@ pub(super) async fn execute_with_cancellation(
     query: String,
     timeout_seconds: u64,
     include_hidden: bool,
+    respect_gitignore: bool,
     mut cancel_receiver: watch::Receiver<bool>,
 ) -> CommandResult {
     if query.trim().is_empty() {
@@ -126,8 +134,13 @@ pub(super) async fn execute_with_cancellation(
     let expression = SearchExpression::parse(&query);
     let mut matches = Vec::with_capacity(RESULT_LIMIT);
     let result = {
-        let traversal =
-            collect_matches(Path::new(&path), &expression, include_hidden, &mut matches);
+        let traversal = collect_matches(
+            Path::new(&path),
+            &expression,
+            include_hidden,
+            respect_gitignore,
+            &mut matches,
+        );
         tokio::pin!(traversal);
         let timeout = tokio::time::sleep(Duration::from_secs(timeout_seconds));
         tokio::pin!(timeout);
@@ -187,6 +200,7 @@ mod tests {
             "query".to_string(),
             5,
             false,
+            true,
             cancel_receiver,
         )
         .await;
@@ -224,6 +238,7 @@ mod tests {
             "visibletarget".to_string(),
             5,
             false,
+            true,
         )
         .await;
 
@@ -264,6 +279,7 @@ mod tests {
             "searchabletarget".to_string(),
             5,
             false,
+            true,
         )
         .await;
 
@@ -314,6 +330,7 @@ mod tests {
             "termuxvisibletarget".to_string(),
             5,
             false,
+            true,
         )
         .await;
 
@@ -376,6 +393,7 @@ mod tests {
             "-node_modules testtarget".to_string(),
             5,
             false,
+            true,
         )
         .await;
         let quoted_result = execute(
@@ -383,6 +401,7 @@ mod tests {
             "\"-node_modules\"".to_string(),
             5,
             false,
+            true,
         )
         .await;
 
@@ -428,12 +447,14 @@ mod tests {
             "hiddentarget".to_string(),
             5,
             false,
+            true,
         )
         .await;
         let included_result = execute(
             root.to_string_lossy().into_owned(),
             "hiddentarget".to_string(),
             5,
+            true,
             true,
         )
         .await;
@@ -459,6 +480,71 @@ mod tests {
                 .any(|entry| entry.path == hidden_target.to_string_lossy())
         );
     }
+
+    /// Verifies rules are loaded at every depth and can be disabled explicitly.
+    #[tokio::test]
+    async fn nested_gitignore_rules_are_respected_by_default() {
+        let root = test_root("nested-gitignore");
+        let nested = root.join("nested");
+        let root_ignored = root.join("root-target.log");
+        let nested_ignored = nested.join("ignored-target.txt");
+        let nested_reincluded = nested.join("kept-target.log");
+        tokio::fs::create_dir_all(&nested)
+            .await
+            .expect("nested directory should be created");
+        tokio::fs::write(root.join(".gitignore"), b"*.log\n")
+            .await
+            .expect("root ignore file should be created");
+        tokio::fs::write(
+            nested.join(".gitignore"),
+            b"ignored-target.txt\n!kept-target.log\n",
+        )
+        .await
+        .expect("nested ignore file should be created");
+        for target in [&root_ignored, &nested_ignored, &nested_reincluded] {
+            tokio::fs::write(target, b"target")
+                .await
+                .expect("search target should be created");
+        }
+
+        let respected = execute(
+            root.to_string_lossy().into_owned(),
+            "target".to_string(),
+            5,
+            false,
+            true,
+        )
+        .await;
+        let disabled = execute(
+            root.to_string_lossy().into_owned(),
+            "target".to_string(),
+            5,
+            false,
+            false,
+        )
+        .await;
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("test tree should be removed");
+        let CommandResult::FileSearch(respected_response) = respected else {
+            panic!("a gitignore-aware search should succeed");
+        };
+        // The nested negation takes precedence over the matching root rule.
+        assert_eq!(
+            respected_response
+                .results
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![nested_reincluded.to_string_lossy().as_ref()]
+        );
+        let CommandResult::FileSearch(disabled_response) = disabled else {
+            panic!("a search with gitignore disabled should succeed");
+        };
+        // Disabling ignore checks exposes every otherwise matching path.
+        assert_eq!(disabled_response.results.len(), 3);
+    }
 }
 
 /// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
@@ -466,6 +552,7 @@ async fn collect_matches(
     root: &Path,
     expression: &SearchExpression,
     include_hidden: bool,
+    respect_gitignore: bool,
     matches: &mut Vec<RankedEntry>,
 ) -> std::io::Result<()> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
@@ -483,6 +570,7 @@ async fn collect_matches(
     let mut directories = vec![TraversedDirectory {
         entries: root_entries,
         identity: root_identity,
+        gitignore: load_gitignore(root, respect_gitignore).await,
     }];
 
     while let Some(directory) = directories.last_mut() {
@@ -530,6 +618,10 @@ async fn collect_matches(
             || followed_metadata
                 .as_ref()
                 .is_some_and(std::fs::Metadata::is_dir);
+        if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
+            // Ignored directories are pruned before opening them, matching Git traversal semantics.
+            continue;
+        }
         if is_hidden && !include_hidden && is_directory {
             // Hidden symlink directories require metadata to identify, but are still never opened.
             continue;
@@ -578,11 +670,51 @@ async fn collect_matches(
             directories.push(TraversedDirectory {
                 entries: child_directory,
                 identity: child_identity,
+                gitignore: load_gitignore(&entry_path, respect_gitignore).await,
             });
         }
     }
 
     Ok(())
+}
+
+/// Loads one directory's rules asynchronously while tolerating missing or partially invalid files.
+async fn load_gitignore(directory: &Path, enabled: bool) -> Option<Gitignore> {
+    if !enabled {
+        return None;
+    }
+    let ignore_path = directory.join(".gitignore");
+    let file = tokio::fs::File::open(&ignore_path).await.ok()?;
+    let mut lines = BufReader::new(file).lines();
+    let mut builder = GitignoreBuilder::new(directory);
+    let mut first_line = true;
+    while let Ok(Some(mut line)) = lines.next_line().await {
+        if first_line {
+            line = line.trim_start_matches('\u{feff}').to_string();
+            first_line = false;
+        }
+        // Git accepts the valid rules in a file even when another line is malformed.
+        let _ = builder.add_line(Some(ignore_path.clone()), &line);
+    }
+    builder.build().ok()
+}
+
+/// Applies the nearest matching rule first because deeper `.gitignore` files override ancestors.
+fn is_ignored(directories: &[TraversedDirectory], path: &Path, is_directory: bool) -> bool {
+    for gitignore in directories
+        .iter()
+        .rev()
+        .filter_map(|directory| directory.gitignore.as_ref())
+    {
+        let matched = gitignore.matched(path, is_directory);
+        if matched.is_ignore() {
+            return true;
+        }
+        if matched.is_whitelist() {
+            return false;
+        }
+    }
+    false
 }
 
 /// Keeps only the globally strongest matches while traversal continues through arbitrary trees.

@@ -139,6 +139,7 @@ async fn handle_command_message(
             query,
             timeout_seconds,
             include_hidden,
+            respect_gitignore,
         } => {
             let result = match file_search_cancel {
                 Some(cancel_receiver) => {
@@ -148,6 +149,7 @@ async fn handle_command_message(
                             query,
                             timeout_seconds,
                             include_hidden,
+                            respect_gitignore,
                             cancel_receiver,
                         )
                         .await
@@ -159,6 +161,7 @@ async fn handle_command_message(
                             query,
                             timeout_seconds,
                             include_hidden,
+                            respect_gitignore,
                         })
                         .await
                 }

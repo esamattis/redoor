@@ -518,9 +518,13 @@ test.describe.serial("File Browser Navigation", () => {
         const hiddenToggle = page.getByRole("button", {
             name: "Search hidden directories",
         });
+        const gitignoreToggle = page.getByRole("button", {
+            name: "Respect .gitignore files",
+        });
         // Recursive-only controls do not occupy the local-filter toolbar.
         await expect(timeoutInput).toHaveCount(0);
         await expect(hiddenToggle).toHaveCount(0);
+        await expect(gitignoreToggle).toHaveCount(0);
         await filterInput.fill("nested3txt");
 
         // Local filtering cannot discover a file below a child directory.
@@ -530,6 +534,7 @@ test.describe.serial("File Browser Navigation", () => {
         // Recursive searches reveal their optional controls with safe defaults.
         await expect(timeoutInput).toHaveValue("5");
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "false");
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "true");
         await timeoutInput.hover();
         // The tooltip explains both the unit and accepted range at the control.
         await expect(page.getByRole("tooltip")).toHaveText(
@@ -538,6 +543,8 @@ test.describe.serial("File Browser Navigation", () => {
         await timeoutInput.fill("12");
         await hiddenToggle.click();
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
+        await gitignoreToggle.click();
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
         await filterInput.fill("nested");
         await filterInput.fill("nested3txt");
 
@@ -564,6 +571,10 @@ test.describe.serial("File Browser Navigation", () => {
         // Hidden-directory traversal is explicit rather than enabled by default.
         expect(searchRequests[0]?.searchParams.get("include_hidden")).toBe(
             "true",
+        );
+        // Git ignore checking is default-on but can be disabled for exhaustive searches.
+        expect(searchRequests[0]?.searchParams.get("respect_gitignore")).toBe(
+            "false",
         );
 
         let notifyRequestStarted: (() => void) | undefined;

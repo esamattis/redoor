@@ -31,7 +31,17 @@ impl CommandHandler {
                 query,
                 timeout_seconds,
                 include_hidden,
-            } => file_search::execute(path, query, timeout_seconds, include_hidden).await,
+                respect_gitignore,
+            } => {
+                file_search::execute(
+                    path,
+                    query,
+                    timeout_seconds,
+                    include_hidden,
+                    respect_gitignore,
+                )
+                .await
+            }
             Command::Cat { path } => self.cat(path).await,
             Command::RawDownload {
                 path,
@@ -81,6 +91,7 @@ impl CommandHandler {
         query: String,
         timeout_seconds: u64,
         include_hidden: bool,
+        respect_gitignore: bool,
         cancel_receiver: watch::Receiver<bool>,
     ) -> CommandResult {
         file_search::execute_with_cancellation(
@@ -88,6 +99,7 @@ impl CommandHandler {
             query,
             timeout_seconds,
             include_hidden,
+            respect_gitignore,
             cancel_receiver,
         )
         .await

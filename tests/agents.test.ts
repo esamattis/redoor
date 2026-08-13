@@ -83,7 +83,12 @@ async function getConnectedTestAgent(): Promise<Agent> {
 async function searchAgentFiles(
     agent: Agent,
     root: string,
-    search: { query: string; timeout?: number; includeHidden?: boolean },
+    search: {
+        query: string;
+        timeout?: number;
+        includeHidden?: boolean;
+        respectGitignore?: boolean;
+    },
 ): Promise<FileSearchResponse> {
     const encodedRoot = encodeFilesystemPath(root);
     const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
@@ -97,6 +102,12 @@ async function searchAgentFiles(
     }
     if (search.includeHidden !== undefined) {
         url.searchParams.set("include_hidden", search.includeHidden.toString());
+    }
+    if (search.respectGitignore !== undefined) {
+        url.searchParams.set(
+            "respect_gitignore",
+            search.respectGitignore.toString(),
+        );
     }
     const response = await fetch(url, { headers: agent.getAuthHeaders() });
     // Successful transport proves the REST route relayed the command to the connected agent.
@@ -469,6 +480,36 @@ describe("Agents API", () => {
         // Explicit opt-in proves the REST option reaches agent traversal.
         expect(includedResult.results.map((entry) => entry.path)).toEqual([
             hiddenTarget,
+        ]);
+    });
+
+    it("should respect gitignore files at every recursion depth by default", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({
+            suffix: "-gitignore-file-search",
+        });
+        const nestedDirectory = path.join(searchRoot, "nested");
+        const ignoredTarget = path.join(nestedDirectory, "ignored-target.txt");
+        await fs.mkdir(nestedDirectory);
+        await fs.writeFile(
+            path.join(nestedDirectory, ".gitignore"),
+            "ignored-target.txt\n",
+            "utf-8",
+        );
+        await fs.writeFile(ignoredTarget, "ignored", "utf-8");
+
+        const defaultResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: "ignoredtarget",
+        });
+        // Omission must activate nested ignore rules so callers get repository-like results.
+        expect(defaultResult.results).toEqual([]);
+        const disabledResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: "ignoredtarget",
+            respectGitignore: false,
+        });
+        // Explicitly disabling the check proves the REST option reaches agent traversal.
+        expect(disabledResult.results.map((entry) => entry.path)).toEqual([
+            ignoredTarget,
         ]);
     });
 

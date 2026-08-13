@@ -10,6 +10,7 @@ import {
     File,
     Folder,
     FolderSearch,
+    GitBranch,
     Eye,
     EyeOff,
     LoaderCircle,
@@ -152,6 +153,7 @@ export function FileList(props: {
     const [searchTimeoutSeconds, setSearchTimeoutSeconds] = React.useState(5);
     const [includeHiddenDirectories, setIncludeHiddenDirectories] =
         React.useState(false);
+    const [respectGitignore, setRespectGitignore] = React.useState(true);
     const [debouncedFilter, setDebouncedFilter] = React.useState("");
     const [sort, setSort] = React.useState<{
         column: FileSortColumn;
@@ -172,6 +174,7 @@ export function FileList(props: {
             query: searchRecursively ? debouncedFilter : "",
             timeoutSeconds: searchTimeoutSeconds,
             includeHidden: includeHiddenDirectories,
+            respectGitignore,
         }),
     );
     const searchState = getFileSearchState({
@@ -262,9 +265,11 @@ export function FileList(props: {
                     active={searchRecursively}
                     timeoutSeconds={searchTimeoutSeconds}
                     includeHiddenDirectories={includeHiddenDirectories}
+                    respectGitignore={respectGitignore}
                     onActiveChange={setSearchRecursively}
                     onTimeoutChange={setSearchTimeoutSeconds}
                     onIncludeHiddenChange={setIncludeHiddenDirectories}
+                    onRespectGitignoreChange={setRespectGitignore}
                 />
             </div>
             {searchRecursively ? (
@@ -289,9 +294,11 @@ function RecursiveSearchControls(props: {
     active: boolean;
     timeoutSeconds: number;
     includeHiddenDirectories: boolean;
+    respectGitignore: boolean;
     onActiveChange: React.Dispatch<React.SetStateAction<boolean>>;
     onTimeoutChange: React.Dispatch<React.SetStateAction<number>>;
     onIncludeHiddenChange: React.Dispatch<React.SetStateAction<boolean>>;
+    onRespectGitignoreChange: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
     return (
         <>
@@ -341,6 +348,25 @@ function RecursiveSearchControls(props: {
                             ) : (
                                 <EyeOff className="h-4 w-4" />
                             )}
+                        </button>
+                    </Tooltip>
+                    <Tooltip content="Respect .gitignore files">
+                        <button
+                            type="button"
+                            aria-label="Respect .gitignore files"
+                            aria-pressed={props.respectGitignore}
+                            onClick={() =>
+                                props.onRespectGitignoreChange(
+                                    (current) => !current,
+                                )
+                            }
+                            className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                                props.respectGitignore
+                                    ? "border-blue-500 bg-blue-500/15 text-blue-300"
+                                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
+                            }`}
+                        >
+                            <GitBranch className="h-4 w-4" />
                         </button>
                     </Tooltip>
                 </>

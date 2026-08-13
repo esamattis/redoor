@@ -16,6 +16,7 @@ export const queryKeys = {
             query: string;
             timeoutSeconds: number;
             includeHidden: boolean;
+            respectGitignore: boolean;
         },
     ) =>
         [
@@ -27,6 +28,7 @@ export const queryKeys = {
             search.query,
             search.timeoutSeconds,
             search.includeHidden,
+            search.respectGitignore,
         ] as const,
 };
 
@@ -71,7 +73,12 @@ export function fileContentQueryOptions(agent: Agent, path: string) {
 export function fileSearchQueryOptions(
     agent: Agent,
     path: string,
-    search: { query: string; timeoutSeconds: number; includeHidden: boolean },
+    search: {
+        query: string;
+        timeoutSeconds: number;
+        includeHidden: boolean;
+        respectGitignore: boolean;
+    },
 ) {
     return queryOptions({
         queryKey: queryKeys.fileSearch(agent.id, path, search),
@@ -79,6 +86,7 @@ export function fileSearchQueryOptions(
             agent.searchFiles(path, search.query, {
                 timeoutSeconds: search.timeoutSeconds,
                 includeHidden: search.includeHidden,
+                respectGitignore: search.respectGitignore,
                 signal,
             }),
         enabled: search.query.trim() !== "",

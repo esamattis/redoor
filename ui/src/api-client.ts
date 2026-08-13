@@ -402,6 +402,7 @@ export class Agent {
         options: {
             timeoutSeconds: number;
             includeHidden: boolean;
+            respectGitignore: boolean;
             signal?: AbortSignal;
         },
     ): Promise<FileSearchResponse> {
@@ -416,6 +417,10 @@ export class Agent {
         url.searchParams.set(
             "include_hidden",
             options.includeHidden.toString(),
+        );
+        url.searchParams.set(
+            "respect_gitignore",
+            options.respectGitignore.toString(),
         );
         return apiRequest<FileSearchResponse>(
             url.toString(),
