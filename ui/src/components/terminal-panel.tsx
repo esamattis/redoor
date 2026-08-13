@@ -2,7 +2,9 @@ import * as React from "react";
 import {
     CircleCheck,
     CircleX,
+    HardDrive,
     LoaderCircle,
+    MoreHorizontal,
     Plus,
     RotateCcw,
     SquareTerminal,
@@ -22,6 +24,7 @@ import {
 } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
+import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
 
 type TerminalState =
@@ -45,9 +48,11 @@ const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
         }),
     ]);
 
-/** Keeps each tab's creation directory and lifecycle independent. */
+/** Keeps each tab's owning agent, creation directory, and lifecycle independent. */
 type TerminalTab = {
     id: number;
+    agent: Agent;
+    agentTerminalNumber: number;
     title: string;
     cwd: string;
     state: TerminalState;
@@ -102,23 +107,42 @@ function isTerminalTabFocused(): boolean {
     );
 }
 
-/** Owns all ephemeral terminal tabs for the currently routed agent. */
-export function TerminalPanel(props: { agent: Agent; cwd: string }) {
+/** Identifies the routed agent and directory used by the direct new-terminal action. */
+type ActiveTerminalTarget = {
+    agent: Agent;
+    cwd: string;
+};
+
+/** Owns terminal tabs globally so route and agent navigation cannot destroy live shells. */
+export function TerminalPanel(props: {
+    agents: Agent[];
+    activeTarget: ActiveTerminalTarget | null;
+}) {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
     const nextTabIdRef = React.useRef(1);
+    const nextAgentTerminalNumberRef = React.useRef(new Map<string, number>());
 
-    /** Captures the visible browser directory without changing older tabs. */
-    const createTerminal = () => {
+    /** Captures the selected agent and directory without changing older tabs. */
+    const createTerminal = (target: ActiveTerminalTarget) => {
         const id = nextTabIdRef.current;
         nextTabIdRef.current += 1;
+        const agentTerminalNumber =
+            nextAgentTerminalNumberRef.current.get(target.agent.id) ?? 1;
+        nextAgentTerminalNumberRef.current.set(
+            target.agent.id,
+            agentTerminalNumber + 1,
+        );
+        const title = `${target.agent.name} ${agentTerminalNumber}`;
         setTabs((currentTabs) => [
             ...currentTabs,
             {
                 id,
-                title: `Terminal ${id}`,
-                cwd: props.cwd,
+                agent: target.agent,
+                agentTerminalNumber,
+                title,
+                cwd: target.cwd,
                 state: { type: "not_started" },
                 restartGeneration: 0,
             },
@@ -198,6 +222,8 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
             hideTitle
             actions={
                 <TerminalTabActions
+                    agents={props.agents}
+                    activeTarget={props.activeTarget}
                     tabs={tabs}
                     activeTabId={activeTabId}
                     onCreate={createTerminal}
@@ -217,7 +243,7 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
                 {tabs.map((tab) => (
                     <TerminalSession
                         key={tab.id}
-                        agent={props.agent}
+                        agent={tab.agent}
                         tab={tab}
                         isActive={tab.id === activeTabId}
                         isPanelCollapsed={isCollapsed}
@@ -231,9 +257,11 @@ export function TerminalPanel(props: { agent: Agent; cwd: string }) {
 
 /** Renders terminal-tab controls while keeping panel lifecycle state local to the parent. */
 function TerminalTabActions(props: {
+    agents: Agent[];
+    activeTarget: ActiveTerminalTarget | null;
     tabs: TerminalTab[];
     activeTabId: number | null;
-    onCreate: () => void;
+    onCreate: (target: ActiveTerminalTarget) => void;
     onClose: (tabId: number) => void;
     onRestart: (tabId: number) => void;
     onSelect: (tabId: number) => void;
@@ -242,6 +270,12 @@ function TerminalTabActions(props: {
         tabIndex: number,
     ) => void;
 }) {
+    const pickerButtonRef = React.useRef<HTMLButtonElement>(null);
+    const [isPickerOpen, setIsPickerOpen] = React.useState(false);
+    const availableAgents = props.agents.filter(
+        (agent) => agent.status === "connected" && agent.cwd !== null,
+    );
+
     return (
         <div className="flex min-w-max max-w-none items-center gap-1">
             <div
@@ -280,8 +314,11 @@ function TerminalTabActions(props: {
                                         : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
                                 }`}
                             >
-                                <span className="whitespace-nowrap">
-                                    {tab.title}
+                                <span className="max-w-36 truncate whitespace-nowrap">
+                                    {tab.agent.name}
+                                </span>
+                                <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-slate-950/70 px-1.5 py-0.5 text-[10px] leading-none tabular-nums text-slate-300">
+                                    {tab.agentTerminalNumber}
                                 </span>
                                 <span
                                     role="status"
@@ -322,16 +359,70 @@ function TerminalTabActions(props: {
                     );
                 })}
             </div>
-            <Tooltip content="New terminal">
+            {props.activeTarget ? (
+                <Tooltip
+                    content={`New terminal in ${props.activeTarget.agent.name}`}
+                >
+                    <button
+                        type="button"
+                        aria-label="New terminal"
+                        onClick={() => {
+                            const activeTarget = props.activeTarget;
+                            if (activeTarget) {
+                                props.onCreate(activeTarget);
+                            }
+                        }}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                    >
+                        <Plus className="h-4 w-4" />
+                    </button>
+                </Tooltip>
+            ) : null}
+            <Tooltip content="New terminal in another agent">
                 <button
+                    ref={pickerButtonRef}
                     type="button"
-                    aria-label="New terminal"
-                    onClick={props.onCreate}
+                    aria-label="Choose agent for new terminal"
+                    aria-haspopup="dialog"
+                    aria-expanded={isPickerOpen}
+                    onClick={() => setIsPickerOpen(true)}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
-                    <Plus className="h-4 w-4" />
+                    <MoreHorizontal className="h-4 w-4" />
                 </button>
             </Tooltip>
+            <Dialog
+                isOpen={isPickerOpen}
+                title="New terminal"
+                closeAriaLabel="Close agent picker"
+                anchorRef={pickerButtonRef}
+                onClose={() => setIsPickerOpen(false)}
+            >
+                <div className="mt-2 grid gap-1">
+                    {availableAgents.map((agent) => (
+                        <button
+                            key={agent.id}
+                            type="button"
+                            onClick={() => {
+                                if (agent.cwd === null) {
+                                    return;
+                                }
+                                props.onCreate({ agent, cwd: agent.cwd });
+                                setIsPickerOpen(false);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                        >
+                            <HardDrive className="h-4 w-4 text-slate-500" />
+                            <span className="truncate">{agent.name}</span>
+                        </button>
+                    ))}
+                    {availableAgents.length === 0 ? (
+                        <p className="px-3 py-2 text-sm text-slate-500">
+                            No connected agents
+                        </p>
+                    ) : null}
+                </div>
+            </Dialog>
         </div>
     );
 }

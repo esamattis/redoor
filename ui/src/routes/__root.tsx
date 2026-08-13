@@ -206,6 +206,13 @@ function RootLayout() {
             location.pathname.startsWith(`${routePrefix}/`)
         );
     });
+    const activeTerminalTarget =
+        activeAgent?.status === "connected" && activeAgent.cwd !== null
+            ? {
+                  agent: activeAgent,
+                  cwd: terminalCwd ?? activeAgent.cwd,
+              }
+            : null;
 
     React.useEffect(() => {
         const refreshListener = new RefreshListener(api, router, queryClient);
@@ -278,13 +285,10 @@ function RootLayout() {
                 <main className="flex-1 overflow-auto">
                     <Outlet />
                 </main>
-                {activeAgent?.status === "connected" && terminalCwd ? (
-                    <TerminalPanel
-                        key={activeAgent.id}
-                        agent={activeAgent}
-                        cwd={terminalCwd}
-                    />
-                ) : null}
+                <TerminalPanel
+                    agents={agents}
+                    activeTarget={activeTerminalTarget}
+                />
                 <SelectedFilesPanel agents={agents} />
                 <TransferProgressPanel
                     agents={agents}

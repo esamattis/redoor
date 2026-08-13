@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 /**
@@ -110,7 +111,8 @@ export function Dialog(props: {
     );
 
     if (isAnchored) {
-        return (
+        // Anchored menus escape overflow containers such as collapsed bottom panels.
+        return createPortal(
             <div
                 className="fixed inset-0 z-50"
                 role={props.role ?? "dialog"}
@@ -124,7 +126,8 @@ export function Dialog(props: {
                 }}
             >
                 {panel}
-            </div>
+            </div>,
+            document.body,
         );
     }
 
