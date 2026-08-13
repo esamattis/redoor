@@ -91,6 +91,7 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
         remote_bin: optional_text(request.remote_bin),
         home: optional_text(request.home),
         log: optional_text(request.log),
+        password: optional_password(request.password),
     })
 }
 
@@ -100,4 +101,9 @@ fn optional_text(value: Option<String>) -> Option<String> {
         let value = value.trim().to_string();
         (!value.is_empty()).then_some(value)
     })
+}
+
+/// Keeps leading or trailing spaces that are part of the password, unlike other form fields.
+fn optional_password(value: Option<String>) -> Option<String> {
+    value.and_then(|value| (!value.is_empty()).then_some(value))
 }

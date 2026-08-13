@@ -55,6 +55,7 @@ describe("SSH agent configuration API", () => {
             remote_bin: "/opt/redoor",
             home: "/srv/app",
             log: "/tmp/created-ssh-agent.log",
+            password: "ssh-secret",
         });
 
         // The response must be immediately usable without restarting or contacting SSH.
@@ -80,6 +81,7 @@ describe("SSH agent configuration API", () => {
         expect(editedConfig).toContain('username = "deploy"');
         expect(editedConfig).toContain("ssh_port = 2222");
         expect(editedConfig).toContain(`name = "${AGENT_NAME}"`);
+        expect(editedConfig).toContain('password = "ssh-secret"');
 
         await apiClient.restartServer();
         const afterRestart = await waitForValue({
@@ -113,6 +115,7 @@ describe("SSH agent configuration API", () => {
                 remote_bin: null,
                 home: null,
                 log: null,
+                password: null,
             }),
         ).rejects.toMatchObject({
             status: 400,
@@ -127,6 +130,7 @@ describe("SSH agent configuration API", () => {
                 remote_bin: null,
                 home: null,
                 log: null,
+                password: null,
             }),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
         // Rejected submissions must not modify the durable source of truth.

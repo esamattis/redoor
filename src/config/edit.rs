@@ -23,6 +23,7 @@ pub(crate) async fn append_ssh_agent(path: &Path, config: &SshBackedAgentConfig)
     insert_optional_string(&mut table, "remote_bin", &config.remote_bin);
     insert_optional_string(&mut table, "home", &config.home);
     insert_optional_string(&mut table, "log", &config.log);
+    insert_optional_string(&mut table, "password", &config.password);
 
     match document.get_mut("agents") {
         Some(item) => item

@@ -25,12 +25,17 @@
 //! agent so it inherits the secret only through its environment. Remaining
 //! stdin is then forwarded normally.
 //!
+//! Optional `password` values are delivered through OpenSSH `SSH_ASKPASS` by
+//! re-executing this binary. That keeps the secret off argv and off the SSH
+//! stdin already used for tokens, sniff scripts, and uploads.
+//!
 //! Both standalone and TOML-managed launches select a random dynamic remote
 //! port for each SSH spawn attempt. `ExitOnForwardFailure=yes` makes SSH exit
 //! when that port is already occupied. Managed agents let the watchdog retry;
 //! standalone launches detect that specific bind failure and retry locally
 //! without supervising an agent after it has started.
 
+pub(crate) mod askpass;
 mod provision;
 mod transport;
 
@@ -58,7 +63,7 @@ pub(crate) fn default_agent_name(target: &str) -> String {
 /// (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`)
 /// don't have to compute it themselves;
 /// `start_relay` fills it in when `None`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct SshBackedAgentConfig {
     /// SSH login username. Forwarded to ssh via `-l`. When `None`, ssh config
     /// or the `user@host` target syntax supplies the username.
@@ -81,6 +86,25 @@ pub(crate) struct SshBackedAgentConfig {
     /// logs (forwarded through ssh) are captured locally. The file is
     /// opened in append mode so agent restarts accumulate logs.
     pub(crate) log: Option<String>,
+    /// Optional SSH login password. When set, OpenSSH is given `SSH_ASKPASS`
+    /// pointing at this binary so password auth can run without a TTY or
+    /// stealing the stdin used for tokens and uploads.
+    pub(crate) password: Option<String>,
+}
+
+impl std::fmt::Debug for SshBackedAgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshBackedAgentConfig")
+            .field("username", &self.username)
+            .field("ssh_port", &self.ssh_port)
+            .field("name", &self.name)
+            .field("remote_bin", &self.remote_bin)
+            .field("home", &self.home)
+            .field("target", &self.target)
+            .field("log", &self.log)
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 /// Spawns `ssh` with reverse port forwarding and starts a redoor agent on
@@ -316,7 +340,8 @@ async fn prepare_ssh_backed_agent_for_destination(
         .unwrap_or_else(|| default_agent_name(&config.target));
     let host = SshHost::new(config.target.clone())
         .username(config.username.clone())
-        .ssh_port(config.ssh_port);
+        .ssh_port(config.ssh_port)
+        .password(config.password.clone());
 
     // Sniff the remote host before starting the agent so we can install the
     // redoor binary on first contact. Without this, a fresh remote host

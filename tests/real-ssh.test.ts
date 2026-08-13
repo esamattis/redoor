@@ -28,6 +28,7 @@ const execFileAsync = promisify(execFile);
 
 const SSH_TEST_HOST = "redoor-ssh-test";
 const SSH_TEST_USER = "redoor";
+const SSH_PASSWORD_USER = "redoor-password";
 
 type RelayPidMetadata = {
     pid: number;
@@ -69,14 +70,51 @@ async function sshTestCommand(command: string): Promise<void> {
     await execFileAsync("ssh", ["-l", SSH_TEST_USER, SSH_TEST_HOST, command]);
 }
 
+/** Runs a command as the password-only user so cleanup can reach that user's home. */
+async function sshPasswordTestCommand(command: string): Promise<void> {
+    const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+    if (password === undefined || password === "") {
+        throw new Error(
+            "REDOOR_SSH_TEST_PASSWORD is required for password SSH cleanup",
+        );
+    }
+    const askpassDir = mkdtempSync(join(tmpdir(), "redoor-ssh-askpass-"));
+    const askpassPath = join(askpassDir, "askpass");
+    writeFileSync(
+        askpassPath,
+        `#!/bin/sh
+printf '%s\n' ${shellQuote(password)}
+`,
+        { mode: 0o700 },
+    );
+    try {
+        await execFileAsync(
+            "ssh",
+            ["-l", SSH_PASSWORD_USER, SSH_TEST_HOST, command],
+            {
+                env: {
+                    ...process.env,
+                    DISPLAY: process.env.DISPLAY ?? ":0",
+                    SSH_ASKPASS: askpassPath,
+                    SSH_ASKPASS_REQUIRE: "force",
+                },
+            },
+        );
+    } finally {
+        rmSync(askpassDir, { recursive: true, force: true });
+    }
+}
+
 /** Stops any orphaned remote agent and removes only this test's isolated files. */
 async function cleanupSshTest(options: {
     remoteRoot: string;
     agentAppNames: string[];
+    sshCommand?: (command: string) => Promise<void>;
 }): Promise<void> {
+    const run = options.sshCommand ?? sshTestCommand;
     const appNames = options.agentAppNames.map(shellQuote).join(" ");
     const command = `for app in ${appNames}; do pid_file="$HOME/.local/share/$app/agent.pid"; if [ -f "$pid_file" ]; then pid=$(tr -d '[:space:]' < "$pid_file"); case "$pid" in *[!0-9]*|'') ;; *) kill "$pid" 2>/dev/null || true ;; esac; fi; rm -rf "$HOME/.local/share/$app"; done; rm -rf ${shellQuote(options.remoteRoot)}`;
-    await sshTestCommand(command);
+    await run(command);
 }
 
 /** Kills one remote relay agent so the owning local SSH process must reconnect it. */
@@ -511,3 +549,110 @@ log = "${agentLogPath}"
         }, 120_000);
     },
 );
+
+describe.skipIf(
+    process.env.REDOOR_SSH_TEST !== "1" ||
+        !process.env.REDOOR_SSH_TEST_PASSWORD,
+)("TOML-managed SSH agents with password auth", () => {
+    test("starts an [[agents]] entry as redoor-password", async () => {
+        const processManager = new ProcessManager();
+        const home = mkdtempSync(
+            join(tmpdir(), "redoor-managed-ssh-password-"),
+        );
+        const suffix = `${process.pid}-${Date.now()}`;
+        const appName = `redoor-managed-ssh-password-${suffix}`;
+        const agentName = `managed-ssh-password-${suffix}`;
+        const remoteRoot = `/tmp/redoor-managed-ssh-password-${suffix}`;
+        const configPath = join(home, "config.toml");
+        const agentLogPath = join(home, "managed-agent.log");
+        const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
+        if (sshPassword === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+        writeFileSync(
+            configPath,
+            `agent_token = "${TEST_AGENT_TOKEN}"
+
+[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+port = ${VITEST_SERVER_PORT}
+
+[[agents]]
+target = "${SSH_TEST_HOST}"
+username = "${SSH_PASSWORD_USER}"
+password = ${JSON.stringify(sshPassword)}
+name = "${agentName}"
+home = "${remoteRoot}"
+log = "${agentLogPath}"
+`,
+        );
+
+        onTestFinished(async () => {
+            processManager.killAll();
+            try {
+                await cleanupSshTest({
+                    remoteRoot,
+                    agentAppNames: [appName],
+                    sshCommand: sshPasswordTestCommand,
+                });
+            } finally {
+                rmSync(home, { recursive: true, force: true });
+            }
+        });
+
+        // Password-user artifacts live in a different home than the key-auth user.
+        await cleanupSshTest({
+            remoteRoot,
+            agentAppNames: [appName],
+            sshCommand: sshPasswordTestCommand,
+        });
+        await sshPasswordTestCommand(`mkdir -p ${shellQuote(remoteRoot)}`);
+        const serverPid = processManager.spawn(
+            SERVER_PATH,
+            ["server", "--config", configPath],
+            {
+                env: {
+                    ...process.env,
+                    HOME: home,
+                    REDOOR_APP_NAME: appName,
+                },
+            },
+        );
+        await waitForPort(VITEST_SERVER_PORT);
+        const apiClient = new ApiClient(
+            `http://127.0.0.1:${VITEST_SERVER_PORT}`,
+        );
+        await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
+
+        const configuredAgent = await waitForValue({
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (agent) => agent.name === agentName,
+                ),
+            description: "password SSH agent inventory registration",
+        });
+        expect(configuredAgent.managed).toBe(true);
+        expect(configuredAgent.status).toBe("stopped");
+
+        await configuredAgent.start();
+        const connected = await waitForValue({
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.name === agentName,
+                );
+                if (agent?.connectionId) {
+                    return agent;
+                }
+                throw new Error(
+                    `status=${agent?.status ?? "missing"}, issue=${agent?.connectionIssue ?? "none"}, server=${processManager.getStdout(serverPid)}`,
+                );
+            },
+            timeoutMs: 60_000,
+            description: "password SSH agent to connect",
+        });
+        const echo = await connected.echo("managed-through-password-ssh");
+        // Echo proves sniff, binary upload, and the long-lived session all used askpass.
+        expect(echo.message).toBe("managed-through-password-ssh");
+    }, 120_000);
+});

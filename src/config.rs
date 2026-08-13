@@ -447,7 +447,7 @@ fn parse_relays_array(doc: &ParsedDocument<'_>) -> Result<Vec<RelayConfig>> {
     };
     let mut configs = Vec::new();
     for (index, entry) in relays.iter().enumerate() {
-        const KNOWN_KEYS: [&str; 12] = [
+        const KNOWN_KEYS: [&str; 13] = [
             "id",
             "target",
             "server",
@@ -460,6 +460,7 @@ fn parse_relays_array(doc: &ParsedDocument<'_>) -> Result<Vec<RelayConfig>> {
             "log",
             "insecure",
             "agent_app_name",
+            "password",
         ];
         for (key, _) in entry.iter() {
             if !KNOWN_KEYS.contains(&key) {
@@ -537,6 +538,7 @@ fn parse_relays_array(doc: &ParsedDocument<'_>) -> Result<Vec<RelayConfig>> {
                 home: string("home", false)?,
                 target,
                 log: string("log", false)?,
+                password: string("password", false)?,
             },
         });
     }
@@ -594,6 +596,22 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
         .and_then(|item| item.as_str())
         .map(|s| s.to_string());
 
+    let password = match entry.get("password") {
+        None => None,
+        Some(item) => {
+            let value = item
+                .as_str()
+                .with_context(|| format!("agents entry #{} 'password' must be a string", index))?;
+            if value.is_empty() {
+                bail!(
+                    "agents entry #{} 'password' must be non-empty when set",
+                    index
+                );
+            }
+            Some(value.to_string())
+        }
+    };
+
     Ok(SshBackedAgentConfig {
         username,
         ssh_port,
@@ -602,6 +620,7 @@ fn parse_ssh_backed_entry(index: usize, entry: &toml_edit::Table) -> Result<SshB
         home,
         target,
         log,
+        password,
     })
 }
 
@@ -646,6 +665,13 @@ fn parse_local_entry(index: usize, entry: &toml_edit::Table) -> Result<AgentConf
         bail!(
             "agents entry #{} has 'remote_bin' which only applies to SSH-backed agents (local = true); \
              remove 'remote_bin'",
+            index
+        );
+    }
+    if entry.get("password").is_some() {
+        bail!(
+            "agents entry #{} has 'password' which only applies to SSH-backed agents (local = true); \
+             remove 'password'",
             index
         );
     }
@@ -1126,7 +1152,7 @@ target = "host"
     /// field rather than a single vague "config error".
     #[tokio::test]
     async fn test_parse_config_file_rejects_local_with_ssh_fields() {
-        for field in ["username", "ssh_port", "remote_bin"] {
+        for field in ["username", "ssh_port", "remote_bin", "password"] {
             let temp = std::env::temp_dir().join(format!(
                 "redoor-agents-test-local-ssh-{}-{}.toml",
                 field,
@@ -1226,6 +1252,37 @@ log = "log/prod-db.log"
             agent.log.as_deref(),
             Some("log/prod-db.log"),
             "log should be read from the ssh toml entry"
+        );
+    }
+
+    /// Stores the SSH password as written so OpenSSH askpass can replay it later.
+    #[tokio::test]
+    async fn test_parse_config_file_ssh_entry_with_password() {
+        let temp = std::env::temp_dir().join(format!(
+            "redoor-agents-test-ssh-password-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let content = r#"
+[[agents]]
+target = "prod-db"
+password = "  keep spaces  "
+"#;
+        write_test_config(&temp, content).unwrap();
+
+        let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
+        std::fs::remove_file(&temp).ok();
+
+        let agent = match &config.agents[0] {
+            AgentConfig::SshBacked(config) => config,
+            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
+        };
+        assert_eq!(
+            agent.password.as_deref(),
+            Some("  keep spaces  "),
+            "password spaces are significant and must not be trimmed"
         );
     }
 

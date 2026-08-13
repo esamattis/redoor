@@ -204,6 +204,12 @@ struct AgentLogsArgs {
 
 #[tokio::main]
 async fn main() {
+    // OpenSSH execs SSH_ASKPASS as this binary with the prompt as argv[1].
+    // Detect that role before clap treats the prompt as a subcommand.
+    if std::env::var_os(ssh::askpass::ENV).is_some() {
+        ssh::askpass::run();
+        return;
+    }
     let cli = Cli::parse();
     app_name::initialize(cli.app_name);
     match cli.command {

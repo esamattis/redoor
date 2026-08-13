@@ -11,7 +11,14 @@ export const Route = createFileRoute("/agents/new")({
 });
 
 type FormState = Record<
-    "target" | "username" | "sshPort" | "name" | "remoteBin" | "home" | "log",
+    | "target"
+    | "username"
+    | "sshPort"
+    | "name"
+    | "remoteBin"
+    | "home"
+    | "log"
+    | "password",
     string
 >;
 
@@ -23,6 +30,7 @@ const initialForm: FormState = {
     remoteBin: "",
     home: "",
     log: "",
+    password: "",
 };
 
 /** Collects SSH settings without contacting the remote host until the agent is started. */
@@ -78,6 +86,7 @@ function NewSshAgentPage() {
             remote_bin: optional(form.remoteBin),
             home: optional(form.home),
             log: optional(form.log),
+            password: form.password || null,
         });
     };
 
@@ -122,6 +131,7 @@ function NewSshAgentPage() {
                                 label="SSH target"
                                 value={form.target}
                                 placeholder="host.example.com"
+                                description="Host, alias, or user@host accepted by the local OpenSSH client."
                                 required
                                 autoFocus
                                 disabled={isSubmitting}
@@ -131,6 +141,7 @@ function NewSshAgentPage() {
                                 label="Agent name"
                                 value={form.name}
                                 placeholder="Defaults to target hostname"
+                                description="Name shown in the UI. Defaults to the target hostname when omitted."
                                 disabled={isSubmitting}
                                 onChange={(value) => update("name", value)}
                             />
@@ -138,6 +149,7 @@ function NewSshAgentPage() {
                                 label="SSH username"
                                 value={form.username}
                                 placeholder="Use SSH config default"
+                                description="Passed as ssh -l. Leave empty to use OpenSSH config or user@host."
                                 autoComplete="username"
                                 disabled={isSubmitting}
                                 onChange={(value) => update("username", value)}
@@ -146,11 +158,23 @@ function NewSshAgentPage() {
                                 label="SSH port"
                                 value={form.sshPort}
                                 placeholder="22"
+                                description="Leave empty to use the port from OpenSSH config. Not forced to 22."
                                 type="number"
                                 min={1}
                                 max={65_535}
                                 disabled={isSubmitting}
                                 onChange={(value) => update("sshPort", value)}
+                            />
+                            <TextField
+                                label="SSH password"
+                                value={form.password}
+                                placeholder="Leave empty for key auth"
+                                description="Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication."
+                                type="password"
+                                autoComplete="current-password"
+                                className="sm:col-span-2"
+                                disabled={isSubmitting}
+                                onChange={(value) => update("password", value)}
                             />
                         </div>
                     </section>
@@ -163,6 +187,7 @@ function NewSshAgentPage() {
                                 label="Remote binary"
                                 value={form.remoteBin}
                                 placeholder="Use managed default"
+                                description="Path to redoor on the remote host. Leave empty for the managed versioned install."
                                 disabled={isSubmitting}
                                 onChange={(value) => update("remoteBin", value)}
                             />
@@ -170,6 +195,7 @@ function NewSshAgentPage() {
                                 label="Home directory"
                                 value={form.home}
                                 placeholder="Discover from remote user"
+                                description="Directory opened in the UI. Leave empty to use the remote user's home."
                                 disabled={isSubmitting}
                                 onChange={(value) => update("home", value)}
                             />
@@ -177,6 +203,7 @@ function NewSshAgentPage() {
                                 label="Diagnostic log"
                                 value={form.log}
                                 placeholder="Optional local log path"
+                                description="Local file for SSH stdout and stderr. Leave empty to inherit the server terminal."
                                 disabled={isSubmitting}
                                 onChange={(value) => update("log", value)}
                             />
@@ -216,22 +243,39 @@ function TextField(props: {
     label: string;
     value: string;
     placeholder: string;
+    description: string;
     required?: boolean;
     autoFocus?: boolean;
     autoComplete?: string;
     type?: React.HTMLInputTypeAttribute;
     min?: number;
     max?: number;
+    className?: string;
     disabled: boolean;
     onChange: (value: string) => void;
 }) {
+    const inputId = React.useId();
+    const descriptionId = React.useId();
     return (
-        <label className="block text-sm font-medium text-slate-300">
-            {props.label}
+        <div className={props.className}>
+            <div className="flex items-baseline justify-between gap-3">
+                <label
+                    htmlFor={inputId}
+                    className="text-sm font-medium text-slate-300"
+                >
+                    {props.label}
+                </label>
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    {props.required ? "Required" : "Optional"}
+                </span>
+            </div>
             <input
+                id={inputId}
                 value={props.value}
                 placeholder={props.placeholder}
                 required={props.required}
+                aria-required={props.required || undefined}
+                aria-describedby={descriptionId}
                 autoFocus={props.autoFocus}
                 autoComplete={props.autoComplete}
                 type={props.type}
@@ -241,6 +285,9 @@ function TextField(props: {
                 onChange={(event) => props.onChange(event.target.value)}
                 className="mt-2 w-full rounded-md border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
             />
-        </label>
+            <p id={descriptionId} className="mt-1.5 text-xs text-slate-500">
+                {props.description}
+            </p>
+        </div>
     );
 }

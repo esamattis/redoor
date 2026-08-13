@@ -8,6 +8,7 @@ import { WEB_BASE_URL } from "./helpers";
 const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
 const CREATED_SSH_AGENT = `playwright-ssh-test-${process.pid}`;
+const CREATED_SSH_PASSWORD_AGENT = `playwright-ssh-password-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
 
 /** Reads one lifecycle snapshot through the same authenticated API as the UI. */
@@ -25,7 +26,12 @@ async function getAgent(
 
 test.describe.serial("Agent management", () => {
     test.afterEach(async ({ request }) => {
-        for (const name of [VALID_AGENT, FAILING_AGENT, CREATED_SSH_AGENT]) {
+        for (const name of [
+            VALID_AGENT,
+            FAILING_AGENT,
+            CREATED_SSH_AGENT,
+            CREATED_SSH_PASSWORD_AGENT,
+        ]) {
             const response = await request.get(`${WEB_BASE_URL}/api/v1/agents`);
             const body: AgentListResponse = await response.json();
             const agent = body.agents.find((entry) => entry.name === name);
@@ -38,6 +44,22 @@ test.describe.serial("Agent management", () => {
                 expect(shutdownResponse.ok()).toBe(true);
             }
         }
+    });
+
+    test("marks SSH target required and describes plaintext password storage", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/new`);
+        await expect(page.getByLabel("SSH target")).toHaveAttribute(
+            "aria-required",
+            "true",
+        );
+        await expect(page.getByText("Required", { exact: true })).toBeVisible();
+        await expect(
+            page.getByText(
+                "Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication.",
+            ),
+        ).toBeVisible();
     });
 
     test("adds and connects an SSH-backed agent through redoor-ssh-test", async ({
@@ -74,6 +96,41 @@ test.describe.serial("Agent management", () => {
             }),
         ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
         const connected = await getAgent(page.request, CREATED_SSH_AGENT);
+        expect(connected.managed).toBe(true);
+        expect(connected.connection_id).not.toBeNull();
+    });
+
+    test("adds and connects an SSH agent with password auth", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_SSH_TEST !== "1" ||
+                !process.env.REDOOR_SSH_TEST_PASSWORD,
+            "redoor-ssh-test password fixture is not enabled",
+        );
+        const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+        if (password === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.getByRole("link", { name: "Add SSH agent" }).click();
+
+        await page.getByLabel("SSH target").fill("redoor-ssh-test");
+        await page.getByLabel("SSH username").fill("redoor-password");
+        await page.getByLabel("Agent name").fill(CREATED_SSH_PASSWORD_AGENT);
+        await page.getByLabel("SSH password").fill(password);
+        await page.getByRole("button", { name: "Add SSH agent" }).click();
+
+        // Password auth must prepare and connect without a TTY or ssh-agent key.
+        await expect(
+            page.getByRole("tab", {
+                name: `${CREATED_SSH_PASSWORD_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        const connected = await getAgent(
+            page.request,
+            CREATED_SSH_PASSWORD_AGENT,
+        );
         expect(connected.managed).toBe(true);
         expect(connected.connection_id).not.toBeNull();
     });

@@ -151,6 +151,8 @@ pub(super) struct SshHost {
     /// port from its host configuration or built-in default.
     ssh_port: Option<u16>,
     target: String,
+    /// Optional login password delivered through `SSH_ASKPASS` rather than SSH stdin.
+    password: Option<String>,
 }
 
 impl SshHost {
@@ -160,6 +162,7 @@ impl SshHost {
             username: None,
             ssh_port: None,
             target,
+            password: None,
         }
     }
 
@@ -173,6 +176,12 @@ impl SshHost {
     /// host-specific ports from `~/.ssh/config` instead of forcing port 22.
     pub(super) fn ssh_port(mut self, port: Option<u16>) -> Self {
         self.ssh_port = port;
+        self
+    }
+
+    /// Enables non-interactive password auth via a re-exec of this binary.
+    pub(super) fn password(mut self, password: Option<String>) -> Self {
+        self.password = password;
         self
     }
 
@@ -205,7 +214,11 @@ impl SshHost {
     ) -> Result<tokio::process::Child, std::io::Error> {
         let mut ssh = build_ssh_command(self, command, args, options).await?;
 
-        log!(Level::Debug, "Spawning ssh command: {:?}", ssh);
+        log!(
+            Level::Debug,
+            "Spawning ssh command: {}",
+            ssh_command_argv_debug(&ssh)
+        );
 
         // Ensure the ssh client is killed if the supervisor task is
         // dropped (e.g. on server shutdown), preventing the ssh
@@ -235,7 +248,11 @@ impl SshHost {
     ) -> Result<std::process::ExitStatus, std::io::Error> {
         let mut ssh = build_ssh_command(self, command, args, options).await?;
 
-        log!(Level::Debug, "Running ssh command: {:?}", ssh);
+        log!(
+            Level::Debug,
+            "Running ssh command: {}",
+            ssh_command_argv_debug(&ssh)
+        );
 
         ssh.status().await
     }
@@ -254,7 +271,11 @@ impl SshHost {
         ssh.stdout(Stdio::piped());
         ssh.stderr(Stdio::inherit());
 
-        log!(Level::Debug, "Running ssh script through {:?}", ssh);
+        log!(
+            Level::Debug,
+            "Running ssh script through {}",
+            ssh_command_argv_debug(&ssh)
+        );
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("script requires piped ssh stdin");
@@ -302,9 +323,12 @@ impl SshHost {
         if let Some(port) = self.ssh_port {
             ssh.arg("-p").arg(port.to_string());
         }
+        // No TTY and stdin is the upload stream, so new hosts cannot be confirmed interactively.
+        ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
         // Compress the upload stream so large binaries transfer faster over
         // slow uplinks. ssh compression is cheap and transparent here.
         ssh.arg("-C");
+        apply_password_askpass(&mut ssh, self.password.as_deref())?;
         ssh.arg(&self.target);
         ssh.arg(format!("cat > {}", remote_path));
 
@@ -314,7 +338,11 @@ impl SshHost {
         // instead of only the local Broken pipe that follows early cat exit.
         ssh.stderr(Stdio::piped());
 
-        log!(Level::Debug, "Running ssh command: {:?}", ssh);
+        log!(
+            Level::Debug,
+            "Running ssh command: {}",
+            ssh_command_argv_debug(&ssh)
+        );
 
         let mut child = ssh.spawn()?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
@@ -423,10 +451,14 @@ async fn build_ssh_command(
     // Without this, ssh keeps running and the remote command executes
     // against a tunnel that will never come up.
     ssh.arg("-o").arg("ExitOnForwardFailure=yes");
+    // Managed SSH has no TTY for host-key prompts; accept-new still rejects changed keys.
+    ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
 
     for forward in &options.reverse_forwards {
         ssh.arg("-R").arg(forward.to_ssh_spec());
     }
+
+    apply_password_askpass(&mut ssh, host.password.as_deref())?;
 
     ssh.arg(&host.target);
     if let Some((name, _)) = &options.secret_env {
@@ -507,6 +539,42 @@ async fn build_ssh_command(
     Ok(ssh)
 }
 
+/// Formats argv only so configured passwords in the child environment stay out of logs.
+fn ssh_command_argv_debug(ssh: &Command) -> String {
+    let std_cmd = ssh.as_std();
+    let mut parts = vec![std_cmd.get_program().to_string_lossy().into_owned()];
+    parts.extend(
+        std_cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    );
+    format!("{parts:?}")
+}
+
+/// Points OpenSSH at this binary as `SSH_ASKPASS` so password auth can use a
+/// separate process instead of the SSH stdin already reserved for secrets and uploads.
+fn apply_password_askpass(ssh: &mut Command, password: Option<&str>) -> Result<(), std::io::Error> {
+    let Some(password) = password else {
+        return Ok(());
+    };
+    let exe = std::env::current_exe().map_err(|error| {
+        std::io::Error::other(format!(
+            "failed to locate redoor executable for SSH_ASKPASS: {error}"
+        ))
+    })?;
+    // A second identical askpass answer cannot succeed, so fail on the first attempt.
+    ssh.arg("-o").arg("NumberOfPasswordPrompts=1");
+    ssh.env("SSH_ASKPASS", &exe);
+    ssh.env("SSH_ASKPASS_REQUIRE", "force");
+    ssh.env(super::askpass::ENV, "1");
+    ssh.env(super::askpass::PASSWORD_ENV, password);
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        // Older OpenSSH refuses to invoke SSH_ASKPASS unless a display is advertised.
+        ssh.env("DISPLAY", ":0");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     /// Protects standalone forwarding monitoring when relay output also has a
@@ -585,6 +653,42 @@ mod tests {
         assert!(debug_command.contains("/opt/redoor"));
     }
 
+    /// Keeps the configured SSH password out of argv logs while still enabling askpass.
+    #[tokio::test]
+    async fn password_is_absent_from_logged_ssh_argv() {
+        let host = super::SshHost::new("example.test".to_string())
+            .password(Some("super-secret-password".to_string()));
+        let command =
+            super::build_ssh_command(&host, "true", &[], &super::SshRunOptions::default())
+                .await
+                .unwrap();
+        let logged = super::ssh_command_argv_debug(&command);
+
+        // Operator logs must not print the configured password.
+        assert!(!logged.contains("super-secret-password"));
+        // A single prompt avoids three identical askpass failures for a wrong password.
+        assert!(logged.contains("NumberOfPasswordPrompts=1"));
+
+        let envs: Vec<(String, Option<String>)> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        // OpenSSH must call this binary instead of prompting on a TTY.
+        assert!(envs.iter().any(|(key, value)| {
+            key == "SSH_ASKPASS_REQUIRE" && value.as_deref() == Some("force")
+        }));
+        assert!(envs.iter().any(|(key, _)| key == "SSH_ASKPASS"));
+        assert!(envs.iter().any(|(key, value)| {
+            key == super::super::askpass::ENV && value.as_deref() == Some("1")
+        }));
+    }
+
     /// Verifies an omitted port preserves SSH host aliases while an explicit
     /// override still produces the expected OpenSSH `-p` arguments.
     #[tokio::test]
@@ -596,6 +700,8 @@ mod tests {
             .unwrap();
         // Omitting `-p` is what allows OpenSSH to use the alias's configured port.
         assert!(!format!("{configured_command:?}").contains("\"-p\""));
+        // Non-interactive sessions must accept unknown hosts instead of prompting.
+        assert!(format!("{configured_command:?}").contains("StrictHostKeyChecking=accept-new"));
 
         let overridden_host =
             super::SshHost::new("configured-alias".to_string()).ssh_port(Some(2222));

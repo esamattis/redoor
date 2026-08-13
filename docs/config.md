@@ -117,6 +117,7 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `remote_bin` | string | no | Path to the redoor binary on the remote host. When omitted, uses the versioned install layout under `${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/<version>/redoor`. |
 | `home` | string | no | Home directory opened on the remote agent. When omitted, the remote process user's home directory is published. |
 | `log` | string | no | Local file that captures the SSH process stdout/stderr (append mode). |
+| `password` | string | no | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible. |
 
 ```toml
 [[agents]]
@@ -127,6 +128,7 @@ target = "user@example.com"
 # remote_bin = "/home/deploy/.local/share/redoor/binaries/<version>/redoor"
 # home = "/srv/app"
 # log = "/var/log/redoor/prod-agent.log"
+# password = "plaintext-ssh-password"
 ```
 
 ### Local agent
@@ -140,7 +142,7 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | `home` | string | no | Home directory opened in the UI. Defaults to the spawned process user's home directory. |
 | `log` | string | no | File for the spawned agent stdout/stderr (append). When omitted, stdio is inherited from the server. |
 
-SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`) are rejected on local entries.
+SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`, `password`) are rejected on local entries.
 
 ```toml
 [[agents]]
@@ -167,6 +169,7 @@ Optional named SSH relays started explicitly with `redoor agent relay start ID`.
 | `binary_source` | string | no | Local Redoor binary to upload unconditionally. |
 | `home` | string | no | Home directory published by the remote agent. |
 | `log` | string | no | Local relay and remote-agent log. Defaults to a per-ID path. |
+| `password` | string | no | Plaintext SSH login password delivered through `SSH_ASKPASS`. |
 | `insecure` | bool | no | Disable routed TLS certificate verification. Requires a secure server URL. Default `false`. |
 
 ```toml

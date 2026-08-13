@@ -31,4 +31,8 @@ home: string | null,
 /**
  * Optional local path receiving SSH subprocess diagnostics.
  */
-log: string | null, };
+log: string | null, 
+/**
+ * Optional SSH login password stored in plaintext in config.toml.
+ */
+password: string | null, };

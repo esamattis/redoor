@@ -506,6 +506,8 @@ pub struct CreateSshAgentRequest {
     pub home: Option<String>,
     /// Optional local path receiving SSH subprocess diagnostics.
     pub log: Option<String>,
+    /// Optional SSH login password stored in plaintext in config.toml.
+    pub password: Option<String>,
 }
 
 /// Returns the newly visible dormant inventory record after persistence succeeds.
