@@ -5,6 +5,7 @@ import type {
     CreateSshAgentRequest,
     ManagedSshAgentConfigurationResponse,
 } from "#ui/api-client";
+import { Password } from "#ui/components/password";
 import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
 
@@ -290,7 +291,7 @@ function ConnectionFields(props: {
                     disabled={props.disabled}
                     onChange={props.onAuthModeChange}
                 />
-                <TextField
+                <Password
                     label="SSH password"
                     value={props.form.password}
                     placeholder={
@@ -307,7 +308,6 @@ function ConnectionFields(props: {
                               ? "Stored as plaintext in config.toml."
                               : "Password input is disabled because key mode uses a preconfigured SSH key or ssh-agent."
                     }
-                    type="password"
                     autoComplete="current-password"
                     className="sm:col-span-2"
                     required={passwordMode && !props.hasStoredPassword}

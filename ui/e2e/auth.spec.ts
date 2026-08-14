@@ -33,6 +33,25 @@ test.describe("Authentication", () => {
         await expect(page).toHaveURL(`${WEB_BASE_URL}${returnPath}`);
     });
 
+    test("reveals the login password with the visibility toggle", async ({
+        page,
+    }) => {
+        await page.context().clearCookies();
+        await page.goto(`${WEB_BASE_URL}/login`);
+        const password = page.getByLabel("Password");
+        await password.fill("test-password");
+        // The typed secret must stay masked until the operator asks to inspect it.
+        await expect(password).toHaveAttribute("type", "password");
+        const toggle = page.getByRole("button", { name: "Show characters" });
+        await toggle.hover();
+        await expect(page.getByRole("tooltip")).toHaveText("Show characters");
+        await toggle.click();
+        await expect(password).toHaveAttribute("type", "text");
+        await expect(password).toHaveValue("test-password");
+        await page.getByRole("button", { name: "Hide characters" }).click();
+        await expect(password).toHaveAttribute("type", "password");
+    });
+
     test("logout clears the session and returns to login", async ({ page }) => {
         await page.context().clearCookies();
         await page.goto(`${WEB_BASE_URL}/login`);

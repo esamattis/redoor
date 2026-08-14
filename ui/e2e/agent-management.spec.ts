@@ -82,6 +82,26 @@ test.describe.serial("Agent management", () => {
         ).toBeDisabled();
     });
 
+    test("reveals the SSH password with the visibility toggle", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/new`);
+        await page.getByRole("radio", { name: "Use ssh password" }).check();
+        const password = page.getByLabel("SSH password", { exact: true });
+        await password.fill("secret-value");
+        // The typed secret must stay masked until the operator asks to inspect it.
+        await expect(password).toHaveAttribute("type", "password");
+        const toggle = page.getByRole("button", { name: "Show characters" });
+        await toggle.hover();
+        await expect(page.getByRole("tooltip")).toHaveText("Show characters");
+        await toggle.click();
+        // Operators need to verify the secret before it is stored in config.toml.
+        await expect(password).toHaveAttribute("type", "text");
+        await expect(password).toHaveValue("secret-value");
+        await page.getByRole("button", { name: "Hide characters" }).click();
+        await expect(password).toHaveAttribute("type", "password");
+    });
+
     test("edits and deletes a managed SSH entry from its tab", async ({
         page,
     }) => {
