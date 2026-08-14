@@ -664,12 +664,14 @@ function BrandMark(props: { className?: string }) {
             className={`mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white ${props.className ?? ""}`}
         >
             <img
-                src="/logo-dark.svg"
+                src="/logo-dark-transparent.svg"
                 alt=""
-                className="h-5 w-5"
+                className="h-6 w-6 md:h-12 md:w-12"
                 aria-hidden="true"
             />
-            <span className="text-sm font-semibold tracking-tight">Redoor</span>
+            <span className="hidden text-2xl font-semibold tracking-tight md:inline">
+                Redoor
+            </span>
         </Link>
     );
 }
