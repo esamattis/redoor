@@ -186,20 +186,25 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "subdir3", exact: true }),
         ).toBeVisible();
 
-        // Row actions expose download without leaving the directory listing.
-        const downloadFile = page.getByRole("link", {
-            name: "Download file file1.txt",
-            exact: true,
+        await page
+            .getByRole("button", {
+                name: "Actions for directory subdir1",
+                exact: true,
+            })
+            .click();
+        await page
+            .getByRole("dialog", { name: "Actions for directory subdir1" })
+            .getByRole("button", { name: "Download", exact: true })
+            .click();
+        const downloadDialog = page.getByRole("dialog", {
+            name: "Download directory",
         });
-        await expect(downloadFile).toBeVisible();
-        await expect(downloadFile).toHaveAttribute(
-            "href",
-            new RegExp(
-                `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
-            ),
+        // Directory downloads explain their streaming archive format before starting.
+        await expect(downloadDialog).toContainText(
+            "streamed as a .tar.gz archive",
         );
-        const downloadDirectory = page.getByRole("link", {
-            name: "Download directory subdir1 as .tar.gz",
+        const downloadDirectory = downloadDialog.getByRole("link", {
+            name: "Download .tar.gz",
             exact: true,
         });
         await expect(downloadDirectory).toBeVisible();
@@ -209,12 +214,6 @@ test.describe.serial("File Browser Navigation", () => {
                 `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
             ),
         );
-        await downloadDirectory.hover();
-        const downloadTooltip = page.getByRole("tooltip", {
-            name: "Download as .tar.gz archive",
-        });
-        // The shared tooltip must escape the file table's clipped card instead of losing content at its edge.
-        await expect(downloadTooltip).toBeInViewport({ ratio: 1 });
 
         const fileEntries = page.locator("main tbody tr");
         await expect(fileEntries).toHaveCount(5);
@@ -679,7 +678,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             moreMenu.getByRole("link", { name: "Upload queue", exact: true }),
         ).toHaveCount(0);
-        await page.getByRole("button", { name: "Close more menu" }).click();
+        await page.keyboard.press("Escape");
         await page.getByRole("link", { name: "Details", exact: true }).click();
 
         // The query parameter makes the alternate view directly addressable and reload-safe.

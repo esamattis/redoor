@@ -12,6 +12,7 @@ import { X } from "lucide-react";
 export function Dialog(props: {
     isOpen: boolean;
     title: string;
+    hideTitle?: boolean;
     description?: React.ReactNode;
     closeAriaLabel: string;
     isBusy?: boolean;
@@ -65,37 +66,43 @@ export function Dialog(props: {
                       : undefined
             }
         >
-            <div className="flex items-start justify-between gap-4">
-                <div>
-                    <h2
-                        id={titleId}
-                        className={
-                            isAnchored
-                                ? "text-sm font-semibold text-slate-100"
-                                : "text-lg font-semibold text-slate-100"
-                        }
-                    >
-                        {props.title}
-                    </h2>
-                    {props.description ? (
-                        <div
-                            id={descriptionId}
-                            className="mt-2 text-sm text-slate-400"
+            {props.hideTitle ? (
+                <h2 id={titleId} className="sr-only">
+                    {props.title}
+                </h2>
+            ) : (
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h2
+                            id={titleId}
+                            className={
+                                isAnchored
+                                    ? "text-sm font-semibold text-slate-100"
+                                    : "text-lg font-semibold text-slate-100"
+                            }
                         >
-                            {props.description}
-                        </div>
-                    ) : null}
+                            {props.title}
+                        </h2>
+                        {props.description ? (
+                            <div
+                                id={descriptionId}
+                                className="mt-2 text-sm text-slate-400"
+                            >
+                                {props.description}
+                            </div>
+                        ) : null}
+                    </div>
+                    <button
+                        type="button"
+                        aria-label={props.closeAriaLabel}
+                        onClick={props.onClose}
+                        disabled={props.isBusy}
+                        className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
                 </div>
-                <button
-                    type="button"
-                    aria-label={props.closeAriaLabel}
-                    onClick={props.onClose}
-                    disabled={props.isBusy}
-                    className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    <X className="h-4 w-4" />
-                </button>
-            </div>
+            )}
 
             {props.errorMessage ? (
                 <p

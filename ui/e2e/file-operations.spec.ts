@@ -483,15 +483,21 @@ test.describe.serial("File Operations", () => {
 
         await page
             .getByRole("button", {
-                name: `Rename file ${originalName}`,
+                name: `Actions for file ${originalName}`,
                 exact: true,
             })
+            .click();
+        await page
+            .getByRole("dialog", {
+                name: `Actions for file ${originalName}`,
+            })
+            .getByRole("button", { name: "Rename", exact: true })
             .click();
         const dialog = page.getByRole("dialog", { name: "Rename file" });
         const renameInput = dialog.getByRole("textbox", {
             name: "Rename file",
         });
-        // The inline pencil must open the shared focused rename workflow.
+        // The row action must open the shared focused rename workflow.
         await expect(dialog).toBeVisible();
         await expect(renameInput).toBeFocused();
         // Multi-dot names select only the basename before the first extension separator.
@@ -549,9 +555,15 @@ test.describe.serial("File Operations", () => {
 
         await page
             .getByRole("button", {
-                name: `Rename directory ${originalName}`,
+                name: `Actions for directory ${originalName}`,
                 exact: true,
             })
+            .click();
+        await page
+            .getByRole("dialog", {
+                name: `Actions for directory ${originalName}`,
+            })
+            .getByRole("button", { name: "Rename", exact: true })
             .click();
         const dialog = page.getByRole("dialog", {
             name: "Rename directory",
@@ -588,6 +600,43 @@ test.describe.serial("File Operations", () => {
         ).toBeVisible();
         await expect(fs.stat(renamedPath)).resolves.toMatchObject({});
         await expect(fs.stat(originalPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+    });
+
+    test("should delete a file from its row action menu", async ({ page }) => {
+        const directoryPath = path.join(ctx.testDirPath, "subdir3");
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        const fileName = `delete-from-row-${Date.now()}.txt`;
+        const filePath = path.join(directoryPath, fileName);
+        await fs.writeFile(filePath, "temporary row content");
+        await page.goto(directoryUrl);
+
+        await page
+            .getByRole("button", {
+                name: `Actions for file ${fileName}`,
+                exact: true,
+            })
+            .click();
+        await page
+            .getByRole("dialog", { name: `Actions for file ${fileName}` })
+            .getByRole("button", { name: "Delete", exact: true })
+            .click();
+        const dialog = page.getByRole("dialog", {
+            name: "Delete this file?",
+        });
+        // Row deletion retains an explicit destructive confirmation step.
+        await expect(dialog).toBeVisible();
+        await dialog
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
+
+        // Refreshing the listing after deletion removes the stale row in place.
+        await expect(
+            page.getByRole("link", { name: fileName, exact: true }),
+        ).toHaveCount(0);
+        // The filesystem check proves the row action deleted the remote path.
+        await expect(fs.stat(filePath)).rejects.toMatchObject({
             code: "ENOENT",
         });
     });

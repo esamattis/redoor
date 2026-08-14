@@ -249,6 +249,7 @@ function PathMoreActions(props: {
                     <ActionMenu
                         label="More"
                         icon={<MoreHorizontal className="h-4 w-4" />}
+                        hideLabel={true}
                     >
                         {(close) => (
                             <>

@@ -1,7 +1,7 @@
 import React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import {
     ArrowDownUp,
     ChevronDown,
@@ -14,24 +14,31 @@ import {
     Eye,
     EyeOff,
     LoaderCircle,
+    MoreHorizontal,
     Pencil,
     Search,
+    Trash2,
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
 import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import type { FileSearchEntry, FileSearchResponse } from "#ui/api-client";
 import {
     selectedFileKeysAtom,
     toggleSelectedFileAtom,
+    unselectFileAtom,
 } from "#ui/selected-files";
 import {
     compareFileEntries,
     type FileSortColumn,
     type FileSortDirection,
     formatModifiedAge,
+    getErrorMessage,
     joinBrowserPath,
 } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
@@ -640,6 +647,163 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
     );
 }
 
+/** Keeps mutations and download confirmation behind one compact row menu. */
+function FileEntryActions(props: {
+    agent: Agent;
+    agentId: string;
+    entryName: string;
+    fullPath: string;
+    isDirectory: boolean;
+}) {
+    const router = useRouter();
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+    const [isDownloadDialogOpen, setIsDownloadDialogOpen] =
+        React.useState(false);
+    const entryType = props.isDirectory ? "directory" : "file";
+    const downloadUrl = props.agent.getRawUrl(props.fullPath, {
+        download: true,
+    });
+    const downloadName = props.isDirectory
+        ? `${props.entryName}.tar.gz`
+        : props.entryName;
+    const deleteMutation = useMutation({
+        mutationFn: () => props.agent.deleteFile(props.fullPath),
+        onSuccess: async () => {
+            unselectFile({ agentId: props.agentId, path: props.fullPath });
+            setIsDeleteDialogOpen(false);
+            await router.invalidate();
+        },
+    });
+
+    const closeDeleteDialog = () => {
+        if (!deleteMutation.isPending) {
+            setIsDeleteDialogOpen(false);
+            deleteMutation.reset();
+        }
+    };
+
+    return (
+        <>
+            <RenamePathAction
+                agent={props.agent}
+                path={props.fullPath}
+                currentName={props.entryName}
+                entryType={entryType}
+                navigateAfterRename={false}
+            >
+                {(renameAction) => (
+                    <>
+                        <ActionMenu
+                            label={`Actions for ${entryType} ${props.entryName}`}
+                            icon={<MoreHorizontal className="h-4 w-4" />}
+                            hideLabel={true}
+                        >
+                            {(close) => (
+                                <>
+                                    <ActionMenuButton
+                                        onClick={() => {
+                                            close();
+                                            renameAction.open();
+                                        }}
+                                    >
+                                        <Pencil className="h-4 w-4 text-slate-400" />
+                                        Rename
+                                    </ActionMenuButton>
+                                    {props.isDirectory ? (
+                                        <ActionMenuButton
+                                            onClick={() => {
+                                                close();
+                                                setIsDownloadDialogOpen(true);
+                                            }}
+                                        >
+                                            <Download className="h-4 w-4 text-slate-400" />
+                                            Download
+                                        </ActionMenuButton>
+                                    ) : (
+                                        <a
+                                            href={downloadUrl}
+                                            download={downloadName}
+                                            onClick={close}
+                                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                                        >
+                                            <Download className="h-4 w-4 text-slate-400" />
+                                            Download
+                                        </a>
+                                    )}
+                                    <div className="my-1 border-t border-slate-800" />
+                                    <ActionMenuButton
+                                        tone="danger"
+                                        onClick={() => {
+                                            close();
+                                            deleteMutation.reset();
+                                            setIsDeleteDialogOpen(true);
+                                        }}
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                        Delete
+                                    </ActionMenuButton>
+                                </>
+                            )}
+                        </ActionMenu>
+                        {renameAction.dialog}
+                    </>
+                )}
+            </RenamePathAction>
+            <Dialog
+                isOpen={isDownloadDialogOpen}
+                title="Download directory"
+                description={`${props.entryName} will be streamed as a .tar.gz archive while it is downloaded.`}
+                closeAriaLabel="Close directory download dialog"
+                onClose={() => setIsDownloadDialogOpen(false)}
+            >
+                <p className="mt-4 text-sm leading-relaxed text-slate-400">
+                    The archive is created on the agent as data is sent, so the
+                    complete directory is not buffered in memory first.
+                </p>
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={() => setIsDownloadDialogOpen(false)}
+                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
+                    >
+                        Cancel
+                    </button>
+                    <a
+                        href={downloadUrl}
+                        download={downloadName}
+                        onClick={() => setIsDownloadDialogOpen(false)}
+                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500"
+                    >
+                        <Download className="h-4 w-4" />
+                        Download .tar.gz
+                    </a>
+                </div>
+            </Dialog>
+            <ConfirmationDialog
+                isOpen={isDeleteDialogOpen}
+                title={`Delete this ${entryType}?`}
+                description={`This permanently deletes ${props.entryName} from the agent filesystem.`}
+                confirmLabel={`Delete ${entryType}`}
+                busyLabel="Deleting..."
+                isBusy={deleteMutation.isPending}
+                errorMessage={
+                    deleteMutation.isError
+                        ? getErrorMessage(deleteMutation.error, "Delete failed")
+                        : null
+                }
+                onClose={closeDeleteDialog}
+                onConfirm={() => deleteMutation.mutate()}
+            >
+                <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                    {props.fullPath}
+                </p>
+            </ConfirmationDialog>
+        </>
+    );
+}
+
+/** Renders one metadata-rich path row and its selection state. */
 function FileEntry(props: {
     agent: Agent;
     agentId: string;
@@ -687,40 +851,13 @@ function FileEntry(props: {
                 )}
             </td>
             <td className="p-1.5 sm:p-2">
-                <div className="flex min-w-0 items-center gap-2">
-                    <Link
-                        to={agent.getBrowserUrl(fullPath)}
-                        data-keyboard-focus-entry="true"
-                        className="min-w-0 truncate font-medium text-blue-400 hover:underline"
-                    >
-                        {entry.name}
-                    </Link>
-                    <RenamePathAction
-                        agent={agent}
-                        path={fullPath}
-                        currentName={entry.name}
-                        entryType={isDirectory ? "directory" : "file"}
-                        navigateAfterRename={false}
-                    >
-                        {(renameAction) => (
-                            <>
-                                <Tooltip
-                                    content={`Rename ${isDirectory ? "directory" : "file"}`}
-                                >
-                                    <button
-                                        type="button"
-                                        onClick={renameAction.open}
-                                        aria-label={`Rename ${isDirectory ? "directory" : "file"} ${entry.name}`}
-                                        className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
-                                    >
-                                        <Pencil className="h-3.5 w-3.5" />
-                                    </button>
-                                </Tooltip>
-                                {renameAction.dialog}
-                            </>
-                        )}
-                    </RenamePathAction>
-                </div>
+                <Link
+                    to={agent.getBrowserUrl(fullPath)}
+                    data-keyboard-focus-entry="true"
+                    className="block min-w-0 truncate font-medium text-blue-400 hover:underline"
+                >
+                    {entry.name}
+                </Link>
             </td>
             <td
                 className={
@@ -755,30 +892,13 @@ function FileEntry(props: {
                 {entry.group || "-"}
             </td>
             <td className="p-1.5 text-right sm:p-2">
-                <Tooltip
-                    content={
-                        isDirectory
-                            ? "Download as .tar.gz archive"
-                            : "Download file"
-                    }
-                >
-                    <a
-                        href={agent.getRawUrl(fullPath, {
-                            download: true,
-                        })}
-                        download={
-                            isDirectory ? `${entry.name}.tar.gz` : entry.name
-                        }
-                        aria-label={
-                            isDirectory
-                                ? `Download directory ${entry.name} as .tar.gz`
-                                : `Download file ${entry.name}`
-                        }
-                        className="inline-flex shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-200"
-                    >
-                        <Download className="h-3.5 w-3.5" />
-                    </a>
-                </Tooltip>
+                <FileEntryActions
+                    agent={agent}
+                    agentId={agentId}
+                    entryName={entry.name}
+                    fullPath={fullPath}
+                    isDirectory={isDirectory}
+                />
             </td>
         </tr>
     );
