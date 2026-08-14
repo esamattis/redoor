@@ -166,7 +166,7 @@ test.describe("First-run demo", () => {
             expect(generated).toContain(
                 '# bind = "0.0.0.0" # default 127.0.0.1',
             );
-            expect(generated).toContain("# port = 3000");
+            expect(generated).toContain("# port = 7666");
             expect(generated).not.toContain("[agent]");
 
             const credentials = await ensureBrowserLoginCredentials(configPath);

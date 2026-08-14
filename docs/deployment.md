@@ -12,7 +12,7 @@ Disable request buffering for the Redoor proxy location:
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:3000;
+    proxy_pass http://127.0.0.1:7666;
     proxy_request_buffering off;
 }
 ```

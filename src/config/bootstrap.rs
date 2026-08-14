@@ -106,7 +106,7 @@ agent_token = {agent_token}
 
 [server]
 {credentials}
-# port = 3000
+# port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
 

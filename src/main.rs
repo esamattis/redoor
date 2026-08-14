@@ -477,7 +477,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
 
     // Precedence: CLI > env > config file > default.
     // Clap already merged CLI and env into `args`; config is the next fallback.
-    let port = args.port.or(server_section.port).unwrap_or(3000);
+    let port = args.port.or(server_section.port).unwrap_or(7666);
 
     let bind = args
         .bind

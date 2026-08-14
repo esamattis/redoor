@@ -54,7 +54,7 @@ agent_token = "secret"
 # username = "admin"
 # password = "long-private-password"
 
-# port = 3000
+# port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
 
@@ -86,7 +86,7 @@ redoor server systemd setup
 agent_token = "secret"
 
 [agent]
-server = "http://127.0.0.1:3000"
+server = "http://127.0.0.1:7666"
 name = "macbook"
 ```
 
@@ -110,7 +110,7 @@ agent_token = "secret"
 [[relays]]
 id = "production"
 target = "user@host"
-server = "http://redoor.internal:3000"
+server = "http://redoor.internal:7666"
 ```
 
 ```bash

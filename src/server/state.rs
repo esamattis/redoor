@@ -54,7 +54,7 @@ pub(crate) struct CoordinatorArgs {
     #[arg(long)]
     pub(crate) daemon: bool,
     /// Port to listen on. Overrides `REDOOR_PORT` and `[server].port`.
-    /// Defaults to 3000 when not set anywhere.
+    /// Defaults to 7666 when not set anywhere.
     #[arg(long, env = "REDOOR_PORT")]
     pub(crate) port: Option<u16>,
     /// Address to bind the HTTP listener on (e.g. "0.0.0.0" to expose

@@ -47,7 +47,7 @@ Required when running `redoor server`. Optional in agent-only configs.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `port` | integer (u16) | `3000` | HTTP listen port. Override with `--port` / `REDOOR_PORT`. |
+| `port` | integer (u16) | `7666` | HTTP listen port. Override with `--port` / `REDOOR_PORT`. |
 | `bind` | string | `127.0.0.1` | Listen address. Use `0.0.0.0` only when intentionally exposing beyond localhost. Override with `--bind`. |
 | `log` | string | platform default\* | Server log file path. Override with `--log` / `REDOOR_SERVER_LOG`. |
 | `username` | string | see auth below | Browser UI login username. Non-empty when set. |
@@ -68,7 +68,7 @@ Do not put `agent_token` under `[server]`; it must stay at the top level.
 
 ```toml
 [server]
-port = 3000
+port = 7666
 bind = "127.0.0.1"
 cookie_secure = false
 # log = "log/server.log"
@@ -93,7 +93,7 @@ Legacy alias: `ws_address` is still accepted as a synonym for `server`. Do not s
 
 ```toml
 [agent]
-server = "http://127.0.0.1:3000"
+server = "http://127.0.0.1:7666"
 name = "macbook"
 home = "/home/me/projects"
 log = "log/agent.log"
@@ -190,7 +190,7 @@ See [SSH relays](relays.md) for commands and runtime-file behavior.
 agent_token = "long-private-secret"
 
 [server]
-port = 3000
+port = 7666
 bind = "127.0.0.1"
 cookie_secure = false
 # On Linux, omit username/password to use PAM (process owner).
@@ -199,7 +199,7 @@ password = "long-private-password"
 # log = "log/server.log"
 
 [agent]
-server = "http://127.0.0.1:3000"
+server = "http://127.0.0.1:7666"
 name = "macbook"
 home = "/home/me/projects"
 # log = "log/agent.log"

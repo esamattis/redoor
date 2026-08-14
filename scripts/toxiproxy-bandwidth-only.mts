@@ -25,7 +25,7 @@ const apiBaseUrl = (
 ).replace(/\/$/, "");
 const proxyName = process.env.PROXY_NAME ?? "slow";
 const listenAddress = process.env.LISTEN_ADDR ?? "127.0.0.1:3001";
-const upstreamAddress = process.env.UPSTREAM_ADDR ?? "127.0.0.1:3000";
+const upstreamAddress = process.env.UPSTREAM_ADDR ?? "127.0.0.1:7666";
 const downstreamRateKbps = positiveIntegerSchema.parse(
     process.env.DOWNSTREAM_RATE_KBPS ?? "500",
 );
