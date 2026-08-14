@@ -410,7 +410,7 @@ function TopTabStrip(props: {
             <div
                 role="tablist"
                 aria-label="Agents"
-                className="flex min-h-0 min-w-0 flex-1 items-end gap-1 overflow-x-auto overscroll-x-contain pb-0"
+                className="top-tab-strip flex min-h-0 min-w-0 flex-1 items-end gap-1 overflow-x-auto overscroll-x-contain pb-0"
             >
                 {props.agents.length === 0 ? (
                     <span className="px-3 pb-2 text-sm text-slate-500">

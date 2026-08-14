@@ -50,6 +50,15 @@ code {
     background-clip: content-box;
 }
 
+/* Keep overflowing tabs scrollable without letting a scrollbar change the header height. */
+.top-tab-strip {
+    scrollbar-width: none;
+}
+
+.top-tab-strip::-webkit-scrollbar {
+    display: none;
+}
+
 .route-loading-progress-bar {
     position: relative;
 }
