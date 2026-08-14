@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Page } from "@playwright/test";
 import { ApiClient, encodeFilesystemPath } from "#ui/api-client";
 import { testPorts } from "#test-ports";
 
@@ -84,4 +85,12 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
 
 export async function teardownTestDir(testDirPath: string): Promise<void> {
     await fs.rm(testDirPath, { force: true, recursive: true });
+}
+
+/** Fires the same visibility/focus events the listing and editor listen for. */
+export async function simulateTabRefocus(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        window.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("focus"));
+    });
 }

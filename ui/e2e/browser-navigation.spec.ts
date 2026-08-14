@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    simulateTabRefocus,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -1161,5 +1162,58 @@ test.describe.serial("File Browser Navigation", () => {
             name: "Size for file1.txt",
         });
         await expect(fileSizeColumn).not.toHaveText("-");
+    });
+
+    test("should refresh the file list when the tab is focused", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+
+        const appearedPath = path.join(
+            ctx.testDirPath,
+            "appeared-on-focus.txt",
+        );
+        await fs.writeFile(appearedPath, "new listing entry");
+        await simulateTabRefocus(page);
+
+        // Returning to the tab must pick up files created outside this page.
+        await expect(
+            page.getByRole("link", {
+                name: "appeared-on-focus.txt",
+                exact: true,
+            }),
+        ).toBeVisible();
+    });
+
+    test("should refresh the file list from the more menu", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+
+        const appearedPath = path.join(
+            ctx.testDirPath,
+            "appeared-from-menu.txt",
+        );
+        await fs.writeFile(appearedPath, "new listing entry");
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Refresh", exact: true })
+            .click();
+
+        // The directory More action must reload ls without leaving the listing.
+        await expect(
+            page.getByRole("link", {
+                name: "appeared-from-menu.txt",
+                exact: true,
+            }),
+        ).toBeVisible();
     });
 });

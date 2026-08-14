@@ -102,6 +102,7 @@ export function FilePageHeader(props: {
     fileName: string;
     downloadUrl: string;
     activeView: "details" | "view" | "diff" | "sync";
+    isEditorDirty?: boolean;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -156,6 +157,7 @@ export function FilePageHeader(props: {
                     }
                     downloadUrl={props.downloadUrl}
                     downloadName={props.fileName}
+                    isEditorDirty={props.isEditorDirty}
                 />
             }
         />

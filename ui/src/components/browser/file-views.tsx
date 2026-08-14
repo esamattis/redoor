@@ -4,6 +4,7 @@ import type { Agent } from "#ui/api-client";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
+import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
@@ -70,7 +71,7 @@ export function FileEditView(props: {
     const contentQuery = useQuery(
         fileContentQueryOptions(props.agent, props.filePath),
     );
-    const [content, setContent] = React.useState(contentQuery.data ?? "");
+    const [draft, setDraft] = React.useState<string | null>(null);
     const saveMutation = useMutation({
         mutationFn: (nextContent: string) =>
             props.agent.upload(
@@ -84,17 +85,25 @@ export function FileEditView(props: {
                 fileContentQueryOptions(props.agent, props.filePath).queryKey,
                 nextContent,
             );
+            setDraft(null);
         },
     });
     const savedContent = contentQuery.data ?? "";
-    const isDirty = content !== savedContent;
+    const content = draft ?? savedContent;
+    const isDirty = draft !== null && draft !== savedContent;
     const canEdit = contentQuery.isSuccess && !saveMutation.isPending;
+
+    useEditorRefreshRegistration({
+        agentId: props.agent.id,
+        path: props.filePath,
+        isDirty,
+    });
 
     const handleRestore = () => {
         if (!canEdit) {
             return;
         }
-        setContent(savedContent);
+        setDraft(null);
         saveMutation.reset();
     };
 
@@ -128,6 +137,7 @@ export function FileEditView(props: {
                 fileName={props.fileName}
                 downloadUrl={props.downloadUrl}
                 activeView="view"
+                isEditorDirty={isDirty}
             />
 
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
@@ -176,7 +186,7 @@ export function FileEditView(props: {
                             aria-label="File editor"
                             value={content}
                             onChange={(event) => {
-                                setContent(event.target.value);
+                                setDraft(event.target.value);
                                 if (saveMutation.isSuccess) {
                                     saveMutation.reset();
                                 }

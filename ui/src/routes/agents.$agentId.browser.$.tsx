@@ -34,6 +34,7 @@ import {
     sortFileEntries,
 } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
+import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync";
@@ -127,6 +128,7 @@ function FileBrowser() {
     const { api } = Route.useRouteContext();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
+    useRefreshBrowserOnWindowFocus();
 
     const parentPath = getImmediateParentPath(path);
 

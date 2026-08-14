@@ -1,5 +1,5 @@
 import React from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
     Download,
@@ -7,9 +7,11 @@ import {
     LoaderCircle,
     MoreHorizontal,
     Pencil,
+    RefreshCw,
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { refreshBrowserPath } from "#ui/components/browser/refresh";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
@@ -220,15 +222,18 @@ export function RenamePathAction(props: {
     });
 }
 
-/** Keeps rename and destructive object actions out of the primary action row. */
+/** Keeps refresh, rename, and destructive object actions out of the primary action row. */
 function PathMoreActions(props: {
     agent: Agent;
     path: string;
     currentName: string;
     entryType: "file" | "directory";
     view?: "details" | "edit" | "diff" | "sync";
+    isEditorDirty?: boolean;
     onDelete?: () => void;
 }) {
+    const router = useRouter();
+    const queryClient = useQueryClient();
     const canModify = getImmediateParentPath(props.path) !== null;
 
     return (
@@ -247,6 +252,27 @@ function PathMoreActions(props: {
                     >
                         {(close) => (
                             <>
+                                <ActionMenuButton
+                                    onClick={() => {
+                                        close();
+                                        void refreshBrowserPath({
+                                            router,
+                                            queryClient,
+                                            fileContent:
+                                                props.entryType === "file"
+                                                    ? {
+                                                          agentId:
+                                                              props.agent.id,
+                                                          path: props.path,
+                                                      }
+                                                    : undefined,
+                                            isEditorDirty: props.isEditorDirty,
+                                        });
+                                    }}
+                                >
+                                    <RefreshCw className="h-4 w-4 text-slate-400" />
+                                    Refresh
+                                </ActionMenuButton>
                                 <ActionMenuButton
                                     disabled={renameAction.disabled}
                                     onClick={() => {
@@ -294,6 +320,7 @@ export function PersistentPathActions(props: {
     downloadName: string;
     /** Explains archive packaging when the download is a directory tarball. */
     downloadTooltip?: string;
+    isEditorDirty?: boolean;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -351,6 +378,7 @@ export function PersistentPathActions(props: {
                 currentName={props.currentName}
                 entryType={props.entryType}
                 view={props.view}
+                isEditorDirty={props.isEditorDirty}
                 onDelete={() => {
                     deleteMutation.reset();
                     setIsConfirmDeleteOpen(true);

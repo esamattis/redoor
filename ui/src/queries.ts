@@ -65,8 +65,8 @@ export function serverInfoQueryOptions(api: ApiClient) {
 
 /**
  * Reads editable text once so the loader and textarea share a cached buffer.
- * Infinite staleTime keeps later fetchQuery/preload/focus hits off the wire;
- * Save writes the cache directly instead of refetching remote bytes.
+ * Infinite staleTime keeps later fetchQuery/preload/invalidation off the wire.
+ * The editor opts into window-focus refetch while clean; Save writes the cache.
  */
 export function fileContentQueryOptions(agent: Agent, path: string) {
     return queryOptions({

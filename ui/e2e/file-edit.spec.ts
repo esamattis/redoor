@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    simulateTabRefocus,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -119,6 +120,86 @@ test.describe.serial("File Edit View", () => {
 
         // Preload and remount must reuse the cached buffer instead of hitting /raw again.
         expect(rawGets.length).toBe(downloadsAfterOpen);
+    });
+
+    test("should refresh a clean editor when the tab is focused", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "focus-refresh.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toHaveValue("original buffer");
+
+        await fs.writeFile(filePath, "changed on disk");
+        await simulateTabRefocus(page);
+
+        // A clean editor should pick up external writes after the user returns to the tab.
+        await expect(editor).toHaveValue("changed on disk");
+    });
+
+    test("should keep unsaved edits when the tab is focused", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "focus-dirty.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toHaveValue("original buffer");
+        await editor.fill("unsaved local edit");
+
+        await fs.writeFile(filePath, "changed on disk");
+        await simulateTabRefocus(page);
+
+        // Dirty text must survive refocus so an external change cannot wipe in-progress edits.
+        await expect(editor).toHaveValue("unsaved local edit");
+    });
+
+    test("should refresh a clean editor from the more menu", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "menu-refresh.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toHaveValue("original buffer");
+
+        await fs.writeFile(filePath, "changed from menu");
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Refresh", exact: true })
+            .click();
+
+        // The More action must reload remote bytes without requiring a tab switch.
+        await expect(editor).toHaveValue("changed from menu");
+    });
+
+    test("should keep unsaved edits when refreshing from the more menu", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "menu-dirty.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toHaveValue("original buffer");
+        await editor.fill("unsaved local edit");
+
+        await fs.writeFile(filePath, "changed from menu");
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Refresh", exact: true })
+            .click();
+
+        // Manual refresh follows the same dirty-buffer rule as tab focus.
+        await expect(editor).toHaveValue("unsaved local edit");
     });
 
     test("should restore unsaved edits", async ({ page }) => {
