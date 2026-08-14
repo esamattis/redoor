@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 620" role="img" aria-labelledby="title description">
+    <title id="title">Redoor logo on a transparent background</title>
+    <desc id="description">A white lowercase r forming a doorway, with a red open door and terminal prompt.</desc>
+    <defs>
+        <linearGradient id="letter" x1="0" y1="0" x2="0.86" y2="1">
+            <stop offset="0" stop-color="#f7f6f4" />
+            <stop offset="0.56" stop-color="#f5f4f2" />
+            <stop offset="1" stop-color="#ffffff" />
+        </linearGradient>
+        <linearGradient id="door" gradientUnits="userSpaceOnUse" x1="263" y1="249" x2="354" y2="520">
+            <stop offset="0" stop-color="#ff2422" />
+            <stop offset="0.46" stop-color="#dd1719" />
+            <stop offset="1" stop-color="#981013" />
+        </linearGradient>
+        <linearGradient id="floor" gradientUnits="userSpaceOnUse" x1="108" y1="493" x2="440" y2="552">
+            <stop offset="0" stop-color="#5e0b0e" />
+            <stop offset="0.38" stop-color="#ad1216" />
+            <stop offset="0.72" stop-color="#c51116" />
+            <stop offset="1" stop-color="#fa2021" />
+        </linearGradient>
+        <linearGradient id="floorShade" x1="0" y1="0" x2="1" y2="0.4">
+            <stop stop-color="#02070b" stop-opacity="0.78" />
+            <stop offset="0.58" stop-color="#23080b" stop-opacity="0.12" />
+            <stop offset="1" stop-color="#33080b" stop-opacity="0" />
+        </linearGradient>
+        <filter id="ambient" x="-25%" y="-25%" width="150%" height="160%">
+            <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#000000" flood-opacity="0.72" />
+        </filter>
+        <filter id="edge" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.7" />
+        </filter>
+        <filter id="redGlow" x="-35%" y="-35%" width="170%" height="170%">
+            <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#ff181b" flood-opacity="0.55" />
+        </filter>
+    </defs>
+
+    <g transform="translate(60)">
+        <g filter="url(#ambient)">
+            <path d="M263 249 L354 296 L354 520 L263 486 Z" fill="url(#door)" stroke="#ef2423" stroke-width="1.4" stroke-linejoin="round" />
+            <path d="M105 514 L238 476 L440 552 L223 552 C181 550 141 537 105 514 Z" fill="url(#floor)" />
+            <path d="M105 514 L238 476 C216 502 205 530 223 552 C180 550 140 537 105 514 Z" fill="url(#floorShade)" />
+            <path
+                d="M108 67 H226 C233 67 238 73 238 80 V128 C273 92 311 70 350 68 C377 67 404 70 431 77 C436 78 439 82 439 88 V208 C439 215 434 219 428 216 C353 184 289 199 238 254 V477 L108 515 C101 517 95 511 95 504 V80 C95 73 101 67 108 67 Z"
+                fill="url(#letter)"
+                stroke="#d6d5d3"
+                stroke-width="1.4"
+                stroke-linejoin="round"
+                filter="url(#edge)"
+            />
+        </g>
+        <g fill="none" stroke="#e72927" stroke-linecap="round" stroke-linejoin="round" filter="url(#redGlow)">
+            <path d="M140 368 L165 392 L140 416" stroke-width="7" />
+            <path d="M177 416 H204" stroke-width="7" />
+        </g>
+    </g>
+</svg>

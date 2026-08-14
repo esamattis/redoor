@@ -583,7 +583,7 @@ function BrandMark() {
             className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white"
         >
             <img
-                src="/logo.svg"
+                src="/logo-dark.svg"
                 alt=""
                 className="h-5 w-5"
                 aria-hidden="true"

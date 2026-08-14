@@ -3,7 +3,7 @@
     "name": "Redoor Agent Management",
     "icons": [
         {
-            "src": "logo.svg",
+            "src": "logo-dark.svg",
             "type": "image/svg+xml",
             "sizes": "any"
         },

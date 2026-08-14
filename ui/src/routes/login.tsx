@@ -92,7 +92,7 @@ function LoginPage() {
                 <div className="w-full rounded-xl border border-slate-800 bg-[#11141b] p-8 shadow-2xl">
                     <div className="mb-8 flex items-center justify-center gap-3">
                         <img
-                            src="/logo.svg"
+                            src="/logo-dark.svg"
                             alt=""
                             aria-hidden="true"
                             className="h-9 w-9"

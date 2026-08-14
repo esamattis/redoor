@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 620" role="img" aria-labelledby="title description">
+    <title id="title">Redoor logo for light backgrounds</title>
+    <desc id="description">A navy lowercase r forming a doorway, with a red open door and terminal prompt.</desc>
+    <defs>
+        <radialGradient id="background" cx="50%" cy="43%" r="73%">
+            <stop offset="0" stop-color="#ffffff" />
+            <stop offset="0.72" stop-color="#fdfdfd" />
+            <stop offset="1" stop-color="#f8f8f8" />
+        </radialGradient>
+        <linearGradient id="letter" x1="0" y1="0" x2="0.82" y2="1">
+            <stop offset="0" stop-color="#13243b" />
+            <stop offset="0.58" stop-color="#102139" />
+            <stop offset="1" stop-color="#0c1b31" />
+        </linearGradient>
+        <linearGradient id="door" gradientUnits="userSpaceOnUse" x1="263" y1="249" x2="354" y2="520">
+            <stop offset="0" stop-color="#ff272d" />
+            <stop offset="0.42" stop-color="#fb3d43" />
+            <stop offset="0.76" stop-color="#ff9da1" />
+            <stop offset="1" stop-color="#ffe8e9" />
+        </linearGradient>
+        <linearGradient id="floor" gradientUnits="userSpaceOnUse" x1="108" y1="493" x2="440" y2="552">
+            <stop offset="0" stop-color="#fff4f4" />
+            <stop offset="0.38" stop-color="#ffd1d3" />
+            <stop offset="0.72" stop-color="#fa8589" />
+            <stop offset="1" stop-color="#f22c33" />
+        </linearGradient>
+        <radialGradient id="floorApex" gradientUnits="userSpaceOnUse" cx="238" cy="476" r="125">
+            <stop stop-color="#ff4b51" stop-opacity="0.62" />
+            <stop offset="1" stop-color="#ff4b51" stop-opacity="0" />
+        </radialGradient>
+        <radialGradient id="floorHighlight" gradientUnits="userSpaceOnUse" cx="155" cy="548" r="145">
+            <stop stop-color="#ffffff" stop-opacity="0.72" />
+            <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+        </radialGradient>
+        <filter id="ambient" x="-25%" y="-25%" width="150%" height="160%">
+            <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#64748b" flood-opacity="0.2" />
+        </filter>
+        <filter id="edge" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-color="#64748b" flood-opacity="0.35" />
+        </filter>
+        <filter id="redGlow" x="-35%" y="-35%" width="170%" height="170%">
+            <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#ff2b31" flood-opacity="0.38" />
+        </filter>
+        <filter id="warmGlow" x="-30%" y="-35%" width="160%" height="180%">
+            <feGaussianBlur stdDeviation="13" />
+        </filter>
+        <filter id="grain" x="0" y="0" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="3" seed="19" result="noise" />
+            <feColorMatrix in="noise" type="saturate" values="0" result="grayNoise" />
+            <feComponentTransfer in="grayNoise" result="softNoise">
+                <feFuncA type="table" tableValues="0 0.025" />
+            </feComponentTransfer>
+            <feBlend in="SourceGraphic" in2="softNoise" mode="multiply" />
+        </filter>
+        <clipPath id="frame">
+            <rect width="620" height="620" />
+        </clipPath>
+    </defs>
+
+    <g clip-path="url(#frame)">
+        <rect width="620" height="620" fill="url(#background)" />
+
+        <g transform="translate(60)">
+            <g fill="#ff5b61" opacity="0.2" filter="url(#warmGlow)">
+                <path d="M263 249 L354 296 L354 520 L263 486 Z" />
+                <path d="M105 514 L238 476 L440 552 L223 552 C181 550 141 537 105 514 Z" />
+            </g>
+
+            <g filter="url(#ambient)">
+                <path
+                    d="M263 249 L354 296 L354 520 L263 486 Z"
+                    fill="url(#door)"
+                    stroke="#ff5358"
+                    stroke-width="1.4"
+                    stroke-linejoin="round"
+                />
+
+                <path d="M105 514 L238 476 L440 552 L223 552 C181 550 141 537 105 514 Z" fill="url(#floor)" />
+                <path d="M105 514 L238 476 L440 552 L223 552 C181 550 141 537 105 514 Z" fill="url(#floorApex)" />
+                <path d="M105 514 L238 476 L440 552 L223 552 C181 550 141 537 105 514 Z" fill="url(#floorHighlight)" />
+
+                <path
+                    d="M108 67 H226 C233 67 238 73 238 80 V128 C273 92 311 70 350 68 C377 67 404 70 431 77 C436 78 439 82 439 88 V208 C439 215 434 219 428 216 C353 184 289 199 238 254 V477 L108 515 C101 517 95 511 95 504 V80 C95 73 101 67 108 67 Z"
+                    fill="url(#letter)"
+                    stroke="#293950"
+                    stroke-width="1.4"
+                    stroke-linejoin="round"
+                    filter="url(#edge)"
+                />
+            </g>
+
+            <g fill="none" stroke="#ff292f" stroke-linecap="round" stroke-linejoin="round" filter="url(#redGlow)">
+                <path d="M140 368 L165 392 L140 416" stroke-width="7" />
+                <path d="M177 416 H204" stroke-width="7" />
+            </g>
+        </g>
+
+        <rect width="620" height="620" fill="transparent" filter="url(#grain)" opacity="0.3" />
+    </g>
+</svg>

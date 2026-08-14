@@ -26,6 +26,7 @@
         "types": "tsc -p tsconfig.json",
         "format": "cd ui && prettier --write .",
         "format:check": "cd ui && prettier --check .",
+        "generate-icons": "node scripts/generate-logo-assets.mts",
         "preplaywright": "node scripts/test/ensure-test-ports.mts",
         "playwright": "playwright test --reporter=line --config ui/playwright.config.ts",
         "lint": "oxlint -c .oxlintrc.json --type-aware",
