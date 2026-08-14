@@ -71,7 +71,7 @@ function getTerminalStatus(state: TerminalState) {
     if (state.type === "disconnected") {
         return {
             label: "Disconnected",
-            color: "text-red-400",
+            color: "text-amber-400",
         };
     }
     return {
@@ -292,7 +292,7 @@ export function TerminalPanel(props: {
             keepChildrenMounted
             defaultExpandedHeight={400}
         >
-            <div className="relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
+            <div className="terminal-surface relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
                 {tabs.map((tab) => (
                     <TerminalSession
                         key={tab.id}
@@ -395,7 +395,7 @@ function TerminalTabActions(props: {
                                     aria-label={`Restart ${tab.title}`}
                                     title={`Restart ${tab.title}`}
                                     onClick={() => props.onRestart(tab.id)}
-                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-red-500/20 text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-blue-400 transition-colors hover:bg-blue-500/10 hover:text-blue-300"
                                 >
                                     <RotateCcw className="h-3.5 w-3.5" />
                                 </button>
@@ -405,7 +405,7 @@ function TerminalTabActions(props: {
                                 aria-label={`Close ${tab.title}`}
                                 title={`Close ${tab.title}`}
                                 onClick={() => props.onClose(tab.id)}
-                                className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-200"
                             >
                                 <X className="h-3.5 w-3.5" />
                             </button>

@@ -91,12 +91,21 @@ function LoginPage() {
                 ) : null}
                 <div className="w-full rounded-xl border border-slate-800 bg-[#11141b] p-8 shadow-2xl">
                     <div className="mb-8 flex items-center justify-center gap-3">
-                        <img
-                            src="/logo-dark.svg"
-                            alt=""
+                        <span
+                            className="relative h-9 w-9 shrink-0"
                             aria-hidden="true"
-                            className="h-9 w-9"
-                        />
+                        >
+                            <img
+                                src="/logo-dark.svg"
+                                alt=""
+                                className="theme-logo-dark absolute inset-0 h-9 w-9"
+                            />
+                            <img
+                                src="/logo-light.svg"
+                                alt=""
+                                className="theme-logo-light absolute inset-0 h-9 w-9"
+                            />
+                        </span>
                         <span className="text-xl font-semibold text-slate-100">
                             Redoor
                         </span>

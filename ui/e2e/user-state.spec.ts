@@ -24,8 +24,10 @@ test.describe.serial("User state", () => {
     test.afterEach(async () => {
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
-        // Later browser tests assume the default of showing hidden files.
-        await api.updateUserState({ state: { showHiddenFiles: true } });
+        // Later browser tests assume the default user preferences.
+        await api.updateUserState({
+            state: { showHiddenFiles: true, theme: "system" },
+        });
     });
 
     test("should persist hidden-file visibility on the server", async ({
@@ -100,5 +102,81 @@ test.describe.serial("User state", () => {
         await expect(
             page.getByRole("button", { name: "Show hidden files" }),
         ).toHaveAttribute("aria-pressed", "false");
+    });
+
+    test("should follow the system theme and persist an override", async ({
+        page,
+    }) => {
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        // A missing preference resolves from the OS rather than assuming dark or light.
+        await expect(page.locator("html")).toHaveAttribute(
+            "data-theme",
+            "dark",
+        );
+        const themeButton = page.getByRole("button", {
+            name: "Color theme: System",
+        });
+        const triggerBox = await themeButton.boundingBox();
+        // The compact control remains at the right edge of the application header.
+        expect((triggerBox?.x ?? 0) + (triggerBox?.width ?? 0)).toBeGreaterThan(
+            1200,
+        );
+
+        await page.emulateMedia({ colorScheme: "light" });
+        // System mode must react to OS changes without requiring a reload.
+        await expect(page.locator("html")).toHaveAttribute(
+            "data-theme",
+            "light",
+        );
+        await expect(page.locator("body")).toHaveCSS(
+            "background-color",
+            "rgb(248, 250, 252)",
+        );
+        await page.emulateMedia({ colorScheme: "dark" });
+
+        await themeButton.hover();
+        // The tooltip names the state that the next click will select.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to dark theme",
+        );
+        await themeButton.click();
+        const darkThemeButton = page.getByRole("button", {
+            name: "Color theme: Dark",
+        });
+        await darkThemeButton.hover();
+        // Each state advertises the next step in the cycle.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to light theme",
+        );
+        await darkThemeButton.click();
+
+        // An explicit choice must override a dark OS preference immediately.
+        await expect(page.locator("html")).toHaveClass(/light/);
+        await expect(page.locator("html")).toHaveAttribute(
+            "data-theme",
+            "light",
+        );
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        // Active light-theme controls need dark blue text rather than the dark theme's pale tint.
+        await expect(
+            page.getByRole("link", { name: "Files", exact: true }),
+        ).toHaveCSS("color", "rgb(30, 64, 175)");
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        // Server readback proves the choice lives in user state rather than local storage.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ theme: "light" });
+
+        await page.reload();
+
+        // Reload must restore the server preference even though the OS remains dark.
+        await expect(page.locator("html")).toHaveClass(/light/);
+        await expect(
+            page.getByRole("button", { name: "Color theme: Light" }),
+        ).toBeVisible();
     });
 });

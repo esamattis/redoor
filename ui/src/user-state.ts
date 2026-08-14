@@ -10,12 +10,14 @@ const rootRouteApi = getRouteApi("__root__");
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
+    theme: z.enum(["system", "dark", "light"]).catch("system"),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
 
 export const defaultUserState: UserState = {
     showHiddenFiles: true,
+    theme: "system",
 };
 
 type UserStateUpdater = (prev: UserState) => UserState;

@@ -65,6 +65,7 @@ import {
 } from "#ui/queries";
 import { userStateQueryOptions } from "#ui/user-state";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
+import { ThemeManager, ThemeToggle } from "#ui/components/theme-toggle";
 import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 
@@ -288,6 +289,7 @@ function RootLayout() {
 
     return (
         <div className="flex h-screen bg-[#0b0d12]">
+            <ThemeManager />
             <RouteLoadingIndicator />
             <UserStatePersistToast />
             <GlobalFileImportHandler destination={importDestination} />
@@ -482,6 +484,9 @@ function TopTabStrip(props: {
                     <Link to="/agents/new" aria-label="Add managed agent" />
                 </AddButton>
             </div>
+            <div className="shrink-0 pb-1">
+                <ThemeToggle />
+            </div>
         </header>
     );
 }
@@ -647,12 +652,18 @@ function BrandMark(props: { className?: string }) {
             tabIndex={-1}
             className={`mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white ${props.className ?? ""}`}
         >
-            <img
-                src="/logo-dark-transparent.svg"
-                alt=""
-                className="h-12 w-12"
-                aria-hidden="true"
-            />
+            <span className="relative h-12 w-12 shrink-0" aria-hidden="true">
+                <img
+                    src="/logo-dark-transparent.svg"
+                    alt=""
+                    className="theme-logo-dark absolute inset-0 h-12 w-12"
+                />
+                <img
+                    src="/logo-light-transparent.svg"
+                    alt=""
+                    className="theme-logo-light absolute inset-0 h-12 w-12"
+                />
+            </span>
             <span className="text-2xl font-semibold tracking-tight">
                 Redoor
             </span>

@@ -1,18 +1,172 @@
 @import "tailwindcss";
 
-/*
- * The app uses a permanent dark theme so the root palette is set here once
- * instead of toggling `dark:` variants everywhere. Keeping the values on
- * body prevents light flashes before React mounts.
- */
+:root {
+    color-scheme: light dark;
+    --color-slate-50: light-dark(#020617, #f8fafc);
+    --color-slate-100: light-dark(#0f172a, #f1f5f9);
+    --color-slate-200: light-dark(#1e293b, #e2e8f0);
+    --color-slate-300: light-dark(#334155, #cbd5e1);
+    --color-slate-400: light-dark(#475569, #94a3b8);
+    --color-slate-500: #64748b;
+    --color-slate-600: light-dark(#94a3b8, #475569);
+    --color-slate-700: light-dark(#cbd5e1, #334155);
+    --color-slate-800: light-dark(#e2e8f0, #1e293b);
+    --color-slate-900: light-dark(#f1f5f9, #0f172a);
+    --color-slate-950: light-dark(#f8fafc, #020617);
+    --color-blue-200: light-dark(#1e40af, #bfdbfe);
+    --color-blue-300: light-dark(#1d4ed8, #93c5fd);
+    --color-blue-400: light-dark(#2563eb, #60a5fa);
+    --color-red-50: light-dark(#450a0a, #fef2f2);
+    --color-red-100: light-dark(#7f1d1d, #fee2e2);
+    --color-red-200: light-dark(#991b1b, #fecaca);
+    --color-red-300: light-dark(#b91c1c, #fca5a5);
+    --color-red-400: light-dark(#dc2626, #f87171);
+    --color-red-800: light-dark(#fecaca, #991b1b);
+    --color-red-900: light-dark(#fee2e2, #7f1d1d);
+    --color-red-950: light-dark(#fef2f2, #450a0a);
+    --color-amber-50: light-dark(#451a03, #fffbeb);
+    --color-amber-100: light-dark(#78350f, #fef3c7);
+    --color-amber-200: light-dark(#92400e, #fde68a);
+    --color-amber-300: light-dark(#b45309, #fcd34d);
+    --color-amber-400: light-dark(#d97706, #fbbf24);
+    --color-amber-800: light-dark(#fde68a, #92400e);
+    --color-amber-900: light-dark(#fef3c7, #78350f);
+    --color-amber-950: light-dark(#fffbeb, #451a03);
+    --color-emerald-300: light-dark(#047857, #6ee7b7);
+    --color-emerald-400: light-dark(#059669, #34d399);
+    --app-canvas: light-dark(#f8fafc, #0b0d12);
+    --app-chrome: light-dark(#f1f5f9, #0f1218);
+    --app-surface: light-dark(#ffffff, #11141b);
+    --app-active-surface: light-dark(#ffffff, #161a23);
+    --app-raised-surface: light-dark(#e2e8f0, #1a1f2a);
+    --app-code-surface: light-dark(#f8fafc, #080a0e);
+    --app-error-surface: light-dark(#ffffff, #141821);
+    --app-error-tint: light-dark(#fff1f2, #161018);
+    --app-subtle-overlay: light-dark(
+        rgb(15 23 42 / 0.06),
+        rgb(255 255 255 / 0.05)
+    );
+    --app-hover-overlay: light-dark(
+        rgb(15 23 42 / 0.1),
+        rgb(255 255 255 / 0.1)
+    );
+}
+
+:root.light {
+    color-scheme: light;
+}
+
+:root.dark {
+    color-scheme: dark;
+}
+
 body {
     @apply m-0 bg-[#0b0d12] text-slate-200 antialiased;
+    background-color: var(--app-canvas);
     font-family:
         -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
         "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
         sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+}
+
+/* Existing dark surfaces share semantic colors so all screens switch together. */
+.bg-\[\#0b0d12\] {
+    background-color: var(--app-canvas);
+}
+
+.bg-\[\#0f1218\] {
+    background-color: var(--app-chrome);
+}
+
+.bg-\[\#11141b\] {
+    background-color: var(--app-surface);
+}
+
+.bg-\[\#161a23\] {
+    background-color: var(--app-active-surface);
+}
+
+.bg-\[\#1a1f2a\] {
+    background-color: var(--app-raised-surface);
+}
+
+.bg-\[\#080a0e\] {
+    background-color: var(--app-code-surface);
+}
+
+.bg-\[\#141821\] {
+    background-color: var(--app-error-surface);
+}
+
+.bg-\[\#161018\]\/95 {
+    background-color: color-mix(
+        in srgb,
+        var(--app-error-tint) 95%,
+        transparent
+    );
+}
+
+.bg-\[\#11141b\]\/95 {
+    background-color: color-mix(in srgb, var(--app-surface) 95%, transparent);
+}
+
+.bg-white\/5,
+.hover\:bg-white\/5:hover {
+    background-color: var(--app-subtle-overlay);
+}
+
+.hover\:bg-white\/10:hover {
+    background-color: var(--app-hover-overlay);
+}
+
+.hover\:text-white:hover {
+    color: var(--color-slate-100);
+}
+
+/* Warning actions stay warm without inheriting dark-mode yellow text in light mode. */
+.warning-action {
+    border-color: light-dark(#f2cc74, rgb(245 158 11 / 0.4));
+    background-color: light-dark(#fffbeb, rgb(245 158 11 / 0.1));
+    color: light-dark(#78350f, #fde68a);
+}
+
+.warning-action:hover:not(:disabled) {
+    background-color: light-dark(#fef3c7, rgb(245 158 11 / 0.2));
+}
+
+.warning-action:disabled {
+    border-color: var(--color-slate-700);
+    background-color: var(--color-slate-800);
+    color: var(--color-slate-500);
+}
+
+/* Ghostty currently has a fixed dark terminal palette, so its frame stays dark too. */
+.terminal-surface.bg-\[\#0b0d12\] {
+    background-color: #0b0d12;
+}
+
+.theme-logo-light {
+    display: none;
+}
+
+:root.light .theme-logo-dark {
+    display: none;
+}
+
+:root.light .theme-logo-light {
+    display: block;
+}
+
+@media (prefers-color-scheme: light) {
+    :root:not(.dark) .theme-logo-dark {
+        display: none;
+    }
+
+    :root:not(.dark) .theme-logo-light {
+        display: block;
+    }
 }
 
 code {
@@ -25,7 +179,7 @@ code {
  * default. The thin variant keeps horizontal tab strips and file lists tidy.
  */
 * {
-    scrollbar-color: rgb(51 65 85) transparent;
+    scrollbar-color: var(--color-slate-700) transparent;
     scrollbar-width: thin;
 }
 
@@ -39,14 +193,14 @@ code {
 }
 
 *::-webkit-scrollbar-thumb {
-    background-color: rgb(51 65 85);
+    background-color: var(--color-slate-700);
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: content-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background-color: rgb(71 85 105);
+    background-color: var(--color-slate-600);
     background-clip: content-box;
 }
 

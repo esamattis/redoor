@@ -204,7 +204,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                             upgradeMutation.reset();
                             setAction("running_server");
                         }}
-                        className="inline-flex items-center justify-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:border-slate-700 disabled:bg-slate-800 disabled:text-slate-500"
+                        className="warning-action inline-flex items-center justify-center gap-2 rounded border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed"
                     >
                         <PackageOpen className="h-4 w-4" aria-hidden="true" />
                         Force install server binary
