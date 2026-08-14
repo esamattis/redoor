@@ -328,8 +328,12 @@ function DirectoryBrowserPage(props: {
               : "files";
 
     return (
-        <div className="p-6">
-            <div className="mx-auto max-w-6xl">
+        <div className="p-2 lg:p-4">
+            <div
+                className={
+                    activeView === "files" ? "w-full" : "mx-auto max-w-6xl"
+                }
+            >
                 <BrowserHeader
                     agent={props.agent}
                     agentId={props.agentId}

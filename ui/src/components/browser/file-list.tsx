@@ -249,7 +249,7 @@ export function FileList(props: {
     return (
         <div className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
             {props.actions}
-            <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/35 p-2">
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800 bg-slate-900/35 p-1.5 sm:gap-2 sm:p-2">
                 <label className="relative min-w-0 flex-1">
                     <span className="sr-only">Filter files</span>
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
@@ -261,7 +261,7 @@ export function FileList(props: {
                         onChange={(event) => setFilter(event.target.value)}
                         onKeyDown={handleFilterKeyDown}
                         placeholder="Filter files (f, s for recursive)"
-                        className="w-full rounded-md border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                        className="w-full rounded-md border border-slate-700 bg-slate-900 py-1.5 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 sm:py-2"
                     />
                 </label>
                 <RecursiveSearchControls
@@ -436,7 +436,7 @@ function FileTable(props: {
             <table ref={tableRef} className="w-full min-w-[55rem]">
                 <thead>
                     <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                        <th className="text-left p-3 text-sm font-medium text-slate-400">
+                        <th className="p-1.5 text-left text-sm font-medium text-slate-400 sm:p-2">
                             Select
                         </th>
                         <SortableFileColumnHeader
@@ -475,7 +475,7 @@ function FileTable(props: {
                             sort={props.sort}
                             onSort={props.onSort}
                         />
-                        <th className="text-right p-3 text-sm font-medium text-slate-400">
+                        <th className="p-1.5 text-right text-sm font-medium text-slate-400 sm:p-2">
                             Actions
                         </th>
                     </tr>
@@ -519,13 +519,13 @@ function SortableFileColumnHeader(props: {
     return (
         <th
             aria-sort={direction ?? "none"}
-            className="p-1 text-left text-sm font-medium text-slate-400"
+            className="p-0.5 text-left text-sm font-medium text-slate-400"
         >
             <button
                 type="button"
                 onClick={() => props.onSort(props.column)}
                 aria-label={`Sort by ${props.label} ${nextDirection}`}
-                className="flex w-full items-center gap-1.5 rounded px-2 py-2 text-left transition-colors hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="flex w-full items-center gap-1.5 rounded px-1.5 py-1.5 text-left transition-colors hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
                 {props.label}
                 <SortIcon className="h-3.5 w-3.5" />
@@ -615,7 +615,7 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
                                 <Link
                                     to={props.agent.getBrowserUrl(entry.path)}
                                     data-keyboard-focus-entry="true"
-                                    className="group flex items-start gap-3 px-4 py-3 transition-colors hover:bg-white/5"
+                                    className="group flex items-start gap-2 px-2 py-1.5 transition-colors hover:bg-white/5 sm:gap-3 sm:px-3 sm:py-2"
                                 >
                                     {isDirectory ? (
                                         <Folder className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
@@ -661,7 +661,7 @@ function FileEntry(props: {
             className="border-b border-slate-800/60 last:border-b-0 hover:bg-white/5"
             aria-label={`${isDirectory ? "Directory" : "File"} entry ${entry.name}`}
         >
-            <td className="p-3" aria-label="">
+            <td className="p-1.5 sm:p-2" aria-label="">
                 <Checkbox
                     label={
                         isSelected
@@ -679,14 +679,14 @@ function FileEntry(props: {
                     }
                 />
             </td>
-            <td className="p-3">
+            <td className="p-1.5 sm:p-2">
                 {isDirectory ? (
                     <Folder className="h-5 w-5 text-blue-400" />
                 ) : (
                     <File className="h-5 w-5 text-slate-500" />
                 )}
             </td>
-            <td className="p-3">
+            <td className="p-1.5 sm:p-2">
                 <div className="flex min-w-0 items-center gap-2">
                     <Link
                         to={agent.getBrowserUrl(fullPath)}
@@ -724,14 +724,16 @@ function FileEntry(props: {
             </td>
             <td
                 className={
-                    isDirectory ? "p-3 text-slate-600" : "p-3 text-slate-400"
+                    isDirectory
+                        ? "p-1.5 text-slate-600 sm:p-2"
+                        : "p-1.5 text-slate-400 sm:p-2"
                 }
                 aria-label={`Size for ${entry.name}`}
             >
                 {isDirectory ? "-" : formatSize(entry.size)}
             </td>
             <td
-                className="p-3 text-slate-400"
+                className="p-1.5 text-slate-400 sm:p-2"
                 aria-label={`Modified ${entry.name}`}
             >
                 <Tooltip
@@ -746,9 +748,13 @@ function FileEntry(props: {
                     </time>
                 </Tooltip>
             </td>
-            <td className="p-3 text-slate-400">{entry.owner || "-"}</td>
-            <td className="p-3 text-slate-400">{entry.group || "-"}</td>
-            <td className="p-3 text-right">
+            <td className="p-1.5 text-slate-400 sm:p-2">
+                {entry.owner || "-"}
+            </td>
+            <td className="p-1.5 text-slate-400 sm:p-2">
+                {entry.group || "-"}
+            </td>
+            <td className="p-1.5 text-right sm:p-2">
                 <Tooltip
                     content={
                         isDirectory

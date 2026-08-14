@@ -689,7 +689,7 @@ export function DirectoryFilesActions(props: {
     return (
         <div
             aria-label="Files view actions"
-            className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/35 p-2"
+            className="flex flex-wrap items-center justify-between gap-1 border-b border-slate-800 bg-slate-900/35 p-1.5 sm:gap-2 sm:p-2"
         >
             <button
                 type="button"
