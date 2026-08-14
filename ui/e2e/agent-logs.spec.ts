@@ -157,7 +157,10 @@ test.describe.serial("Agent logs", () => {
         }
         const closed = activeSocket.waitForEvent("close");
 
-        await page.getByRole("link", { name: "Server logs" }).click();
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Server logs" })
+            .click();
         await closed;
         // Destination rendering proves the agent route unmounted completely.
         await expect(

@@ -478,13 +478,15 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page.locator("main tbody tr")).toHaveCount(0);
     });
 
-    test("should start tab traversal at the first agent tab", async ({
+    test("should start tab traversal in the application sidebar", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
-        const firstAgentTab = page.getByRole("tab").first();
-        // A rendered tab proves the authenticated layout and its global listener are mounted.
-        await expect(firstAgentTab).toBeVisible();
+        const homeLink = page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Server home" });
+        // Visible application navigation proves the authenticated desktop shell is mounted.
+        await expect(homeLink).toBeVisible();
         await page.evaluate(() => {
             if (document.activeElement instanceof HTMLElement) {
                 document.activeElement.blur();
@@ -493,8 +495,8 @@ test.describe.serial("File Browser Navigation", () => {
 
         await page.keyboard.press("Tab");
 
-        // Global traversal skips branding so the first sorted agent is the first tab stop.
-        await expect(firstAgentTab).toBeFocused();
+        // Global traversal skips branding but includes the persistent sidebar before agent tabs.
+        await expect(homeLink).toBeFocused();
     });
 
     test("should recursively search from the current directory", async ({

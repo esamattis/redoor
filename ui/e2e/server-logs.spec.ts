@@ -14,9 +14,8 @@ function isServerLogSocket(socket: PlaywrightWebSocket): boolean {
 /** Opens the logs page through the user-visible navigation path. */
 async function navigateToServerLogs(page: import("@playwright/test").Page) {
     await page.goto(`${WEB_BASE_URL}/`);
-    await page.getByRole("button", { name: "Open menu" }).click();
     await page
-        .getByRole("dialog", { name: "Menu" })
+        .getByRole("navigation", { name: "Application" })
         .getByRole("link", { name: "Server logs" })
         .click();
 }
@@ -218,9 +217,8 @@ test.describe.serial("Server logs", () => {
         }
         const closed = activeSocket.waitForEvent("close");
 
-        await page.getByRole("button", { name: "Open menu" }).click();
         await page
-            .getByRole("dialog", { name: "Menu" })
+            .getByRole("navigation", { name: "Application" })
             .getByRole("link", { name: "Server home" })
             .click();
         await closed;

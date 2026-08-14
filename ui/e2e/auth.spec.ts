@@ -83,14 +83,18 @@ test.describe("Authentication", () => {
             page.getByRole("heading", { name: "Build date" }),
         ).toBeVisible();
         await expect(page.getByText("debug", { exact: true })).toBeVisible();
-        // Account actions live behind the burger menu so the tab strip stays uncluttered.
-        await page.getByRole("button", { name: "Open menu" }).click();
-        await expect(page.getByRole("dialog", { name: "Menu" })).toBeVisible();
+        // Account actions remain available in the persistent application sidebar.
+        const applicationNavigation = page.getByRole("navigation", {
+            name: "Application",
+        });
+        await expect(applicationNavigation).toBeVisible();
         await expect(
-            page.getByRole("link", { name: "Server home" }),
+            applicationNavigation.getByRole("link", { name: "Server home" }),
         ).toBeVisible();
 
-        await page.getByRole("button", { name: "Log out" }).click();
+        await applicationNavigation
+            .getByRole("button", { name: "Log out" })
+            .click();
         // Logout must leave protected chrome and display the dedicated form.
         await expect(page).toHaveURL(`${WEB_BASE_URL}/login`);
         await expect(

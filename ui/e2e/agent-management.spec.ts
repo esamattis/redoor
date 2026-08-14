@@ -487,8 +487,10 @@ test.describe.serial("Agent management", () => {
         });
         // Clicking the tab must surface non-interactive authentication guidance promptly.
         await expect(lifecycleAlert).toBeVisible({ timeout: 15_000 });
-        await page.getByRole("button", { name: "Open menu" }).click();
-        await page.getByRole("link", { name: "Agents" }).click();
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Agents" })
+            .click();
         const row = page.getByRole("row", {
             name: `Agent ${CREATED_SSH_MISSING_PASSWORD_AGENT}`,
         });
@@ -497,8 +499,10 @@ test.describe.serial("Agent management", () => {
             "Configure a password, SSH key, or ssh-agent credential",
         );
         // Responsive navigation proves password preparation is not blocking the server.
-        await page.getByRole("button", { name: "Open menu" }).click();
-        await page.getByRole("link", { name: "Server home" }).click();
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Server home" })
+            .click();
         await expect(
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();
@@ -684,8 +688,10 @@ test.describe.serial("Agent management", () => {
         // The actionable supervisor issue remains inline while desired-running retries continue.
         await expect(row.getByRole("alert")).not.toBeEmpty();
         // An unrelated navigation remains responsive while the failing child cycles.
-        await page.getByRole("button", { name: "Open menu" }).click();
-        await page.getByRole("link", { name: "Server home" }).click();
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Server home" })
+            .click();
         await expect(
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();

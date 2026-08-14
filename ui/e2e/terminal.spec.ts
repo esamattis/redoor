@@ -266,10 +266,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Each agent starts its own terminal numbering at one.
         expect(terminalSockets).toHaveLength(6);
 
-        // Transfers live in the burger menu so agent tabs remain dedicated to agents.
-        await page.getByRole("button", { name: "Open menu" }).click();
+        // Transfers remain separate from agent tabs in the application sidebar.
         await page
-            .getByRole("dialog", { name: "Menu" })
+            .getByRole("navigation", { name: "Application" })
             .getByRole("link", { name: "Transfers" })
             .click();
         // Non-agent routes retain all terminals but cannot infer a target for the direct action.

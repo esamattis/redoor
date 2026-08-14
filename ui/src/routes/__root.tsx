@@ -42,7 +42,6 @@ import {
     type SelectedPath,
 } from "#ui/selected-files";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import { TransferList } from "#ui/components/transfer-list";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
@@ -144,6 +143,7 @@ function RootLayout() {
     const location = useLocation();
     const router = useRouter();
     const { api, queryClient } = Route.useRouteContext();
+    const [isMenuOpen, setIsMenuOpen] = React.useState(false);
     const { data: transferProgress } = useQuery({
         ...transfersQueryOptions(api),
         initialData: initialTransferProgress,
@@ -218,6 +218,12 @@ function RootLayout() {
                   cwd: terminalCwd ?? activeAgent.cwd,
               }
             : null;
+    const logoutMutation = useMutation({
+        mutationFn: () => api.logout(),
+        onSuccess: () => {
+            window.location.replace("/login");
+        },
+    });
 
     React.useEffect(() => {
         const refreshListener = new RefreshListener(api, router, queryClient);
@@ -281,7 +287,7 @@ function RootLayout() {
     }, []);
 
     return (
-        <div className="flex h-screen flex-col bg-[#0b0d12]">
+        <div className="flex h-screen bg-[#0b0d12]">
             <RouteLoadingIndicator />
             <UserStatePersistToast />
             <GlobalFileImportHandler destination={importDestination} />
@@ -289,20 +295,34 @@ function RootLayout() {
                 agents={agents}
                 onUploadsChanged={() => router.invalidate()}
             />
-            <TopTabStrip agents={sortedAgents} pathname={location.pathname} />
-            <div className="flex min-h-0 flex-1 flex-col">
-                <main className="flex-1 overflow-auto">
-                    <Outlet />
-                </main>
-                <TerminalPanel
-                    agents={agents}
-                    activeTarget={activeTerminalTarget}
+            <ApplicationNavigation
+                pathname={location.pathname}
+                isOpen={isMenuOpen}
+                isLoggingOut={logoutMutation.isPending}
+                onClose={() => setIsMenuOpen(false)}
+                onLogout={() => logoutMutation.mutate()}
+            />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <TopTabStrip
+                    agents={sortedAgents}
+                    pathname={location.pathname}
+                    isMenuOpen={isMenuOpen}
+                    onOpenMenu={() => setIsMenuOpen(true)}
                 />
-                <SelectedFilesPanel agents={agents} />
-                <TransferProgressPanel
-                    agents={agents}
-                    transfers={transferProgress.transfers}
-                />
+                <div className="flex min-h-0 flex-1 flex-col">
+                    <main className="flex-1 overflow-auto">
+                        <Outlet />
+                    </main>
+                    <TerminalPanel
+                        agents={agents}
+                        activeTarget={activeTerminalTarget}
+                    />
+                    <SelectedFilesPanel agents={agents} />
+                    <TransferProgressPanel
+                        agents={agents}
+                        transfers={transferProgress.transfers}
+                    />
+                </div>
             </div>
             <TanStackDevtools
                 config={{
@@ -329,13 +349,12 @@ function RootLayout() {
 function TopTabStrip(props: {
     agents: RootLoaderData["agents"];
     pathname: string;
+    isMenuOpen: boolean;
+    onOpenMenu: () => void;
 }) {
     const agentTabLocations = useAtomValue(agentTabLocationsAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const router = useRouter();
-    const { api } = Route.useRouteContext();
-    const [isMenuOpen, setIsMenuOpen] = React.useState(false);
-    const menuButtonRef = React.useRef<HTMLButtonElement>(null);
     const startMutation = useMutation({
         mutationFn: (agent: RootLoaderData["agents"][number]) => agent.start(),
         onMutate: (agent) => {
@@ -364,12 +383,6 @@ function TopTabStrip(props: {
             }));
         },
     });
-    const logoutMutation = useMutation({
-        mutationFn: () => api.logout(),
-        onSuccess: () => {
-            window.location.replace("/login");
-        },
-    });
 
     /** Opens status immediately, then starts the managed process without blocking navigation. */
     const openManagedAgent = (agent: RootLoaderData["agents"][number]) => {
@@ -381,7 +394,19 @@ function TopTabStrip(props: {
             aria-label="Primary navigation"
             className="flex min-h-0 min-w-0 items-end gap-1 border-b border-slate-800 bg-[#0f1218] px-3 pt-2"
         >
-            <BrandMark />
+            <Tooltip content="Open menu" className="shrink-0 md:hidden">
+                <button
+                    type="button"
+                    aria-label="Open menu"
+                    aria-haspopup="dialog"
+                    aria-expanded={props.isMenuOpen}
+                    onClick={props.onOpenMenu}
+                    className="mb-1 flex items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                >
+                    <Menu className="h-5 w-5" />
+                </button>
+            </Tooltip>
+            <BrandMark className="md:hidden" />
             <div
                 role="tablist"
                 aria-label="Agents"
@@ -468,41 +493,93 @@ function TopTabStrip(props: {
                     </Link>
                 </Tooltip>
             </div>
-            <button
-                ref={menuButtonRef}
-                type="button"
-                aria-label="Open menu"
-                aria-haspopup="dialog"
-                aria-expanded={isMenuOpen}
-                onClick={() => setIsMenuOpen(true)}
-                className="mb-1 flex shrink-0 items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
-            >
-                <Menu className="h-5 w-5" />
-            </button>
-            <Dialog
-                isOpen={isMenuOpen}
-                title="Menu"
-                closeAriaLabel="Close menu"
-                isBusy={logoutMutation.isPending}
-                anchorRef={menuButtonRef}
-                onClose={() => {
-                    if (!logoutMutation.isPending) {
-                        setIsMenuOpen(false);
-                    }
-                }}
-            >
-                <ApplicationMenu
-                    pathname={props.pathname}
-                    isLoggingOut={logoutMutation.isPending}
-                    onClose={() => setIsMenuOpen(false)}
-                    onLogout={() => logoutMutation.mutate()}
-                />
-            </Dialog>
         </header>
     );
 }
 
-/** Keeps the dialog navigation markup separate from the tab-strip state and agent controls. */
+/** Presents persistent desktop navigation and an overlay drawer on small screens. */
+function ApplicationNavigation(props: {
+    pathname: string;
+    isOpen: boolean;
+    isLoggingOut: boolean;
+    onClose: () => void;
+    onLogout: () => void;
+}) {
+    React.useEffect(() => {
+        if (!props.isOpen || props.isLoggingOut) {
+            return;
+        }
+
+        /** Lets keyboard users dismiss the mobile navigation drawer. */
+        const closeMenuOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                props.onClose();
+            }
+        };
+
+        document.addEventListener("keydown", closeMenuOnEscape);
+        return () => document.removeEventListener("keydown", closeMenuOnEscape);
+    }, [props.isLoggingOut, props.isOpen, props.onClose]);
+
+    const menu = (
+        <ApplicationMenu
+            pathname={props.pathname}
+            isLoggingOut={props.isLoggingOut}
+            onClose={props.onClose}
+            onLogout={props.onLogout}
+        />
+    );
+
+    return (
+        <>
+            <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-800 bg-[#0f1218] p-3 md:flex">
+                <BrandMark />
+                {menu}
+            </aside>
+            {props.isOpen ? (
+                <div
+                    className="fixed inset-0 z-50 bg-black/60 md:hidden"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="mobile-menu-title"
+                    onMouseDown={(event) => {
+                        if (
+                            event.target === event.currentTarget &&
+                            !props.isLoggingOut
+                        ) {
+                            props.onClose();
+                        }
+                    }}
+                >
+                    <aside className="flex h-full w-72 max-w-[85vw] flex-col border-r border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/50">
+                        <div className="flex items-center justify-between gap-4 px-2 pb-1">
+                            <h2
+                                id="mobile-menu-title"
+                                className="text-sm font-semibold text-slate-100"
+                            >
+                                Menu
+                            </h2>
+                            <Tooltip content="Close menu">
+                                <button
+                                    type="button"
+                                    aria-label="Close menu"
+                                    onClick={props.onClose}
+                                    disabled={props.isLoggingOut}
+                                    className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    <X className="h-4 w-4" />
+                                </button>
+                            </Tooltip>
+                        </div>
+                        {menu}
+                    </aside>
+                </div>
+            ) : null}
+        </>
+    );
+}
+
+/** Shares the application destinations between desktop and mobile navigation. */
 function ApplicationMenu(props: {
     pathname: string;
     isLoggingOut: boolean;
@@ -522,7 +599,10 @@ function ApplicationMenu(props: {
     ] as const;
 
     return (
-        <nav aria-label="Application" className="mt-3 flex flex-col gap-1">
+        <nav
+            aria-label="Application"
+            className="mt-3 flex min-h-0 flex-1 flex-col gap-1"
+        >
             {menuItems.map((item) => {
                 const isActive =
                     item.to === "/transfers"
@@ -556,7 +636,7 @@ function ApplicationMenu(props: {
                 type="button"
                 onClick={props.onLogout}
                 disabled={props.isLoggingOut}
-                className="flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+                className="mt-auto flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
             >
                 {props.isLoggingOut ? (
                     <LoaderCircle
@@ -575,12 +655,13 @@ function ApplicationMenu(props: {
     );
 }
 
-function BrandMark() {
+/** Links the product identity back to the server home. */
+function BrandMark(props: { className?: string }) {
     return (
         <Link
             to="/"
             tabIndex={-1}
-            className="mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white"
+            className={`mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white ${props.className ?? ""}`}
         >
             <img
                 src="/logo-dark.svg"
@@ -588,9 +669,7 @@ function BrandMark() {
                 className="h-5 w-5"
                 aria-hidden="true"
             />
-            <span className="hidden text-sm font-semibold tracking-tight sm:inline">
-                Redoor
-            </span>
+            <span className="text-sm font-semibold tracking-tight">Redoor</span>
         </Link>
     );
 }
