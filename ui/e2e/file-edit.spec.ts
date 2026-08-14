@@ -70,6 +70,57 @@ test.describe.serial("File Edit View", () => {
         ).toBeDisabled();
     });
 
+    test("should download editable file contents once", async ({ page }) => {
+        const filePath = path.join(ctx.testDirPath, "file1.txt");
+        const rawPath = `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/${encodeFilesystemPath(filePath)}`;
+        const rawGets: string[] = [];
+        page.on("request", (request) => {
+            if (request.method() !== "GET") {
+                return;
+            }
+            const url = new URL(request.url());
+            // The editor buffer uses the bare /raw GET; Download adds ?download=1.
+            if (url.pathname === rawPath && !url.searchParams.has("download")) {
+                rawGets.push(request.url());
+            }
+        });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toHaveValue("content1");
+
+        const downloadsAfterOpen = rawGets.length;
+        // Loader plus a StrictMode/preload duplicate may share one transfer or repeat it once.
+        expect(downloadsAfterOpen).toBeGreaterThan(0);
+        expect(downloadsAfterOpen).toBeLessThanOrEqual(2);
+
+        const fileView = page.getByLabel("File view");
+        const detailsLink = fileView.getByRole("link", {
+            name: "Details",
+            exact: true,
+        });
+        const viewLink = fileView.getByRole("link", {
+            name: "View",
+            exact: true,
+        });
+        // Intent preload re-runs the edit loader; a stale buffer would download again.
+        await detailsLink.hover();
+        await viewLink.hover();
+        await detailsLink.hover();
+        await viewLink.hover();
+
+        // Leaving and returning remounts the editor and re-runs fetchQuery on the same key.
+        await detailsLink.click();
+        await expect(detailsLink).toHaveAttribute("aria-current", "page");
+        await viewLink.click();
+        await expect(editor).toHaveValue("content1");
+
+        // Preload and remount must reuse the cached buffer instead of hitting /raw again.
+        expect(rawGets.length).toBe(downloadsAfterOpen);
+    });
+
     test("should restore unsaved edits", async ({ page }) => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}?view=edit`,

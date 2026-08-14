@@ -8,8 +8,12 @@ export const queryKeys = {
     transfers: () => [...queryKeys.all, "transfers"] as const,
     serverInfo: () => [...queryKeys.all, "server-info"] as const,
     userState: () => [...queryKeys.all, "user-state"] as const,
+    /**
+     * Editor bytes are a one-shot buffer, not agent inventory. Nesting under
+     * `agents()` would let RefreshListener prefix-match and mark the file stale.
+     */
     fileContent: (agentId: string, path: string) =>
-        [...queryKeys.all, "agents", agentId, "file-content", path] as const,
+        [...queryKeys.all, "file-content", agentId, path] as const,
     fileSearch: (
         agentId: string,
         path: string,
@@ -59,7 +63,11 @@ export function serverInfoQueryOptions(api: ApiClient) {
     });
 }
 
-/** Reads editable text once so navigation can finish with the editor data ready. */
+/**
+ * Reads editable text once so the loader and textarea share a cached buffer.
+ * Infinite staleTime keeps later fetchQuery/preload/focus hits off the wire;
+ * Save writes the cache directly instead of refetching remote bytes.
+ */
 export function fileContentQueryOptions(agent: Agent, path: string) {
     return queryOptions({
         queryKey: queryKeys.fileContent(agent.id, path),
@@ -67,6 +75,7 @@ export function fileContentQueryOptions(agent: Agent, path: string) {
             const response = await agent.download(path);
             return response.text();
         },
+        staleTime: Number.POSITIVE_INFINITY,
     });
 }
 
