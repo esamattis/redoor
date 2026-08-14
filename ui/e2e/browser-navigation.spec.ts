@@ -91,8 +91,10 @@ test.describe.serial("File Browser Navigation", () => {
 
         const modifiedCell = page.getByLabel("Modified alpha.txt");
         const modifiedTime = modifiedCell.locator("time");
-        // The visible cell provides an absolute local date and an ISO value for machines.
+        // The visible cell provides an absolute browser-local date without wrapping.
         await expect(modifiedTime).not.toHaveText("");
+        await expect(modifiedTime).toHaveCSS("white-space", "nowrap");
+        // The machine-readable timestamp remains independent of the browser locale.
         await expect(modifiedTime).toHaveAttribute(
             "datetime",
             new Date(modifiedAt * 1000).toISOString(),

@@ -877,6 +877,7 @@ function FileEntry(props: {
                     content={formatModifiedAge(entry.modified_at, Date.now())}
                 >
                     <time
+                        className="whitespace-nowrap"
                         dateTime={new Date(
                             entry.modified_at * 1000,
                         ).toISOString()}
