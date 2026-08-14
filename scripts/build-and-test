@@ -47,18 +47,7 @@ silent_unless_error cargo build
 if [ "$(uname -s)" = "Linux" ] && systemctl --user cat redoor-dev &>/dev/null; then
     # If the execution goes here and it fails. Do not skip this. Repair the service.
     echo "Restarting the redoor-dev.service"
-    mkdir -p "$HOME/.local/bin"
-    # A running executable cannot be truncated on Linux, but replacing its directory
-    # entry atomically lets the old process finish using its inode before restart.
-    temp_binary=$(mktemp "$HOME/.local/bin/redoor.XXXXXX")
-    trap 'rm -f "$temp_binary"' EXIT
-    cp target/debug/redoor "$temp_binary"
-    chmod 755 "$temp_binary"
-    silent_unless_error "$temp_binary" --version
-    mv "$temp_binary" "$HOME/.local/bin/redoor"
-    trap - EXIT
-    silent_unless_error systemctl --user restart redoor-dev
-    silent_unless_error systemctl --user is-active --quiet redoor-dev
+    silent_unless_error ./scripts/install-and-restart-redoor-dev
 fi
 silent_unless_error pn types
 silent_unless_error pn lint

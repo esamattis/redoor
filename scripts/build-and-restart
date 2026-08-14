@@ -1,0 +1,6 @@
+#!/bin/bash
+set -eu
+
+vite build ./ui
+cargo build --bin redoor
+./scripts/install-and-restart-redoor-dev

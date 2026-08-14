@@ -1,0 +1,16 @@
+#!/bin/bash
+set -eu
+
+mkdir -p "$HOME/.local/bin"
+
+# Replace the binary atomically because Linux cannot truncate a running executable.
+temp_binary=$(mktemp "$HOME/.local/bin/redoor.XXXXXX")
+trap 'rm -f "$temp_binary"' EXIT
+cp target/debug/redoor "$temp_binary"
+chmod 755 "$temp_binary"
+"$temp_binary" --version
+mv "$temp_binary" "$HOME/.local/bin/redoor"
+trap - EXIT
+
+systemctl --user restart redoor-dev
+systemctl --user is-active --quiet redoor-dev
