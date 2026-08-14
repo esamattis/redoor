@@ -391,7 +391,7 @@ export function PersistentPathActions(props: {
                 description={
                     <>
                         This permanently deletes
-                        <span className="mx-1 break-all font-medium text-slate-100">
+                        <span className="mx-1 font-medium text-slate-100">
                             {props.currentName}
                         </span>
                         from the agent filesystem.
@@ -408,7 +408,7 @@ export function PersistentPathActions(props: {
                 onClose={closeDeleteDialog}
                 onConfirm={handleDelete}
             >
-                <p className="break-all rounded bg-[#0b0d12] px-3 py-2 font-mono text-sm text-slate-300">
+                <p className="overflow-x-auto whitespace-nowrap rounded-md border border-slate-800 bg-[#0b0d12] px-3 py-2.5 font-mono text-sm text-slate-300">
                     {props.path}
                 </p>
             </ConfirmationDialog>
