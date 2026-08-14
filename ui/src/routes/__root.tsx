@@ -406,7 +406,6 @@ function TopTabStrip(props: {
                     <Menu className="h-5 w-5" />
                 </button>
             </Tooltip>
-            <BrandMark className="md:hidden" />
             <div
                 role="tablist"
                 aria-label="Agents"
@@ -531,7 +530,7 @@ function ApplicationNavigation(props: {
                     className="fixed inset-0 z-50 bg-black/60 md:hidden"
                     role="dialog"
                     aria-modal="true"
-                    aria-labelledby="mobile-menu-title"
+                    aria-label="Application menu"
                     onMouseDown={(event) => {
                         if (
                             event.target === event.currentTarget &&
@@ -542,13 +541,8 @@ function ApplicationNavigation(props: {
                     }}
                 >
                     <aside className="flex h-full w-72 max-w-[85vw] flex-col border-r border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/50">
-                        <div className="flex items-center justify-between gap-4 px-2 pb-1">
-                            <h2
-                                id="mobile-menu-title"
-                                className="text-sm font-semibold text-slate-100"
-                            >
-                                Menu
-                            </h2>
+                        <div className="flex items-start justify-between gap-4">
+                            <BrandMark />
                             <Tooltip content="Close menu">
                                 <button
                                     type="button"
@@ -656,10 +650,10 @@ function BrandMark(props: { className?: string }) {
             <img
                 src="/logo-dark-transparent.svg"
                 alt=""
-                className="h-6 w-6 md:h-12 md:w-12"
+                className="h-12 w-12"
                 aria-hidden="true"
             />
-            <span className="hidden text-2xl font-semibold tracking-tight md:inline">
+            <span className="text-2xl font-semibold tracking-tight">
                 Redoor
             </span>
         </Link>
