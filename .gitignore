@@ -7,3 +7,4 @@ test-results
 dev_agents
 *.log
 .opencode/package-lock.json
+.DS_Store
