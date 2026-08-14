@@ -5,7 +5,7 @@ use axum::{
 };
 use redoor::{
     actors,
-    commands::{AgentDetailsResponse, Command, CommandResult, ErrorResponse},
+    commands::{AgentDetailsResponse, Command, CommandResult, ErrorResponse, MountPoint},
     types::AgentId,
 };
 
@@ -29,7 +29,11 @@ pub(crate) async fn get_agent_details(
         })
         .await
     {
-        Ok(CommandResult::GetAgentDetails(details)) => Ok(*details),
+        Ok(CommandResult::GetAgentDetails(mut details)) => {
+            // Older connected agents may predate filtering, so enforce visibility server-side too.
+            details.mount_points.retain(MountPoint::is_visible);
+            Ok(*details)
+        }
         Ok(CommandResult::Error { kind, message }) => {
             let status = command_error_status(&kind);
             Err((status, Json(ErrorResponse { error: message })).into_response())

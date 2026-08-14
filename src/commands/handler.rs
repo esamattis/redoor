@@ -1,6 +1,6 @@
 use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, CatResult, Command, CommandErrorKind,
-    CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult,
+    CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult, MountPoint,
     UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity, current_exe_path,
     external_ip, file_search, metadata,
 };
@@ -356,6 +356,32 @@ impl CommandHandler {
         let arch = std::env::consts::ARCH.to_string();
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
         let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+        // Mount discovery uses platform blocking APIs, so keep it off the command runtime thread.
+        let mut mount_points = match tokio::task::spawn_blocking(mountpoints::mountinfos).await {
+            Ok(Ok(mount_infos)) => mount_infos
+                .into_iter()
+                .map(|mount_info| MountPoint {
+                    path: mount_info.path.to_string_lossy().into_owned(),
+                    available_bytes: mount_info.avail,
+                    total_bytes: mount_info.size,
+                    mount_type: mount_info.format,
+                })
+                .filter(MountPoint::is_visible)
+                .collect::<Vec<_>>(),
+            Ok(Err(error)) => {
+                return CommandResult::error(
+                    CommandErrorKind::Internal,
+                    format!("Failed to list mount points: {error:?}"),
+                );
+            }
+            Err(error) => {
+                return CommandResult::error(
+                    CommandErrorKind::Internal,
+                    format!("Mount point task failed: {error}"),
+                );
+            }
+        };
+        mount_points.sort_by(|left, right| left.path.cmp(&right.path));
 
         CommandResult::GetAgentDetails(Box::new(AgentDetailsResponse {
             id: AgentId::from(""),
@@ -376,6 +402,7 @@ impl CommandHandler {
             connected_at: UnixTimestampSeconds::new(0),
             // Agent process reports its own baked identity; router may also rewrite from registration.
             binary: current_binary_identity(),
+            mount_points,
         }))
     }
 }

@@ -41,7 +41,25 @@ import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { UpgradeButton } from "#ui/components/upgrade-button";
 import { agentsQueryOptions } from "#ui/queries";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
+import { formatSize } from "#ui/utils/path";
 import { Route as RootRoute } from "./__root";
+
+const HIDDEN_MOUNT_TYPES = new Set([
+    "devpts",
+    "devtmpfs",
+    "proc",
+    "fuse.lxcfs",
+    "sysfs",
+    "efivarfs",
+    "cgroup2",
+    "fusectl",
+    "pstore",
+    "debugfs",
+    "securityfs",
+    "tmpfs",
+    "mqueue",
+    "binfmt_misc",
+]);
 
 export const Route = createFileRoute("/agents/$agentId/")({
     loader: async ({ params, parentMatchPromise }) => {
@@ -227,6 +245,7 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     const locations = useAtomValue(agentTabLocationsAtom);
     const now = useNow();
     const startState = startStates[props.agent.id];
+    const configPath = props.details.config_path || "No config file loaded";
 
     React.useEffect(() => {
         if (!startState?.autoRedirect || props.agent.cwd === null) return;
@@ -268,10 +287,7 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                         />
                         <DetailPathItem
                             label="Config file"
-                            value={
-                                props.details.config_path ||
-                                "No config file loaded"
-                            }
+                            value={configPath}
                             copyAriaLabel="Copy config file path"
                             browserUrl={
                                 props.details.config_path
@@ -357,6 +373,10 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                             />
                         </div>
                     </DetailCard>
+                    <MountPoints
+                        agent={props.agent}
+                        mountPoints={props.details.mount_points}
+                    />
                     <div className="md:col-span-2">
                         <UpgradeButton
                             target={`agent ${props.details.name}`}
@@ -416,6 +436,86 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
             <Outlet />
         </div>
     );
+}
+
+/** Presents every mounted filesystem with capacity and a direct browser destination. */
+function MountPoints(props: {
+    agent: Agent;
+    mountPoints: AgentDetailsResponse["mount_points"];
+}) {
+    return (
+        <section
+            aria-labelledby="mount-points-heading"
+            className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] md:col-span-2"
+        >
+            <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-3 font-semibold text-slate-300">
+                <HardDrive className="h-5 w-5" />
+                <h2
+                    id="mount-points-heading"
+                    className="text-sm uppercase tracking-wide"
+                >
+                    Mount Points
+                </h2>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="w-full min-w-[36rem] text-left text-sm">
+                    <thead className="bg-slate-900/60 text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                            <th scope="col" className="px-4 py-2 font-medium">
+                                Path
+                            </th>
+                            <th scope="col" className="px-4 py-2 font-medium">
+                                Available / Total
+                            </th>
+                            <th scope="col" className="px-4 py-2 font-medium">
+                                Type
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                        {props.mountPoints
+                            .filter(
+                                (mountPoint) =>
+                                    mountPoint.mount_type === null ||
+                                    !HIDDEN_MOUNT_TYPES.has(
+                                        mountPoint.mount_type,
+                                    ),
+                            )
+                            .map((mountPoint) => (
+                                <tr key={mountPoint.path}>
+                                    <td className="max-w-md px-4 py-2.5">
+                                        <Link
+                                            to={props.agent.getBrowserUrl(
+                                                mountPoint.path,
+                                            )}
+                                            aria-label={`Browse mount point ${mountPoint.path}`}
+                                            className="block truncate font-mono text-xs text-blue-400 hover:text-blue-300 hover:underline"
+                                        >
+                                            {mountPoint.path}
+                                        </Link>
+                                    </td>
+                                    <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-200">
+                                        {formatCapacity(
+                                            mountPoint.available_bytes,
+                                        )}{" "}
+                                        /{" "}
+                                        {formatCapacity(mountPoint.total_bytes)}
+                                    </td>
+                                    <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-300">
+                                        {mountPoint.mount_type ?? "Unavailable"}
+                                    </td>
+                                </tr>
+                            ))}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    );
+}
+
+/** Keeps unavailable platform capacity distinct from a real zero-byte value. */
+function formatCapacity(bytes: number | null): string {
+    return bytes === null ? "Unavailable" : formatSize(bytes);
 }
 
 /** Keeps restart controls isolated from the static detail cards and their data. */

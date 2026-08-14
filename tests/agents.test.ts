@@ -286,6 +286,49 @@ describe("Agents API", () => {
             build_date: serverInfo.build_date,
         });
         expect(testAgent.binary).toEqual(result.binary);
+        // Mount inventory must include the root needed for direct filesystem navigation.
+        expect(result.mount_points.some((mount) => mount.path === "/")).toBe(
+            true,
+        );
+        // Every reported capacity pair must remain physically valid after transport.
+        expect(
+            result.mount_points.every(
+                (mount) =>
+                    mount.available_bytes === null ||
+                    mount.total_bytes === null ||
+                    mount.available_bytes <= mount.total_bytes,
+            ),
+        ).toBe(true);
+        // Filesystem formats are either unavailable or useful non-empty labels.
+        expect(
+            result.mount_points.every(
+                (mount) =>
+                    mount.mount_type === null || mount.mount_type.length > 0,
+            ),
+        ).toBe(true);
+        // Kernel and container pseudo-filesystems are noise on the operator overview.
+        expect(
+            result.mount_points.every(
+                (mount) =>
+                    mount.mount_type === null ||
+                    ![
+                        "devpts",
+                        "devtmpfs",
+                        "proc",
+                        "fuse.lxcfs",
+                        "sysfs",
+                        "efivarfs",
+                        "cgroup2",
+                        "fusectl",
+                        "pstore",
+                        "debugfs",
+                        "securityfs",
+                        "tmpfs",
+                        "mqueue",
+                        "binfmt_misc",
+                    ].includes(mount.mount_type),
+            ),
+        ).toBe(true);
     });
 
     it("should list directory contents on connected agent", async () => {

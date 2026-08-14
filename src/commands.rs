@@ -697,6 +697,50 @@ pub struct AgentDetailsResponse {
     pub connected_at: UnixTimestampSeconds,
     /// Compile-time identity of the agent binary currently serving this connection.
     pub binary: BinaryIdentity,
+    /// Current filesystems are optional on the wire so newer servers can still inspect older agents.
+    #[serde(default)]
+    pub mount_points: Vec<MountPoint>,
+}
+
+/// Describes one mounted filesystem for capacity checks and direct browser navigation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MountPoint {
+    /// Absolute path where the filesystem is mounted.
+    pub path: String,
+    /// Bytes available to the user running the agent, when reported by the platform.
+    #[ts(type = "number | null")]
+    pub available_bytes: Option<u64>,
+    /// Total filesystem capacity in bytes, when reported by the platform.
+    #[ts(type = "number | null")]
+    pub total_bytes: Option<u64>,
+    /// Filesystem format such as ext4, tmpfs, APFS, or NTFS.
+    pub mount_type: Option<String>,
+}
+
+impl MountPoint {
+    /// Hides pseudo-filesystems that add noise without representing operator-managed storage.
+    pub fn is_visible(&self) -> bool {
+        !matches!(
+            self.mount_type.as_deref(),
+            Some(
+                "devpts"
+                    | "devtmpfs"
+                    | "proc"
+                    | "fuse.lxcfs"
+                    | "sysfs"
+                    | "efivarfs"
+                    | "cgroup2"
+                    | "fusectl"
+                    | "pstore"
+                    | "debugfs"
+                    | "securityfs"
+                    | "tmpfs"
+                    | "mqueue"
+                    | "binfmt_misc"
+            )
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1284,10 +1328,69 @@ mod tests {
                 assert!(!details.arch.is_empty(), "ARCH should not be empty");
                 assert!(!details.hostname.is_empty(), "Hostname should not be empty");
                 assert!(!details.username.is_empty(), "Username should not be empty");
+                assert!(
+                    details.mount_points.iter().any(|mount| mount.path == "/"),
+                    "the filesystem root should be present in mount details"
+                );
+                assert!(
+                    details.mount_points.iter().all(|mount| {
+                        mount.available_bytes.zip(mount.total_bytes).is_none_or(
+                            |(available_bytes, total_bytes)| available_bytes <= total_bytes,
+                        )
+                    }),
+                    "available mount capacity should not exceed total capacity"
+                );
+                assert!(
+                    details.mount_points.iter().all(MountPoint::is_visible),
+                    "virtual device, process, and LXC filesystems should stay hidden"
+                );
                 // Binary identity must match the same bake used by the server home page.
                 assert_eq!(details.binary, current_binary_identity());
             }
             _ => panic!("Expected GetAgentDetails result"),
         }
+    }
+
+    /// Keeps the shared agent, server, and UI exclusion contract exact.
+    #[test]
+    fn test_mount_point_visibility() {
+        for mount_type in [
+            "devpts",
+            "devtmpfs",
+            "proc",
+            "fuse.lxcfs",
+            "sysfs",
+            "efivarfs",
+            "cgroup2",
+            "fusectl",
+            "pstore",
+            "debugfs",
+            "securityfs",
+            "tmpfs",
+            "mqueue",
+            "binfmt_misc",
+        ] {
+            let mount = MountPoint {
+                path: "/ignored".to_string(),
+                available_bytes: Some(0),
+                total_bytes: Some(0),
+                mount_type: Some(mount_type.to_string()),
+            };
+            assert!(
+                !mount.is_visible(),
+                "{mount_type} should be excluded from mount inventory"
+            );
+        }
+
+        let storage_mount = MountPoint {
+            path: "/".to_string(),
+            available_bytes: Some(1),
+            total_bytes: Some(2),
+            mount_type: Some("ext4".to_string()),
+        };
+        assert!(
+            storage_mount.is_visible(),
+            "storage filesystems should remain visible"
+        );
     }
 }
