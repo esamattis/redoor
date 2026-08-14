@@ -5,7 +5,6 @@ import {
     HardDrive,
     LoaderCircle,
     MoreHorizontal,
-    Plus,
     RotateCcw,
     SquareTerminal,
     X,
@@ -23,6 +22,7 @@ import {
     type TerminalServerMessage,
 } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
+import { AddButton } from "#ui/components/add-button";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
 import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
@@ -414,8 +414,8 @@ function TerminalTabActions(props: {
                 })}
             </div>
             {props.activeTarget ? (
-                <Tooltip
-                    content={`New terminal in ${props.activeTarget.agent.name} (t)`}
+                <AddButton
+                    tooltip={`New terminal in ${props.activeTarget.agent.name} (t)`}
                 >
                     <button
                         type="button"
@@ -426,11 +426,8 @@ function TerminalTabActions(props: {
                                 props.onCreate(activeTarget);
                             }
                         }}
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <Plus className="h-4 w-4" />
-                    </button>
-                </Tooltip>
+                    />
+                </AddButton>
             ) : null}
             <Tooltip content="New terminal in another agent">
                 <button

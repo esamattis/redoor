@@ -23,7 +23,6 @@ import {
     Menu,
     ScrollText,
     Users,
-    Plus,
     Pencil,
 } from "lucide-react";
 import {
@@ -33,6 +32,7 @@ import {
     type TransferProgressEntry,
     type ServerInfoResponse,
 } from "#ui/api-client";
+import { AddButton } from "#ui/components/add-button";
 import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 
 import {
@@ -401,7 +401,7 @@ function TopTabStrip(props: {
                     aria-haspopup="dialog"
                     aria-expanded={props.isMenuOpen}
                     onClick={props.onOpenMenu}
-                    className="mb-1 flex items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                    className="flex items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
                 >
                     <Menu className="h-5 w-5" />
                 </button>
@@ -479,19 +479,9 @@ function TopTabStrip(props: {
                         );
                     })
                 )}
-                <Tooltip content="Add managed agent">
-                    <Link
-                        to="/agents/new"
-                        aria-label="Add managed agent"
-                        className={`mb-1 flex shrink-0 items-center justify-center rounded-md border p-2 transition-colors ${
-                            props.pathname === "/agents/new"
-                                ? "border-blue-500/60 bg-blue-500/15 text-blue-300"
-                                : "border-slate-700 text-slate-400 hover:border-slate-600 hover:bg-white/5 hover:text-slate-200"
-                        }`}
-                    >
-                        <Plus className="h-4 w-4" aria-hidden="true" />
-                    </Link>
-                </Tooltip>
+                <AddButton tooltip="Add managed agent">
+                    <Link to="/agents/new" aria-label="Add managed agent" />
+                </AddButton>
             </div>
         </header>
     );
