@@ -1,5 +1,5 @@
 import * as React from "react";
-import { LoaderCircle, Server, TerminalSquare } from "lucide-react";
+import { Info, LoaderCircle, Server, TerminalSquare } from "lucide-react";
 
 import type {
     CreateSshAgentRequest,
@@ -20,6 +20,9 @@ type FormState = Record<
     string
 >;
 
+/** Auth is inferred from password presence because GET never returns the secret itself. */
+type SshAuthMode = "key" | "password";
+
 /** Converts persisted nullable settings into controlled inputs shared by add and edit views. */
 function initialForm(
     configuration?: ManagedSshAgentConfigurationResponse,
@@ -32,8 +35,19 @@ function initialForm(
         remoteBin: configuration?.remote_bin ?? "",
         home: configuration?.home ?? "",
         log: configuration?.log ?? "",
-        password: configuration?.password ?? "",
+        password: "",
     };
+}
+
+/** Picks the radio that matches durable state so edit does not imply a password the server never stored. */
+function initialAuthMode(
+    mode: "add" | "edit",
+    configuration?: ManagedSshAgentConfigurationResponse,
+): SshAuthMode {
+    if (mode === "edit" && configuration?.has_password === true) {
+        return "password";
+    }
+    return "key";
 }
 
 /** Collects and validates the SSH-backed settings used by both managed-agent workflows. */
@@ -55,13 +69,27 @@ export function ManagedAgentForm(props: {
     const [form, setForm] = React.useState<FormState>(() =>
         initialForm(props.configuration),
     );
+    const [authMode, setAuthMode] = React.useState<SshAuthMode>(() =>
+        initialAuthMode(props.mode, props.configuration),
+    );
     const [validationError, setValidationError] = React.useState<string | null>(
         null,
     );
+    const hasStoredPassword = props.configuration?.has_password === true;
 
     /** Updates one controlled field and clears stale submission feedback. */
     const update = (field: keyof FormState, value: string) => {
         setForm((current) => ({ ...current, [field]: value }));
+        setValidationError(null);
+        props.onChange();
+    };
+
+    /** Switching to key mode drops the typed secret so a later password-mode save cannot reuse it. */
+    const updateAuthMode = (mode: SshAuthMode) => {
+        setAuthMode(mode);
+        if (mode === "key") {
+            setForm((current) => ({ ...current, password: "" }));
+        }
         setValidationError(null);
         props.onChange();
     };
@@ -82,6 +110,10 @@ export function ManagedAgentForm(props: {
             setValidationError("SSH port must be between 1 and 65535");
             return;
         }
+        if (authMode === "password" && !form.password && !hasStoredPassword) {
+            setValidationError("SSH password is required");
+            return;
+        }
         const optional = (value: string) => value.trim() || null;
         props.onSubmit({
             target,
@@ -91,7 +123,8 @@ export function ManagedAgentForm(props: {
             remote_bin: optional(form.remoteBin),
             home: optional(form.home),
             log: optional(form.log),
-            password: form.password || null,
+            password: authMode === "password" ? form.password || null : null,
+            clear_password: authMode === "key",
         });
     };
 
@@ -123,8 +156,11 @@ export function ManagedAgentForm(props: {
                     <ConnectionFields
                         mode={props.mode}
                         form={form}
+                        authMode={authMode}
+                        hasStoredPassword={hasStoredPassword}
                         disabled={isDisabled}
                         onChange={update}
+                        onAuthModeChange={updateAuthMode}
                     />
                     <AdvancedFields
                         form={form}
@@ -195,9 +231,15 @@ export function ManagedAgentForm(props: {
 function ConnectionFields(props: {
     mode: "add" | "edit";
     form: FormState;
+    authMode: SshAuthMode;
+    hasStoredPassword: boolean;
     disabled: boolean;
     onChange: (field: keyof FormState, value: string) => void;
+    onAuthModeChange: (mode: SshAuthMode) => void;
 }) {
+    const passwordMode = props.authMode === "password";
+    const keepExistingPassword =
+        props.mode === "edit" && props.hasStoredPassword && passwordMode;
     return (
         <section>
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-slate-300">
@@ -243,27 +285,113 @@ function ConnectionFields(props: {
                     disabled={props.disabled}
                     onChange={(value) => props.onChange("sshPort", value)}
                 />
+                <AuthModeFields
+                    authMode={props.authMode}
+                    disabled={props.disabled}
+                    onChange={props.onAuthModeChange}
+                />
                 <TextField
                     label="SSH password"
                     value={props.form.password}
                     placeholder={
-                        props.mode === "edit"
+                        keepExistingPassword
                             ? "Leave blank to keep the current password"
-                            : "Leave empty for key auth"
+                            : passwordMode
+                              ? "Enter SSH password"
+                              : "Disabled when using a preconfigured SSH key"
                     }
                     description={
-                        props.mode === "edit"
+                        keepExistingPassword
                             ? "Stored as plaintext in config.toml. Leave blank to keep the current password."
-                            : "Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication."
+                            : passwordMode
+                              ? "Stored as plaintext in config.toml."
+                              : "Password input is disabled because key mode uses a preconfigured SSH key or ssh-agent."
                     }
                     type="password"
                     autoComplete="current-password"
                     className="sm:col-span-2"
-                    disabled={props.disabled}
+                    required={passwordMode && !props.hasStoredPassword}
+                    disabled={props.disabled || !passwordMode}
                     onChange={(value) => props.onChange("password", value)}
                 />
             </div>
         </section>
+    );
+}
+
+/** Keeps the two auth radios in one fieldset so Playwright can select them by accessible name. */
+function AuthModeFields(props: {
+    authMode: SshAuthMode;
+    disabled: boolean;
+    onChange: (mode: SshAuthMode) => void;
+}) {
+    return (
+        <fieldset className="sm:col-span-2 grid gap-3">
+            <legend className="text-sm font-medium text-slate-300">
+                SSH authentication
+            </legend>
+            <p className="text-xs text-slate-500">
+                Password authentication stores the secret as plaintext in
+                config.toml. Key mode uses a preconfigured SSH key or ssh-agent.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+                <AuthModeOption
+                    value="key"
+                    label="Use preconfigured ssh key"
+                    description="Authenticate with a preconfigured SSH key or ssh-agent. Saving removes any stored password."
+                    checked={props.authMode === "key"}
+                    disabled={props.disabled}
+                    onChange={props.onChange}
+                />
+                <AuthModeOption
+                    value="password"
+                    label="Use ssh password"
+                    description="Enable the password field and store the SSH password as plaintext in config.toml."
+                    checked={props.authMode === "password"}
+                    disabled={props.disabled}
+                    onChange={props.onChange}
+                />
+            </div>
+        </fieldset>
+    );
+}
+
+/** Renders one native radio plus a tooltip without putting extra text into the accessible name. */
+function AuthModeOption(props: {
+    value: SshAuthMode;
+    label: string;
+    description: string;
+    checked: boolean;
+    disabled: boolean;
+    onChange: (mode: SshAuthMode) => void;
+}) {
+    return (
+        <div
+            className={`flex items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
+                props.checked
+                    ? "border-blue-500/60 bg-blue-500/10 text-blue-100"
+                    : "border-slate-700 bg-slate-950/50 text-slate-300"
+            }`}
+        >
+            <label className="flex min-w-0 cursor-pointer items-center gap-3 text-sm font-medium">
+                <input
+                    type="radio"
+                    name="ssh-auth-mode"
+                    value={props.value}
+                    checked={props.checked}
+                    disabled={props.disabled}
+                    onChange={() => props.onChange(props.value)}
+                    className="h-4 w-4 accent-blue-500"
+                />
+                {props.label}
+            </label>
+            <Tooltip content={props.description}>
+                <Info
+                    aria-label={`${props.label} help`}
+                    className="h-4 w-4 shrink-0 text-slate-400"
+                />
+            </Tooltip>
+        </div>
     );
 }
 

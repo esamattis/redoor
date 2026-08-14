@@ -35,4 +35,9 @@ log: string | null,
 /**
  * New password to persist; omit or send empty on update to keep the existing secret.
  */
-password: string | null, };
+password: string | null, 
+/**
+ * When true, drop any stored password so key or ssh-agent auth is used.
+ * Separate from an omitted password because that still means "keep" on update.
+ */
+clear_password: boolean | null, };

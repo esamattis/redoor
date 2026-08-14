@@ -508,6 +508,9 @@ pub struct CreateSshAgentRequest {
     pub log: Option<String>,
     /// New password to persist; omit or send empty on update to keep the existing secret.
     pub password: Option<String>,
+    /// When true, drop any stored password so key or ssh-agent auth is used.
+    /// Separate from an omitted password because that still means "keep" on update.
+    pub clear_password: Option<bool>,
 }
 
 /// Returns the newly visible dormant inventory record after persistence succeeds.
@@ -537,6 +540,8 @@ pub struct ManagedSshAgentConfigurationResponse {
     pub log: Option<String>,
     /// Always null on GET so the stored SSH password is never sent to the browser.
     pub password: Option<String>,
+    /// Reports whether a password is stored so the edit form can choose the matching auth radio.
+    pub has_password: bool,
 }
 
 /// Returns the replacement dormant inventory record after an SSH configuration edit.

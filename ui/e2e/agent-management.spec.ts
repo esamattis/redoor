@@ -3,6 +3,7 @@ import path from "node:path";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
+import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
 import { WEB_BASE_URL } from "./helpers";
 
 const VALID_AGENT = "lazy_managed";
@@ -10,6 +11,8 @@ const FAILING_AGENT = "failing_managed";
 const CREATED_SSH_AGENT = `playwright-ssh-test-${process.pid}`;
 const CREATED_SSH_PASSWORD_AGENT = `playwright-ssh-password-${process.pid}`;
 const CREATED_SSH_MISSING_PASSWORD_AGENT = `playwright-ssh-missing-password-${process.pid}`;
+const CREATED_SSH_MODE_SWITCH_AGENT = `playwright-ssh-mode-switch-${process.pid}`;
+const CREATED_SSH_PASSWORD_CHANGE_AGENT = `playwright-ssh-password-change-${process.pid}`;
 const EDITED_AGENT = `playwright-edit-${process.pid}`;
 const RUNNING_EDIT_AGENT = `playwright-running-edit-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
@@ -35,6 +38,8 @@ test.describe.serial("Agent management", () => {
             CREATED_SSH_AGENT,
             CREATED_SSH_PASSWORD_AGENT,
             CREATED_SSH_MISSING_PASSWORD_AGENT,
+            CREATED_SSH_MODE_SWITCH_AGENT,
+            CREATED_SSH_PASSWORD_CHANGE_AGENT,
             EDITED_AGENT,
             `${EDITED_AGENT}-original`,
             RUNNING_EDIT_AGENT,
@@ -65,9 +70,16 @@ test.describe.serial("Agent management", () => {
         await expect(page.getByText("Required", { exact: true })).toBeVisible();
         await expect(
             page.getByText(
-                "Stored as plaintext in config.toml. Leave empty to use preconfigured SSH key or ssh-agent authentication.",
+                "Password authentication stores the secret as plaintext in config.toml. Key mode uses a preconfigured SSH key or ssh-agent.",
             ),
         ).toBeVisible();
+        await expect(
+            page.getByRole("radio", { name: "Use preconfigured ssh key" }),
+        ).toBeChecked();
+        // Add defaults to key mode so a blank password cannot be saved as an empty secret.
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeDisabled();
     });
 
     test("edits and deletes a managed SSH entry from its tab", async ({
@@ -149,6 +161,13 @@ test.describe.serial("Agent management", () => {
         await page.getByLabel("SSH target").fill("redoor-ssh-test");
         await page.getByLabel("SSH username").fill("redoor");
         await page.getByLabel("Agent name").fill(CREATED_SSH_AGENT);
+        await page
+            .getByRole("radio", { name: "Use preconfigured ssh key" })
+            .check();
+        // Key mode must disable the password field so create cannot persist a leftover secret.
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeDisabled();
         await page.getByRole("button", { name: "Add managed agent" }).click();
 
         // Submission dynamically adds and opens the managed tab without a server restart.
@@ -250,7 +269,12 @@ test.describe.serial("Agent management", () => {
         await page.getByLabel("SSH target").fill("redoor-ssh-test");
         await page.getByLabel("SSH username").fill("redoor-password");
         await page.getByLabel("Agent name").fill(CREATED_SSH_PASSWORD_AGENT);
-        await page.getByLabel("SSH password").fill(password);
+        await page.getByRole("radio", { name: "Use ssh password" }).check();
+        // Password mode must enable the field before a secret can be typed.
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeEnabled();
+        await page.getByLabel("SSH password", { exact: true }).fill(password);
         await page.getByRole("button", { name: "Add managed agent" }).click();
 
         // Password auth must prepare and connect without a TTY or ssh-agent key.
@@ -265,6 +289,146 @@ test.describe.serial("Agent management", () => {
         );
         expect(connected.managed).toBe(true);
         expect(connected.connection_id).not.toBeNull();
+    });
+
+    test("switches an existing agent from password auth to key auth", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_SSH_TEST !== "1" ||
+                !process.env.REDOOR_SSH_TEST_PASSWORD,
+            "redoor-ssh-test password fixture is not enabled",
+        );
+        const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+        if (password === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.getByRole("link", { name: "Add managed agent" }).click();
+        await page.getByLabel("SSH target").fill("redoor-ssh-test");
+        await page.getByLabel("SSH username").fill("redoor-password");
+        await page.getByLabel("Agent name").fill(CREATED_SSH_MODE_SWITCH_AGENT);
+        await page.getByRole("radio", { name: "Use ssh password" }).check();
+        await page.getByLabel("SSH password", { exact: true }).fill(password);
+        await page.getByRole("button", { name: "Add managed agent" }).click();
+        await expect(
+            page.getByRole("tab", {
+                name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+
+        await page
+            .getByRole("link", {
+                name: `Edit ${CREATED_SSH_MODE_SWITCH_AGENT}`,
+            })
+            .click();
+        await expect(
+            page.getByRole("radio", { name: "Use ssh password" }),
+        ).toBeChecked();
+        await page
+            .getByRole("radio", { name: "Use preconfigured ssh key" })
+            .check();
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeDisabled();
+        await page.getByLabel("SSH username").fill("redoor");
+        await page.getByRole("button", { name: "Stop and Save" }).click();
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${CREATED_SSH_MODE_SWITCH_AGENT}/edit$`),
+        );
+
+        const configuration = await page.request.get(
+            `${WEB_BASE_URL}/api/v1/agents/${CREATED_SSH_MODE_SWITCH_AGENT}/configuration`,
+        );
+        expect(configuration.ok()).toBe(true);
+        const body: ManagedSshAgentConfigurationResponse =
+            await configuration.json();
+        // Switching to key mode must drop the stored secret without echoing it.
+        expect(body.has_password).toBe(false);
+        expect(body.password).toBeNull();
+
+        await page
+            .getByRole("tab", {
+                name: `${CREATED_SSH_MODE_SWITCH_AGENT}, stopped`,
+            })
+            .click();
+        // Live auth must now succeed as the key user after the password is removed.
+        await expect(
+            page.getByRole("tab", {
+                name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        await page
+            .getByRole("link", {
+                name: `Edit ${CREATED_SSH_MODE_SWITCH_AGENT}`,
+            })
+            .click();
+        await expect(
+            page.getByRole("radio", { name: "Use preconfigured ssh key" }),
+        ).toBeChecked();
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeDisabled();
+    });
+
+    test("replaces a wrong SSH password on an existing agent", async ({
+        page,
+    }) => {
+        test.skip(
+            process.env.REDOOR_SSH_TEST !== "1" ||
+                !process.env.REDOOR_SSH_TEST_PASSWORD,
+            "redoor-ssh-test password fixture is not enabled",
+        );
+        const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+        if (password === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "redoor-ssh-test",
+                    username: "redoor-password",
+                    ssh_port: null,
+                    name: CREATED_SSH_PASSWORD_CHANGE_AGENT,
+                    remote_bin: null,
+                    home: null,
+                    log: null,
+                    password: `wrong-${process.pid}-password`,
+                    clear_password: false,
+                },
+            },
+        );
+        expect(createResponse.ok()).toBe(true);
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page
+            .getByRole("link", {
+                name: `Edit ${CREATED_SSH_PASSWORD_CHANGE_AGENT}`,
+            })
+            .click();
+        await expect(
+            page.getByRole("radio", { name: "Use ssh password" }),
+        ).toBeChecked();
+        await expect(
+            page.getByLabel("SSH password", { exact: true }),
+        ).toBeEnabled();
+        await page.getByLabel("SSH password", { exact: true }).fill(password);
+        await page.getByRole("button", { name: "Save managed agent" }).click();
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${CREATED_SSH_PASSWORD_CHANGE_AGENT}/edit$`),
+        );
+
+        await page
+            .getByRole("tab", {
+                name: `${CREATED_SSH_PASSWORD_CHANGE_AGENT}, stopped`,
+            })
+            .click();
+        // The corrected secret must authenticate as redoor-password after the edit.
+        await expect(
+            page.getByRole("tab", {
+                name: `${CREATED_SSH_PASSWORD_CHANGE_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
     });
 
     test("shows an actionable error when SSH needs an omitted password", async ({

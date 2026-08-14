@@ -30,6 +30,7 @@ function sshRequest(
         home: null,
         log: null,
         password: null,
+        clear_password: null,
         ...overrides,
     };
 }
@@ -79,6 +80,7 @@ describe("SSH agent configuration API", () => {
             home: "/srv/app",
             log: "/tmp/created-ssh-agent.log",
             password: "ssh-secret",
+            clear_password: null,
         });
 
         // The response must be immediately usable without restarting or contacting SSH.
@@ -145,6 +147,7 @@ describe("SSH agent configuration API", () => {
                 home: null,
                 log: null,
                 password: null,
+                clear_password: null,
             }),
         ).rejects.toMatchObject({
             status: 400,
@@ -160,6 +163,7 @@ describe("SSH agent configuration API", () => {
                 home: null,
                 log: null,
                 password: null,
+                clear_password: null,
             }),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
         // Rejected submissions must not modify the durable source of truth.
@@ -168,13 +172,14 @@ describe("SSH agent configuration API", () => {
 
     it("reads, updates, renames, and deletes a stopped SSH entry", async () => {
         const configuration = await apiClient.getSshAgentConfiguration(AGENT_NAME);
-        // The edit view must receive persisted settings without the stored SSH password.
+        // The edit view must learn that a secret exists without receiving the secret itself.
         expect(configuration).toMatchObject({
             target: "example-host",
             username: "deploy",
             ssh_port: 2222,
             name: AGENT_NAME,
             password: null,
+            has_password: true,
         });
 
         const renamed = "updated-ssh-agent";
@@ -192,6 +197,7 @@ describe("SSH agent configuration API", () => {
             home: "/srv/updated",
             log: null,
             password: "updated-secret",
+            clear_password: false,
         });
         // Save must settle a delayed restart before replacing the identity, rather than racing it.
         expect(update.agent).toMatchObject({
@@ -208,11 +214,15 @@ describe("SSH agent configuration API", () => {
         expect(afterUpdate.log).toBeNull();
         // GET must keep omitting the secret after an update that replaces it.
         expect(afterUpdate.password).toBeNull();
+        expect(afterUpdate.has_password).toBe(true);
         const editedConfig = readFileSync(configPath, "utf8");
         // Updating must preserve unrelated comments while replacing old SSH values.
         expect(editedConfig).toContain("# This comment must survive the config edit.");
         expect(editedConfig).toContain('target = "updated-host"');
         expect(editedConfig).not.toContain('target = "example-host"');
+        // A typed password on PUT must replace the durable secret, not keep the old one.
+        expect(editedConfig).toContain('password = "updated-secret"');
+        expect(editedConfig).not.toContain('password = "ssh-secret"');
 
         const deletion = await apiClient.deleteManagedAgent(renamed);
         expect(deletion.deleted).toBe(true);
@@ -335,11 +345,69 @@ describe("SSH agent configuration API", () => {
         );
         // Identity stays the same so only the password-preservation path is under test.
         expect(updated.agent.id).toBe(name);
+        const kept = await apiClient.getSshAgentConfiguration(name);
         // GET still must not echo the secret after an update that kept it.
-        expect((await apiClient.getSshAgentConfiguration(name)).password).toBeNull();
+        expect(kept.password).toBeNull();
+        // Presence must stay true so the edit form can keep the password radio selected.
+        expect(kept.has_password).toBe(true);
         // An empty PUT password must leave the durable secret untouched.
         expect(readFileSync(configPath, "utf8")).toContain('password = "keep-me"');
         expect(readFileSync(configPath, "utf8")).toContain('target = "secret-host-2"');
+    });
+
+    it("reports missing passwords and can clear a stored secret", async () => {
+        const name = "password-clear-agent";
+        await apiClient.createSshAgent(
+            sshRequest({ target: "key-only-host", name }),
+        );
+        onTestFinished(async () => {
+            try {
+                await apiClient.deleteManagedAgent(name);
+            } catch {
+                // Cleanup must tolerate an already-removed leftover from a failed assertion.
+            }
+        });
+
+        const withoutPassword = await apiClient.getSshAgentConfiguration(name);
+        // Key-auth agents must initialize the edit radios from absence, not a leaked secret.
+        expect(withoutPassword.password).toBeNull();
+        expect(withoutPassword.has_password).toBe(false);
+
+        await apiClient.updateSshAgent(
+            name,
+            sshRequest({
+                target: "key-only-host",
+                name,
+                password: "temporary-secret",
+            }),
+        );
+        expect(readFileSync(configPath, "utf8")).toContain(
+            'password = "temporary-secret"',
+        );
+        expect((await apiClient.getSshAgentConfiguration(name)).has_password).toBe(
+            true,
+        );
+
+        await apiClient.updateSshAgent(
+            name,
+            sshRequest({
+                target: "key-only-host",
+                name,
+                clear_password: true,
+            }),
+        );
+        const cleared = await apiClient.getSshAgentConfiguration(name);
+        // Clearing must flip presence so the UI can switch to key mode on the next edit.
+        expect(cleared.has_password).toBe(false);
+        expect(cleared.password).toBeNull();
+        const afterClear = readFileSync(configPath, "utf8");
+        const clearedTable = afterClear
+            .split("[[agents]]")
+            .find((table) => table.includes(`name = "${name}"`));
+        // Persistence must drop the TOML key rather than leave an empty password string.
+        expect(clearedTable).toBeDefined();
+        expect(clearedTable).not.toMatch(/^\s*password\s*=/m);
+        expect(afterClear).toContain('target = "key-only-host"');
     });
 
     it("stops a desired-running agent before deleting it", async () => {

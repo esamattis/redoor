@@ -118,14 +118,13 @@ async fn update_ssh_agent(
     old_id: &str,
     request: CreateSshAgentRequest,
 ) -> Result<AgentInfoResponse, (StatusCode, String)> {
+    let clear_password = request.clear_password.unwrap_or(false);
     let mut config = validate_request(request).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let new_id = watchdog::supervisor_key(&AgentConfig::SshBacked(config.clone()));
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent_for_update(state, old_id, &new_id).await?;
-    // Empty PUT password means "keep the stored secret" so the browser never has to echo it back.
-    if config.password.is_none() {
-        config.password = existing_config.password;
-    }
+    config.password =
+        apply_password_update(config.password, clear_password, existing_config.password);
 
     if new_id != old_id {
         match find_ssh_agent(state, old_id).await {
@@ -397,6 +396,19 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
     })
 }
 
+/// Resolves keep / replace / clear without forcing the browser to echo the stored secret.
+fn apply_password_update(
+    incoming: Option<String>,
+    clear_password: bool,
+    existing: Option<String>,
+) -> Option<String> {
+    if clear_password {
+        None
+    } else {
+        incoming.or(existing)
+    }
+}
+
 /// Treats whitespace-only optional form fields as omitted settings.
 fn optional_text(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
@@ -422,6 +434,7 @@ impl From<SshBackedAgentConfig> for ManagedSshAgentConfigurationResponse {
             home: config.home,
             log: config.log,
             password: None,
+            has_password: config.password.is_some(),
         }
     }
 }
