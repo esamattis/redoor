@@ -352,13 +352,17 @@ export function SelectedFilesCard(props: {
                             </span>{" "}
                             selected
                         </p>
-                        <button
-                            type="button"
-                            onClick={() => activateBottomDrawerTab("selected")}
-                            className="inline-flex h-7 items-center rounded-md border border-slate-700 px-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            Show
-                        </button>
+                        {selectedFiles.length > 0 ? (
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    activateBottomDrawerTab("selected")
+                                }
+                                className="inline-flex h-7 items-center rounded-md border border-slate-700 px-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
+                            >
+                                Show
+                            </button>
+                        ) : null}
                         {selectedFiles.length > 0 ? (
                             <Tooltip content="Clear selection">
                                 <button
