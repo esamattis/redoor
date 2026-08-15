@@ -1,5 +1,11 @@
 import { spawn, ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import {
+    mkdtempSync,
+    writeFileSync,
+    rmSync,
+    mkdirSync,
+    realpathSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -105,7 +111,9 @@ export class TempFileManager {
         encoding?: BufferEncoding;
     }): string {
         if (!this.tempDir) {
-            this.tempDir = mkdtempSync(join(tmpdir(), "redoor-test-"));
+            this.tempDir = realpathSync(
+                mkdtempSync(join(tmpdir(), "redoor-test-")),
+            );
         }
         const suffix = options?.suffix ?? ".tmp";
         const filePath = join(
@@ -137,7 +145,9 @@ export class TempFileManager {
      */
     tempDirectory(options?: { suffix?: string }): string {
         if (!this.tempDir) {
-            this.tempDir = mkdtempSync(join(tmpdir(), "redoor-test-"));
+            this.tempDir = realpathSync(
+                mkdtempSync(join(tmpdir(), "redoor-test-")),
+            );
         }
         const suffix = options?.suffix ?? "";
         const directoryPath = join(
