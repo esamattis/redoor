@@ -102,9 +102,13 @@ test.describe("Server home", () => {
             "aria-label",
             /Transfer progress \d+% .+\/s .+ remaining$/,
         );
-        await expect(panel.getByText(/\d+%/)).toBeVisible();
-        await expect(panel.getByText(/\/s/)).toBeVisible();
-        await expect(panel.getByText("remaining")).toBeVisible();
+        const activeTransfer = panel
+            .getByRole("row")
+            .filter({ hasText: "active.bin" });
+        // The visible row summary presents the same progress details as the accessible label.
+        await expect(
+            activeTransfer.getByText(/\d+% .+\/s .+ remaining$/),
+        ).toBeVisible();
         // Labels next to the rate made finished and in-flight rows harder to scan.
         await expect(
             panel.getByText(/Current speed|Final speed|Speed:/),

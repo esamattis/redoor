@@ -131,6 +131,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(terminalSockets).toHaveLength(1);
 
         await page
+            .getByRole("button", { name: "Minimize Terminal" })
+            .press("Enter");
+        await page
             .getByRole("link", { name: ctx.testDirName, exact: true })
             .click();
         // The file listing proves the directory loader has committed before cwd is captured.
@@ -173,6 +176,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Mouse and keyboard tab switching preserve both live sockets.
         expect(terminalSockets).toHaveLength(2);
 
+        await page
+            .getByRole("button", { name: "Minimize Terminal" })
+            .press("Enter");
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
@@ -407,7 +413,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCount(1);
         await expect(firstTerminal).toBeFocused();
 
-        await page.keyboard.press("Escape");
+        await page
+            .getByRole("button", { name: "Minimize Terminal" })
+            .press("Enter");
         await page
             .getByRole("link", { name: ctx.testDirName, exact: true })
             .click();
