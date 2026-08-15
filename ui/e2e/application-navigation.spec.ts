@@ -54,4 +54,44 @@ test.describe("Application navigation", () => {
         await expect(menuDialog).toBeHidden();
         await expect(openMenuButton).toHaveAttribute("aria-expanded", "false");
     });
+
+    test("keeps overlay panels visible during horizontal touch scrolling", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const gestureStates = await page.locator("main").evaluate((main) => {
+            const dispatchTouch = (
+                type: string,
+                clientX: number,
+                clientY: number,
+            ) => {
+                const event = new Event(type, { bubbles: true });
+                Object.defineProperty(event, "touches", {
+                    value: [{ clientX, clientY }],
+                });
+                main.dispatchEvent(event);
+            };
+
+            dispatchTouch("touchstart", 200, 200);
+            dispatchTouch("touchmove", 100, 215);
+            const hiddenAfterHorizontalGesture =
+                document.documentElement.hasAttribute("data-touch-scrolling");
+
+            dispatchTouch("touchstart", 200, 200);
+            dispatchTouch("touchmove", 185, 100);
+            const hiddenAfterVerticalGesture =
+                document.documentElement.hasAttribute("data-touch-scrolling");
+
+            return {
+                hiddenAfterHorizontalGesture,
+                hiddenAfterVerticalGesture,
+            };
+        });
+
+        // Horizontal content scrolling must leave the overlay controls available.
+        expect(gestureStates.hiddenAfterHorizontalGesture).toBe(false);
+        // Vertical scrolling still hides the panels to expose more content.
+        expect(gestureStates.hiddenAfterVerticalGesture).toBe(true);
+    });
 });

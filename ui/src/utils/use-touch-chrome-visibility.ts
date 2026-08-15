@@ -5,6 +5,7 @@ export function useTouchChromeVisibility() {
     const topChromeRef = React.useRef<HTMLDivElement | null>(null);
     const bottomChromeRef = React.useRef<HTMLDivElement | null>(null);
     const scrollAreaRef = React.useRef<HTMLElement | null>(null);
+    const touchStartXRef = React.useRef<number | null>(null);
     const touchStartYRef = React.useRef<number | null>(null);
     const touchStartScrollTopRef = React.useRef<number | null>(null);
     const isTouchActiveRef = React.useRef(false);
@@ -76,18 +77,24 @@ export function useTouchChromeVisibility() {
         }
         isScrollingRef.current = false;
         isTouchActiveRef.current = true;
+        touchStartXRef.current = event.touches[0]?.clientX ?? null;
         touchStartYRef.current = event.touches[0]?.clientY ?? null;
         touchStartScrollTopRef.current = event.currentTarget.scrollTop;
     };
 
-    /** Treats more than ten vertical pixels as scrolling in either direction. */
+    /** Hides chrome only for deliberate vertical gestures, not horizontal scrolling. */
     const handleTouchMove = (event: React.TouchEvent<HTMLElement>) => {
+        const startX = touchStartXRef.current;
         const startY = touchStartYRef.current;
+        const currentX = event.touches[0]?.clientX;
         const currentY = event.touches[0]?.clientY;
         if (
+            startX !== null &&
             startY !== null &&
+            currentX !== undefined &&
             currentY !== undefined &&
-            Math.abs(currentY - startY) > 10
+            Math.abs(currentY - startY) > 10 &&
+            Math.abs(currentY - startY) > Math.abs(currentX - startX)
         ) {
             document.documentElement.setAttribute(
                 "data-touch-scrolling",
@@ -119,6 +126,7 @@ export function useTouchChromeVisibility() {
     /** Leaves content unobstructed briefly after scrolling or touch cancellation finishes. */
     const handleTouchEnd = () => {
         isTouchActiveRef.current = false;
+        touchStartXRef.current = null;
         touchStartYRef.current = null;
         if (!isScrollingRef.current) {
             scheduleRestore();
