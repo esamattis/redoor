@@ -68,6 +68,8 @@ import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
 import { ThemeManager, ThemeToggle } from "#ui/components/theme-toggle";
 import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
+import { emptyServerInfo } from "#ui/empty-server-info";
+import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -88,23 +90,6 @@ export function getAgentFromRootLoaderData(
 ) {
     return loaderData.agents.find((agent) => agent.id === agentId);
 }
-
-const emptyServerInfo: ServerInfoResponse = {
-    app_name: "",
-    agent_token: "",
-    config_path: "",
-    exe_path: "",
-    auth_mode: "toml",
-    external_ip: null,
-    os: "",
-    arch: "",
-    version: "",
-    git_rev: "",
-    git_dirty: false,
-    version_dirty: false,
-    build_mode: "debug",
-    build_date: "",
-};
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
     loader: async ({ context, location }) => {
@@ -304,28 +289,31 @@ function RootLayout() {
                 onClose={() => setIsMenuOpen(false)}
                 onLogout={() => logoutMutation.mutate()}
             />
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <TopTabStrip
-                    agents={sortedAgents}
-                    pathname={location.pathname}
-                    isMenuOpen={isMenuOpen}
-                    onOpenMenu={() => setIsMenuOpen(true)}
-                />
-                <div className="flex min-h-0 flex-1 flex-col">
-                    <main className="flex-1 overflow-auto">
-                        <Outlet />
-                    </main>
-                    <TerminalPanel
-                        agents={agents}
-                        activeTarget={activeTerminalTarget}
+            <OverlayChromeLayout
+                topChrome={
+                    <TopTabStrip
+                        agents={sortedAgents}
+                        pathname={location.pathname}
+                        isMenuOpen={isMenuOpen}
+                        onOpenMenu={() => setIsMenuOpen(true)}
                     />
-                    <SelectedFilesPanel agents={agents} />
-                    <TransferProgressPanel
-                        agents={agents}
-                        transfers={transferProgress.transfers}
-                    />
-                </div>
-            </div>
+                }
+                bottomChrome={
+                    <>
+                        <TerminalPanel
+                            agents={agents}
+                            activeTarget={activeTerminalTarget}
+                        />
+                        <SelectedFilesPanel agents={agents} />
+                        <TransferProgressPanel
+                            agents={agents}
+                            transfers={transferProgress.transfers}
+                        />
+                    </>
+                }
+            >
+                <Outlet />
+            </OverlayChromeLayout>
             <TanStackDevtools
                 config={{
                     position: "bottom-right",

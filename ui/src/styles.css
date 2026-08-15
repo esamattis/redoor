@@ -213,6 +213,23 @@ code {
     display: none;
 }
 
+/* Measured padding keeps the first and last scroll positions clear of overlay chrome. */
+.overlay-chrome-scroll-area {
+    padding-block: var(--top-chrome-height, 0px)
+        var(--bottom-chrome-height, 0px);
+}
+
+/* Touch scrolling moves compact chrome without changing the scroll area's layout. */
+[data-touch-scrolling] .touch-hide-top-shell {
+    pointer-events: none;
+    transform: translateY(-100%);
+}
+
+[data-touch-scrolling] .touch-hide-bottom-stack {
+    pointer-events: none;
+    transform: translateY(100%);
+}
+
 .route-loading-progress-bar {
     position: relative;
 }

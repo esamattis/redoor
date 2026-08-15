@@ -1,0 +1,150 @@
+import * as React from "react";
+
+/** Marks the application shell while a touch has become a deliberate scroll gesture. */
+export function useTouchChromeVisibility() {
+    const topChromeRef = React.useRef<HTMLDivElement | null>(null);
+    const bottomChromeRef = React.useRef<HTMLDivElement | null>(null);
+    const scrollAreaRef = React.useRef<HTMLElement | null>(null);
+    const touchStartYRef = React.useRef<number | null>(null);
+    const touchStartScrollTopRef = React.useRef<number | null>(null);
+    const isTouchActiveRef = React.useRef(false);
+    const isScrollingRef = React.useRef(false);
+    const scrollStopTimerRef = React.useRef<number | null>(null);
+    const restoreTimerRef = React.useRef<number | null>(null);
+
+    React.useLayoutEffect(() => {
+        const topChrome = topChromeRef.current;
+        const bottomChrome = bottomChromeRef.current;
+        const scrollArea = scrollAreaRef.current;
+        if (!topChrome || !bottomChrome || !scrollArea) {
+            return;
+        }
+
+        // Keep endpoint space synchronized with overlay chrome as panels and responsive content resize.
+        const updateScrollInsets = () => {
+            scrollArea.style.setProperty(
+                "--top-chrome-height",
+                `${topChrome.offsetHeight}px`,
+            );
+            scrollArea.style.setProperty(
+                "--bottom-chrome-height",
+                `${bottomChrome.offsetHeight}px`,
+            );
+        };
+        const resizeObserver = new ResizeObserver(updateScrollInsets);
+        resizeObserver.observe(topChrome);
+        resizeObserver.observe(bottomChrome);
+        updateScrollInsets();
+        return () => resizeObserver.disconnect();
+    }, []);
+
+    /** Replaces an older restore so momentum scrolling keeps chrome hidden. */
+    const scheduleRestore = () => {
+        if (restoreTimerRef.current !== null) {
+            window.clearTimeout(restoreTimerRef.current);
+        }
+        restoreTimerRef.current = window.setTimeout(() => {
+            document.documentElement.removeAttribute("data-touch-scrolling");
+            touchStartScrollTopRef.current = null;
+            restoreTimerRef.current = null;
+        }, 500);
+    };
+
+    /** Starts restoration only after scroll events have stopped arriving. */
+    const scheduleScrollStop = () => {
+        if (scrollStopTimerRef.current !== null) {
+            window.clearTimeout(scrollStopTimerRef.current);
+        }
+        scrollStopTimerRef.current = window.setTimeout(() => {
+            isScrollingRef.current = false;
+            scrollStopTimerRef.current = null;
+            if (!isTouchActiveRef.current) {
+                scheduleRestore();
+            }
+        }, 100);
+    };
+
+    /** Records the gesture origin without making ordinary taps move the chrome. */
+    const handleTouchStart = (event: React.TouchEvent<HTMLElement>) => {
+        if (restoreTimerRef.current !== null) {
+            window.clearTimeout(restoreTimerRef.current);
+            restoreTimerRef.current = null;
+        }
+        if (scrollStopTimerRef.current !== null) {
+            window.clearTimeout(scrollStopTimerRef.current);
+            scrollStopTimerRef.current = null;
+        }
+        isScrollingRef.current = false;
+        isTouchActiveRef.current = true;
+        touchStartYRef.current = event.touches[0]?.clientY ?? null;
+        touchStartScrollTopRef.current = event.currentTarget.scrollTop;
+    };
+
+    /** Treats more than ten vertical pixels as scrolling in either direction. */
+    const handleTouchMove = (event: React.TouchEvent<HTMLElement>) => {
+        const startY = touchStartYRef.current;
+        const currentY = event.touches[0]?.clientY;
+        if (
+            startY !== null &&
+            currentY !== undefined &&
+            Math.abs(currentY - startY) > 10
+        ) {
+            document.documentElement.setAttribute(
+                "data-touch-scrolling",
+                "true",
+            );
+        }
+    };
+
+    /** Uses actual displacement so fast swipes still hide chrome during momentum scrolling. */
+    const handleScroll = (event: React.UIEvent<HTMLElement>) => {
+        isScrollingRef.current = true;
+        if (restoreTimerRef.current !== null) {
+            window.clearTimeout(restoreTimerRef.current);
+            restoreTimerRef.current = null;
+        }
+        scheduleScrollStop();
+
+        const startScrollTop = touchStartScrollTopRef.current;
+        if (
+            startScrollTop === null ||
+            Math.abs(event.currentTarget.scrollTop - startScrollTop) <= 10
+        ) {
+            return;
+        }
+
+        document.documentElement.setAttribute("data-touch-scrolling", "true");
+    };
+
+    /** Leaves content unobstructed briefly after scrolling or touch cancellation finishes. */
+    const handleTouchEnd = () => {
+        isTouchActiveRef.current = false;
+        touchStartYRef.current = null;
+        if (!isScrollingRef.current) {
+            scheduleRestore();
+        }
+    };
+
+    React.useEffect(() => {
+        return () => {
+            if (restoreTimerRef.current !== null) {
+                window.clearTimeout(restoreTimerRef.current);
+            }
+            if (scrollStopTimerRef.current !== null) {
+                window.clearTimeout(scrollStopTimerRef.current);
+            }
+            document.documentElement.removeAttribute("data-touch-scrolling");
+        };
+    }, []);
+
+    return {
+        topChromeRef,
+        bottomChromeRef,
+        scrollAreaRef,
+        onTouchStart: handleTouchStart,
+        onTouchMove: handleTouchMove,
+        onTouchEnd: handleTouchEnd,
+        onTouchCancel: handleTouchEnd,
+        onScroll: handleScroll,
+    };
+}
