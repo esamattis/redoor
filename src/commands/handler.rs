@@ -356,6 +356,7 @@ impl CommandHandler {
         let arch = std::env::consts::ARCH.to_string();
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
         let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+        #[cfg(not(target_os = "android"))]
         // Mount discovery uses platform blocking APIs, so keep it off the command runtime thread.
         let mut mount_points = match tokio::task::spawn_blocking(mountpoints::mountinfos).await {
             Ok(Ok(mount_infos)) => mount_infos
@@ -381,6 +382,9 @@ impl CommandHandler {
                 );
             }
         };
+        #[cfg(target_os = "android")]
+        // The mountpoints crate has no Android backend, so capacity is unavailable on this target.
+        let mut mount_points = Vec::new();
         mount_points.sort_by(|left, right| left.path.cmp(&right.path));
 
         CommandResult::GetAgentDetails(Box::new(AgentDetailsResponse {
