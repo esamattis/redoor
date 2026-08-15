@@ -235,6 +235,9 @@ function PathMoreActions(props: {
     const router = useRouter();
     const queryClient = useQueryClient();
     const canModify = getImmediateParentPath(props.path) !== null;
+    const openMutation = useMutation({
+        mutationFn: () => props.agent.openPath(props.path),
+    });
 
     return (
         <RenamePathAction
@@ -253,6 +256,24 @@ function PathMoreActions(props: {
                     >
                         {(close) => (
                             <>
+                                {props.agent.supportsNativeOpen ? (
+                                    <ActionMenuButton
+                                        disabled={openMutation.isPending}
+                                        onClick={() => {
+                                            close();
+                                            openMutation.mutate();
+                                        }}
+                                    >
+                                        {openMutation.isPending ? (
+                                            <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
+                                        ) : (
+                                            <ExternalLink className="h-4 w-4 text-slate-400" />
+                                        )}
+                                        {openMutation.isPending
+                                            ? "Opening..."
+                                            : "Open natively"}
+                                    </ActionMenuButton>
+                                ) : null}
                                 <ActionMenuButton
                                     onClick={() => {
                                         close();
@@ -304,6 +325,21 @@ function PathMoreActions(props: {
                         )}
                     </ActionMenu>
                     {renameAction.dialog}
+                    {openMutation.isSuccess || openMutation.isError ? (
+                        <Toast
+                            tone={openMutation.isError ? "error" : "success"}
+                            icon={<ExternalLink className="h-4 w-4" />}
+                            dismissAriaLabel="Dismiss native open message"
+                            onDismiss={() => openMutation.reset()}
+                        >
+                            {openMutation.isError
+                                ? getErrorMessage(
+                                      openMutation.error,
+                                      "Could not open the path",
+                                  )
+                                : "Opened on the agent computer"}
+                        </Toast>
+                    ) : null}
                 </>
             )}
         </RenamePathAction>
@@ -389,7 +425,6 @@ export function PersistentPathActions(props: {
                     setIsConfirmDeleteOpen(true);
                 }}
             />
-            <NativeOpenButton agent={props.agent} path={props.path} />
             <ConfirmationDialog
                 isOpen={isConfirmDeleteOpen}
                 title={`Delete this ${props.entryType}?`}
@@ -417,50 +452,6 @@ export function PersistentPathActions(props: {
                     {props.path}
                 </p>
             </ConfirmationDialog>
-        </>
-    );
-}
-
-/** Launches one remote path on the agent desktop while reporting the asynchronous result. */
-function NativeOpenButton(props: { agent: Agent; path: string }) {
-    const openMutation = useMutation({
-        mutationFn: () => props.agent.openPath(props.path),
-    });
-
-    if (!props.agent.supportsNativeOpen) {
-        return null;
-    }
-
-    return (
-        <>
-            <button
-                type="button"
-                disabled={openMutation.isPending}
-                onClick={() => openMutation.mutate()}
-                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-wait disabled:opacity-60"
-            >
-                {openMutation.isPending ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                    <ExternalLink className="h-4 w-4" />
-                )}
-                {openMutation.isPending ? "Opening..." : "Open natively"}
-            </button>
-            {openMutation.isSuccess || openMutation.isError ? (
-                <Toast
-                    tone={openMutation.isError ? "error" : "success"}
-                    icon={<ExternalLink className="h-4 w-4" />}
-                    dismissAriaLabel="Dismiss native open message"
-                    onDismiss={() => openMutation.reset()}
-                >
-                    {openMutation.isError
-                        ? getErrorMessage(
-                              openMutation.error,
-                              "Could not open the path",
-                          )
-                        : "Opened on the agent computer"}
-                </Toast>
-            ) : null}
         </>
     );
 }
