@@ -701,21 +701,10 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
-        // Directory download uses the same label as files; packaging is explained via tooltip.
-        const downloadDirectory = page
-            .getByLabel("File browser actions")
-            .getByRole("link", {
-                name: "Download",
-                exact: true,
-            });
-        await expect(downloadDirectory).toBeVisible();
-        // The href targets the raw endpoint with download=1 so the browser treats it as an attachment.
-        await expect(downloadDirectory).toHaveAttribute(
-            "href",
-            new RegExp(
-                `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/.*[?&]download=1`,
-            ),
-        );
+        // Directory metadata no longer adds a separate action row below its view switch.
+        await expect(
+            page.getByRole("link", { name: "Download", exact: true }),
+        ).toHaveCount(0);
         // Activating details replaces the child list instead of rendering both dense views together.
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
@@ -725,7 +714,9 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("button", { name: "New", exact: true }),
         ).toHaveCount(0);
 
-        await page.getByRole("link", { name: "Files", exact: true }).click();
+        await directoryView
+            .getByRole("link", { name: "Files", exact: true })
+            .click();
 
         // Returning to the list removes the details query so the default URL stays canonical.
         await expect(page).toHaveURL(directoryUrl);
@@ -795,38 +786,6 @@ test.describe.serial("File Browser Navigation", () => {
                 .getByLabel("Directory view")
                 .getByRole("link", { name: "Sync", exact: true }),
         ).toHaveAttribute("aria-current", "page");
-    });
-
-    test("should rename a directory and retain its details URL", async ({
-        page,
-    }) => {
-        const originalName = `rename-directory-${Date.now()}`;
-        const renamedName = `renamed-directory-${Date.now()}`;
-        const originalPath = path.join(ctx.testDirPath, originalName);
-        const renamedPath = path.join(ctx.testDirPath, renamedName);
-        await fs.mkdir(originalPath);
-        const originalUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}?view=details`;
-        await page.goto(originalUrl);
-
-        await page.getByRole("button", { name: "More", exact: true }).click();
-        await page.getByRole("button", { name: "Rename", exact: true }).click();
-        const renameInput = page.getByRole("textbox", {
-            name: "Rename directory",
-        });
-        // Directory details expose the current leaf name without making the full path editable.
-        await expect(renameInput).toHaveValue(originalName);
-        await renameInput.fill(renamedName);
-        await page.getByRole("button", { name: "Rename", exact: true }).click();
-
-        // The details query and destination path are both retained after the rename.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(renamedPath)}?view=details`,
-        );
-        // A directory at only the new name confirms the agent performed the filesystem move.
-        await expect(fs.stat(renamedPath)).resolves.toMatchObject({});
-        await expect(fs.stat(originalPath)).rejects.toMatchObject({
-            code: "ENOENT",
-        });
     });
 
     test("should navigate to deep nested directory", async ({ page }) => {

@@ -1,9 +1,19 @@
 import React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, ArrowUp, Check, Home, Info, Pencil } from "lucide-react";
+import {
+    ArrowLeft,
+    ArrowUp,
+    Check,
+    File,
+    Files,
+    GitCompareArrows,
+    Home,
+    Info,
+    Pencil,
+    RefreshCw,
+} from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
-import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import {
     getBrowserPathHref,
     type PathLoadError,
@@ -16,9 +26,8 @@ export function BrowserPageHeader(props: {
     agentId: string;
     path: string;
     startEditingPath?: boolean;
-    actionLabel: string;
     navigation: React.ReactNode;
-    actions?: React.ReactNode;
+    viewToggle: React.ReactNode;
 }) {
     return (
         <header className="mb-4">
@@ -43,19 +52,101 @@ export function BrowserPageHeader(props: {
                     />
                 </div>
             </div>
-            {props.actions ? (
-                <div
-                    aria-label={props.actionLabel}
-                    className="overflow-x-auto overscroll-x-contain rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
-                >
-                    <div className="flex min-w-max items-center justify-end gap-2">
-                        <div className="flex shrink-0 items-center gap-1">
-                            {props.actions}
-                        </div>
-                    </div>
-                </div>
-            ) : null}
+            <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800">
+                {props.viewToggle}
+            </div>
         </header>
+    );
+}
+
+/** Keeps filesystem representations beside their path instead of in global navigation. */
+export function ViewToggle(props: {
+    agent: Agent;
+    path: string;
+    entryType: "directory" | "file";
+    activeView: "files" | "details" | "view" | "diff" | "sync";
+}) {
+    const pathTarget = getBrowserPathHref(props.agent, props.path);
+    if (props.entryType === "directory") {
+        return (
+            <ViewSwitch label="Directory view">
+                <ViewToggleLink
+                    to={pathTarget}
+                    label="Files"
+                    icon={<Files className="h-4 w-4" aria-hidden="true" />}
+                    active={props.activeView === "files"}
+                />
+                <ViewToggleLink
+                    to={pathTarget}
+                    search={{ view: "details" }}
+                    label="Details"
+                    icon={<Info className="h-4 w-4" aria-hidden="true" />}
+                    active={props.activeView === "details"}
+                />
+                <ViewToggleLink
+                    to={pathTarget}
+                    search={{ view: "sync" }}
+                    label="Sync"
+                    icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
+                    active={props.activeView === "sync"}
+                />
+            </ViewSwitch>
+        );
+    }
+
+    return (
+        <ViewSwitch label="File view">
+            <ViewToggleLink
+                to={pathTarget}
+                label="Details"
+                icon={<Info className="h-4 w-4" aria-hidden="true" />}
+                active={props.activeView === "details"}
+            />
+            <ViewToggleLink
+                to={pathTarget}
+                search={{ view: "edit" }}
+                label="View"
+                icon={<File className="h-4 w-4" aria-hidden="true" />}
+                active={props.activeView === "view"}
+            />
+            <ViewToggleLink
+                to={pathTarget}
+                search={{ view: "diff" }}
+                label="Diff"
+                icon={
+                    <GitCompareArrows className="h-4 w-4" aria-hidden="true" />
+                }
+                active={props.activeView === "diff"}
+            />
+            <ViewToggleLink
+                to={pathTarget}
+                search={{ view: "sync" }}
+                label="Sync"
+                icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
+                active={props.activeView === "sync"}
+            />
+        </ViewSwitch>
+    );
+}
+
+/** Applies current-page semantics to a filesystem representation link. */
+function ViewToggleLink(props: {
+    to: string;
+    search?: Record<string, string>;
+    label: string;
+    icon: React.ReactNode;
+    active: boolean;
+}) {
+    return (
+        <Link
+            to={props.to}
+            search={props.search ?? {}}
+            aria-current={props.active ? "page" : undefined}
+            className={getViewSwitchItemClass(props.active)}
+        >
+            {props.icon}
+            {props.label}
+        </Link>
     );
 }
 
@@ -95,9 +186,6 @@ export function BrowserHeader(props: {
 }) {
     const navigate = useNavigate();
     const pathUnavailable = props.pathUnavailable === true;
-    const directoryName = props.path.split("/").filter(Boolean).pop() ?? "/";
-    const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
-    const archiveUrl = props.agent.getRawUrl(props.path, { download: true });
 
     React.useEffect(() => {
         /** Returns alternate directory views to the list before moving to the parent. */
@@ -135,7 +223,6 @@ export function BrowserHeader(props: {
             agentId={props.agentId}
             path={props.path}
             startEditingPath={pathUnavailable}
-            actionLabel="File browser actions"
             navigation={
                 <>
                     <Tooltip content="Go to the parent directory (Backspace)">
@@ -157,25 +244,13 @@ export function BrowserHeader(props: {
                     </Tooltip>
                 </>
             }
-            actions={
-                !pathUnavailable && props.activeView !== "files" ? (
-                    <PersistentPathActions
-                        agent={props.agent}
-                        path={props.path}
-                        currentName={directoryName}
-                        entryType="directory"
-                        view={
-                            props.activeView === "details"
-                                ? "details"
-                                : props.activeView === "sync"
-                                  ? "sync"
-                                  : undefined
-                        }
-                        downloadUrl={archiveUrl}
-                        downloadName={archiveName}
-                        downloadTooltip="Downloads this directory as a .tar.gz archive."
-                    />
-                ) : null
+            viewToggle={
+                <ViewToggle
+                    agent={props.agent}
+                    path={props.path}
+                    entryType="directory"
+                    activeView={props.activeView}
+                />
             }
         />
     );

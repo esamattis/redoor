@@ -1,14 +1,30 @@
 import React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Check, Copy, Download, File, Folder } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+    Check,
+    Copy,
+    Download,
+    File,
+    Folder,
+    MoreHorizontal,
+    Pencil,
+    Trash2,
+} from "lucide-react";
 import type {
     Agent,
     LsDirectoryResponse,
     LsFileResponse,
 } from "#ui/api-client";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { FilePageHeader } from "#ui/components/browser/file-page-header";
-import { getErrorMessage } from "#ui/components/browser/utils";
+import { RenamePathAction } from "#ui/components/browser/path-actions";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import {
+    getErrorMessage,
+    getImmediateParentPath,
+} from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
 
 /** Converts permission bits to the compact notation people expect from Unix tools. */
@@ -228,6 +244,8 @@ function PathDetailHeader(props: {
     path: string;
     pathCopied?: boolean;
     onCopyPath?: () => void;
+    nameActions?: React.ReactNode;
+    cornerActions?: React.ReactNode;
 }) {
     const isDirectory = props.entryType === "directory";
     const typeLabel = isDirectory ? "Directory" : "File";
@@ -235,7 +253,12 @@ function PathDetailHeader(props: {
     return (
         <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
             <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-            <div className="relative flex min-w-0 items-start gap-4">
+            {props.cornerActions ? (
+                <div className="absolute right-3 top-3 z-10">
+                    {props.cornerActions}
+                </div>
+            ) : null}
+            <div className="relative flex min-w-0 items-start gap-4 pr-10">
                 <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
                     {isDirectory ? (
                         <Folder className="h-7 w-7 text-blue-400" />
@@ -243,16 +266,23 @@ function PathDetailHeader(props: {
                         <File className="h-7 w-7 text-blue-400" />
                     )}
                 </div>
-                <div className="min-w-0 pt-0.5">
+                <div className="min-w-0 flex-1 pt-0.5">
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
                         {typeLabel} details
                     </p>
-                    <h1
-                        aria-label={`${typeLabel} name`}
-                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                    >
-                        {props.name}
-                    </h1>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <h1
+                            aria-label={`${typeLabel} name`}
+                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                        >
+                            {props.name}
+                        </h1>
+                        {props.nameActions ? (
+                            <div className="flex w-full shrink-0 justify-start md:ml-auto md:w-auto md:justify-end">
+                                {props.nameActions}
+                            </div>
+                        ) : null}
+                    </div>
                 </div>
             </div>
             <div className="relative mt-6">
@@ -281,6 +311,113 @@ function PathDetailHeader(props: {
                 </code>
             </div>
         </header>
+    );
+}
+
+/** Keeps destructive file-detail actions compact while preserving confirmation and navigation. */
+function FileDetailMenu(props: {
+    agent: Agent;
+    path: string;
+    fileName: string;
+}) {
+    const navigate = useNavigate();
+    const parentPath = getImmediateParentPath(props.path);
+    const [isDeleteOpen, setIsDeleteOpen] = React.useState(false);
+    const deleteMutation = useMutation({
+        mutationFn: () => props.agent.deleteFile(props.path),
+        onSuccess: async () => {
+            if (parentPath === null) {
+                return;
+            }
+            setIsDeleteOpen(false);
+            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
+        },
+    });
+
+    /** Closes deletion only when no request is still using the dialog state. */
+    const closeDeleteDialog = () => {
+        if (deleteMutation.isPending) {
+            return;
+        }
+        setIsDeleteOpen(false);
+        deleteMutation.reset();
+    };
+
+    return (
+        <RenamePathAction
+            agent={props.agent}
+            path={props.path}
+            currentName={props.fileName}
+            entryType="file"
+        >
+            {(renameAction) => (
+                <>
+                    <ActionMenu
+                        label="File actions"
+                        icon={<MoreHorizontal className="h-4 w-4" />}
+                        hideLabel={true}
+                    >
+                        {(close) => (
+                            <>
+                                <ActionMenuButton
+                                    disabled={renameAction.disabled}
+                                    onClick={() => {
+                                        close();
+                                        renameAction.open();
+                                    }}
+                                >
+                                    <Pencil className="h-4 w-4 text-slate-400" />
+                                    Rename
+                                </ActionMenuButton>
+                                <ActionMenuButton
+                                    tone="danger"
+                                    disabled={parentPath === null}
+                                    onClick={() => {
+                                        close();
+                                        deleteMutation.reset();
+                                        setIsDeleteOpen(true);
+                                    }}
+                                >
+                                    <Trash2 className="h-4 w-4" />
+                                    Delete file
+                                </ActionMenuButton>
+                            </>
+                        )}
+                    </ActionMenu>
+                    {renameAction.dialog}
+                    <ConfirmationDialog
+                        isOpen={isDeleteOpen}
+                        title="Delete this file?"
+                        description={
+                            <>
+                                This permanently deletes
+                                <span className="mx-1 font-medium text-slate-100">
+                                    {props.fileName}
+                                </span>
+                                from the agent filesystem.
+                            </>
+                        }
+                        confirmLabel="Delete file"
+                        busyLabel="Deleting..."
+                        isBusy={deleteMutation.isPending}
+                        errorMessage={
+                            deleteMutation.isError
+                                ? getErrorMessage(
+                                      deleteMutation.error,
+                                      "Delete failed",
+                                  )
+                                : null
+                        }
+                        onClose={closeDeleteDialog}
+                        onConfirm={() => deleteMutation.mutate()}
+                    >
+                        <p className="overflow-x-auto whitespace-nowrap rounded-md border border-slate-800 bg-[#0b0d12] px-3 py-2.5 font-mono text-sm text-slate-300">
+                            {props.path}
+                        </p>
+                    </ConfirmationDialog>
+                </>
+            )}
+        </RenamePathAction>
     );
 }
 
@@ -351,8 +488,6 @@ export function FileDetailView(props: {
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                fileName={props.fileName}
-                downloadUrl={props.downloadUrl}
                 activeView="details"
             />
 
@@ -362,6 +497,23 @@ export function FileDetailView(props: {
                     name={props.fileName}
                     path={props.lsResult.path}
                     pathCopied={copiedCommand === "path"}
+                    nameActions={
+                        <a
+                            href={props.downloadUrl}
+                            download={props.fileName}
+                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+                        >
+                            <Download className="h-4 w-4" aria-hidden="true" />
+                            Download
+                        </a>
+                    }
+                    cornerActions={
+                        <FileDetailMenu
+                            agent={props.agent}
+                            path={props.path}
+                            fileName={props.fileName}
+                        />
+                    }
                     onCopyPath={() =>
                         copyToClipboard(props.lsResult.path, "path")
                     }

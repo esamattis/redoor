@@ -662,7 +662,9 @@ test.describe.serial("File Operations", () => {
             .getByRole("link", { name: "delete-me.txt", exact: true })
             .click();
 
-        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "File actions", exact: true })
+            .click();
         await page
             .getByRole("button", { name: "Delete file", exact: true })
             .click();
@@ -677,7 +679,9 @@ test.describe.serial("File Operations", () => {
             page.getByRole("dialog", { name: "Delete this file?" }),
         ).toBeHidden();
 
-        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "File actions", exact: true })
+            .click();
         await page
             .getByRole("button", { name: "Delete file", exact: true })
             .click();

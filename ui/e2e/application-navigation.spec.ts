@@ -71,6 +71,28 @@ test.describe("Application navigation", () => {
         await expect(openMenuButton).toHaveAttribute("aria-expanded", "false");
     });
 
+    test("uses drawers for both side menus on mid-sized screens", async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 1000, height: 800 });
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        // Mid-sized layouts reserve the width for route content instead of two persistent sidebars.
+        await expect(
+            page.getByRole("navigation", { name: "Application" }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("navigation", { name: "Agents" }),
+        ).toBeHidden();
+        // Both edge drawers remain independently reachable at this breakpoint.
+        await expect(
+            page.getByRole("button", { name: "Open application menu" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Open agent menu" }),
+        ).toBeVisible();
+    });
+
     test("coordinates independently placed mobile drawers and restores focus", async ({
         page,
     }) => {

@@ -97,8 +97,6 @@ export function FileSyncPage(props: {
                     agent={props.agent}
                     agentId={props.agentId}
                     path={props.path}
-                    fileName={props.fileName}
-                    downloadUrl={props.downloadUrl}
                     activeView="sync"
                 />
                 <SyncView

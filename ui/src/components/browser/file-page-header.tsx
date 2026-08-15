@@ -3,8 +3,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUp } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
-import { BrowserPageHeader } from "#ui/components/browser/navigation";
-import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import {
+    BrowserPageHeader,
+    ViewToggle,
+} from "#ui/components/browser/navigation";
 import {
     getBrowserPathHref,
     getImmediateParentPath,
@@ -39,10 +41,7 @@ export function FilePageHeader(props: {
     agent: Agent;
     agentId: string;
     path: string;
-    fileName: string;
-    downloadUrl: string;
     activeView: "details" | "view" | "diff" | "sync";
-    isEditorDirty?: boolean;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -71,31 +70,18 @@ export function FilePageHeader(props: {
             agent={props.agent}
             agentId={props.agentId}
             path={props.path}
-            actionLabel="File actions"
             navigation={
                 <FileViewNavigation
                     agent={props.agent}
                     parentPath={parentPath}
                 />
             }
-            actions={
-                <PersistentPathActions
+            viewToggle={
+                <ViewToggle
                     agent={props.agent}
                     path={props.path}
-                    currentName={props.fileName}
                     entryType="file"
-                    view={
-                        props.activeView === "view"
-                            ? "edit"
-                            : props.activeView === "diff"
-                              ? "diff"
-                              : props.activeView === "sync"
-                                ? "sync"
-                                : undefined
-                    }
-                    downloadUrl={props.downloadUrl}
-                    downloadName={props.fileName}
-                    isEditorDirty={props.isEditorDirty}
+                    activeView={props.activeView}
                 />
             }
         />

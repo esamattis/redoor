@@ -134,10 +134,7 @@ export function FileEditView(props: {
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                fileName={props.fileName}
-                downloadUrl={props.downloadUrl}
                 activeView="view"
-                isEditorDirty={isDirty}
             />
 
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
@@ -216,8 +213,6 @@ export function FileImageView(props: {
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                fileName={props.fileName}
-                downloadUrl={props.downloadUrl}
                 activeView="view"
             />
 
@@ -260,8 +255,6 @@ export function UnsupportedFileView(props: {
                 agent={props.agent}
                 agentId={props.agentId}
                 path={props.path}
-                fileName={props.fileName}
-                downloadUrl={props.downloadUrl}
                 activeView="view"
             />
 

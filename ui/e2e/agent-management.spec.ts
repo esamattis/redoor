@@ -128,6 +128,11 @@ test.describe.serial("Agent management", () => {
         await expect(
             page.getByRole("heading", { name: "Edit managed agent" }),
         ).toBeVisible();
+        const configurationTab = page
+            .getByLabel("Agent view")
+            .getByRole("link", { name: "Configuration", exact: true });
+        // Editable managed agents expose their form in global navigation, including while stopped.
+        await expect(configurationTab).toHaveAttribute("aria-current", "page");
         await expect(
             page.getByText("Agent configuration will be saved to"),
         ).toBeVisible();

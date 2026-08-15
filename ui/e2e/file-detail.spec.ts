@@ -179,7 +179,13 @@ test.describe.serial("File Detail View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}`,
         );
 
-        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("button", { name: "File actions", exact: true })
+            .click();
+        // The compact details menu keeps destructive actions away from the primary download control.
+        await expect(
+            page.getByRole("button", { name: "Delete file", exact: true }),
+        ).toBeVisible();
         await page.getByRole("button", { name: "Rename", exact: true }).click();
         const renameInput = page.getByRole("textbox", { name: "Rename file" });
         // The focused rename workflow starts with the current leaf name.

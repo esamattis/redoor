@@ -1,14 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import {
-    File,
     Files,
-    GitCompareArrows,
     HardDrive,
-    Info,
     PanelLeftOpen,
     PanelRightOpen,
-    RefreshCw,
     ScrollText,
+    Settings,
 } from "lucide-react";
 import type * as React from "react";
 
@@ -17,13 +14,12 @@ import {
     getViewSwitchItemClass,
     ViewSwitch,
 } from "#ui/components/browser/navigation";
-import { getBrowserPathHref } from "#ui/components/browser/utils";
 import { ThemeToggle } from "#ui/components/theme-toggle";
-import { Tooltip } from "#ui/components/tooltip";
 
 export type AgentViewContext =
     | { kind: "agent"; agent: Agent }
     | { kind: "logs"; agent: Agent }
+    | { kind: "configuration"; agent: Agent }
     | { kind: "directory"; agent: Agent; path: string }
     | { kind: "file"; agent: Agent; path: string }
     | null;
@@ -31,7 +27,6 @@ export type AgentViewContext =
 /** Turns the global top slot into route-specific representation navigation and mobile menu access. */
 export function ContextualTopBar(props: {
     context: AgentViewContext;
-    view: string | null;
     isApplicationMenuOpen: boolean;
     isAgentMenuOpen: boolean;
     applicationTriggerRef: React.RefObject<HTMLButtonElement | null>;
@@ -44,50 +39,40 @@ export function ContextualTopBar(props: {
             aria-label="View navigation"
             className="flex min-h-12 min-w-0 items-center gap-2 border-b border-slate-800 bg-[#0f1218] px-2 pt-2 md:px-3"
         >
-            <Tooltip content="Open application menu" className="md:hidden">
-                <button
-                    ref={props.applicationTriggerRef}
-                    type="button"
-                    aria-label="Open application menu"
-                    aria-haspopup="dialog"
-                    aria-controls="application-menu-drawer"
-                    aria-expanded={props.isApplicationMenuOpen}
-                    onClick={props.onOpenApplicationMenu}
-                    className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100"
-                >
-                    <PanelLeftOpen className="h-5 w-5" aria-hidden="true" />
-                </button>
-            </Tooltip>
+            <button
+                ref={props.applicationTriggerRef}
+                type="button"
+                aria-label="Open application menu"
+                aria-haspopup="dialog"
+                aria-controls="application-menu-drawer"
+                aria-expanded={props.isApplicationMenuOpen}
+                onClick={props.onOpenApplicationMenu}
+                className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100 xl:hidden"
+            >
+                <PanelLeftOpen className="h-5 w-5" aria-hidden="true" />
+            </button>
             <div className="flex min-w-0 flex-1 self-stretch items-end overflow-x-auto overscroll-x-contain">
-                <ContextualViewSwitch
-                    context={props.context}
-                    view={props.view}
-                />
+                <ContextualViewSwitch context={props.context} />
             </div>
             <ThemeToggle />
-            <Tooltip content="Open agent menu" className="md:hidden">
-                <button
-                    ref={props.agentTriggerRef}
-                    type="button"
-                    aria-label="Open agent menu"
-                    aria-haspopup="dialog"
-                    aria-controls="agent-menu-drawer"
-                    aria-expanded={props.isAgentMenuOpen}
-                    onClick={props.onOpenAgentMenu}
-                    className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100"
-                >
-                    <PanelRightOpen className="h-5 w-5" aria-hidden="true" />
-                </button>
-            </Tooltip>
+            <button
+                ref={props.agentTriggerRef}
+                type="button"
+                aria-label="Open agent menu"
+                aria-haspopup="dialog"
+                aria-controls="agent-menu-drawer"
+                aria-expanded={props.isAgentMenuOpen}
+                onClick={props.onOpenAgentMenu}
+                className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100 xl:hidden"
+            >
+                <PanelRightOpen className="h-5 w-5" aria-hidden="true" />
+            </button>
         </header>
     );
 }
 
 /** Selects only representations supported by the loaded agent or filesystem resource. */
-function ContextualViewSwitch(props: {
-    context: AgentViewContext;
-    view: string | null;
-}) {
+function ContextualViewSwitch(props: { context: AgentViewContext }) {
     if (!props.context) {
         return null;
     }
@@ -95,8 +80,12 @@ function ContextualViewSwitch(props: {
     const agent = props.context.agent;
     const agentTarget = `/agents/${encodeURIComponent(agent.id)}`;
     const logsTarget = `${agentTarget}/logs`;
-    if (props.context.kind === "agent" || props.context.kind === "logs") {
-        const filesTarget = agent.getBrowserUrl(agent.cwd ?? "/");
+    const configurationTarget = `${agentTarget}/edit`;
+    const filesTarget = agent.getBrowserUrl(agent.cwd ?? "/");
+    const isFilesystemContext =
+        props.context.kind === "directory" || props.context.kind === "file";
+    const canBrowse = agent.status === "connected" && agent.cwd !== null;
+    if (!isFilesystemContext) {
         return (
             <ViewSwitch label="Agent view">
                 <ViewLink
@@ -105,79 +94,43 @@ function ContextualViewSwitch(props: {
                     icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
                     active={props.context.kind === "agent"}
                 />
-                <Link
-                    to={filesTarget}
-                    className={getViewSwitchItemClass(false)}
-                >
-                    <Files className="h-4 w-4" aria-hidden="true" />
-                    Files
-                </Link>
-                <ViewLink
-                    to={logsTarget}
-                    label="Logs"
-                    icon={<ScrollText className="h-4 w-4" aria-hidden="true" />}
-                    active={props.context.kind === "logs"}
-                />
+                {canBrowse ? (
+                    <ViewLink
+                        to={filesTarget}
+                        label="Files"
+                        icon={<Files className="h-4 w-4" aria-hidden="true" />}
+                        active={false}
+                    />
+                ) : null}
+                {agent.configurationEditable ? (
+                    <ViewLink
+                        to={configurationTarget}
+                        label="Configuration"
+                        icon={
+                            <Settings className="h-4 w-4" aria-hidden="true" />
+                        }
+                        active={props.context.kind === "configuration"}
+                    />
+                ) : null}
+                {canBrowse ? (
+                    <ViewLink
+                        to={logsTarget}
+                        label="Logs"
+                        icon={
+                            <ScrollText
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        }
+                        active={props.context.kind === "logs"}
+                    />
+                ) : null}
             </ViewSwitch>
         );
     }
 
-    const pathTarget = getBrowserPathHref(agent, props.context.path);
-    if (props.context.kind === "directory") {
-        const activeView =
-            props.view === "details"
-                ? "details"
-                : props.view === "sync"
-                  ? "sync"
-                  : "files";
-        return (
-            <ViewSwitch label="Directory view">
-                <ViewLink
-                    to={agentTarget}
-                    label="Agent"
-                    icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
-                    active={false}
-                />
-                <ViewLink
-                    to={pathTarget}
-                    label="Files"
-                    icon={<Files className="h-4 w-4" aria-hidden="true" />}
-                    active={activeView === "files"}
-                />
-                <ViewLink
-                    to={pathTarget}
-                    search={{ view: "details" }}
-                    label="Details"
-                    icon={<Info className="h-4 w-4" aria-hidden="true" />}
-                    active={activeView === "details"}
-                />
-                <ViewLink
-                    to={pathTarget}
-                    search={{ view: "sync" }}
-                    label="Sync"
-                    icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
-                    active={activeView === "sync"}
-                />
-                <ViewLink
-                    to={logsTarget}
-                    label="Logs"
-                    icon={<ScrollText className="h-4 w-4" aria-hidden="true" />}
-                    active={false}
-                />
-            </ViewSwitch>
-        );
-    }
-
-    const activeView =
-        props.view === "edit"
-            ? "view"
-            : props.view === "diff"
-              ? "diff"
-              : props.view === "sync"
-                ? "sync"
-                : "details";
     return (
-        <ViewSwitch label="File view">
+        <ViewSwitch label="Agent view">
             <ViewLink
                 to={agentTarget}
                 label="Agent"
@@ -185,34 +138,19 @@ function ContextualViewSwitch(props: {
                 active={false}
             />
             <ViewLink
-                to={pathTarget}
-                label="Details"
-                icon={<Info className="h-4 w-4" aria-hidden="true" />}
-                active={activeView === "details"}
+                to={filesTarget}
+                label="Files"
+                icon={<Files className="h-4 w-4" aria-hidden="true" />}
+                active={true}
             />
-            <ViewLink
-                to={pathTarget}
-                search={{ view: "edit" }}
-                label="View"
-                icon={<File className="h-4 w-4" aria-hidden="true" />}
-                active={activeView === "view"}
-            />
-            <ViewLink
-                to={pathTarget}
-                search={{ view: "diff" }}
-                label="Diff"
-                icon={
-                    <GitCompareArrows className="h-4 w-4" aria-hidden="true" />
-                }
-                active={activeView === "diff"}
-            />
-            <ViewLink
-                to={pathTarget}
-                search={{ view: "sync" }}
-                label="Sync"
-                icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
-                active={activeView === "sync"}
-            />
+            {agent.configurationEditable ? (
+                <ViewLink
+                    to={configurationTarget}
+                    label="Configuration"
+                    icon={<Settings className="h-4 w-4" aria-hidden="true" />}
+                    active={false}
+                />
+            ) : null}
             <ViewLink
                 to={logsTarget}
                 label="Logs"

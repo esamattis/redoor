@@ -6,7 +6,7 @@ import { Tooltip } from "#ui/components/tooltip";
 const focusableSelector =
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/** Provides the shared desktop sidebar and accessible mobile drawer behavior for either edge. */
+/** Provides the shared wide-screen sidebar and responsive drawer behavior for either edge. */
 export function SideMenu(props: {
     placement: "left" | "right";
     label: string;
@@ -72,13 +72,13 @@ export function SideMenu(props: {
         <>
             <aside
                 aria-label={props.label}
-                className={`hidden w-56 shrink-0 flex-col ${borderClass} border-slate-800 bg-[#0f1218] p-3 md:flex`}
+                className={`hidden w-56 shrink-0 flex-col ${borderClass} border-slate-800 bg-[#0f1218] p-3 xl:flex`}
             >
                 {props.children}
             </aside>
             {props.isOpen ? (
                 <div
-                    className="fixed inset-0 z-50 bg-black/60 md:hidden"
+                    className="fixed inset-0 z-50 bg-black/60 xl:hidden"
                     role="dialog"
                     aria-modal="true"
                     aria-label={props.label}

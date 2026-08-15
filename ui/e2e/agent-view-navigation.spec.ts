@@ -38,6 +38,14 @@ test.describe("Agent view navigation", () => {
             .click();
         // Files must open the connected agent's published browser location.
         await expect(page).toHaveURL(context.agentBrowserUrl);
+        const browserAgentView = page.getByLabel("Agent view");
+        // Browser routes retain the global Files destination and identify it as current.
+        await expect(
+            browserAgentView.getByRole("link", {
+                name: "Files",
+                exact: true,
+            }),
+        ).toHaveAttribute("aria-current", "page");
         const homeBox = await page
             .getByRole("link", { name: "Agent home" })
             .boundingBox();
@@ -68,8 +76,7 @@ test.describe("Agent view navigation", () => {
         expect((moreBox?.y ?? 0) + (moreBox?.height ?? 0) / 2).toBeCloseTo(
             uploadCenter,
         );
-        await page
-            .getByLabel("Directory view")
+        await browserAgentView
             .getByRole("link", { name: "Agent", exact: true })
             .click();
         // Returning to the agent page must restore the Agent tab as current.

@@ -155,8 +155,20 @@ function useAgentViewContext(
             } satisfies AgentViewContext;
         }
     }
-    if (activeAgent?.status === "connected" && activeAgent.cwd !== null) {
+    if (activeAgent) {
         const agentPath = `/agents/${encodeURIComponent(activeAgent.id)}`;
+        if (
+            pathname === `${agentPath}/edit` &&
+            activeAgent.configurationEditable
+        ) {
+            return {
+                kind: "configuration",
+                agent: activeAgent,
+            } satisfies AgentViewContext;
+        }
+        if (activeAgent.status !== "connected" || activeAgent.cwd === null) {
+            return null;
+        }
         if (pathname === agentPath) {
             return {
                 kind: "agent",
@@ -288,7 +300,6 @@ function RootLayout() {
         activeAgent,
         location.pathname,
     );
-    const activeView = new URLSearchParams(location.searchStr).get("view");
     const logoutMutation = useMutation({
         mutationFn: () => api.logout(),
         onSuccess: () => {
@@ -362,7 +373,6 @@ function RootLayout() {
                 topChrome={
                     <ContextualTopBar
                         context={agentViewContext}
-                        view={activeView}
                         isApplicationMenuOpen={openMenu === "application"}
                         isAgentMenuOpen={openMenu === "agents"}
                         applicationTriggerRef={applicationMenuTriggerRef}

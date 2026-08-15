@@ -166,10 +166,12 @@ test.describe.serial("User state", () => {
         );
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
-        const activeFilesTab = page.getByRole("link", {
-            name: "Files",
-            exact: true,
-        });
+        const activeFilesTab = page
+            .getByLabel("Directory view")
+            .getByRole("link", {
+                name: "Files",
+                exact: true,
+            });
         // The raised active tab keeps high-contrast neutral text in the light theme.
         await expect(activeFilesTab).toHaveCSS("color", "rgb(15, 23, 42)");
         // Its icon retains the blue current-view accent used by the earlier tab treatment.
