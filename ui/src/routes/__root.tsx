@@ -213,6 +213,34 @@ function useManagedAgentRefresh(
     }, [agents, router]);
 }
 
+/** Resolves the closest useful shell directory from the active route's loaded data. */
+function useTerminalCwd() {
+    return useMatches({
+        select: (matches) => {
+            const browserMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId/browser/$",
+            );
+            if (browserMatch?.loaderData) {
+                const lsResult = browserMatch.loaderData.lsResult;
+                // Missing paths still expose a cwd so the terminal can open near the attempted location.
+                if (!lsResult) {
+                    return browserMatch.loaderData.path;
+                }
+                return isLsFileResponse(lsResult)
+                    ? getParentPath(browserMatch.loaderData.path)
+                    : browserMatch.loaderData.path;
+            }
+
+            const detailsMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId",
+            );
+            return detailsMatch?.loaderData?.kind === "connected"
+                ? detailsMatch.loaderData.agent.cwd
+                : null;
+        },
+    });
+}
+
 function RootLayout() {
     const { agents, transferProgress: initialTransferProgress } =
         Route.useLoaderData();
@@ -228,19 +256,6 @@ function RootLayout() {
         ...transfersQueryOptions(api),
         initialData: initialTransferProgress,
     });
-    const selectedFiles = useAtomValue(selectedFilesAtom);
-    const drawerActivation = useAtomValue(bottomDrawerActivationAtom);
-    const [activeDrawerTab, setActiveDrawerTab] =
-        React.useState<BottomDrawerTabId>("terminal");
-    const [isDrawerCollapsed, setIsDrawerCollapsed] = React.useState(true);
-    const lastDrawerActivationRef = React.useRef(0);
-    const activeTransfers = transferProgress.transfers.filter(
-        (transfer) => transfer.state === "active",
-    );
-    const lastTransferPercentage = useLastEstimatedTransferPercentage(
-        transferProgress.transfers,
-    );
-    const transferSummary = getTransferSummary(transferProgress.transfers);
     const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
     const importLocation = useMatches({
         select: (matches) => {
@@ -268,30 +283,7 @@ function RootLayout() {
         importAgent.cwd !== null
             ? { agent: importAgent, path: importLocation.path }
             : null;
-    const terminalCwd = useMatches({
-        select: (matches) => {
-            const browserMatch = matches.find(
-                (match) => match.routeId === "/agents/$agentId/browser/$",
-            );
-            if (browserMatch?.loaderData) {
-                const lsResult = browserMatch.loaderData.lsResult;
-                // Missing paths still expose a cwd so the terminal can open near the attempted location.
-                if (!lsResult) {
-                    return browserMatch.loaderData.path;
-                }
-                return isLsFileResponse(lsResult)
-                    ? getParentPath(browserMatch.loaderData.path)
-                    : browserMatch.loaderData.path;
-            }
-
-            const detailsMatch = matches.find(
-                (match) => match.routeId === "/agents/$agentId",
-            );
-            return detailsMatch?.loaderData?.kind === "connected"
-                ? detailsMatch.loaderData.agent.cwd
-                : null;
-        },
-    });
+    const terminalCwd = useTerminalCwd();
     const sortedAgents = React.useMemo(() => {
         return [...agents].sort((left, right) =>
             left.name.localeCompare(right.name),
@@ -322,17 +314,6 @@ function RootLayout() {
             window.location.replace("/login");
         },
     });
-
-    React.useEffect(() => {
-        if (
-            drawerActivation.sequence <= lastDrawerActivationRef.current
-        ) {
-            return;
-        }
-        lastDrawerActivationRef.current = drawerActivation.sequence;
-        setActiveDrawerTab(drawerActivation.tab);
-        setIsDrawerCollapsed(false);
-    }, [drawerActivation]);
 
     React.useEffect(() => {
         const refreshListener = new RefreshListener(api, router, queryClient);
@@ -409,50 +390,10 @@ function RootLayout() {
                     />
                 }
                 bottomChrome={
-                    <TabbedBottomDrawer
-                        activeTab={activeDrawerTab}
-                        isCollapsed={isDrawerCollapsed}
-                        onActiveTabChange={setActiveDrawerTab}
-                        onCollapsedChange={setIsDrawerCollapsed}
-                        tabs={[
-                            {
-                                id: "selected",
-                                label: "Selected",
-                                icon: <Files className="h-4 w-4" />,
-                                badge: `${selectedFiles.length}`,
-                                content: <SelectedFilesPane agents={agents} />,
-                            },
-                            {
-                                id: "transfers",
-                                label: "Transfers",
-                                icon: <ArrowUpDown className="h-4 w-4" />,
-                                badge:
-                                    lastTransferPercentage === null
-                                        ? transferSummary || "0"
-                                        : `${lastTransferPercentage}%`,
-                                content: (
-                                    <TransferProgressPane
-                                        agents={agents}
-                                        transfers={activeTransfers}
-                                    />
-                                ),
-                            },
-                            {
-                                id: "terminal",
-                                label: "Terminal",
-                                icon: <SquareTerminal className="h-4 w-4" />,
-                                content: (
-                                    <TerminalPanel
-                                        agents={agents}
-                                        activeTarget={activeTerminalTarget}
-                                        isVisible={
-                                            !isDrawerCollapsed &&
-                                            activeDrawerTab === "terminal"
-                                        }
-                                    />
-                                ),
-                            },
-                        ]}
+                    <ApplicationBottomDrawer
+                        agents={agents}
+                        transfers={transferProgress.transfers}
+                        activeTerminalTarget={activeTerminalTarget}
                     />
                 }
             >
@@ -477,6 +418,84 @@ function RootLayout() {
                 ]}
             />
         </div>
+    );
+}
+
+/** Owns shared tool state so the application shell only supplies loaded context. */
+function ApplicationBottomDrawer(props: {
+    agents: RootLoaderData["agents"];
+    transfers: TransferProgressEntry[];
+    activeTerminalTarget: {
+        agent: RootLoaderData["agents"][number];
+        cwd: string;
+    } | null;
+}) {
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const drawerActivation = useAtomValue(bottomDrawerActivationAtom);
+    const [activeTab, setActiveTab] =
+        React.useState<BottomDrawerTabId>("terminal");
+    const [isCollapsed, setIsCollapsed] = React.useState(true);
+    const lastActivationRef = React.useRef(0);
+    const activeTransfers = props.transfers.filter(
+        (transfer) => transfer.state === "active",
+    );
+    const lastTransferPercentage = useLastEstimatedTransferPercentage(
+        props.transfers,
+    );
+    const transferSummary = getTransferSummary(props.transfers);
+
+    React.useEffect(() => {
+        if (drawerActivation.sequence <= lastActivationRef.current) {
+            return;
+        }
+        lastActivationRef.current = drawerActivation.sequence;
+        setActiveTab(drawerActivation.tab);
+        setIsCollapsed(false);
+    }, [drawerActivation]);
+
+    return (
+        <TabbedBottomDrawer
+            activeTab={activeTab}
+            isCollapsed={isCollapsed}
+            onActiveTabChange={setActiveTab}
+            onCollapsedChange={setIsCollapsed}
+            tabs={[
+                {
+                    id: "selected",
+                    label: "Selected",
+                    icon: <Files className="h-4 w-4" />,
+                    badge: `${selectedFiles.length}`,
+                    content: <SelectedFilesPane agents={props.agents} />,
+                },
+                {
+                    id: "transfers",
+                    label: "Transfers",
+                    icon: <ArrowUpDown className="h-4 w-4" />,
+                    badge:
+                        lastTransferPercentage === null
+                            ? transferSummary || "0"
+                            : `${lastTransferPercentage}%`,
+                    content: (
+                        <TransferProgressPane
+                            agents={props.agents}
+                            transfers={activeTransfers}
+                        />
+                    ),
+                },
+                {
+                    id: "terminal",
+                    label: "Terminal",
+                    icon: <SquareTerminal className="h-4 w-4" />,
+                    content: (
+                        <TerminalPanel
+                            agents={props.agents}
+                            activeTarget={props.activeTerminalTarget}
+                            isVisible={!isCollapsed && activeTab === "terminal"}
+                        />
+                    ),
+                },
+            ]}
+        />
     );
 }
 
@@ -662,14 +681,6 @@ function SelectedFilesTable(props: {
             </table>
         </div>
     );
-}
-
-function getErrorMessage(cause: unknown) {
-    if (cause instanceof Error) {
-        return cause.message;
-    }
-
-    return "Upload failed";
 }
 
 /**

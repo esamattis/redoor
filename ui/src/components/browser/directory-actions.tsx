@@ -13,6 +13,7 @@ import {
     Plus,
     Trash2,
     Upload,
+    X,
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -23,6 +24,7 @@ import { Tooltip } from "#ui/components/tooltip";
 import type { Agent, ApiClient } from "#ui/api-client";
 import {
     selectedFilesAtom,
+    clearSelectedFilesAtom,
     unselectFileAtom,
     type SelectedPath,
 } from "#ui/selected-files";
@@ -31,6 +33,7 @@ import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
 type CopySelectedFilesState =
     | { type: "idle" }
@@ -106,10 +109,11 @@ function CopySelectedFilesAction(props: {
             file.agentId === props.destinationAgent.id &&
             file.path === joinBrowserPath(props.directoryPath, file.fileName),
     );
-
-    if (selectedFiles.length === 0) {
-        return null;
-    }
+    const canCopy =
+        selectedFiles.length > 0 &&
+        !isCurrentDirectorySelected &&
+        !isCopying &&
+        !isRoutePending;
 
     const handleCopySelectedFiles = async () => {
         if (selectedFiles.length === 0) {
@@ -211,21 +215,19 @@ function CopySelectedFilesAction(props: {
 
     return (
         <>
-            <button
-                type="button"
-                onClick={handleCopySelectedFiles}
-                aria-label="Copy selected files here"
-                disabled={
-                    selectedFiles.length === 0 ||
-                    isCurrentDirectorySelected ||
-                    isCopying ||
-                    isRoutePending
-                }
-                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-                <Copy className="h-3.5 w-3.5" />
-                {isCopying ? "Copying..." : "Copy here"}
-            </button>
+            {canCopy ? (
+                <Tooltip content="Copy selected items to this directory">
+                    <button
+                        type="button"
+                        onClick={handleCopySelectedFiles}
+                        aria-label="Copy selected items to this directory"
+                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+                    >
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy
+                    </button>
+                </Tooltip>
+            ) : null}
             {statusMessage ? (
                 <Toast
                     tone={
@@ -256,6 +258,8 @@ export function SelectedFilesCard(props: {
     const router = useRouter();
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
+    const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
+    const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
     const fileCount = selectedFiles.filter(
         (file) => file.entryType === "file",
@@ -310,10 +314,6 @@ export function SelectedFilesCard(props: {
         onSuccess: () => setIsDeleteDialogOpen(false),
     });
 
-    if (selectedFiles.length === 0) {
-        return null;
-    }
-
     /** Prevents the confirmation from closing while deletion is in progress. */
     const closeDeleteDialog = () => {
         if (deleteMutation.isPending) {
@@ -333,12 +333,36 @@ export function SelectedFilesCard(props: {
                     <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-300">
                         <Files className="h-4 w-4" aria-hidden="true" />
                     </span>
-                    <p className="text-sm font-medium text-slate-200">
-                        {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
-                        {directoryCount}{" "}
-                        {directoryCount === 1 ? "directory" : "directories"}{" "}
-                        selected
-                    </p>
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <p className="text-sm font-medium text-slate-200">
+                            {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
+                            {directoryCount}{" "}
+                            {directoryCount === 1 ? "directory" : "directories"}{" "}
+                            selected
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => activateBottomDrawerTab("selected")}
+                            className="inline-flex h-7 items-center rounded-md border border-slate-700 px-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        >
+                            Show
+                        </button>
+                        {selectedFiles.length > 0 ? (
+                            <Tooltip content="Clear selection">
+                                <button
+                                    type="button"
+                                    aria-label="Clear selection"
+                                    onClick={clearSelectedFiles}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                                >
+                                    <X
+                                        className="h-3.5 w-3.5"
+                                        aria-hidden="true"
+                                    />
+                                </button>
+                            </Tooltip>
+                        ) : null}
+                    </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <CopySelectedFilesAction
@@ -347,18 +371,25 @@ export function SelectedFilesCard(props: {
                         destinationAgent={props.destinationAgent}
                         directoryPath={props.directoryPath}
                     />
-                    <button
-                        type="button"
-                        onClick={() => {
-                            deleteMutation.reset();
-                            setIsDeleteDialogOpen(true);
-                        }}
-                        disabled={deleteMutation.isPending}
-                        className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-sm font-semibold text-red-200 transition-colors hover:border-red-500/60 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        Delete selected files
-                    </button>
+                    {selectedFiles.length > 0 && !deleteMutation.isPending ? (
+                        <Tooltip content="Delete selected items">
+                            <button
+                                type="button"
+                                aria-label="Delete selected items"
+                                onClick={() => {
+                                    deleteMutation.reset();
+                                    setIsDeleteDialogOpen(true);
+                                }}
+                                className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-sm font-semibold text-red-200 transition-colors hover:border-red-500/60 hover:bg-red-500/20"
+                            >
+                                <Trash2
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                />
+                                Delete
+                            </button>
+                        </Tooltip>
+                    ) : null}
                 </div>
             </section>
             <ConfirmationDialog

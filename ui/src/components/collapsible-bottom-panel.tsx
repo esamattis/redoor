@@ -54,7 +54,10 @@ export function TabbedBottomDrawer(props: {
     };
 
     return (
-        <div data-collapsed={props.isCollapsed} className="z-10 shrink-0">
+        <div
+            data-collapsed={props.isCollapsed}
+            className="relative z-10 h-[49px] shrink-0"
+        >
             <section
                 ref={resize.panelRef}
                 style={
@@ -63,7 +66,7 @@ export function TabbedBottomDrawer(props: {
                         : undefined
                 }
                 aria-label="Application tools"
-                className="flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
+                className="absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
             >
                 {props.isCollapsed ? null : (
                     <div

@@ -279,9 +279,7 @@ function FileBrowser() {
                     fileName={fileName}
                     lsResult={lsResult}
                     downloadUrl={downloadUrl}
-                    initialOneTimeTokens={
-                        data.metadata?.one_time_tokens ?? []
-                    }
+                    initialOneTimeTokens={data.metadata?.one_time_tokens ?? []}
                 />
             );
 

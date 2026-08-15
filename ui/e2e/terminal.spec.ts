@@ -39,6 +39,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
 
         await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .click();
@@ -78,6 +79,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             .parse(await detailsResponse.json());
 
         await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await expect(
             page.getByRole("tablist", { name: "Terminal tabs" }),
         ).toBeVisible();
@@ -119,10 +121,10 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCSS("caret-color", "rgba(0, 0, 0, 0)");
 
         await page
-            .getByRole("button", { name: "Minimize Terminal" })
+            .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
         await page
-            .getByRole("button", { name: "Expand Terminal" })
+            .getByRole("button", { name: "Expand bottom drawer" })
             .press("Enter");
         await expect(
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
@@ -131,7 +133,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(terminalSockets).toHaveLength(1);
 
         await page
-            .getByRole("button", { name: "Minimize Terminal" })
+            .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
         await page
             .getByRole("link", { name: ctx.testDirName, exact: true })
@@ -140,6 +142,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .click();
@@ -177,7 +180,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(terminalSockets).toHaveLength(2);
 
         await page
-            .getByRole("button", { name: "Minimize Terminal" })
+            .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
@@ -186,6 +189,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("file1.txt");
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .click();
@@ -312,6 +316,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .click();
@@ -358,6 +363,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
 
         await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .hover();
@@ -389,7 +395,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(firstTerminal).toBeFocused();
 
         await page
-            .getByRole("button", { name: "Minimize Terminal" })
+            .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
         await page.keyboard.press("t");
         // A collapsed live session is restored instead of opening a duplicate.
@@ -424,7 +430,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(firstTerminal).toBeFocused();
 
         await page
-            .getByRole("button", { name: "Minimize Terminal" })
+            .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
         await page
             .getByRole("link", { name: ctx.testDirName, exact: true })

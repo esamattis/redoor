@@ -31,7 +31,7 @@ test.describe.serial("Copy Operations", () => {
             .click();
 
         let copyButton = page.getByRole("button", {
-            name: "Copy selected files here",
+            name: "Copy selected items to this directory",
         });
         const fileListing = page.getByRole("table").first();
 
@@ -42,21 +42,26 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
+        // Copying onto the same path is unusable, so the action remains hidden at the source.
+        await expect(copyButton).toHaveCount(0);
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+
         copyButton = page.getByRole("button", {
-            name: "Copy selected files here",
+            name: "Copy selected items to this directory",
         });
-        // Selecting a file reveals the destination action in the directory toolbar.
+        // A distinct destination reveals the copy action in the directory toolbar.
         await expect(copyButton).toBeVisible();
         await expect(copyButton).toBeEnabled();
 
-        const selectedItemsPanel = page
-            .getByRole("heading", { name: "Selected items" })
-            .locator("xpath=ancestor::section");
+        await page.getByRole("button", { name: "Show", exact: true }).click();
+        const selectedItemsPanel = page.getByRole("tabpanel", {
+            name: /Selected/,
+        });
 
         // The popup no longer contains the copy action after it was moved into the directory.
         await expect(
             selectedItemsPanel.getByRole("button", {
-                name: "Copy selected files here",
+                name: "Copy selected items to this directory",
             }),
         ).toHaveCount(0);
 
@@ -68,24 +73,14 @@ test.describe.serial("Copy Operations", () => {
         expect(fileListingBox).not.toBeNull();
         expect(copyButtonBox?.y).toBeLessThan(fileListingBox?.y ?? 0);
 
-        await page
-            .getByLabel("File entry file1.txt")
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
-        );
-        await expect(
-            page.getByRole("heading", { name: "File name" }),
-        ).toContainText("file1.txt");
-
-        // File detail pages are not copy destinations, so they do not show the action.
-        await expect(copyButton).toHaveCount(0);
-
         // Drop the selection so later serial tests start from a clean clipboard state.
-        await page.getByRole("button", { name: "Clear all" }).click();
+        await page.getByRole("button", { name: "Clear selection" }).click();
+        // Clearing removes the selected row while leaving the persistent drawer available.
         await expect(
-            page.getByRole("heading", { name: "Selected items" }),
+            selectedItemsPanel.getByRole("link", {
+                name: "file1.txt",
+                exact: true,
+            }),
         ).toHaveCount(0);
     });
 
@@ -154,7 +149,9 @@ test.describe.serial("Copy Operations", () => {
         ).toBeVisible();
 
         // Clear any leftover selection from earlier serial tests in this worker.
-        const clearSelection = page.getByRole("button", { name: "Clear all" });
+        const clearSelection = page.getByRole("button", {
+            name: "Clear selection",
+        });
         if (await clearSelection.isVisible()) {
             await clearSelection.click();
         }
@@ -164,16 +161,20 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
+        await page.getByRole("button", { name: "Show", exact: true }).click();
+        const selectedItemsPanel = page.getByRole("tabpanel", {
+            name: /Selected/,
+        });
         // The selected-items panel must show the file we just chose, not another row.
         await expect(
-            page.getByRole("heading", { name: "Selected items" }),
+            selectedItemsPanel.getByRole("link", {
+                name: "file1.txt",
+                exact: true,
+            }),
         ).toBeVisible();
-        await expect(
-            page
-                .getByRole("heading", { name: "Selected items" })
-                .locator("xpath=ancestor::section")
-                .getByRole("link", { name: "file1.txt", exact: true }),
-        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Minimize bottom drawer" })
+            .click();
 
         // Navigate into the newly created directory to set it as the copy destination.
         await page
@@ -185,11 +186,11 @@ test.describe.serial("Copy Operations", () => {
 
         // The selection persists across navigation, so the destination action is enabled.
         const copyButton = page.getByRole("button", {
-            name: "Copy selected files here",
+            name: "Copy selected items to this directory",
         });
         await expect(copyButton).toBeEnabled();
-        // The contextual label carries the selected count without a separate destination banner.
-        await expect(copyButton).toHaveText("Copy 1 here");
+        // The compact action keeps details in its accessible label and tooltip.
+        await expect(copyButton).toHaveText("Copy");
 
         const copyResponsePromise = page.waitForResponse(
             (response) =>
@@ -203,7 +204,7 @@ test.describe.serial("Copy Operations", () => {
         expect(copyResponse.ok()).toBe(true);
         // Terminal success clears the copied item rather than clearing it on request acceptance.
         await expect(
-            page.getByRole("heading", { name: "Selected items" }),
+            page.getByRole("button", { name: "Clear selection" }),
         ).toHaveCount(0, { timeout: 30_000 });
 
         // Reload the page because the directory listing does not auto-refresh after copy.
@@ -243,10 +244,12 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("button", { name: "Select file file1.txt" })
             .click();
 
-        // The source directory exposes the action now that a file is selected.
+        // The source directory hides copy because it would overwrite the same path.
         await expect(
-            page.getByRole("button", { name: "Copy selected files here" }),
-        ).toBeEnabled();
+            page.getByRole("button", {
+                name: "Copy selected items to this directory",
+            }),
+        ).toHaveCount(0);
 
         // Navigate to the destination agent via the right menu so the
         // selection state survives the client-side navigation.
@@ -256,7 +259,7 @@ test.describe.serial("Copy Operations", () => {
 
         // The selection persists across agents, so the destination action remains enabled.
         const copyButton = page.getByRole("button", {
-            name: "Copy selected files here",
+            name: "Copy selected items to this directory",
         });
         await expect(copyButton).toBeEnabled();
 
@@ -264,7 +267,7 @@ test.describe.serial("Copy Operations", () => {
 
         // Cross-agent copies use the same terminal transfer state before clearing selection.
         await expect(
-            page.getByRole("heading", { name: "Selected items" }),
+            page.getByRole("button", { name: "Clear selection" }),
         ).toHaveCount(0, { timeout: 30_000 });
 
         // Reload the page because the directory listing does not auto-refresh after copy.

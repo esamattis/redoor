@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { WEB_BASE_URL } from "./helpers";
 
 test.describe("Server home", () => {
-    test("keeps transfer totals available in a minimized bar", async ({
+    test("keeps transfer progress available in a minimized bar", async ({
         page,
     }) => {
         await page.route("**/api/v1/transfers/progress", async (route) => {
@@ -33,23 +33,20 @@ test.describe("Server home", () => {
 
         await page.goto(`${WEB_BASE_URL}/`);
 
-        const panel = page
-            .getByRole("heading", { name: "Transfers" })
-            .locator("xpath=ancestor::section");
-        // The aggregate header keeps transfer state visible without opening the drawer.
-        await expect(panel).toContainText(
-            "3 downloading, 2 uploading, 38 completed, 1 errored",
-        );
+        const panel = page.getByRole("region", {
+            name: "Application tools",
+        });
+        const transfersTab = panel.getByRole("tab", { name: /Transfers/ });
+        // Active work prioritizes its completion percentage in the compact tab badge.
+        await expect(transfersTab).toContainText("50%");
         // Starting minimized prevents transfer details from taking page space by default.
         await expect(
-            panel.getByRole("button", { name: "Expand Transfers" }),
+            panel.getByRole("button", { name: "Expand bottom drawer" }),
         ).toHaveAttribute("aria-expanded", "false");
         // The list is absent, rather than merely hidden, while the drawer is minimized.
         await expect(panel.getByRole("table")).toHaveCount(0);
 
-        await panel
-            .getByRole("button", { name: "Expand Transfers" })
-            .press("Enter");
+        await transfersTab.press("Enter");
 
         // Expanding mounts only active transfer rows; history remains behind View all.
         await expect(panel.getByRole("row")).toHaveCount(6);
@@ -83,16 +80,13 @@ test.describe("Server home", () => {
         });
 
         await page.goto(`${WEB_BASE_URL}/`);
-        const panel = page
-            .getByRole("heading", { name: "Transfers" })
-            .locator("xpath=ancestor::section");
+        const panel = page.getByRole("region", {
+            name: "Application tools",
+        });
+        const transfersTab = panel.getByRole("tab", { name: /Transfers/ });
         // The only active transfer is also the one expected to finish last.
-        await expect(
-            panel.getByRole("heading", { name: /Transfers \d+%/ }),
-        ).toBeVisible();
-        await panel
-            .getByRole("button", { name: "Expand Transfers" })
-            .press("Enter");
+        await expect(transfersTab).toContainText(/\d+%/);
+        await transfersTab.press("Enter");
 
         const progress = panel.getByRole("img", {
             name: /Transfer progress \d+% .+\/s/,
@@ -143,7 +137,7 @@ server = "${serverProtocol}//${browserUrl.host}"
     });
 });
 
-/** Builds deterministic transfer snapshots for the minimized-bar aggregate test. */
+/** Builds deterministic transfer snapshots for the minimized-bar progress test. */
 function createTransfers(
     count: number,
     options: {
