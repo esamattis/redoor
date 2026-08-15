@@ -1,7 +1,6 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "#ui/api-client";
-import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
@@ -60,8 +59,6 @@ function FileEditActions(props: {
 /** Edits plain-text file contents in one textarea with explicit save/restore. */
 export function FileEditView(props: {
     agent: Agent;
-    agentId: string;
-    path: string;
     fileName: string;
     filePath: string;
     mimeType: string;
@@ -130,13 +127,6 @@ export function FileEditView(props: {
 
     return (
         <div>
-            <FilePageHeader
-                agent={props.agent}
-                agentId={props.agentId}
-                path={props.path}
-                activeView="view"
-            />
-
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
@@ -202,20 +192,11 @@ export function FileEditView(props: {
 /** Renders agent-verified images through the authenticated raw download URL. */
 export function FileImageView(props: {
     agent: Agent;
-    agentId: string;
-    path: string;
     fileName: string;
     downloadUrl: string;
 }) {
     return (
         <div>
-            <FilePageHeader
-                agent={props.agent}
-                agentId={props.agentId}
-                path={props.path}
-                activeView="view"
-            />
-
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
@@ -244,20 +225,11 @@ export function FileImageView(props: {
 /** Explains that the agent did not mark this path as text-editable or image-viewable. */
 export function UnsupportedFileView(props: {
     agent: Agent;
-    agentId: string;
-    path: string;
     fileName: string;
     downloadUrl: string;
 }) {
     return (
         <div>
-            <FilePageHeader
-                agent={props.agent}
-                agentId={props.agentId}
-                path={props.path}
-                activeView="view"
-            />
-
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">

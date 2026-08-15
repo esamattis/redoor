@@ -1,4 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import {
     type ApiClient,
     type Agent,
@@ -14,7 +15,10 @@ import {
     MissingPathSkeleton,
     UnavailablePathState,
 } from "#ui/components/browser/navigation";
-import { DirectoryFilesActions } from "#ui/components/browser/directory-actions";
+import {
+    DirectoryFilesActions,
+    SelectedFilesCard,
+} from "#ui/components/browser/directory-actions";
 import { FileList } from "#ui/components/browser/file-list";
 import { UploadQueue } from "#ui/components/browser/upload-queue";
 import {
@@ -22,7 +26,7 @@ import {
     FileDetailView,
 } from "#ui/components/browser/metadata";
 import { FileDiffView } from "#ui/components/browser/file-diff-view";
-import { FileSyncPage, SyncView } from "#ui/components/browser/sync";
+import { SyncView } from "#ui/components/browser/sync";
 import {
     FileEditView,
     FileImageView,
@@ -123,6 +127,40 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
     errorComponent: RouteError,
 });
 
+/** Fixes browser navigation chrome in one route-level frame for every path type and view. */
+function BrowserRouteShell(props: {
+    agent: Agent;
+    agentId: string;
+    path: string;
+    parentPath: string | null;
+    entryType: "directory" | "file";
+    activeView: "files" | "details" | "view" | "diff" | "sync";
+    constrainContent?: boolean;
+    pathUnavailable?: boolean;
+    children: ReactNode;
+}) {
+    return (
+        <div className="p-2 lg:p-4">
+            <BrowserHeader
+                agent={props.agent}
+                agentId={props.agentId}
+                path={props.path}
+                parentPath={props.parentPath}
+                entryType={props.entryType}
+                activeView={props.activeView}
+                pathUnavailable={props.pathUnavailable}
+            />
+            <div
+                className={
+                    props.constrainContent ? "mx-auto max-w-6xl" : "w-full"
+                }
+            >
+                {props.children}
+            </div>
+        </div>
+    );
+}
+
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { api } = Route.useRouteContext();
@@ -134,29 +172,27 @@ function FileBrowser() {
 
     if (pathError) {
         return (
-            <div className="p-6">
-                <div className="mx-auto max-w-6xl">
-                    <BrowserHeader
+            <BrowserRouteShell
+                agent={agent}
+                agentId={agentId}
+                path={path}
+                parentPath={parentPath}
+                entryType="directory"
+                activeView="files"
+                constrainContent
+                pathUnavailable
+            >
+                {pathError.type === "missing" ? (
+                    <MissingPathSkeleton />
+                ) : (
+                    <UnavailablePathState
                         agent={agent}
-                        agentId={agentId}
                         path={path}
                         parentPath={parentPath}
-                        directoryPath={path}
-                        activeView="files"
-                        pathUnavailable={true}
+                        error={pathError}
                     />
-                    {pathError.type === "missing" ? (
-                        <MissingPathSkeleton />
-                    ) : (
-                        <UnavailablePathState
-                            agent={agent}
-                            path={path}
-                            parentPath={parentPath}
-                            error={pathError}
-                        />
-                    )}
-                </div>
-            </div>
+                )}
+            </BrowserRouteShell>
         );
     }
 
@@ -187,111 +223,80 @@ function FileBrowser() {
         const editable = data.metadata?.editable === true;
         const viewableImage = data.metadata?.viewable_image === true;
 
-        if (search.view === "diff") {
-            return (
-                <div className="p-6">
-                    <div className="mx-auto max-w-6xl">
-                        <FileDiffView
-                            key={`${agentId}:${lsResult.path}`}
-                            api={api}
-                            agent={agent}
-                            agents={data.agents}
-                            agentId={agentId}
-                            path={path}
-                            fileName={fileName}
-                            filePath={lsResult.path}
-                            downloadUrl={downloadUrl}
-                        />
-                    </div>
-                </div>
-            );
-        }
-
-        if (search.view === "sync") {
-            return (
-                <FileSyncPage
+        const activeView =
+            search.view === "diff"
+                ? "diff"
+                : search.view === "sync"
+                  ? "sync"
+                  : search.view === "edit"
+                    ? "view"
+                    : "details";
+        const content =
+            activeView === "diff" ? (
+                <FileDiffView
                     key={`${agentId}:${lsResult.path}`}
                     api={api}
                     agent={agent}
                     agents={data.agents}
                     agentId={agentId}
-                    path={path}
                     fileName={fileName}
                     filePath={lsResult.path}
                     downloadUrl={downloadUrl}
                 />
+            ) : activeView === "sync" ? (
+                <SyncView
+                    api={api}
+                    sourceAgent={agent}
+                    agents={data.agents}
+                    sourcePath={lsResult.path}
+                    entryType="file"
+                />
+            ) : activeView === "view" && editable ? (
+                <FileEditView
+                    key={`${agentId}:${lsResult.path}`}
+                    agent={agent}
+                    fileName={fileName}
+                    filePath={lsResult.path}
+                    mimeType={data.metadata?.mime_type ?? "text/plain"}
+                    downloadUrl={downloadUrl}
+                />
+            ) : activeView === "view" && viewableImage ? (
+                <FileImageView
+                    agent={agent}
+                    fileName={fileName}
+                    downloadUrl={downloadUrl}
+                />
+            ) : activeView === "view" ? (
+                <UnsupportedFileView
+                    agent={agent}
+                    fileName={fileName}
+                    downloadUrl={downloadUrl}
+                />
+            ) : (
+                <FileDetailView
+                    agent={agent}
+                    path={path}
+                    fileName={fileName}
+                    lsResult={lsResult}
+                    downloadUrl={downloadUrl}
+                    initialOneTimeTokens={
+                        data.metadata?.one_time_tokens ?? []
+                    }
+                />
             );
-        }
-
-        if (search.view === "edit") {
-            if (editable) {
-                return (
-                    <div className="p-6">
-                        <div className="mx-auto max-w-6xl">
-                            <FileEditView
-                                key={`${agentId}:${lsResult.path}`}
-                                agent={agent}
-                                agentId={agentId}
-                                path={path}
-                                fileName={fileName}
-                                filePath={lsResult.path}
-                                mimeType={
-                                    data.metadata?.mime_type ?? "text/plain"
-                                }
-                                downloadUrl={downloadUrl}
-                            />
-                        </div>
-                    </div>
-                );
-            }
-
-            if (viewableImage) {
-                return (
-                    <div className="p-6">
-                        <div className="mx-auto max-w-6xl">
-                            <FileImageView
-                                agent={agent}
-                                agentId={agentId}
-                                path={path}
-                                fileName={fileName}
-                                downloadUrl={downloadUrl}
-                            />
-                        </div>
-                    </div>
-                );
-            }
-
-            return (
-                <div className="p-6">
-                    <div className="mx-auto max-w-6xl">
-                        <UnsupportedFileView
-                            agent={agent}
-                            agentId={agentId}
-                            path={path}
-                            fileName={fileName}
-                            downloadUrl={downloadUrl}
-                        />
-                    </div>
-                </div>
-            );
-        }
 
         return (
-            <div className="p-6">
-                <div className="mx-auto max-w-6xl">
-                    <FileDetailView
-                        agent={agent}
-                        agentId={agentId}
-                        path={path}
-                        fileName={fileName}
-                        lsResult={lsResult}
-                        downloadUrl={downloadUrl}
-                        initialOneTimeTokens={
-                            data.metadata?.one_time_tokens ?? []
-                        }
-                    />
-                </div>
-            </div>
+            <BrowserRouteShell
+                agent={agent}
+                agentId={agentId}
+                path={path}
+                parentPath={parentPath}
+                entryType="file"
+                activeView={activeView}
+                constrainContent
+            >
+                {content}
+            </BrowserRouteShell>
         );
     }
 
@@ -330,75 +335,72 @@ function DirectoryBrowserPage(props: {
               : "files";
 
     return (
-        <div className="p-2 lg:p-4">
-            <div
-                className={
-                    activeView === "files" ? "w-full" : "mx-auto max-w-6xl"
-                }
-            >
-                <BrowserHeader
-                    agent={props.agent}
-                    agentId={props.agentId}
+        <BrowserRouteShell
+            agent={props.agent}
+            agentId={props.agentId}
+            path={props.path}
+            parentPath={props.parentPath}
+            entryType="directory"
+            activeView={activeView}
+            constrainContent={activeView !== "files"}
+        >
+            {activeView === "details" ? (
+                <DirectoryDetailView
                     path={props.path}
-                    parentPath={props.parentPath}
-                    directoryPath={props.path}
-                    activeView={activeView}
+                    directoryName={
+                        props.path.split("/").filter(Boolean).pop() ?? "/"
+                    }
+                    lsResult={props.lsResult}
                 />
-
-                {activeView === "details" ? (
-                    <DirectoryDetailView
-                        path={props.path}
-                        directoryName={
-                            props.path.split("/").filter(Boolean).pop() ?? "/"
-                        }
-                        lsResult={props.lsResult}
+            ) : activeView === "sync" ? (
+                <SyncView
+                    api={props.api}
+                    sourceAgent={props.agent}
+                    agents={props.agents}
+                    sourcePath={props.lsResult.path}
+                    entryType="directory"
+                />
+            ) : (
+                <>
+                    <UploadQueue
+                        agentId={props.agentId}
+                        destinationPath={props.path}
                     />
-                ) : activeView === "sync" ? (
-                    <SyncView
+                    <SelectedFilesCard
                         api={props.api}
-                        sourceAgent={props.agent}
                         agents={props.agents}
-                        sourcePath={props.lsResult.path}
-                        entryType="directory"
+                        destinationAgent={props.agent}
+                        directoryPath={props.path}
                     />
-                ) : (
-                    <>
-                        <UploadQueue
-                            agentId={props.agentId}
-                            destinationPath={props.path}
-                        />
-                        <FileList
-                            key={props.path}
-                            agent={props.agent}
-                            agentId={props.agentId}
-                            agentName={props.agentName}
-                            directoryPath={props.path}
-                            files={[...directories, ...regularFiles]}
-                            mountPoint={getMountPointForPath(
-                                props.mountPoints,
-                                props.path,
-                            )}
-                            actions={
-                                <DirectoryFilesActions
-                                    api={props.api}
-                                    agent={props.agent}
-                                    agents={props.agents}
-                                    directoryPath={props.path}
-                                    showHiddenFiles={showHiddenFiles}
-                                    onToggleHiddenFiles={() =>
-                                        setUserState((current) => ({
-                                            ...current,
-                                            showHiddenFiles:
-                                                !current.showHiddenFiles,
-                                        }))
-                                    }
-                                />
-                            }
-                        />
-                    </>
-                )}
-            </div>
-        </div>
+                    <FileList
+                        key={props.path}
+                        agent={props.agent}
+                        agentId={props.agentId}
+                        agentName={props.agentName}
+                        directoryPath={props.path}
+                        files={[...directories, ...regularFiles]}
+                        mountPoint={getMountPointForPath(
+                            props.mountPoints,
+                            props.path,
+                        )}
+                        actions={
+                            <DirectoryFilesActions
+                                agent={props.agent}
+                                directoryPath={props.path}
+                                showHiddenFiles={showHiddenFiles}
+                                onToggleHiddenFiles={() =>
+                                    setUserState((current) => ({
+                                        ...current,
+                                        showHiddenFiles:
+                                            !current.showHiddenFiles,
+                                    }))
+                                }
+                            />
+                        }
+                    />
+                </>
+            )}
+        </BrowserRouteShell>
     );
 }
 

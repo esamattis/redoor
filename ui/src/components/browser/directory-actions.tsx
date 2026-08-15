@@ -1,7 +1,7 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
     ClipboardPaste,
     Copy,
@@ -9,10 +9,13 @@ import {
     EyeOff,
     FilePlus,
     FolderPlus,
+    Files,
     Plus,
+    Trash2,
     Upload,
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { Toast } from "#ui/components/toast";
@@ -98,6 +101,11 @@ function CopySelectedFilesAction(props: {
               ? null
               : copyState.message;
     const isCopying = copyState.type === "copying";
+    const isCurrentDirectorySelected = selectedFiles.every(
+        (file) =>
+            file.agentId === props.destinationAgent.id &&
+            file.path === joinBrowserPath(props.directoryPath, file.fileName),
+    );
 
     if (selectedFiles.length === 0) {
         return null;
@@ -208,12 +216,15 @@ function CopySelectedFilesAction(props: {
                 onClick={handleCopySelectedFiles}
                 aria-label="Copy selected files here"
                 disabled={
-                    selectedFiles.length === 0 || isCopying || isRoutePending
+                    selectedFiles.length === 0 ||
+                    isCurrentDirectorySelected ||
+                    isCopying ||
+                    isRoutePending
                 }
                 className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
                 <Copy className="h-3.5 w-3.5" />
-                {isCopying ? "Copying..." : `Copy ${selectedFiles.length} here`}
+                {isCopying ? "Copying..." : "Copy here"}
             </button>
             {statusMessage ? (
                 <Toast
@@ -231,6 +242,144 @@ function CopySelectedFilesAction(props: {
                     {statusMessage}
                 </Toast>
             ) : null}
+        </>
+    );
+}
+
+/** Keeps selected-item context and bulk actions adjacent to the file list. */
+export function SelectedFilesCard(props: {
+    api: ApiClient;
+    agents: Agent[];
+    destinationAgent: Agent;
+    directoryPath: string;
+}) {
+    const router = useRouter();
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+    const fileCount = selectedFiles.filter(
+        (file) => file.entryType === "file",
+    ).length;
+    const directoryCount = selectedFiles.length - fileCount;
+    const deleteMutation = useMutation({
+        mutationFn: async (files: SelectedPath[]) => {
+            const agentsById = new Map(
+                props.agents.map((agent) => [agent.id, agent]),
+            );
+            const results = await Promise.allSettled(
+                files.map((file) => {
+                    const agent = agentsById.get(file.agentId);
+                    if (!agent) {
+                        return Promise.reject(
+                            new Error(
+                                `Agent unavailable for selected item: ${file.agentId}`,
+                            ),
+                        );
+                    }
+                    return agent.deleteFile(file.path);
+                }),
+            );
+            const successfulDeletes = files.filter(
+                (_file, index) => results[index]?.status === "fulfilled",
+            );
+            const failedDeletes = results.filter(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected",
+            );
+
+            if (successfulDeletes.length > 0) {
+                successfulDeletes.forEach((file) => {
+                    unselectFile({ agentId: file.agentId, path: file.path });
+                });
+                await router.invalidate();
+            }
+
+            if (failedDeletes.length > 0) {
+                const firstFailure = failedDeletes[0];
+                const failureMessage = getErrorMessage(
+                    firstFailure ? firstFailure.reason : undefined,
+                    "Delete failed",
+                );
+                throw new Error(
+                    successfulDeletes.length > 0
+                        ? `Deleted ${successfulDeletes.length} of ${files.length} items. ${failureMessage}`
+                        : failureMessage,
+                );
+            }
+        },
+        onSuccess: () => setIsDeleteDialogOpen(false),
+    });
+
+    if (selectedFiles.length === 0) {
+        return null;
+    }
+
+    /** Prevents the confirmation from closing while deletion is in progress. */
+    const closeDeleteDialog = () => {
+        if (deleteMutation.isPending) {
+            return;
+        }
+        setIsDeleteDialogOpen(false);
+        deleteMutation.reset();
+    };
+
+    return (
+        <>
+            <section
+                aria-label="Selected files actions"
+                className="mb-3 flex flex-col gap-3 rounded-lg border border-blue-500/25 bg-blue-500/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+                <div className="flex min-w-0 items-center gap-3">
+                    <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-300">
+                        <Files className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <p className="text-sm font-medium text-slate-200">
+                        {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
+                        {directoryCount}{" "}
+                        {directoryCount === 1 ? "directory" : "directories"}{" "}
+                        selected
+                    </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    <CopySelectedFilesAction
+                        api={props.api}
+                        agents={props.agents}
+                        destinationAgent={props.destinationAgent}
+                        directoryPath={props.directoryPath}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => {
+                            deleteMutation.reset();
+                            setIsDeleteDialogOpen(true);
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-sm font-semibold text-red-200 transition-colors hover:border-red-500/60 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        Delete selected files
+                    </button>
+                </div>
+            </section>
+            <ConfirmationDialog
+                isOpen={isDeleteDialogOpen}
+                title={`Delete ${selectedFiles.length === 1 ? "this selected item" : "these selected items"}?`}
+                description={`This permanently deletes ${fileCount} ${fileCount === 1 ? "file" : "files"} and ${directoryCount} ${directoryCount === 1 ? "directory" : "directories"} from the agent filesystem.`}
+                confirmLabel={
+                    selectedFiles.length === 1
+                        ? "Delete selected item"
+                        : `Delete ${selectedFiles.length} selected items`
+                }
+                busyLabel="Deleting..."
+                isBusy={deleteMutation.isPending}
+                errorMessage={
+                    deleteMutation.isError
+                        ? getErrorMessage(deleteMutation.error, "Delete failed")
+                        : null
+                }
+                onClose={closeDeleteDialog}
+                onConfirm={() => deleteMutation.mutate([...selectedFiles])}
+            />
         </>
     );
 }
@@ -680,9 +829,7 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
 
 /** Keeps controls that affect only the file-list representation inside that view. */
 export function DirectoryFilesActions(props: {
-    api: ApiClient;
     agent: Agent;
-    agents: Agent[];
     directoryPath: string;
     showHiddenFiles: boolean;
     onToggleHiddenFiles: () => void;
@@ -745,12 +892,6 @@ export function DirectoryFilesActions(props: {
                     downloadName={archiveName}
                     downloadTooltip="Downloads this directory as a .tar.gz archive."
                     secondaryDownload
-                />
-                <CopySelectedFilesAction
-                    api={props.api}
-                    agents={props.agents}
-                    destinationAgent={props.agent}
-                    directoryPath={props.directoryPath}
                 />
             </div>
         </div>

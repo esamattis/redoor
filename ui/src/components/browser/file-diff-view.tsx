@@ -3,7 +3,6 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { FileSearch, GitCompareArrows } from "lucide-react";
 import type { ApiClient, Agent } from "#ui/api-client";
-import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { AgentPathFields } from "#ui/components/browser/sync";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
@@ -14,7 +13,6 @@ export function FileDiffView(props: {
     agent: Agent;
     agents: Array<Agent>;
     agentId: string;
-    path: string;
     fileName: string;
     filePath: string;
     downloadUrl: string;
@@ -67,13 +65,6 @@ export function FileDiffView(props: {
 
     return (
         <div>
-            <FilePageHeader
-                agent={props.agent}
-                agentId={props.agentId}
-                path={props.path}
-                activeView="diff"
-            />
-
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="border-b border-slate-800 p-6 md:p-8">
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">

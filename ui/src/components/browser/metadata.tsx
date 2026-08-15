@@ -18,7 +18,6 @@ import type {
 } from "#ui/api-client";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
-import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import {
@@ -447,7 +446,6 @@ export function DirectoryDetailView(props: {
 /** Presents file metadata and destructive actions with clear visual separation. */
 export function FileDetailView(props: {
     agent: Agent;
-    agentId: string;
     path: string;
     fileName: string;
     lsResult: LsFileResponse;
@@ -484,13 +482,6 @@ export function FileDetailView(props: {
 
     return (
         <div>
-            <FilePageHeader
-                agent={props.agent}
-                agentId={props.agentId}
-                path={props.path}
-                activeView="details"
-            />
-
             <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <PathDetailHeader
                     entryType="file"

@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
 /**
  * Represents a path selected in the UI for later copy actions.
@@ -8,6 +9,7 @@ export type SelectedPath = {
     agentName: string;
     path: string;
     fileName: string;
+    entryType: "file" | "directory";
 };
 
 function getSelectedFileKey(file: Pick<SelectedPath, "agentId" | "path">) {
@@ -49,6 +51,7 @@ export const selectFileAtom = atom(null, (get, set, file: SelectedPath) => {
     }
 
     set(selectedFilesAtom, [...selectedFiles, file]);
+    set(activateBottomDrawerTabAtom, "selected");
 });
 
 /**
@@ -92,6 +95,7 @@ export const toggleSelectedFileAtom = atom(
         }
 
         set(selectedFilesAtom, [...selectedFiles, file]);
+        set(activateBottomDrawerTabAtom, "selected");
     },
 );
 

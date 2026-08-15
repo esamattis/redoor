@@ -1,60 +1,77 @@
 import * as React from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import type { BottomDrawerTabId } from "#ui/bottom-drawer-state";
 
-/** Keeps persistent activity visible without letting its controls dominate the page. */
-export function CollapsibleBottomPanel(props: {
-    title: string;
-    titleSuffix?: React.ReactNode;
-    description?: string;
-    badge?: React.ReactNode;
-    actions?: React.ReactNode;
-    actionsAlignment?: "start" | "end";
+/** Describes one mounted pane and its compact representation in the drawer tab strip. */
+export type BottomDrawerTab = {
+    id: BottomDrawerTabId;
+    label: string;
     icon?: React.ReactNode;
-    children: React.ReactNode;
-    defaultCollapsed?: boolean;
-    isCollapsed?: boolean;
-    onCollapsedChange?: (isCollapsed: boolean) => void;
-    keepChildrenMounted?: boolean;
-    defaultExpandedHeight?: number;
-    /** Keeps title for a11y labels while showing only the icon in the header. */
-    hideTitle?: boolean;
-}) {
-    const [uncontrolledCollapsed, setUncontrolledCollapsed] = React.useState(
-        props.defaultCollapsed ?? false,
-    );
-    const isCollapsed = props.isCollapsed ?? uncontrolledCollapsed;
-    const resize = useBottomPanelResize({
-        isCollapsed,
-        defaultExpandedHeight: props.defaultExpandedHeight,
-    });
-    const toggleLabel = `${isCollapsed ? "Expand" : "Minimize"} ${props.title}`;
+    badge?: React.ReactNode;
+    content: React.ReactNode;
+};
 
-    /** Updates either the controlled owner or this panel's local collapse state. */
-    const setIsCollapsed = (nextCollapsed: boolean) => {
-        if (props.isCollapsed === undefined) {
-            setUncontrolledCollapsed(nextCollapsed);
+/** Keeps persistent tools in one resizable drawer without unmounting inactive panes. */
+export function TabbedBottomDrawer(props: {
+    tabs: BottomDrawerTab[];
+    activeTab: BottomDrawerTabId;
+    isCollapsed: boolean;
+    onActiveTabChange: (tab: BottomDrawerTabId) => void;
+    onCollapsedChange: (isCollapsed: boolean) => void;
+}) {
+    const resize = useBottomPanelResize({
+        isCollapsed: props.isCollapsed,
+        defaultExpandedHeight: 400,
+    });
+    const toggleLabel = props.isCollapsed
+        ? "Expand bottom drawer"
+        : "Minimize bottom drawer";
+
+    /** Activates a primary pane and reveals the drawer after a direct tab click. */
+    const activateTab = (tab: BottomDrawerTabId) => {
+        props.onActiveTabChange(tab);
+        props.onCollapsedChange(false);
+    };
+
+    /** Gives the primary tab strip conventional horizontal arrow navigation. */
+    const handleTabKeyDown = (
+        event: React.KeyboardEvent<HTMLButtonElement>,
+        tabIndex: number,
+    ) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+            return;
         }
-        props.onCollapsedChange?.(nextCollapsed);
+        const offset = event.key === "ArrowRight" ? 1 : -1;
+        const nextIndex =
+            (tabIndex + offset + props.tabs.length) % props.tabs.length;
+        const nextTab = props.tabs[nextIndex];
+        if (!nextTab) {
+            return;
+        }
+        activateTab(nextTab.id);
+        document.getElementById(`bottom-drawer-tab-${nextTab.id}`)?.focus();
+        event.preventDefault();
     };
 
     return (
-        <div data-collapsed={isCollapsed} className="z-10 shrink-0">
+        <div data-collapsed={props.isCollapsed} className="z-10 shrink-0">
             <section
                 ref={resize.panelRef}
                 style={
-                    !isCollapsed && resize.expandedHeight !== null
+                    !props.isCollapsed && resize.expandedHeight !== null
                         ? { height: resize.expandedHeight }
                         : undefined
                 }
+                aria-label="Application tools"
                 className="flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
             >
-                {isCollapsed ? null : (
+                {props.isCollapsed ? null : (
                     <div
                         role="separator"
-                        aria-label={`Resize ${props.title}`}
+                        aria-label="Resize bottom drawer"
                         aria-orientation="horizontal"
                         tabIndex={0}
-                        title={`Resize ${props.title}`}
+                        title="Resize bottom drawer"
                         onPointerDown={resize.handleResizeStart}
                         onPointerMove={resize.handleResizeMove}
                         onPointerUp={resize.handleResizeEnd}
@@ -67,52 +84,49 @@ export function CollapsibleBottomPanel(props: {
                         }`}
                     />
                 )}
-                <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
+                <div
+                    className={`flex min-h-0 max-w-full flex-col px-2 sm:px-4 ${props.isCollapsed ? "py-1.5" : "flex-1 py-2"}`}
+                >
                     <div
                         ref={resize.headerRef}
-                        className="flex min-w-0 shrink-0 items-center gap-2"
+                        className="flex min-w-0 shrink-0 items-center gap-1"
                     >
-                        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain">
-                            <div className="flex w-max min-w-full items-center gap-3">
-                                <div className="flex shrink-0 items-center gap-3">
-                                    {props.icon ? (
-                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
-                                            {props.icon}
-                                        </div>
-                                    ) : null}
-                                    <div
-                                        className={
-                                            props.hideTitle
-                                                ? "sr-only"
-                                                : "min-w-0"
+                        <div
+                            role="tablist"
+                            aria-label="Application tools"
+                            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain"
+                        >
+                            {props.tabs.map((tab, tabIndex) => {
+                                const isActive = tab.id === props.activeTab;
+                                return (
+                                    <button
+                                        key={tab.id}
+                                        id={`bottom-drawer-tab-${tab.id}`}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={isActive}
+                                        aria-controls={`bottom-drawer-panel-${tab.id}`}
+                                        tabIndex={isActive ? 0 : -1}
+                                        onClick={() => activateTab(tab.id)}
+                                        onKeyDown={(event) =>
+                                            handleTabKeyDown(event, tabIndex)
                                         }
+                                        className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-md px-2.5 text-xs font-medium transition-colors sm:px-3 ${
+                                            isActive
+                                                ? "bg-slate-800 text-slate-100"
+                                                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                                        }`}
                                     >
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            <h2 className="text-sm font-semibold text-slate-100">
-                                                {props.title}
-                                                {props.titleSuffix}
-                                            </h2>
-                                            {props.badge}
-                                        </div>
-                                        {props.description ? (
-                                            <p className="truncate text-xs text-slate-500">
-                                                {props.description}
-                                            </p>
+                                        {tab.icon}
+                                        <span>{tab.label}</span>
+                                        {tab.badge ? (
+                                            <span className="max-w-32 truncate rounded bg-slate-950/60 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400 sm:max-w-48">
+                                                {tab.badge}
+                                            </span>
                                         ) : null}
-                                    </div>
-                                </div>
-                                {props.actions ? (
-                                    <div
-                                        className={
-                                            props.actionsAlignment === "start"
-                                                ? "flex min-w-max flex-1 items-center"
-                                                : "ml-auto flex min-w-max items-center"
-                                        }
-                                    >
-                                        {props.actions}
-                                    </div>
-                                ) : null}
-                            </div>
+                                    </button>
+                                );
+                            })}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                             <div className="mx-1 h-5 w-px bg-slate-800" />
@@ -120,11 +134,13 @@ export function CollapsibleBottomPanel(props: {
                                 type="button"
                                 aria-label={toggleLabel}
                                 title={toggleLabel}
-                                aria-expanded={!isCollapsed}
-                                onClick={() => setIsCollapsed(!isCollapsed)}
+                                aria-expanded={!props.isCollapsed}
+                                onClick={() =>
+                                    props.onCollapsedChange(!props.isCollapsed)
+                                }
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                             >
-                                {isCollapsed ? (
+                                {props.isCollapsed ? (
                                     <ChevronUp className="h-4 w-4" />
                                 ) : (
                                     <ChevronDown className="h-4 w-4" />
@@ -133,19 +149,28 @@ export function CollapsibleBottomPanel(props: {
                         </div>
                     </div>
 
-                    {props.keepChildrenMounted ? (
-                        <div
-                            hidden={isCollapsed}
-                            aria-hidden={isCollapsed}
-                            className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3"
-                        >
-                            {props.children}
-                        </div>
-                    ) : isCollapsed ? null : (
-                        <div className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3">
-                            {props.children}
-                        </div>
-                    )}
+                    <div
+                        hidden={props.isCollapsed}
+                        aria-hidden={props.isCollapsed}
+                        className="mt-2 min-h-0 flex-1 overflow-hidden border-t border-slate-800 pt-2"
+                    >
+                        {props.tabs.map((tab) => {
+                            const isActive = tab.id === props.activeTab;
+                            return (
+                                <div
+                                    key={tab.id}
+                                    id={`bottom-drawer-panel-${tab.id}`}
+                                    role="tabpanel"
+                                    aria-labelledby={`bottom-drawer-tab-${tab.id}`}
+                                    hidden={!isActive}
+                                    aria-hidden={!isActive}
+                                    className="h-full min-h-0"
+                                >
+                                    {tab.content}
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             </section>
         </div>
@@ -180,11 +205,10 @@ function useBottomPanelResize(props: {
         }
 
         const panelRect = panel.getBoundingClientRect();
-        const parentTop = panel.parentElement?.getBoundingClientRect().top ?? 0;
         return {
             currentHeight: panelRect.height,
             minHeight: header.getBoundingClientRect().height + 48,
-            maxHeight: Math.max(panelRect.height, panelRect.bottom - parentTop),
+            maxHeight: Math.max(panelRect.height, window.innerHeight * 0.85),
         };
     };
 

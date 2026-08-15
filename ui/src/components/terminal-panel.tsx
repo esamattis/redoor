@@ -6,9 +6,9 @@ import {
     LoaderCircle,
     MoreHorizontal,
     RotateCcw,
-    SquareTerminal,
     X,
 } from "lucide-react";
+import { useSetAtom } from "jotai";
 import type {
     FitAddon as GhosttyFitAddon,
     IDisposable,
@@ -23,10 +23,10 @@ import {
 } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
 import { AddButton } from "#ui/components/add-button";
-import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
 import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
+import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
 type TerminalState =
     | { type: "not_started" }
@@ -139,8 +139,9 @@ function findOpenTerminalForAgent(
 export function TerminalPanel(props: {
     agents: Agent[];
     activeTarget: ActiveTerminalTarget | null;
+    isVisible: boolean;
 }) {
-    const [isCollapsed, setIsCollapsed] = React.useState(true);
+    const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
@@ -172,7 +173,7 @@ export function TerminalPanel(props: {
             },
         ]);
         setActiveTabId(id);
-        setIsCollapsed(false);
+        activateBottomDrawerTab("terminal");
     };
 
     /** Updates only the session that emitted a lifecycle transition. */
@@ -198,9 +199,6 @@ export function TerminalPanel(props: {
                 remainingTabs[tabIndex] ?? remainingTabs[tabIndex - 1] ?? null;
             setActiveTabId(replacement?.id ?? null);
         }
-        if (remainingTabs.length === 0) {
-            setIsCollapsed(true);
-        }
     };
 
     /** Requests a fresh shell while preserving the tab's identity and cwd. */
@@ -217,7 +215,7 @@ export function TerminalPanel(props: {
             ),
         );
         setActiveTabId(tabId);
-        setIsCollapsed(false);
+        activateBottomDrawerTab("terminal");
     };
 
     /** Gives arrow keys browser-style selection across terminal tabs. */
@@ -252,6 +250,7 @@ export function TerminalPanel(props: {
             if (!props.activeTarget) {
                 if (!isPickerOpen) {
                     event.preventDefault();
+                    activateBottomDrawerTab("terminal");
                     setIsPickerOpen(true);
                 }
                 return;
@@ -265,7 +264,7 @@ export function TerminalPanel(props: {
             );
             if (existingTab) {
                 setActiveTabId(existingTab.id);
-                setIsCollapsed(false);
+                activateBottomDrawerTab("terminal");
             } else {
                 createTerminal(props.activeTarget);
             }
@@ -274,14 +273,17 @@ export function TerminalPanel(props: {
 
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [activeTabId, isPickerOpen, props.activeTarget, tabs]);
+    }, [
+        activeTabId,
+        activateBottomDrawerTab,
+        isPickerOpen,
+        props.activeTarget,
+        tabs,
+    ]);
 
     return (
-        <CollapsibleBottomPanel
-            title="Terminal"
-            icon={<SquareTerminal className="h-4 w-4" />}
-            hideTitle
-            actions={
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="shrink-0 overflow-x-auto overscroll-x-contain pb-2">
                 <TerminalTabActions
                     agents={props.agents}
                     activeTarget={props.activeTarget}
@@ -295,27 +297,26 @@ export function TerminalPanel(props: {
                     onSelect={setActiveTabId}
                     onTabKeyDown={handleTabKeyDown}
                 />
-            }
-            actionsAlignment="start"
-            isCollapsed={isCollapsed}
-            onCollapsedChange={setIsCollapsed}
-            keepChildrenMounted
-            defaultExpandedHeight={400}
-        >
-            <div className="terminal-surface relative h-full overflow-hidden rounded-md bg-[#0b0d12] p-2">
+            </div>
+            <div className="terminal-surface relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12] p-2">
                 {tabs.map((tab) => (
                     <TerminalSession
                         key={tab.id}
                         agent={tab.agent}
                         tab={tab}
                         isActive={tab.id === activeTabId}
-                        isPanelCollapsed={isCollapsed}
+                        isPanelCollapsed={!props.isVisible}
                         focusRequestId={focusRequestId}
                         onStateChange={updateTabState}
                     />
                 ))}
+                {tabs.length === 0 ? (
+                    <div className="flex h-full items-center justify-center px-4 text-center text-sm text-slate-500">
+                        Open a terminal for a connected agent to start a shell.
+                    </div>
+                ) : null}
             </div>
-        </CollapsibleBottomPanel>
+        </div>
     );
 }
 

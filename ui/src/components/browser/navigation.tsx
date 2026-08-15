@@ -180,8 +180,8 @@ export function BrowserHeader(props: {
     agentId: string;
     path: string;
     parentPath: string | null;
-    directoryPath: string;
-    activeView: "files" | "details" | "sync";
+    entryType: "directory" | "file";
+    activeView: "files" | "details" | "view" | "diff" | "sync";
     pathUnavailable?: boolean;
 }) {
     const navigate = useNavigate();
@@ -197,10 +197,14 @@ export function BrowserHeader(props: {
                 return;
             }
 
-            if (props.activeView !== "files" && !pathUnavailable) {
+            if (
+                props.entryType === "directory" &&
+                props.activeView !== "files" &&
+                !pathUnavailable
+            ) {
                 event.preventDefault();
                 void navigate({
-                    to: props.agent.getBrowserUrl(props.directoryPath),
+                    to: props.agent.getBrowserUrl(props.path),
                     search: {},
                 });
                 return;
@@ -248,7 +252,7 @@ export function BrowserHeader(props: {
                 <ViewToggle
                     agent={props.agent}
                     path={props.path}
-                    entryType="directory"
+                    entryType={props.entryType}
                     activeView={props.activeView}
                 />
             }

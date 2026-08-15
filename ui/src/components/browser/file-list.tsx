@@ -874,6 +874,7 @@ function FileEntry(props: {
                             agentName,
                             path: fullPath,
                             fileName: entry.name,
+                            entryType: isDirectory ? "directory" : "file",
                         })
                     }
                 />

@@ -11,7 +11,7 @@ import {
 import { useAtomValue, useSetAtom } from "jotai";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
-import { X, Files, Trash2, LoaderCircle } from "lucide-react";
+import { ArrowUpDown, Files, SquareTerminal, X } from "lucide-react";
 import {
     ApiClient,
     isLsDirectoryResponse,
@@ -27,13 +27,12 @@ import {
     clearSelectedFilesAtom,
     type SelectedPath,
 } from "#ui/selected-files";
-import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     TransferList,
     useLastEstimatedTransferPercentage,
 } from "#ui/components/transfer-list";
-import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
+import { TabbedBottomDrawer } from "#ui/components/collapsible-bottom-panel";
 import { TerminalPanel } from "#ui/components/terminal-panel";
 import { getParentPath } from "#ui/utils/path";
 import { GlobalFileImportHandler } from "#ui/components/global-file-import-handler";
@@ -57,6 +56,10 @@ import {
     ContextualTopBar,
     type AgentViewContext,
 } from "#ui/components/contextual-top-bar";
+import {
+    bottomDrawerActivationAtom,
+    type BottomDrawerTabId,
+} from "#ui/bottom-drawer-state";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -225,6 +228,19 @@ function RootLayout() {
         ...transfersQueryOptions(api),
         initialData: initialTransferProgress,
     });
+    const selectedFiles = useAtomValue(selectedFilesAtom);
+    const drawerActivation = useAtomValue(bottomDrawerActivationAtom);
+    const [activeDrawerTab, setActiveDrawerTab] =
+        React.useState<BottomDrawerTabId>("terminal");
+    const [isDrawerCollapsed, setIsDrawerCollapsed] = React.useState(true);
+    const lastDrawerActivationRef = React.useRef(0);
+    const activeTransfers = transferProgress.transfers.filter(
+        (transfer) => transfer.state === "active",
+    );
+    const lastTransferPercentage = useLastEstimatedTransferPercentage(
+        transferProgress.transfers,
+    );
+    const transferSummary = getTransferSummary(transferProgress.transfers);
     const rememberAgentTabLocation = useSetAtom(rememberAgentTabLocationAtom);
     const importLocation = useMatches({
         select: (matches) => {
@@ -308,6 +324,17 @@ function RootLayout() {
     });
 
     React.useEffect(() => {
+        if (
+            drawerActivation.sequence <= lastDrawerActivationRef.current
+        ) {
+            return;
+        }
+        lastDrawerActivationRef.current = drawerActivation.sequence;
+        setActiveDrawerTab(drawerActivation.tab);
+        setIsDrawerCollapsed(false);
+    }, [drawerActivation]);
+
+    React.useEffect(() => {
         const refreshListener = new RefreshListener(api, router, queryClient);
         refreshListener.start();
         return () => refreshListener.stop();
@@ -382,17 +409,51 @@ function RootLayout() {
                     />
                 }
                 bottomChrome={
-                    <>
-                        <TerminalPanel
-                            agents={agents}
-                            activeTarget={activeTerminalTarget}
-                        />
-                        <SelectedFilesPanel agents={agents} />
-                        <TransferProgressPanel
-                            agents={agents}
-                            transfers={transferProgress.transfers}
-                        />
-                    </>
+                    <TabbedBottomDrawer
+                        activeTab={activeDrawerTab}
+                        isCollapsed={isDrawerCollapsed}
+                        onActiveTabChange={setActiveDrawerTab}
+                        onCollapsedChange={setIsDrawerCollapsed}
+                        tabs={[
+                            {
+                                id: "selected",
+                                label: "Selected",
+                                icon: <Files className="h-4 w-4" />,
+                                badge: `${selectedFiles.length}`,
+                                content: <SelectedFilesPane agents={agents} />,
+                            },
+                            {
+                                id: "transfers",
+                                label: "Transfers",
+                                icon: <ArrowUpDown className="h-4 w-4" />,
+                                badge:
+                                    lastTransferPercentage === null
+                                        ? transferSummary || "0"
+                                        : `${lastTransferPercentage}%`,
+                                content: (
+                                    <TransferProgressPane
+                                        agents={agents}
+                                        transfers={activeTransfers}
+                                    />
+                                ),
+                            },
+                            {
+                                id: "terminal",
+                                label: "Terminal",
+                                icon: <SquareTerminal className="h-4 w-4" />,
+                                content: (
+                                    <TerminalPanel
+                                        agents={agents}
+                                        activeTarget={activeTerminalTarget}
+                                        isVisible={
+                                            !isDrawerCollapsed &&
+                                            activeDrawerTab === "terminal"
+                                        }
+                                    />
+                                ),
+                            },
+                        ]}
+                    />
                 }
             >
                 <Outlet />
@@ -456,43 +517,18 @@ function RouteLoadingIndicator() {
 
 /** Renders controls that operate on the complete selected-items list. */
 function SelectedFilesPanelActions(props: {
-    isDeleting: boolean;
-    selectedFileCount: number;
-    onOpenDeleteDialog: () => void;
     onClearSelectedFiles: () => void;
 }) {
     return (
         <div className="flex items-center gap-2">
-            {props.isDeleting ? (
-                <span
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500/10 text-red-400"
-                    aria-label="Deleting selected items"
-                    role="status"
-                >
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                </span>
-            ) : (
-                <Tooltip content="Delete selected items">
-                    <span className="inline-flex">
-                        <button
-                            type="button"
-                            onClick={props.onOpenDeleteDialog}
-                            disabled={props.selectedFileCount === 0}
-                            aria-label="Delete selected items"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <Trash2 className="h-4 w-4" />
-                        </button>
-                    </span>
-                </Tooltip>
-            )}
-
             <button
                 type="button"
+                aria-label="Clear all selected items"
                 onClick={props.onClearSelectedFiles}
-                className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                className="inline-flex h-8 items-center justify-center rounded-md px-2 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 sm:px-2.5"
             >
-                Clear all
+                <X className="h-4 w-4 sm:hidden" aria-hidden="true" />
+                <span className="hidden sm:inline">Clear all</span>
             </button>
         </div>
     );
@@ -505,8 +541,53 @@ function SelectedFilesTable(props: {
     onUnselectFile: (file: Pick<SelectedPath, "agentId" | "path">) => void;
 }) {
     return (
-        <div className="max-h-64 overflow-auto bg-[#11141b]">
-            <table className="w-full">
+        <div className="h-full overflow-auto bg-[#11141b]">
+            <ul className="divide-y divide-slate-800/70 md:hidden">
+                {props.selectedFiles.map((file) => (
+                    <li
+                        key={`${file.agentId}:${file.path}`}
+                        className="flex min-w-0 items-start gap-3 p-3"
+                    >
+                        <div className="min-w-0 flex-1">
+                            <Link
+                                to={
+                                    props.agents
+                                        .find(
+                                            (agent) =>
+                                                agent.id === file.agentId,
+                                        )
+                                        ?.getBrowserUrl(file.path) ?? "/"
+                                }
+                                className="block break-words text-sm font-medium text-blue-400 hover:underline"
+                            >
+                                {file.fileName}
+                            </Link>
+                            <p className="mt-1 text-xs text-slate-500">
+                                {file.agentName}
+                            </p>
+                            <p className="mt-1 break-all font-mono text-xs leading-relaxed text-slate-400">
+                                {file.path}
+                            </p>
+                        </div>
+                        <Tooltip content={`Unselect ${file.fileName}`}>
+                            <button
+                                type="button"
+                                aria-label={`Unselect ${file.fileName}`}
+                                onClick={() =>
+                                    props.onUnselectFile({
+                                        agentId: file.agentId,
+                                        path: file.path,
+                                    })
+                                }
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700 text-slate-300 transition-colors hover:bg-white/5"
+                            >
+                                <X className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                        </Tooltip>
+                    </li>
+                ))}
+            </ul>
+            <table className="hidden min-w-[44rem] w-full md:table">
                 <thead className="sticky top-0 bg-[#1a1f2a]">
                     <tr className="border-b border-slate-800">
                         <th className="p-3 text-left text-sm font-medium text-slate-400">
@@ -592,68 +673,12 @@ function getErrorMessage(cause: unknown) {
 }
 
 /**
- * Shows the globally selected items so they can be reviewed, cleared, or deleted.
+ * Shows globally selected items inside the shared drawer without owning its chrome.
  */
-function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
-    const router = useRouter();
+function SelectedFilesPane(props: { agents: RootLoaderData["agents"] }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
     const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
-    const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
-    const deleteMutation = useMutation({
-        mutationFn: async (files: SelectedPath[]) => {
-            const agentsById = new Map(
-                props.agents.map((agent) => [agent.id, agent]),
-            );
-            const results = await Promise.allSettled(
-                files.map((file) => {
-                    const agent = agentsById.get(file.agentId);
-                    if (!agent) {
-                        return Promise.reject(
-                            new Error(
-                                `Agent unavailable for selected item: ${file.agentId}`,
-                            ),
-                        );
-                    }
-                    return agent.deleteFile(file.path);
-                }),
-            );
-            const successfulDeletes = files.filter(
-                (_file, index) => results[index]?.status === "fulfilled",
-            );
-            const failedDeletes = results.filter(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successfulDeletes.length > 0) {
-                await router.invalidate();
-                await router.load();
-                successfulDeletes.forEach((file) => {
-                    unselectFile({ agentId: file.agentId, path: file.path });
-                });
-            }
-
-            if (failedDeletes.length > 0) {
-                const firstFailedDelete = failedDeletes[0];
-                const failureMessage = getErrorMessage(
-                    firstFailedDelete ? firstFailedDelete.reason : undefined,
-                ).replace(/^Upload failed$/, "Delete failed");
-                throw new Error(
-                    successfulDeletes.length > 0
-                        ? `Deleted ${successfulDeletes.length} of ${files.length} items. ${failureMessage}`
-                        : failureMessage,
-                );
-            }
-        },
-        onSuccess: () => {
-            setIsDeleteDialogOpen(false);
-        },
-    });
-
-    if (selectedFiles.length === 0) {
-        return null;
-    }
 
     // Sort selected files case-insensitively with dot-prefixed items first so
     // the list is stable and easy to scan.
@@ -668,91 +693,38 @@ function SelectedFilesPanel(props: { agents: RootLoaderData["agents"] }) {
         });
     });
 
-    /** Keeps destructive confirmation visible while its request is in flight. */
-    const closeDeleteDialog = () => {
-        if (deleteMutation.isPending) {
-            return;
-        }
-
-        setIsDeleteDialogOpen(false);
-        deleteMutation.reset();
-    };
-
-    const handleDeleteSelectedFiles = () => {
-        if (selectedFiles.length === 0) {
-            return;
-        }
-        deleteMutation.mutate([...selectedFiles]);
-    };
-
     return (
-        <>
-            <CollapsibleBottomPanel
-                title="Selected items"
-                description="Files and directories selected for copy operations"
-                icon={<Files className="h-4 w-4" />}
-                badge={
-                    <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">
-                        {selectedFiles.length}{" "}
-                        {selectedFiles.length === 1 ? "item" : "items"}
-                    </span>
-                }
-                actions={
+        <div className="flex h-full min-h-0 flex-col">
+            {selectedFiles.length > 0 ? (
+                <div className="flex shrink-0 justify-end pb-2">
                     <SelectedFilesPanelActions
-                        isDeleting={deleteMutation.isPending}
-                        selectedFileCount={selectedFiles.length}
-                        onOpenDeleteDialog={() => {
-                            deleteMutation.reset();
-                            setIsDeleteDialogOpen(true);
-                        }}
                         onClearSelectedFiles={clearSelectedFiles}
                     />
-                }
-            >
-                <SelectedFilesTable
-                    agents={props.agents}
-                    selectedFiles={sortedSelectedFiles}
-                    onUnselectFile={unselectFile}
-                />
-            </CollapsibleBottomPanel>
-
-            <ConfirmationDialog
-                isOpen={isDeleteDialogOpen}
-                title={`Delete ${selectedFiles.length === 1 ? "this item" : "these items"}?`}
-                description={`This permanently deletes ${selectedFiles.length} selected ${selectedFiles.length === 1 ? "item" : "items"} from the agent filesystem.`}
-                confirmLabel={
-                    selectedFiles.length === 1
-                        ? "Delete item"
-                        : `Delete ${selectedFiles.length} items`
-                }
-                busyLabel="Deleting..."
-                isBusy={deleteMutation.isPending}
-                errorMessage={
-                    deleteMutation.isError
-                        ? getErrorMessage(deleteMutation.error).replace(
-                              /^Upload failed$/,
-                              "Delete failed",
-                          )
-                        : null
-                }
-                onClose={closeDeleteDialog}
-                onConfirm={handleDeleteSelectedFiles}
-            />
-        </>
+                </div>
+            ) : null}
+            <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-slate-800">
+                {selectedFiles.length > 0 ? (
+                    <SelectedFilesTable
+                        agents={props.agents}
+                        selectedFiles={sortedSelectedFiles}
+                        onUnselectFile={unselectFile}
+                    />
+                ) : (
+                    <div className="flex h-full items-center justify-center px-4 text-center text-sm text-slate-500">
+                        Select files or directories to review them here.
+                    </div>
+                )}
+            </div>
+        </div>
     );
 }
 
-function TransferProgressPanel(props: {
-    agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
-    transfers: TransferProgressEntry[];
-}) {
-    const activeTransfers = props.transfers.filter(
+/** Summarizes all transfer states without allowing polling updates to activate the drawer. */
+function getTransferSummary(transfers: TransferProgressEntry[]) {
+    const activeTransfers = transfers.filter(
         (transfer) => transfer.state === "active",
     );
-    const lastTransferPercentage = useLastEstimatedTransferPercentage(
-        props.transfers,
-    );
-    const summary = [
+    return [
         [
             activeTransfers.filter(
                 (transfer) => transfer.direction === "download",
@@ -776,49 +748,41 @@ function TransferProgressPanel(props: {
             "moving",
         ],
         [
-            props.transfers.filter((transfer) => transfer.state === "completed")
+            transfers.filter((transfer) => transfer.state === "completed")
                 .length,
             "completed",
         ],
         [
-            props.transfers.filter((transfer) => transfer.state === "errored")
-                .length,
+            transfers.filter((transfer) => transfer.state === "errored").length,
             "errored",
         ],
     ]
         .filter(([count]) => count !== 0)
         .map(([count, label]) => `${count} ${label}`)
         .join(", ");
+}
 
+/** Shows active transfers inside the shared drawer while history remains on its route. */
+function TransferProgressPane(props: {
+    agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
+    transfers: TransferProgressEntry[];
+}) {
     return (
-        <CollapsibleBottomPanel
-            title="Transfers"
-            titleSuffix={
-                lastTransferPercentage === null
-                    ? undefined
-                    : ` ${lastTransferPercentage}%`
-            }
-            defaultCollapsed
-            badge={
-                <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">
-                    {summary || "No transfers"}
-                </span>
-            }
-            actions={
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="flex shrink-0 justify-end pb-2">
                 <Link
                     to="/transfers"
                     className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
                     View all
                 </Link>
-            }
-        >
-            <div className="max-h-64">
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-800">
                 <TransferList
                     agents={props.agents}
-                    transfers={activeTransfers}
+                    transfers={props.transfers}
                 />
             </div>
-        </CollapsibleBottomPanel>
+        </div>
     );
 }

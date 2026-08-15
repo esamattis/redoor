@@ -2,7 +2,6 @@ import React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Info, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
-import { FilePageHeader } from "#ui/components/browser/file-page-header";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { transfersQueryOptions } from "#ui/queries";
@@ -78,38 +77,6 @@ const existingModeOptions: Array<{
             "Add and replace source entries while preserving entries that exist only at the destination.",
     },
 ];
-
-/** Gives file sync the same stable page header as every other file representation. */
-export function FileSyncPage(props: {
-    api: ApiClient;
-    agent: Agent;
-    agents: Array<Agent>;
-    agentId: string;
-    path: string;
-    fileName: string;
-    filePath: string;
-    downloadUrl: string;
-}) {
-    return (
-        <div className="p-6">
-            <div className="mx-auto max-w-6xl">
-                <FilePageHeader
-                    agent={props.agent}
-                    agentId={props.agentId}
-                    path={props.path}
-                    activeView="sync"
-                />
-                <SyncView
-                    api={props.api}
-                    sourceAgent={props.agent}
-                    agents={props.agents}
-                    sourcePath={props.filePath}
-                    entryType="file"
-                />
-            </div>
-        </div>
-    );
-}
 
 /** Explains and selects the destination conflict policy appropriate to the source type. */
 function SyncExistingControls(props: {
