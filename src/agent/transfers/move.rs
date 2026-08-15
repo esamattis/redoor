@@ -120,6 +120,7 @@ impl AgentActor {
 
         if can_use_atomic_rename(same_mount, destination_exists) {
             match rename_without_replacement(source.clone(), dest.clone()).await {
+                #[cfg(target_os = "linux")]
                 Ok(AtomicRenameResult::Renamed) => return Ok(()),
                 Ok(AtomicRenameResult::FallbackRequired) => {}
                 Err(error) => return Err(LocalMoveError::RenameSource(error)),
@@ -175,6 +176,7 @@ async fn verify_move_source_identity(
 
 /// Outcome of a no-replace rename attempt that may require copy semantics instead.
 enum AtomicRenameResult {
+    #[cfg(target_os = "linux")]
     Renamed,
     FallbackRequired,
 }
