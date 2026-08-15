@@ -244,6 +244,73 @@ test.describe.serial("Copy Operations", () => {
         ).resolves.toBe("content2");
     });
 
+    test("should copy other selected files when one source is already in the destination", async ({
+        page,
+    }) => {
+        test.setTimeout(60_000);
+        const copiedFilePath = path.join(
+            ctx.testDirPath,
+            "subdir1",
+            "file1.txt",
+        );
+        await fs.rm(copiedFilePath, { force: true });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+        await page
+            .getByRole("button", { name: "Select file nested1.txt" })
+            .click();
+
+        // The mixed selection must expose Copy even though one item already has its destination path.
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected items to this directory",
+        });
+        await expect(copyButton).toBeEnabled();
+
+        const copyResponses: number[] = [];
+        page.on("response", (response) => {
+            if (
+                response.url() === `${WEB_BASE_URL}/api/v1/copy` &&
+                response.request().method() === "POST"
+            ) {
+                copyResponses.push(response.status());
+            }
+        });
+        await copyButton.click();
+
+        await expect.poll(() => copyResponses.length).toBe(2);
+        // One rejection must not prevent the independent valid request from being accepted.
+        expect([...copyResponses].sort((left, right) => left - right)).toEqual([
+            200, 400,
+        ]);
+        await expect(
+            page.getByText(
+                "Copied 1 of 2 items. Source and destination must be different",
+                { exact: true },
+            ),
+        ).toBeVisible({ timeout: 30_000 });
+
+        // The successful file must reach the destination despite the same-path error.
+        await expect(fs.readFile(copiedFilePath, "utf8")).resolves.toBe(
+            "content1",
+        );
+        // Only the rejected same-path file must remain selected after terminal copy success.
+        await expect(
+            page.getByText("1 file, 0 directories selected"),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Unselect file nested1.txt" }),
+        ).toBeVisible();
+        await expect(copyButton).toHaveCount(0);
+
+        await page.getByRole("button", { name: "Clear selection" }).click();
+    });
+
     test("should copy a file to a newly created directory within the same agent", async ({
         page,
     }) => {
