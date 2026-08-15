@@ -340,22 +340,12 @@ export function SelectedFilesCard(props: {
                         <Files className="h-4 w-4" aria-hidden="true" />
                     </span>
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                        <p className="w-56 text-sm font-medium text-slate-200">
-                            <span className="inline-block w-5 tabular-nums">
-                                {fileCount}
-                            </span>{" "}
-                            <span className="inline-block w-10">
-                                {fileCount === 1 ? "file" : "files"}
-                            </span>
-                            ,{" "}
-                            <span className="inline-block w-5 tabular-nums">
-                                {directoryCount}
-                            </span>{" "}
-                            <span className="inline-block w-20">
-                                {directoryCount === 1
-                                    ? "directory"
-                                    : "directories"}
-                            </span>{" "}
+                        <p className="text-sm font-medium text-slate-200">
+                            {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
+                            {directoryCount}{" "}
+                            {directoryCount === 1
+                                ? "directory"
+                                : "directories"}{" "}
                             selected
                         </p>
                         {selectedFiles.length > 0 ? (
@@ -388,7 +378,7 @@ export function SelectedFilesCard(props: {
                         )}
                     </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-h-10 flex-wrap items-center gap-2">
                     <CopySelectedFilesAction
                         api={props.api}
                         agents={props.agents}

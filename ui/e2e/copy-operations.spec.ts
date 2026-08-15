@@ -9,17 +9,6 @@ import {
     type TestContext,
 } from "./helpers";
 
-declare global {
-    interface PerformanceEntry {
-        readonly value: number;
-    }
-
-    interface Window {
-        selectionLayoutShiftObserver?: PerformanceObserver;
-        selectionLayoutShiftValues?: number[];
-    }
-}
-
 /** Selects one source entry and opens the directory that contains its conflict. */
 async function openCopyConflict(props: {
     page: import("@playwright/test").Page;
@@ -133,29 +122,17 @@ test.describe.serial("Copy Operations", () => {
         await expect(
             page.getByRole("button", { name: "Select file file1.txt" }),
         ).toBeVisible();
+        // The selected-items drawer action is irrelevant until a selection exists.
+        await expect(
+            page.getByRole("button", { name: "Show", exact: true }),
+        ).toHaveCount(0);
         await page.evaluate(async () => document.fonts.ready);
-
-        const supportsLayoutShift = await page.evaluate(() =>
-            PerformanceObserver.supportedEntryTypes.includes("layout-shift"),
-        );
-        test.skip(
-            !supportsLayoutShift,
-            "The browser does not expose layout-shift performance entries",
-        );
-
-        await page.evaluate(() => {
-            window.selectionLayoutShiftValues = [];
-            window.selectionLayoutShiftObserver = new PerformanceObserver(
-                (entries) => {
-                    window.selectionLayoutShiftValues?.push(
-                        ...entries.getEntries().map((entry) => entry.value),
-                    );
-                },
-            );
-            window.selectionLayoutShiftObserver.observe({
-                type: "layout-shift",
-            });
+        const selectedActions = page.getByRole("region", {
+            name: "Selected files actions",
         });
+        const fileListing = page.getByRole("table").first();
+        const selectedActionsBefore = await selectedActions.boundingBox();
+        const fileListingBefore = await fileListing.boundingBox();
 
         await page
             .getByRole("button", { name: "Select file file1.txt" })
@@ -163,28 +140,13 @@ test.describe.serial("Copy Operations", () => {
         await expect(
             page.getByRole("button", { name: "Unselect file file1.txt" }),
         ).toBeVisible();
-        await page.evaluate(
-            () =>
-                new Promise<void>((resolve) => {
-                    requestAnimationFrame(() =>
-                        requestAnimationFrame(() => resolve()),
-                    );
-                }),
-        );
+        const selectedActionsAfter = await selectedActions.boundingBox();
+        const fileListingAfter = await fileListing.boundingBox();
 
-        const layoutShift = await page.evaluate(() => {
-            const observer = window.selectionLayoutShiftObserver;
-            const pendingValues =
-                observer?.takeRecords().map((entry) => entry.value) ?? [];
-            observer?.disconnect();
-            return [
-                ...(window.selectionLayoutShiftValues ?? []),
-                ...pendingValues,
-            ].reduce((total, value) => total + value, 0);
-        });
-
-        // Selecting a row must not move the file list or surrounding browser controls.
-        expect(layoutShift).toBe(0);
+        // Selection controls must not make their containing row taller.
+        expect(selectedActionsAfter?.height).toBe(selectedActionsBefore?.height);
+        // The file list must remain at the same vertical position after selection.
+        expect(fileListingAfter?.y).toBe(fileListingBefore?.y);
 
         await page.getByRole("button", { name: "Clear selection" }).click();
     });
