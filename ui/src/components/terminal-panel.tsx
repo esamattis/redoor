@@ -141,6 +141,7 @@ export function TerminalPanel(props: {
     activeTarget: ActiveTerminalTarget | null;
 }) {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
+    const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
     const [focusRequestId, setFocusRequestId] = React.useState(0);
@@ -239,13 +240,20 @@ export function TerminalPanel(props: {
     };
 
     React.useEffect(() => {
-        /** Opens or focuses a shell for the routed agent's current directory without stealing input. */
+        /** Opens the routed shell or asks for an agent when the route has no terminal target. */
         const handleShortcut = (event: KeyboardEvent) => {
             if (
                 event.key !== "t" ||
-                !props.activeTarget ||
                 shouldIgnoreKeyboardShortcut(event, { shift: true })
             ) {
+                return;
+            }
+
+            if (!props.activeTarget) {
+                if (!isPickerOpen) {
+                    event.preventDefault();
+                    setIsPickerOpen(true);
+                }
                 return;
             }
 
@@ -266,7 +274,7 @@ export function TerminalPanel(props: {
 
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [activeTabId, props.activeTarget, tabs]);
+    }, [activeTabId, isPickerOpen, props.activeTarget, tabs]);
 
     return (
         <CollapsibleBottomPanel
@@ -277,9 +285,11 @@ export function TerminalPanel(props: {
                 <TerminalTabActions
                     agents={props.agents}
                     activeTarget={props.activeTarget}
+                    isPickerOpen={isPickerOpen}
                     tabs={tabs}
                     activeTabId={activeTabId}
                     onCreate={createTerminal}
+                    onPickerOpenChange={setIsPickerOpen}
                     onClose={closeTerminal}
                     onRestart={restartTerminal}
                     onSelect={setActiveTabId}
@@ -313,9 +323,11 @@ export function TerminalPanel(props: {
 function TerminalTabActions(props: {
     agents: Agent[];
     activeTarget: ActiveTerminalTarget | null;
+    isPickerOpen: boolean;
     tabs: TerminalTab[];
     activeTabId: number | null;
     onCreate: (target: ActiveTerminalTarget) => void;
+    onPickerOpenChange: (isOpen: boolean) => void;
     onClose: (tabId: number) => void;
     onRestart: (tabId: number) => void;
     onSelect: (tabId: number) => void;
@@ -325,7 +337,6 @@ function TerminalTabActions(props: {
     ) => void;
 }) {
     const pickerButtonRef = React.useRef<HTMLButtonElement>(null);
-    const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const availableAgents = props.agents.filter(
         (agent) => agent.status === "connected" && agent.cwd !== null,
     );
@@ -429,25 +440,31 @@ function TerminalTabActions(props: {
                     />
                 </AddButton>
             ) : null}
-            <Tooltip content="New terminal in another agent">
+            <Tooltip
+                content={
+                    props.activeTarget
+                        ? "New terminal in another agent"
+                        : "Choose agent for new terminal (t)"
+                }
+            >
                 <button
                     ref={pickerButtonRef}
                     type="button"
                     aria-label="Choose agent for new terminal"
                     aria-haspopup="dialog"
-                    aria-expanded={isPickerOpen}
-                    onClick={() => setIsPickerOpen(true)}
+                    aria-expanded={props.isPickerOpen}
+                    onClick={() => props.onPickerOpenChange(true)}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                 >
                     <MoreHorizontal className="h-4 w-4" />
                 </button>
             </Tooltip>
             <Dialog
-                isOpen={isPickerOpen}
+                isOpen={props.isPickerOpen}
                 title="New terminal"
                 closeAriaLabel="Close agent picker"
                 anchorRef={pickerButtonRef}
-                onClose={() => setIsPickerOpen(false)}
+                onClose={() => props.onPickerOpenChange(false)}
             >
                 <div className="mt-2 grid gap-1">
                     {availableAgents.map((agent) => (
@@ -459,7 +476,7 @@ function TerminalTabActions(props: {
                                     return;
                                 }
                                 props.onCreate({ agent, cwd: agent.cwd });
-                                setIsPickerOpen(false);
+                                props.onPickerOpenChange(false);
                             }}
                             className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
                         >

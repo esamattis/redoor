@@ -286,7 +286,17 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCount(0);
         await page
             .getByRole("button", { name: "Choose agent for new terminal" })
-            .click();
+            .hover();
+        // Application routes advertise that the shortcut opens the required agent choice.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Choose agent for new terminal (t)",
+        );
+        await page.mouse.move(0, 0);
+        await page.keyboard.press("t");
+        // The global shortcut must remain usable when no routed agent can be inferred.
+        await expect(
+            page.getByRole("dialog", { name: "New terminal" }),
+        ).toBeVisible();
         await page
             .getByRole("dialog", { name: "New terminal" })
             .getByRole("button", { name: ctx.agentName })
