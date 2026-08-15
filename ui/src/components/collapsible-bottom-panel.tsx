@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 /** Keeps persistent activity visible without letting its controls dominate the page. */
 export function CollapsibleBottomPanel(props: {
     title: string;
+    titleSuffix?: React.ReactNode;
     description?: string;
     badge?: React.ReactNode;
     actions?: React.ReactNode;
@@ -37,112 +38,117 @@ export function CollapsibleBottomPanel(props: {
     };
 
     return (
-        <section
-            ref={resize.panelRef}
-            style={
-                !isCollapsed && resize.expandedHeight !== null
-                    ? { height: resize.expandedHeight }
-                    : undefined
-            }
-            className="z-10 flex shrink-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
-        >
-            {isCollapsed ? null : (
-                <div
-                    role="separator"
-                    aria-label={`Resize ${props.title}`}
-                    aria-orientation="horizontal"
-                    tabIndex={0}
-                    title={`Resize ${props.title}`}
-                    onPointerDown={resize.handleResizeStart}
-                    onPointerMove={resize.handleResizeMove}
-                    onPointerUp={resize.handleResizeEnd}
-                    onPointerCancel={resize.handleResizeEnd}
-                    onKeyDown={resize.handleResizeKeyDown}
-                    className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
-                        resize.isResizing
-                            ? "bg-blue-400/40"
-                            : "hover:bg-blue-400/25"
-                    }`}
-                />
-            )}
-            <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
-                <div
-                    ref={resize.headerRef}
-                    className="flex min-w-0 shrink-0 items-center gap-2"
-                >
-                    <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain">
-                        <div className="flex w-max min-w-full items-center gap-3">
-                            <div className="flex shrink-0 items-center gap-3">
-                                {props.icon ? (
-                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
-                                        {props.icon}
+        <div data-collapsed={isCollapsed} className="z-10 shrink-0">
+            <section
+                ref={resize.panelRef}
+                style={
+                    !isCollapsed && resize.expandedHeight !== null
+                        ? { height: resize.expandedHeight }
+                        : undefined
+                }
+                className="flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
+            >
+                {isCollapsed ? null : (
+                    <div
+                        role="separator"
+                        aria-label={`Resize ${props.title}`}
+                        aria-orientation="horizontal"
+                        tabIndex={0}
+                        title={`Resize ${props.title}`}
+                        onPointerDown={resize.handleResizeStart}
+                        onPointerMove={resize.handleResizeMove}
+                        onPointerUp={resize.handleResizeEnd}
+                        onPointerCancel={resize.handleResizeEnd}
+                        onKeyDown={resize.handleResizeKeyDown}
+                        className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
+                            resize.isResizing
+                                ? "bg-blue-400/40"
+                                : "hover:bg-blue-400/25"
+                        }`}
+                    />
+                )}
+                <div className="flex min-h-0 max-w-full flex-1 flex-col px-4 py-3">
+                    <div
+                        ref={resize.headerRef}
+                        className="flex min-w-0 shrink-0 items-center gap-2"
+                    >
+                        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain">
+                            <div className="flex w-max min-w-full items-center gap-3">
+                                <div className="flex shrink-0 items-center gap-3">
+                                    {props.icon ? (
+                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
+                                            {props.icon}
+                                        </div>
+                                    ) : null}
+                                    <div
+                                        className={
+                                            props.hideTitle
+                                                ? "sr-only"
+                                                : "min-w-0"
+                                        }
+                                    >
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <h2 className="text-sm font-semibold text-slate-100">
+                                                {props.title}
+                                                {props.titleSuffix}
+                                            </h2>
+                                            {props.badge}
+                                        </div>
+                                        {props.description ? (
+                                            <p className="truncate text-xs text-slate-500">
+                                                {props.description}
+                                            </p>
+                                        ) : null}
+                                    </div>
+                                </div>
+                                {props.actions ? (
+                                    <div
+                                        className={
+                                            props.actionsAlignment === "start"
+                                                ? "flex min-w-max flex-1 items-center"
+                                                : "ml-auto flex min-w-max items-center"
+                                        }
+                                    >
+                                        {props.actions}
                                     </div>
                                 ) : null}
-                                <div
-                                    className={
-                                        props.hideTitle ? "sr-only" : "min-w-0"
-                                    }
-                                >
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <h2 className="text-sm font-semibold text-slate-100">
-                                            {props.title}
-                                        </h2>
-                                        {props.badge}
-                                    </div>
-                                    {props.description ? (
-                                        <p className="truncate text-xs text-slate-500">
-                                            {props.description}
-                                        </p>
-                                    ) : null}
-                                </div>
                             </div>
-                            {props.actions ? (
-                                <div
-                                    className={
-                                        props.actionsAlignment === "start"
-                                            ? "flex min-w-max flex-1 items-center"
-                                            : "ml-auto flex min-w-max items-center"
-                                    }
-                                >
-                                    {props.actions}
-                                </div>
-                            ) : null}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                            <div className="mx-1 h-5 w-px bg-slate-800" />
+                            <button
+                                type="button"
+                                aria-label={toggleLabel}
+                                title={toggleLabel}
+                                aria-expanded={!isCollapsed}
+                                onClick={() => setIsCollapsed(!isCollapsed)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                            >
+                                {isCollapsed ? (
+                                    <ChevronUp className="h-4 w-4" />
+                                ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                )}
+                            </button>
                         </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                        <div className="mx-1 h-5 w-px bg-slate-800" />
-                        <button
-                            type="button"
-                            aria-label={toggleLabel}
-                            title={toggleLabel}
-                            aria-expanded={!isCollapsed}
-                            onClick={() => setIsCollapsed(!isCollapsed)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                        >
-                            {isCollapsed ? (
-                                <ChevronUp className="h-4 w-4" />
-                            ) : (
-                                <ChevronDown className="h-4 w-4" />
-                            )}
-                        </button>
-                    </div>
-                </div>
 
-                {props.keepChildrenMounted ? (
-                    <div
-                        hidden={isCollapsed}
-                        aria-hidden={isCollapsed}
-                        className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3"
-                    >
-                        {props.children}
-                    </div>
-                ) : isCollapsed ? null : (
-                    <div className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3">
-                        {props.children}
-                    </div>
-                )}
-            </div>
-        </section>
+                    {props.keepChildrenMounted ? (
+                        <div
+                            hidden={isCollapsed}
+                            aria-hidden={isCollapsed}
+                            className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3"
+                        >
+                            {props.children}
+                        </div>
+                    ) : isCollapsed ? null : (
+                        <div className="mt-3 min-h-0 flex-1 overflow-auto border-t border-slate-800 pt-3">
+                            {props.children}
+                        </div>
+                    )}
+                </div>
+            </section>
+        </div>
     );
 }
 

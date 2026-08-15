@@ -86,6 +86,10 @@ test.describe("Server home", () => {
         const panel = page
             .getByRole("heading", { name: "Transfers" })
             .locator("xpath=ancestor::section");
+        // The only active transfer is also the one expected to finish last.
+        await expect(
+            panel.getByRole("heading", { name: /Transfers \d+%/ }),
+        ).toBeVisible();
         await panel
             .getByRole("button", { name: "Expand Transfers" })
             .press("Enter");

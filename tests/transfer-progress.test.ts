@@ -4,6 +4,7 @@ import type { TransferProgressEntry } from "#ui/api-client";
 import {
     formatRemainingTime,
     getAnimatedTransferProgress,
+    getLastEstimatedTransferProgress,
     getTransferRemainingSeconds,
     getTransferSpeedBytesPerSecond,
 } from "#ui/utils/transfer-progress";
@@ -75,6 +76,31 @@ describe("transfer progress animation", () => {
             percentage: 100,
             remainingSeconds: null,
         });
+    });
+
+    it("uses the percentage of the transfer estimated to finish last", () => {
+        const progress = getLastEstimatedTransferProgress(
+            [
+                transfer({ request_id: 1, transferred_bytes: 400 }),
+                transfer({ request_id: 2, transferred_bytes: 800 }),
+            ],
+            0,
+            102_000,
+        );
+
+        // The 40% transfer has three seconds left, so its progress represents overall completion.
+        expect(progress?.percentage).toBe(40);
+    });
+
+    it("omits an overall percentage when no transfer has an estimate", () => {
+        const progress = getLastEstimatedTransferProgress(
+            [transfer({ total_bytes: 0 })],
+            0,
+            102_000,
+        );
+
+        // Unknown transfer sizes cannot predict which active transfer will finish last.
+        expect(progress).toBeNull();
     });
 
     it("provides a final speed for transfers completed within one timestamp second", () => {

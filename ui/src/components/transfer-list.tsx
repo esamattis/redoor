@@ -11,6 +11,7 @@ import { formatSize, formatSpeed } from "#ui/utils/path";
 import {
     formatRemainingTime,
     getAnimatedTransferProgress,
+    getLastEstimatedTransferProgress,
     getTransferSpeedBytesPerSecond,
 } from "#ui/utils/transfer-progress";
 
@@ -59,6 +60,58 @@ function useTransferAnimation(
     }
 
     return animationFrame;
+}
+
+/** Animates the header from the transfer whose ETA determines when all transfers finish. */
+export function useLastEstimatedTransferPercentage(
+    transfers: TransferProgressEntry[],
+): number | null {
+    const [animationFrame, setAnimationFrame] = React.useState(() => ({
+        transfers,
+        refreshedAtMilliseconds: Date.now(),
+        elapsedSeconds: 0,
+    }));
+
+    React.useEffect(() => {
+        const refreshedAtMilliseconds = Date.now();
+        if (
+            getLastEstimatedTransferProgress(
+                transfers,
+                0,
+                refreshedAtMilliseconds,
+            ) === null
+        ) {
+            return;
+        }
+        let frameRequest: number;
+
+        const updateAnimation = () => {
+            setAnimationFrame({
+                transfers,
+                refreshedAtMilliseconds,
+                elapsedSeconds: (Date.now() - refreshedAtMilliseconds) / 1000,
+            });
+            frameRequest = window.requestAnimationFrame(updateAnimation);
+        };
+
+        frameRequest = window.requestAnimationFrame(updateAnimation);
+        return () => window.cancelAnimationFrame(frameRequest);
+    }, [transfers]);
+
+    const currentFrame =
+        animationFrame.transfers === transfers
+            ? animationFrame
+            : {
+                  transfers,
+                  refreshedAtMilliseconds: Date.now(),
+                  elapsedSeconds: 0,
+              };
+    const progress = getLastEstimatedTransferProgress(
+        transfers,
+        currentFrame.elapsedSeconds,
+        currentFrame.refreshedAtMilliseconds,
+    );
+    return progress === null ? null : Math.round(progress.percentage);
 }
 
 /** Shows projected bytes and a pie whose full state only comes from the API. */

@@ -43,7 +43,10 @@ import {
 } from "#ui/selected-files";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Tooltip } from "#ui/components/tooltip";
-import { TransferList } from "#ui/components/transfer-list";
+import {
+    TransferList,
+    useLastEstimatedTransferPercentage,
+} from "#ui/components/transfer-list";
 import { CollapsibleBottomPanel } from "#ui/components/collapsible-bottom-panel";
 import { TerminalPanel } from "#ui/components/terminal-panel";
 import { getParentPath } from "#ui/utils/path";
@@ -329,13 +332,7 @@ function RootLayout() {
     );
 }
 
-/**
- * Browser-style tab strip that replaced the old vertical sidebar.
- *
- * Every retained agent gets a tab. The active tab connects to the content
- * area with a lifted look so it reads as the current page, mirroring how
- * Chrome / Edge present open tabs.
- */
+/** Lifts the active retained agent so navigation reads like browser tabs. */
 function TopTabStrip(props: {
     agents: RootLoaderData["agents"];
     pathname: string;
@@ -989,6 +986,9 @@ function TransferProgressPanel(props: {
     const activeTransfers = props.transfers.filter(
         (transfer) => transfer.state === "active",
     );
+    const lastTransferPercentage = useLastEstimatedTransferPercentage(
+        props.transfers,
+    );
     const summary = [
         [
             activeTransfers.filter(
@@ -1025,6 +1025,11 @@ function TransferProgressPanel(props: {
     return (
         <CollapsibleBottomPanel
             title="Transfers"
+            titleSuffix={
+                lastTransferPercentage === null
+                    ? undefined
+                    : ` ${lastTransferPercentage}%`
+            }
             defaultCollapsed
             badge={
                 <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium tabular-nums text-slate-400">

@@ -78,6 +78,35 @@ export function getAnimatedTransferProgress(
     };
 }
 
+/** Uses the slowest finishing estimate because it represents when all active work will be done. */
+export function getLastEstimatedTransferProgress(
+    transfers: TransferProgressEntry[],
+    elapsedSinceRefreshSeconds: number,
+    refreshedAtMilliseconds: number,
+): AnimatedTransferProgress | null {
+    let lastProgress: AnimatedTransferProgress | null = null;
+
+    for (const transfer of transfers) {
+        const progress = getAnimatedTransferProgress(
+            transfer,
+            elapsedSinceRefreshSeconds,
+            refreshedAtMilliseconds,
+        );
+        if (progress.remainingSeconds === null) {
+            continue;
+        }
+        if (
+            lastProgress === null ||
+            lastProgress.remainingSeconds === null ||
+            progress.remainingSeconds > lastProgress.remainingSeconds
+        ) {
+            lastProgress = progress;
+        }
+    }
+
+    return lastProgress;
+}
+
 /** Uses projected bytes so the countdown shrinks with the same animation as the pie. */
 export function getTransferRemainingSeconds(
     transfer: TransferProgressEntry,
