@@ -1,11 +1,11 @@
+#[cfg(not(target_os = "android"))]
+use super::MountPoint;
 use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, CatResult, Command, CommandErrorKind,
     CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult,
     UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity, current_exe_path,
     external_ip, file_search, metadata,
 };
-#[cfg(not(target_os = "android"))]
-use super::MountPoint;
 use tokio::sync::watch;
 
 /// Executes agent-local commands while protocol models remain transport-owned.
