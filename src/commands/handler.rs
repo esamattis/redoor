@@ -1,9 +1,11 @@
 use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, CatResult, Command, CommandErrorKind,
-    CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult, MountPoint,
+    CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult,
     UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity, current_exe_path,
     external_ip, file_search, metadata,
 };
+#[cfg(not(target_os = "android"))]
+use super::MountPoint;
 use tokio::sync::watch;
 
 /// Executes agent-local commands while protocol models remain transport-owned.
@@ -384,7 +386,7 @@ impl CommandHandler {
         };
         #[cfg(target_os = "android")]
         // The mountpoints crate has no Android backend, so capacity is unavailable on this target.
-        let mut mount_points = Vec::new();
+        let mut mount_points: Vec<super::MountPoint> = Vec::new();
         mount_points.sort_by(|left, right| left.path.cmp(&right.path));
 
         CommandResult::GetAgentDetails(Box::new(AgentDetailsResponse {
