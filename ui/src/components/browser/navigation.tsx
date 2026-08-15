@@ -183,6 +183,7 @@ export function BrowserHeader(props: {
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
     pathUnavailable?: boolean;
+    startEditingPath?: boolean;
 }) {
     const navigate = useNavigate();
     const pathUnavailable = props.pathUnavailable === true;
@@ -226,7 +227,9 @@ export function BrowserHeader(props: {
             agent={props.agent}
             agentId={props.agentId}
             path={props.path}
-            startEditingPath={pathUnavailable}
+            startEditingPath={
+                pathUnavailable && props.startEditingPath !== false
+            }
             navigation={
                 <>
                     <Tooltip content="Go to the parent directory (Backspace)">
@@ -257,55 +260,6 @@ export function BrowserHeader(props: {
                 />
             }
         />
-    );
-}
-
-/** Keeps the file table chrome visible while the user corrects a missing path. */
-export function MissingPathSkeleton() {
-    return (
-        <div className="space-y-3">
-            <p role="status" className="text-sm text-slate-400">
-                Directory not found
-            </p>
-            <table
-                aria-label="File list"
-                aria-busy="true"
-                className="w-full rounded-lg border border-slate-800 bg-[#11141b]"
-            >
-                <thead>
-                    <tr className="border-b border-slate-800 bg-[#1a1f2a]">
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Select
-                        </th>
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Type
-                        </th>
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Name
-                        </th>
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Size
-                        </th>
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Owner
-                        </th>
-                        <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Group
-                        </th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td
-                            colSpan={6}
-                            className="p-6 text-center text-sm text-slate-500"
-                        >
-                            Enter a valid path to browse files
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
     );
 }
 

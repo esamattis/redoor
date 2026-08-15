@@ -12,9 +12,9 @@ import { useUserState } from "#ui/user-state";
 import { RouteError } from "#ui/components/route-error";
 import {
     BrowserHeader,
-    MissingPathSkeleton,
     UnavailablePathState,
 } from "#ui/components/browser/navigation";
+import { MissingPathCreationForm } from "#ui/components/browser/missing-path";
 import {
     DirectoryFilesActions,
     SelectedFilesCard,
@@ -137,6 +137,7 @@ function BrowserRouteShell(props: {
     activeView: "files" | "details" | "view" | "diff" | "sync";
     constrainContent?: boolean;
     pathUnavailable?: boolean;
+    startEditingPath?: boolean;
     children: ReactNode;
 }) {
     return (
@@ -149,6 +150,7 @@ function BrowserRouteShell(props: {
                 entryType={props.entryType}
                 activeView={props.activeView}
                 pathUnavailable={props.pathUnavailable}
+                startEditingPath={props.startEditingPath}
             />
             <div
                 className={
@@ -181,9 +183,14 @@ function FileBrowser() {
                 activeView="files"
                 constrainContent
                 pathUnavailable
+                startEditingPath={pathError.type !== "missing"}
             >
                 {pathError.type === "missing" ? (
-                    <MissingPathSkeleton />
+                    <MissingPathCreationForm
+                        key={path}
+                        agent={agent}
+                        path={path}
+                    />
                 ) : (
                     <UnavailablePathState
                         agent={agent}
