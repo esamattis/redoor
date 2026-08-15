@@ -9,6 +9,17 @@ import {
     type TestContext,
 } from "./helpers";
 
+declare global {
+    interface PerformanceEntry {
+        readonly value: number;
+    }
+
+    interface Window {
+        selectionLayoutShiftObserver?: PerformanceObserver;
+        selectionLayoutShiftValues?: number[];
+    }
+}
+
 test.describe.serial("Copy Operations", () => {
     let ctx: TestContext;
 
@@ -82,6 +93,155 @@ test.describe.serial("Copy Operations", () => {
                 exact: true,
             }),
         ).toHaveCount(0);
+    });
+
+    test("should select a file without shifting the file list layout", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await expect(
+            page.getByRole("button", { name: "Select file file1.txt" }),
+        ).toBeVisible();
+        await page.evaluate(async () => document.fonts.ready);
+
+        const supportsLayoutShift = await page.evaluate(() =>
+            PerformanceObserver.supportedEntryTypes.includes("layout-shift"),
+        );
+        test.skip(
+            !supportsLayoutShift,
+            "The browser does not expose layout-shift performance entries",
+        );
+
+        await page.evaluate(() => {
+            window.selectionLayoutShiftValues = [];
+            window.selectionLayoutShiftObserver = new PerformanceObserver(
+                (entries) => {
+                    window.selectionLayoutShiftValues?.push(
+                        ...entries.getEntries().map((entry) => entry.value),
+                    );
+                },
+            );
+            window.selectionLayoutShiftObserver.observe({
+                type: "layout-shift",
+            });
+        });
+
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+        await expect(
+            page.getByRole("button", { name: "Unselect file file1.txt" }),
+        ).toBeVisible();
+        await page.evaluate(
+            () =>
+                new Promise<void>((resolve) => {
+                    requestAnimationFrame(() =>
+                        requestAnimationFrame(() => resolve()),
+                    );
+                }),
+        );
+
+        const layoutShift = await page.evaluate(() => {
+            const observer = window.selectionLayoutShiftObserver;
+            const pendingValues =
+                observer?.takeRecords().map((entry) => entry.value) ?? [];
+            observer?.disconnect();
+            return [
+                ...(window.selectionLayoutShiftValues ?? []),
+                ...pendingValues,
+            ].reduce((total, value) => total + value, 0);
+        });
+
+        // Selecting a row must not move the file list or surrounding browser controls.
+        expect(layoutShift).toBe(0);
+
+        await page.getByRole("button", { name: "Clear selection" }).click();
+    });
+
+    test("should copy two selected files into a new subdirectory", async ({
+        page,
+    }) => {
+        test.setTimeout(60_000);
+        const copyTargetDirName = `selected-copy-target-${Date.now()}`;
+        const copyTargetDirPath = path.join(
+            ctx.testDirPath,
+            "subdir1",
+            copyTargetDirName,
+        );
+        await fs.rm(copyTargetDirPath, { force: true, recursive: true });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await expect(
+            page.getByRole("button", { name: "Select file file1.txt" }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("button", { name: "Select file file1.txt" })
+            .click();
+        await page
+            .getByRole("button", { name: "Select file file2.txt" })
+            .click();
+        // The summary proves both source rows entered the persistent selection.
+        await expect(
+            page.getByText("2 files, 0 directories selected"),
+        ).toBeVisible();
+
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+        await page.getByRole("button", { name: "New", exact: true }).click();
+        await page
+            .getByRole("button", { name: "New directory", exact: true })
+            .click();
+        await page
+            .getByRole("textbox", { name: "Directory name" })
+            .fill(copyTargetDirName);
+        await page
+            .getByRole("dialog", { name: "Create directory" })
+            .getByRole("button", { name: "Create directory", exact: true })
+            .click();
+
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
+        );
+        const copyResponses: boolean[] = [];
+        page.on("response", (response) => {
+            if (
+                response.url() === `${WEB_BASE_URL}/api/v1/copy` &&
+                response.request().method() === "POST"
+            ) {
+                copyResponses.push(response.ok());
+            }
+        });
+
+        await page
+            .getByRole("button", {
+                name: "Copy selected items to this directory",
+            })
+            .click();
+        await expect.poll(() => copyResponses.length).toBe(2);
+        // Both accepted responses prove each selected source started its own copy.
+        expect(copyResponses).toEqual([true, true]);
+        await expect(
+            page.getByRole("button", { name: "Clear selection" }),
+        ).toHaveCount(0, { timeout: 30_000 });
+
+        await page.reload();
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "file2.txt", exact: true }),
+        ).toBeVisible();
+        // Filesystem contents verify both copies landed in the newly created destination.
+        await expect(
+            fs.readFile(path.join(copyTargetDirPath, "file1.txt"), "utf8"),
+        ).resolves.toBe("content1");
+        await expect(
+            fs.readFile(path.join(copyTargetDirPath, "file2.txt"), "utf8"),
+        ).resolves.toBe("content2");
     });
 
     test("should copy a file to a newly created directory within the same agent", async ({

@@ -334,10 +334,22 @@ export function SelectedFilesCard(props: {
                         <Files className="h-4 w-4" aria-hidden="true" />
                     </span>
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                        <p className="text-sm font-medium text-slate-200">
-                            {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
-                            {directoryCount}{" "}
-                            {directoryCount === 1 ? "directory" : "directories"}{" "}
+                        <p className="w-56 text-sm font-medium text-slate-200">
+                            <span className="inline-block w-5 tabular-nums">
+                                {fileCount}
+                            </span>{" "}
+                            <span className="inline-block w-10">
+                                {fileCount === 1 ? "file" : "files"}
+                            </span>
+                            ,{" "}
+                            <span className="inline-block w-5 tabular-nums">
+                                {directoryCount}
+                            </span>{" "}
+                            <span className="inline-block w-20">
+                                {directoryCount === 1
+                                    ? "directory"
+                                    : "directories"}
+                            </span>{" "}
                             selected
                         </p>
                         <button
@@ -361,7 +373,9 @@ export function SelectedFilesCard(props: {
                                     />
                                 </button>
                             </Tooltip>
-                        ) : null}
+                        ) : (
+                            <span aria-hidden="true" className="h-7 w-7" />
+                        )}
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
