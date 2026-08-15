@@ -6,8 +6,10 @@ use super::super::messages::{
     TransferProgressUpdateRequest,
 };
 use super::super::progress::{self, CopyStartContext};
-use super::super::state::{CopyExecution, CopyRequest, DirectDownload, DirectUpload, RouterState};
-use crate::commands::{Command, CommandResult};
+use super::super::state::{
+    CopyExecution, CopyOperation, CopyRequest, DirectDownload, DirectUpload, RouterState,
+};
+use crate::commands::{Command, CommandResult, TransferDirection};
 use crate::log;
 use crate::logging::Level;
 use crate::streaming::StreamChunkFrameRequest;
@@ -63,6 +65,12 @@ pub(crate) fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: 
                     .public_id_by_internal_request
                     .remove(&request_id);
                 state.streams.uploads.remove(&request_id);
+            }
+            CopyExecution::DeletingMoveSource { request_id, .. } => {
+                state
+                    .copies
+                    .public_id_by_internal_request
+                    .remove(&request_id);
             }
         }
     }
@@ -145,6 +153,10 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     dest_agent_id: request.dest_agent_id.clone(),
                     dest_path: request.dest_path.clone(),
                     total_bytes: request.total_bytes,
+                    direction: match request.operation {
+                        CopyOperation::Copy => TransferDirection::Copy,
+                        CopyOperation::Move => TransferDirection::Move,
+                    },
                 },
             );
 
@@ -166,6 +178,9 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                         },
                         content_kind: request.content_kind,
                         pending_source_command: None,
+                        operation: request.operation,
+                        source_path: request.source_path.clone(),
+                        source_identity: request.source_identity.clone(),
                     },
                 );
                 state.streams.uploads.insert(
@@ -179,17 +194,30 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     },
                 );
 
-                let command = match request.content_kind {
-                    super::super::state::CopyContentKind::RawFile => Command::LocalCopyFile {
+                let command = if request.operation == CopyOperation::Move {
+                    Command::LocalMove {
                         source_path: request.source_path.clone(),
                         dest_path: request.dest_path.clone(),
+                        source_is_directory: request.content_kind
+                            == super::super::state::CopyContentKind::TarDirectory,
                         on_existing: request.on_existing,
-                    },
-                    super::super::state::CopyContentKind::TarDirectory => {
-                        Command::LocalCopyDirectory {
+                        expected_identity: request.source_identity.clone().expect(
+                            "move requests must carry the source identity captured at preflight",
+                        ),
+                    }
+                } else {
+                    match request.content_kind {
+                        super::super::state::CopyContentKind::RawFile => Command::LocalCopyFile {
                             source_path: request.source_path.clone(),
                             dest_path: request.dest_path.clone(),
                             on_existing: request.on_existing,
+                        },
+                        super::super::state::CopyContentKind::TarDirectory => {
+                            Command::LocalCopyDirectory {
+                                source_path: request.source_path.clone(),
+                                dest_path: request.dest_path.clone(),
+                                on_existing: request.on_existing,
+                            }
                         }
                     }
                 };
@@ -227,8 +255,13 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     },
                     content_kind: request.content_kind,
                     pending_source_command: Some(
-                        request.content_kind.download_command(request.source_path),
+                        request
+                            .content_kind
+                            .download_command(request.source_path.clone()),
                     ),
+                    operation: request.operation,
+                    source_path: request.source_path.clone(),
+                    source_identity: request.source_identity,
                 },
             );
 
@@ -533,15 +566,62 @@ pub(crate) fn finish_transfer(
             agent_id: expected_agent_id,
             request_id: expected_request_id,
         } => *expected_request_id == request_id && expected_agent_id == &agent_id,
+        CopyExecution::DeletingMoveSource {
+            agent_id: expected_agent_id,
+            request_id: expected_request_id,
+        } => *expected_request_id == request_id && expected_agent_id == &agent_id,
     };
 
     if !is_expected_completion {
         return false;
     }
 
+    let deleting_move_source = matches!(
+        copy_request.execution,
+        CopyExecution::DeletingMoveSource { .. }
+    );
+    let remote_move_destination_completed = matches!(
+        copy_request.execution,
+        CopyExecution::RemoteStream { dest_request_id, .. } if dest_request_id == request_id
+    ) && copy_request.operation == CopyOperation::Move
+        && copy_request.content_kind.completion_matches(&result);
+
+    if remote_move_destination_completed {
+        let source_agent_id = copy_request.source_agent_id.clone();
+        let source_path = copy_request.source_path.clone();
+        let source_identity = copy_request.source_identity.clone();
+        let final_total_bytes = match copy_request.content_kind {
+            super::super::state::CopyContentKind::TarDirectory => {
+                progress::transferred_bytes(state, public_request_id)
+            }
+            super::super::state::CopyContentKind::RawFile => None,
+        };
+        begin_move_source_deletion(
+            state,
+            public_request_id,
+            source_agent_id,
+            source_path,
+            source_identity.expect("remote moves must retain their source identity"),
+            final_total_bytes,
+        );
+        return true;
+    }
+
     match result {
         CommandResult::Error { message, .. } => {
             progress::mark_transfer_errored(state, public_request_id, message);
+        }
+        CommandResult::RawDelete if deleting_move_source => {
+            progress::mark_copy_transfer_completed(state, public_request_id, None);
+        }
+        CommandResult::LocalMove if copy_request.operation == CopyOperation::Move => {
+            let total_bytes = match copy_request.content_kind {
+                super::super::state::CopyContentKind::TarDirectory => {
+                    progress::transferred_bytes(state, public_request_id)
+                }
+                super::super::state::CopyContentKind::RawFile => None,
+            };
+            progress::mark_copy_transfer_completed(state, public_request_id, total_bytes);
         }
         CommandResult::LocalCopyFile
             if copy_request.content_kind == super::super::state::CopyContentKind::RawFile =>
@@ -587,6 +667,67 @@ pub(crate) fn finish_transfer(
 
     cleanup_copy_tracking(state, public_request_id);
     true
+}
+
+/// Replaces streaming bookkeeping with one control command that deletes the copied source.
+fn begin_move_source_deletion(
+    state: &mut RouterState,
+    public_request_id: TransferId,
+    source_agent_id: AgentId,
+    source_path: String,
+    source_identity: crate::commands::MoveSourceIdentity,
+    final_total_bytes: Option<u64>,
+) {
+    let delete_request_id = state.next_id();
+    if let Some(copy_request) = state.copies.by_public_id.get_mut(&public_request_id) {
+        if let CopyExecution::RemoteStream {
+            source_request_id,
+            dest_request_id,
+            ..
+        } = copy_request.execution
+        {
+            state
+                .copies
+                .public_id_by_internal_request
+                .remove(&source_request_id);
+            state
+                .copies
+                .public_id_by_internal_request
+                .remove(&dest_request_id);
+            state.streams.downloads.remove(&source_request_id);
+            state.streams.uploads.remove(&dest_request_id);
+        }
+        copy_request.execution = CopyExecution::DeletingMoveSource {
+            agent_id: source_agent_id.clone(),
+            request_id: delete_request_id,
+        };
+    }
+    state
+        .copies
+        .public_id_by_internal_request
+        .insert(delete_request_id, public_request_id);
+    if let Some(total_bytes) = final_total_bytes
+        && let Some(entry) = state.progress.entries.get_mut(&public_request_id)
+    {
+        entry.total_bytes = total_bytes;
+    }
+    if let Some(source_agent) = state.agents.by_id.get(&source_agent_id) {
+        source_agent.send_message(Message::Command {
+            agent_id: source_agent_id,
+            request_id: delete_request_id,
+            command: Command::DeleteMoveSource {
+                path: source_path,
+                expected_identity: source_identity,
+            },
+        });
+    } else {
+        progress::mark_transfer_errored(
+            state,
+            public_request_id,
+            "Source agent disconnected before move deletion".to_string(),
+        );
+        cleanup_copy_tracking(state, public_request_id);
+    }
 }
 
 /// Applies agent-reported progress updates for local-agent copy operations.

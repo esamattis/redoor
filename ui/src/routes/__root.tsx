@@ -771,6 +771,11 @@ function TransferProgressPanel(props: {
             "copying",
         ],
         [
+            activeTransfers.filter((transfer) => transfer.direction === "move")
+                .length,
+            "moving",
+        ],
+        [
             props.transfers.filter((transfer) => transfer.state === "completed")
                 .length,
             "completed",

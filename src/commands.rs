@@ -187,6 +187,17 @@ pub enum Command {
         #[serde(default)]
         on_existing: CopyExistingMode,
     },
+    /// Moves one file or directory locally, preferring an atomic filesystem rename.
+    LocalMove {
+        source_path: String,
+        dest_path: String,
+        source_is_directory: bool,
+        /// Prevents either rename or fallback cleanup from acting on a replacement source.
+        expected_identity: MoveSourceIdentity,
+        /// Controls replacement when the destination path already exists.
+        #[serde(default)]
+        on_existing: CopyExistingMode,
+    },
     RawDelete {
         path: String,
     },
@@ -200,6 +211,15 @@ pub enum Command {
     },
     Metadata {
         path: String,
+    },
+    /// Reads the stable filesystem identity needed to delete only the source that was copied.
+    MoveMetadata {
+        path: String,
+    },
+    /// Removes a move source only while it still has the identity captured before copying.
+    DeleteMoveSource {
+        path: String,
+        expected_identity: MoveSourceIdentity,
     },
     OpenPath {
         path: String,
@@ -280,12 +300,23 @@ impl Command {
             } => format!(
                 "LocalCopyDirectory source={source_path} dest={dest_path} on_existing={on_existing:?}"
             ),
+            Self::LocalMove {
+                source_path,
+                dest_path,
+                source_is_directory,
+                on_existing,
+                ..
+            } => format!(
+                "LocalMove source={source_path} dest={dest_path} directory={source_is_directory} on_existing={on_existing:?}"
+            ),
             Self::RawDelete { path } => format!("RawDelete path={path}"),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
             Self::RenamePath { dir, old, new } => {
                 format!("RenamePath dir={dir} old={old} new={new}")
             }
             Self::Metadata { path } => format!("Metadata path={path}"),
+            Self::MoveMetadata { path } => format!("MoveMetadata path={path}"),
+            Self::DeleteMoveSource { path, .. } => format!("DeleteMoveSource path={path}"),
             Self::OpenPath { path } => format!("OpenPath path={path}"),
             // Echo bodies can be large or sensitive, so only the command name is logged.
             Self::Echo { .. } => "Echo".to_string(),
@@ -362,6 +393,26 @@ pub struct MetadataResponse {
     pub viewable_image: bool,
     /// Outstanding process-local download tokens for this exact agent and path.
     pub one_time_tokens: Vec<String>,
+}
+
+/// Identifies one filesystem object strongly enough to refuse deletion after path replacement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MoveSourceIdentity {
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+    pub modified_seconds: i64,
+    pub modified_nanoseconds: i64,
+    pub is_directory: bool,
+}
+
+/// Returns move-specific metadata without exposing filesystem identity through the public API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveMetadataResult {
+    pub file_size: u64,
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub identity: MoveSourceIdentity,
 }
 
 /// Returns the opaque single-use credential without exposing registry internals.
@@ -463,10 +514,12 @@ pub enum CommandResult {
     TarUpload,
     LocalCopyFile,
     LocalCopyDirectory,
+    LocalMove,
     RawDelete,
     CreateDirectory,
     RenamePath,
     Metadata(MetadataResponse),
+    MoveMetadata(MoveMetadataResult),
     OpenPath,
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
@@ -831,6 +884,24 @@ pub struct CopyFileResponse {
     pub copy_request_id: TransferId,
 }
 
+/// Starts one logical move between agent filesystem endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MoveFileRequest {
+    pub source: CopyEndpoint,
+    pub dest: CopyEndpoint,
+    /// What to do when `dest.path` already exists.
+    #[serde(default)]
+    pub on_existing: CopyExistingMode,
+}
+
+/// Returns the public id used to follow asynchronous move progress.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MoveFileResponse {
+    pub move_request_id: TransferId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TransferProgressListResponse {
@@ -888,6 +959,7 @@ pub enum TransferDirection {
     Upload,
     Download,
     Copy,
+    Move,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -918,10 +990,12 @@ impl CommandResult {
             Self::TarUpload => "ok TarUpload".to_string(),
             Self::LocalCopyFile => "ok LocalCopyFile".to_string(),
             Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),
+            Self::LocalMove => "ok LocalMove".to_string(),
             Self::RawDelete => "ok RawDelete".to_string(),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
+            Self::MoveMetadata(_) => "ok MoveMetadata".to_string(),
             Self::OpenPath => "ok OpenPath".to_string(),
             Self::Echo(_) => "ok Echo".to_string(),
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),

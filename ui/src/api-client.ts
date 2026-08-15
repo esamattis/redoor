@@ -20,6 +20,8 @@ import type { CopyFileRequest } from "#bindings/CopyFileRequest";
 import type { CopyFileResponse } from "#bindings/CopyFileResponse";
 import type { CopyEndpoint } from "#bindings/CopyEndpoint";
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
+import type { MoveFileRequest } from "#bindings/MoveFileRequest";
+import type { MoveFileResponse } from "#bindings/MoveFileResponse";
 import type { TerminalSize } from "#bindings/TerminalSize";
 import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
@@ -71,6 +73,8 @@ export type {
     CopyFileResponse,
     CopyEndpoint,
     CopyExistingMode,
+    MoveFileRequest,
+    MoveFileResponse,
     TerminalSize,
     TerminalClientMessage,
     TerminalServerMessage,
@@ -122,6 +126,10 @@ type TransferProgressListResponseJson = {
 
 type CopyFileResponseJson = {
     copy_request_id: number;
+};
+
+type MoveFileResponseJson = {
+    move_request_id: number;
 };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
@@ -640,6 +648,31 @@ export class Agent {
         return {
             copy_request_id: response.copy_request_id,
         };
+    }
+
+    /** Starts a smart move that deletes the source only after destination publication. */
+    async moveTo(
+        destination: CopyEndpoint,
+        sourcePath: string,
+        options?: { on_existing?: CopyExistingMode },
+    ): Promise<MoveFileResponse> {
+        encodeFilesystemPath(sourcePath);
+        encodeFilesystemPath(destination.path);
+        const request: MoveFileRequest = {
+            source: { agent: this.info.id, path: sourcePath },
+            dest: destination,
+            on_existing: options?.on_existing ?? "error",
+        };
+        const response = await apiRequest<MoveFileResponseJson>(
+            `${this.baseUrl}/api/v1/move`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
+        return { move_request_id: response.move_request_id };
     }
 
     async download(

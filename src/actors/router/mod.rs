@@ -17,6 +17,7 @@ pub use messages::{
     UnregisterManagedAgentRequest, UploadStartOutcome,
 };
 pub use state::CopyContentKind;
+pub use state::CopyOperation;
 
 use crate::commands::CommandResult;
 use crate::log;

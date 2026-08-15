@@ -305,6 +305,10 @@ pub struct StartCopyRequest {
     pub content_kind: CopyContentKind,
     /// Controls replacement when the destination path already exists.
     pub on_existing: crate::commands::CopyExistingMode,
+    /// Selects whether copy completion is final or followed by source deletion.
+    pub operation: super::state::CopyOperation,
+    /// Prevents move cleanup from deleting a replacement created while copying.
+    pub source_identity: Option<crate::commands::MoveSourceIdentity>,
     /// Reply port that returns the public transfer id.
     pub reply: RouterReply<Result<TransferId, RouterError>>,
 }

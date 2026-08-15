@@ -3,10 +3,24 @@ use super::MountPoint;
 use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, CatResult, Command, CommandErrorKind,
     CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult,
-    UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity, current_exe_path,
-    external_ip, file_search, metadata,
+    MoveMetadataResult, MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path,
+    current_binary_identity, current_exe_path, external_ip, file_search, metadata,
 };
 use tokio::sync::watch;
+
+/// Converts platform metadata into the identity checked before move-source deletion.
+fn move_source_identity(metadata: &std::fs::Metadata) -> MoveSourceIdentity {
+    use std::os::unix::fs::MetadataExt;
+
+    MoveSourceIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        is_directory: metadata.is_dir(),
+    }
+}
 
 /// Executes agent-local commands while protocol models remain transport-owned.
 pub struct CommandHandler;
@@ -61,10 +75,19 @@ impl CommandHandler {
                 CommandErrorKind::InvalidInput,
                 "LocalCopyDirectory is handled by the agent runtime",
             ),
+            Command::LocalMove { .. } => CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "LocalMove is handled by the agent runtime",
+            ),
             Command::RawDelete { path } => self.raw_delete(path).await,
             Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,
+            Command::MoveMetadata { path } => self.move_metadata(path).await,
+            Command::DeleteMoveSource {
+                path,
+                expected_identity,
+            } => self.delete_move_source(path, expected_identity).await,
             Command::OpenPath { .. } => CommandResult::error(
                 CommandErrorKind::InvalidInput,
                 "OpenPath is handled by the agent runtime",
@@ -84,6 +107,46 @@ impl CommandHandler {
                 }
             }
         }
+    }
+
+    /// Captures the source identity before a move starts so later deletion is conditional.
+    async fn move_metadata(&self, path: String) -> CommandResult {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => CommandResult::MoveMetadata(MoveMetadataResult {
+                file_size: metadata.len(),
+                is_file: metadata.is_file(),
+                is_dir: metadata.is_dir(),
+                identity: move_source_identity(&metadata),
+            }),
+            Err(error) => CommandResult::io_error(
+                &format!("Failed to get move source metadata for path {path:?}"),
+                error,
+            ),
+        }
+    }
+
+    /// Deletes only the unchanged source object that the move preflight selected.
+    async fn delete_move_source(
+        &self,
+        path: String,
+        expected_identity: MoveSourceIdentity,
+    ) -> CommandResult {
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return CommandResult::io_error(
+                    &format!("Failed to verify move source path {path:?}"),
+                    error,
+                );
+            }
+        };
+        if move_source_identity(&metadata) != expected_identity {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "Move source changed while it was being copied; refusing to delete it",
+            );
+        }
+        self.raw_delete(path).await
     }
 
     /// Runs recursive search with the agent runtime's per-connection supersession signal.
@@ -468,5 +531,56 @@ mod tests {
             ),
             "self-exec should require an absolute path"
         );
+    }
+
+    #[tokio::test]
+    async fn move_source_deletion_refuses_a_replacement_path() {
+        let path = std::env::temp_dir().join(format!(
+            "redoor-move-identity-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        tokio::fs::write(&path, "original")
+            .await
+            .expect("original source should be created");
+        let original = tokio::fs::metadata(&path)
+            .await
+            .expect("original metadata should be readable");
+        let expected_identity = move_source_identity(&original);
+        let original_path = path.with_extension("original");
+        tokio::fs::rename(&path, &original_path)
+            .await
+            .expect("original source should move away from its pathname");
+        tokio::fs::write(&path, "replacement")
+            .await
+            .expect("replacement source should be created");
+
+        let result = CommandHandler::new()
+            .execute(Command::DeleteMoveSource {
+                path: path.display().to_string(),
+                expected_identity,
+            })
+            .await;
+
+        // A completed destination copy must not authorize deletion of a new object at the old path.
+        assert!(
+            matches!(
+                result,
+                CommandResult::Error {
+                    kind: CommandErrorKind::InvalidInput,
+                    ..
+                }
+            ),
+            "conditional move deletion should reject a replacement source"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&path)
+                .await
+                .expect("replacement source should remain readable"),
+            "replacement",
+            "identity mismatch must preserve the replacement source"
+        );
+        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(original_path).await;
     }
 }

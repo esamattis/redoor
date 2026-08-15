@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import {
     setupTestDir,
     teardownTestDir,
@@ -97,5 +98,56 @@ test.describe.serial("Transfer Path Links", () => {
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
+    });
+
+    test("should show smart moves with both endpoint links", async ({
+        page,
+    }) => {
+        const sourceFileName = `move-source-${Date.now()}.txt`;
+        const destFileName = `move-destination-${Date.now()}.txt`;
+        const sourcePath = path.join(ctx.testDirPath, sourceFileName);
+        const destPath = path.join(ctx.testDirPath, destFileName);
+        await fs.writeFile(sourcePath, "playwright smart move");
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Transfers" })
+            .click();
+        const response = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/move`,
+            {
+                data: {
+                    source: { agent: ctx.agentId, path: sourcePath },
+                    dest: { agent: ctx.agentId, path: destPath },
+                    on_existing: "error",
+                },
+            },
+        );
+        // A successful start is required before transfer history can receive the move row.
+        expect(response.ok()).toBe(true);
+        const moveResponse = z
+            .object({ move_request_id: z.number() })
+            .parse(await response.json());
+        const moveRequestId = moveResponse.move_request_id;
+
+        const moveRow = page
+            .getByRole("row")
+            .filter({ hasText: sourceFileName })
+            .filter({ hasText: destFileName });
+
+        // The move label confirms transfer history does not present smart moves as copies.
+        await expect(moveRow).toContainText("Move");
+        // Completion proves the history row remains active through source deletion.
+        await expect(moveRow).toContainText("completed", { timeout: 15_000 });
+        // Both links let users inspect the source and destination context of the logical move.
+        await expect(
+            moveRow.getByRole("link", { name: sourcePath }),
+        ).toBeVisible();
+        await expect(
+            moveRow.getByRole("link", { name: destPath }),
+        ).toBeVisible();
+        // Referencing the id ensures the API returned the public progress handle used by history.
+        expect(moveRequestId).toEqual(expect.any(Number));
     });
 });

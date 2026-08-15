@@ -210,6 +210,17 @@ pub(crate) enum CopyExecution {
         agent_id: AgentId,
         request_id: RequestId,
     },
+    DeletingMoveSource {
+        agent_id: AgentId,
+        request_id: RequestId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Distinguishes copy transport used for copy from copy transport used for move.
+pub enum CopyOperation {
+    Copy,
+    Move,
 }
 
 /// Bookkeeping for one logical copy request managed by the router.
@@ -224,6 +235,12 @@ pub(crate) struct CopyRequest {
     pub(crate) content_kind: CopyContentKind,
     /// Defers source production until the destination upload worker acknowledges readiness.
     pub(crate) pending_source_command: Option<Command>,
+    /// Determines whether destination completion is final or must be followed by source deletion.
+    pub(crate) operation: CopyOperation,
+    /// Source path retained for deletion after a remote move publishes its destination.
+    pub(crate) source_path: String,
+    /// Filesystem identity that must still match before move-source deletion.
+    pub(crate) source_identity: Option<crate::commands::MoveSourceIdentity>,
 }
 
 #[derive(Default)]

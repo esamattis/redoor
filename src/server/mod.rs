@@ -7,6 +7,7 @@ mod auth;
 mod diffs;
 mod files;
 mod logs;
+mod moves;
 #[cfg(target_os = "linux")]
 mod pam;
 mod raw;

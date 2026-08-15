@@ -95,6 +95,28 @@ async fn handle_command_message(
                 )
                 .await;
         }
+        Command::LocalMove {
+            source_path,
+            dest_path,
+            source_is_directory,
+            expected_identity,
+            on_existing,
+        } => {
+            AgentActor
+                .local_move(
+                    source_path,
+                    dest_path,
+                    source_is_directory,
+                    expected_identity,
+                    on_existing,
+                    super::transfers::copy::LocalCopyResponseContext {
+                        write: &write_text,
+                        agent_id: &agent_id,
+                        request_id,
+                    },
+                )
+                .await;
+        }
         Command::OpenPath { path } => {
             let result = match crate::desktop::open_with_desktop(&path).await {
                 Ok(()) => CommandResult::OpenPath,
@@ -122,6 +144,27 @@ async fn handle_command_message(
         Command::RawDelete { path } => {
             let result = CommandHandler::new()
                 .execute(Command::RawDelete { path })
+                .await;
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
+        Command::DeleteMoveSource {
+            path,
+            expected_identity,
+        } => {
+            let result = CommandHandler::new()
+                .execute(Command::DeleteMoveSource {
+                    path,
+                    expected_identity,
+                })
                 .await;
             log!(
                 Level::Info,

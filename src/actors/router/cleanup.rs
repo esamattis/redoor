@@ -45,6 +45,10 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
                 agent_id: local_agent_id,
                 ..
             } => local_agent_id == agent_id,
+            CopyExecution::DeletingMoveSource {
+                agent_id: source_agent_id,
+                ..
+            } => source_agent_id == agent_id,
         })
         .map(|(request_id, _)| *request_id)
         .collect();
@@ -162,7 +166,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
                     request.dest_agent_id.clone(),
                     source_request_id,
                 )),
-                CopyExecution::LocalAgent { .. } => None,
+                CopyExecution::LocalAgent { .. } | CopyExecution::DeletingMoveSource { .. } => None,
             });
         if let Some((source_agent_id, dest_agent_id, source_request_id)) = copy_sides {
             if &source_agent_id == agent_id {

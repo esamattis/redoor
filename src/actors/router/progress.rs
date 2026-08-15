@@ -57,6 +57,8 @@ pub(crate) struct CopyStartContext {
     pub(crate) dest_path: String,
     /// Expected total byte count for the copy.
     pub(crate) total_bytes: u64,
+    /// Public direction keeps moves distinct while they reuse copy transport.
+    pub(crate) direction: TransferDirection,
 }
 
 /// Creates a progress entry and direct-download state for a newly started download.
@@ -185,7 +187,7 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
                 agent: context.dest_agent_id,
                 path: context.dest_path,
             }),
-            direction: TransferDirection::Copy,
+            direction: context.direction,
             total_bytes: context.total_bytes,
             transferred_bytes: 0,
             started_at: now,
@@ -347,6 +349,7 @@ mod tests {
                 dest_agent_id: AgentId::from("agent-2"),
                 dest_path: "/tmp/destination.bin".to_string(),
                 total_bytes: 16,
+                direction: TransferDirection::Copy,
             },
         );
 

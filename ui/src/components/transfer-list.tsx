@@ -5,6 +5,7 @@ import {
     ArrowUpFromLine,
     Copy,
     AlertCircle,
+    MoveRight,
 } from "lucide-react";
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
 import { formatSize, formatSpeed } from "#ui/utils/path";
@@ -200,6 +201,9 @@ export function TransferList(props: {
                 <TransferTableHeader />
                 <tbody>
                     {props.transfers.map((transfer) => {
+                        const hasEndpoints =
+                            transfer.direction === "copy" ||
+                            transfer.direction === "move";
                         const agent = props.agents.find(
                             (entry) => entry.id === transfer.agent_id,
                         );
@@ -223,13 +227,13 @@ export function TransferList(props: {
                                 <td className="whitespace-nowrap p-3">
                                     <div className="flex flex-col">
                                         <span className="text-sm font-medium text-slate-100">
-                                            {transfer.direction === "copy"
+                                            {hasEndpoints
                                                 ? `${sourceAgent?.name ?? transfer.source?.agent} -> ${destAgent?.name ?? transfer.dest?.agent}`
                                                 : (agent?.name ??
                                                   transfer.agent_id)}
                                         </span>
                                         <span className="text-xs text-slate-500">
-                                            {transfer.direction === "copy"
+                                            {hasEndpoints
                                                 ? `${transfer.source?.agent} -> ${transfer.dest?.agent}`
                                                 : transfer.agent_id}
                                         </span>
@@ -248,6 +252,8 @@ export function TransferList(props: {
                                         ) : transfer.direction ===
                                           "download" ? (
                                             <ArrowDownToLine className="h-3.5 w-3.5" />
+                                        ) : transfer.direction === "move" ? (
+                                            <MoveRight className="h-3.5 w-3.5" />
                                         ) : (
                                             <Copy className="h-3.5 w-3.5" />
                                         )}
@@ -255,11 +261,13 @@ export function TransferList(props: {
                                             ? "Upload"
                                             : transfer.direction === "download"
                                               ? "Download"
-                                              : "Copy"}
+                                              : transfer.direction === "move"
+                                                ? "Move"
+                                                : "Copy"}
                                     </span>
                                 </td>
                                 <td className="max-w-xs p-3">
-                                    {transfer.direction === "copy" ? (
+                                    {hasEndpoints ? (
                                         <div className="space-y-1 font-mono text-xs text-slate-300">
                                             <div className="truncate">
                                                 {sourceAgent ? (

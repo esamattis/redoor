@@ -1,7 +1,7 @@
 use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
 use redoor::{
     actors,
-    commands::{Command, CommandResult, CopyFileRequest, CopyFileResponse, ErrorResponse},
+    commands::{Command, CommandResult, ErrorResponse, MoveFileRequest, MoveFileResponse},
 };
 
 use super::{
@@ -10,44 +10,19 @@ use super::{
     state::ServerState,
 };
 
-/// Route: `GET /api/v1/transfers/progress`
-pub(crate) async fn list_transfer_progress_handler(
+/// Route: `POST /api/v1/move` starts one atomic-or-copy/delete logical move.
+pub(crate) async fn move_file_handler(
     AxumState(state): AxumState<ServerState>,
-) -> impl IntoResponse {
-    match state
-        .router_ref
-        .request(5000, |reply| {
-            actors::router::RouterMsg::GetTransferProgress { reply }
-        })
-        .await
-    {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => {
-            let error_msg = format!("Failed to get transfer progress: {:?}", error);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: error_msg }),
-            )
-                .into_response()
-        }
-    }
-}
-
-/// Route: `POST /api/v1/copy`
-pub(crate) async fn copy_file_handler(
-    AxumState(state): AxumState<ServerState>,
-    Json(payload): Json<CopyFileRequest>,
+    Json(payload): Json<MoveFileRequest>,
 ) -> impl IntoResponse {
     let source_path = match require_absolute_path(payload.source.path.clone()) {
         Ok(path) => path,
         Err(response) => return *response,
     };
-
     let dest_path = match require_absolute_path(payload.dest.path.clone()) {
         Ok(path) => path,
         Err(response) => return *response,
     };
-
     if payload.source.agent == payload.dest.agent && source_path == dest_path {
         return (
             StatusCode::BAD_REQUEST,
@@ -63,7 +38,7 @@ pub(crate) async fn copy_file_handler(
         .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: payload.source.agent.clone(),
-                command: Command::Metadata {
+                command: Command::MoveMetadata {
                     path: source_path.clone(),
                 },
                 reply,
@@ -71,16 +46,19 @@ pub(crate) async fn copy_file_handler(
         })
         .await
     {
-        Ok(CommandResult::Metadata(metadata)) => metadata,
+        Ok(CommandResult::MoveMetadata(metadata)) => metadata,
         Ok(CommandResult::Error { kind, message }) => {
-            let status = command_error_status(&kind);
-            return (status, Json(ErrorResponse { error: message })).into_response();
+            return (
+                command_error_status(&kind),
+                Json(ErrorResponse { error: message }),
+            )
+                .into_response();
         }
         Ok(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: "Unexpected response type from metadata command".to_string(),
+                    error: "Unexpected response type from move metadata command".to_string(),
                 }),
             )
                 .into_response();
@@ -89,7 +67,7 @@ pub(crate) async fn copy_file_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to get source metadata: {:?}", error),
+                    error: format!("Failed to get source metadata: {error:?}"),
                 }),
             )
                 .into_response();
@@ -107,44 +85,42 @@ pub(crate) async fn copy_file_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Copy supports regular files and directories only".to_string(),
+                error: "Move supports regular files and directories only".to_string(),
             }),
         )
             .into_response();
     };
 
-    let copy_request_id = match state
+    let move_request_id = match state
         .router_ref
         .request(30000, |reply| {
             actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
-                source_agent_id: payload.source.agent.clone(),
-                source_path: source_path.clone(),
-                dest_agent_id: payload.dest.agent.clone(),
-                dest_path: dest_path.clone(),
+                source_agent_id: payload.source.agent,
+                source_path,
+                dest_agent_id: payload.dest.agent,
+                dest_path,
                 total_bytes,
                 content_kind,
                 on_existing: payload.on_existing,
-                operation: actors::router::CopyOperation::Copy,
-                source_identity: None,
+                operation: actors::router::CopyOperation::Move,
+                source_identity: Some(source_metadata.identity),
                 reply,
             })
         })
         .await
     {
-        Ok(Ok(copy_request_id)) => copy_request_id,
-        Ok(Err(error)) => {
-            return router_error_response(error);
-        }
+        Ok(Ok(request_id)) => request_id,
+        Ok(Err(error)) => return router_error_response(error),
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to start copy: {:?}", error),
+                    error: format!("Failed to start move: {error:?}"),
                 }),
             )
                 .into_response();
         }
     };
 
-    (StatusCode::OK, Json(CopyFileResponse { copy_request_id })).into_response()
+    (StatusCode::OK, Json(MoveFileResponse { move_request_id })).into_response()
 }
