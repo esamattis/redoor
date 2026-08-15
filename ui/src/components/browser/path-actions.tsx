@@ -322,6 +322,7 @@ export function PersistentPathActions(props: {
     /** Explains archive packaging when the download is a directory tarball. */
     downloadTooltip?: string;
     isEditorDirty?: boolean;
+    secondaryDownload?: boolean;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -356,7 +357,11 @@ export function PersistentPathActions(props: {
         <a
             href={props.downloadUrl}
             download={props.downloadName}
-            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+            className={
+                props.secondaryDownload
+                    ? "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                    : "inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+            }
         >
             <Download className="h-4 w-4" />
             Download
@@ -365,7 +370,6 @@ export function PersistentPathActions(props: {
 
     return (
         <>
-            <NativeOpenButton agent={props.agent} path={props.path} />
             {props.downloadTooltip ? (
                 <Tooltip content={props.downloadTooltip}>
                     {downloadLink}
@@ -385,6 +389,7 @@ export function PersistentPathActions(props: {
                     setIsConfirmDeleteOpen(true);
                 }}
             />
+            <NativeOpenButton agent={props.agent} path={props.path} />
             <ConfirmationDialog
                 isOpen={isConfirmDeleteOpen}
                 title={`Delete this ${props.entryType}?`}

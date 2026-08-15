@@ -1,14 +1,6 @@
 import React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import {
-    ArrowLeft,
-    ArrowUp,
-    Check,
-    HardDrive,
-    Home,
-    Info,
-    Pencil,
-} from "lucide-react";
+import { ArrowLeft, ArrowUp, Check, Home, Info, Pencil } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
@@ -32,14 +24,6 @@ export function BrowserPageHeader(props: {
         <header className="mb-4">
             <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
                 <div className="flex w-max min-w-full items-center gap-3">
-                    <Link
-                        to="/agents/$agentId"
-                        params={{ agentId: props.agentId }}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <HardDrive className="h-3.5 w-3.5" />
-                        Agent
-                    </Link>
                     <Tooltip content="Open agent home directory">
                         <Link
                             to={props.agent.getBrowserUrl(
@@ -51,6 +35,7 @@ export function BrowserPageHeader(props: {
                             <Home className="h-4 w-4" aria-hidden="true" />
                         </Link>
                     </Tooltip>
+                    {props.navigation}
                     <Breadcrumbs
                         agent={props.agent}
                         path={props.path}
@@ -58,21 +43,18 @@ export function BrowserPageHeader(props: {
                     />
                 </div>
             </div>
-            <div
-                aria-label={props.actionLabel}
-                className="overflow-x-auto overscroll-x-contain rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
-            >
-                <div className="flex min-w-max items-center justify-between gap-2">
-                    <div className="flex shrink-0 items-center gap-1">
-                        {props.navigation}
-                    </div>
-                    {props.actions ? (
+            {props.actions ? (
+                <div
+                    aria-label={props.actionLabel}
+                    className="overflow-x-auto overscroll-x-contain rounded-lg border border-slate-700/80 bg-slate-900/70 p-1.5 shadow-sm"
+                >
+                    <div className="flex min-w-max items-center justify-end gap-2">
                         <div className="flex shrink-0 items-center gap-1">
                             {props.actions}
                         </div>
-                    ) : null}
+                    </div>
                 </div>
-            </div>
+            ) : null}
         </header>
     );
 }
@@ -176,7 +158,7 @@ export function BrowserHeader(props: {
                 </>
             }
             actions={
-                !pathUnavailable ? (
+                !pathUnavailable && props.activeView !== "files" ? (
                     <PersistentPathActions
                         agent={props.agent}
                         path={props.path}

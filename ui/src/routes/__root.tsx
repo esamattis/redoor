@@ -155,12 +155,20 @@ function useAgentViewContext(
             } satisfies AgentViewContext;
         }
     }
-    if (
-        activeAgent?.status === "connected" &&
-        activeAgent.cwd !== null &&
-        pathname === `/agents/${encodeURIComponent(activeAgent.id)}`
-    ) {
-        return { kind: "agent", agent: activeAgent } satisfies AgentViewContext;
+    if (activeAgent?.status === "connected" && activeAgent.cwd !== null) {
+        const agentPath = `/agents/${encodeURIComponent(activeAgent.id)}`;
+        if (pathname === agentPath) {
+            return {
+                kind: "agent",
+                agent: activeAgent,
+            } satisfies AgentViewContext;
+        }
+        if (pathname === `${agentPath}/logs`) {
+            return {
+                kind: "logs",
+                agent: activeAgent,
+            } satisfies AgentViewContext;
+        }
     }
     return null;
 }

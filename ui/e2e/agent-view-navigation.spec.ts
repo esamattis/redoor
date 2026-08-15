@@ -25,22 +25,69 @@ test.describe("Agent view navigation", () => {
         await page.goto(`${WEB_BASE_URL}/agents/${context.agentId}`);
 
         const agentView = page.getByLabel("Agent view");
-        const detailsLink = agentView.getByRole("link", {
-            name: "Details",
+        const agentLink = agentView.getByRole("link", {
+            name: "Agent",
             exact: true,
         });
-        // Agent details must be represented as the current contextual top tab.
-        await expect(detailsLink).toHaveAttribute("aria-current", "page");
+        // Agent details must be represented by the first current contextual top tab.
+        await expect(agentLink).toHaveAttribute("aria-current", "page");
+        await expect(agentView.getByRole("link").first()).toHaveText("Agent");
 
         await agentView
             .getByRole("link", { name: "Files", exact: true })
             .click();
         // Files must open the connected agent's published browser location.
         await expect(page).toHaveURL(context.agentBrowserUrl);
-        await page.getByRole("link", { name: "Agent", exact: true }).click();
-        // Returning to the agent page must restore the Details tab as current.
+        const homeBox = await page
+            .getByRole("link", { name: "Agent home" })
+            .boundingBox();
+        const upBox = await page
+            .getByRole("link", { name: "Up" })
+            .boundingBox();
+        const breadcrumbsBox = await page
+            .getByRole("navigation", { name: "Breadcrumbs" })
+            .boundingBox();
+        // Path controls must read from home to parent navigation and then breadcrumbs.
+        expect(homeBox?.x ?? 1).toBeLessThan(upBox?.x ?? 0);
+        expect(upBox?.x ?? 1).toBeLessThan(breadcrumbsBox?.x ?? 0);
+        const filesActions = page.getByLabel("Files view actions");
+        const uploadBox = await filesActions
+            .getByRole("button", { name: "Upload", exact: true })
+            .boundingBox();
+        const downloadBox = await filesActions
+            .getByRole("link", { name: "Download", exact: true })
+            .boundingBox();
+        const moreBox = await filesActions
+            .getByRole("button", { name: "More", exact: true })
+            .boundingBox();
+        // Upload, Download, and overflow actions must remain on one horizontally scrollable row.
+        const uploadCenter = (uploadBox?.y ?? 0) + (uploadBox?.height ?? 0) / 2;
+        expect(
+            (downloadBox?.y ?? 0) + (downloadBox?.height ?? 0) / 2,
+        ).toBeCloseTo(uploadCenter);
+        expect((moreBox?.y ?? 0) + (moreBox?.height ?? 0) / 2).toBeCloseTo(
+            uploadCenter,
+        );
+        await page
+            .getByLabel("Directory view")
+            .getByRole("link", { name: "Agent", exact: true })
+            .click();
+        // Returning to the agent page must restore the Agent tab as current.
         await expect(page).toHaveURL(new RegExp(`/agents/${context.agentId}$`));
-        await expect(detailsLink).toHaveAttribute("aria-current", "page");
+        await expect(agentLink).toHaveAttribute("aria-current", "page");
+
+        const logsLink = agentView.getByRole("link", {
+            name: "Logs",
+            exact: true,
+        });
+        // Agent logs must remain the final contextual tab on the agent page.
+        await expect(agentView.getByRole("link").last()).toHaveText("Logs");
+        await logsLink.click();
+        // The logs route must keep the tab strip visible and mark Logs as current.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${context.agentId}/logs$`),
+        );
+        await expect(logsLink).toHaveAttribute("aria-current", "page");
 
         await page.getByRole("button", { name: "Open agent menu" }).click();
         const agentDialog = page.getByRole("dialog", { name: "Agent menu" });

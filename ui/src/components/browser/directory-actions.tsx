@@ -27,6 +27,7 @@ import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
 import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
+import { PersistentPathActions } from "#ui/components/browser/path-actions";
 
 type CopySelectedFilesState =
     | { type: "idle" }
@@ -686,6 +687,10 @@ export function DirectoryFilesActions(props: {
     showHiddenFiles: boolean;
     onToggleHiddenFiles: () => void;
 }) {
+    const directoryName =
+        props.directoryPath.split("/").filter(Boolean).pop() ?? "/";
+    const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
+
     return (
         <div
             aria-label="Files view actions"
@@ -709,7 +714,7 @@ export function DirectoryFilesActions(props: {
                 )}
                 {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
             </button>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain">
                 <Tooltip content="Pasted text or images are created as new files in this directory.">
                     <button
                         type="button"
@@ -728,6 +733,18 @@ export function DirectoryFilesActions(props: {
                 <UploadFilesAction
                     agent={props.agent}
                     directoryPath={props.directoryPath}
+                />
+                <PersistentPathActions
+                    agent={props.agent}
+                    path={props.directoryPath}
+                    currentName={directoryName}
+                    entryType="directory"
+                    downloadUrl={props.agent.getRawUrl(props.directoryPath, {
+                        download: true,
+                    })}
+                    downloadName={archiveName}
+                    downloadTooltip="Downloads this directory as a .tar.gz archive."
+                    secondaryDownload
                 />
                 <CopySelectedFilesAction
                     api={props.api}

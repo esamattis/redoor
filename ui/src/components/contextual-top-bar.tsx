@@ -3,10 +3,12 @@ import {
     File,
     Files,
     GitCompareArrows,
+    HardDrive,
     Info,
     PanelLeftOpen,
     PanelRightOpen,
     RefreshCw,
+    ScrollText,
 } from "lucide-react";
 import type * as React from "react";
 
@@ -21,6 +23,7 @@ import { Tooltip } from "#ui/components/tooltip";
 
 export type AgentViewContext =
     | { kind: "agent"; agent: Agent }
+    | { kind: "logs"; agent: Agent }
     | { kind: "directory"; agent: Agent; path: string }
     | { kind: "file"; agent: Agent; path: string }
     | null;
@@ -90,10 +93,18 @@ function ContextualViewSwitch(props: {
     }
 
     const agent = props.context.agent;
-    if (props.context.kind === "agent") {
+    const agentTarget = `/agents/${encodeURIComponent(agent.id)}`;
+    const logsTarget = `${agentTarget}/logs`;
+    if (props.context.kind === "agent" || props.context.kind === "logs") {
         const filesTarget = agent.getBrowserUrl(agent.cwd ?? "/");
         return (
             <ViewSwitch label="Agent view">
+                <ViewLink
+                    to={agentTarget}
+                    label="Agent"
+                    icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
+                    active={props.context.kind === "agent"}
+                />
                 <Link
                     to={filesTarget}
                     className={getViewSwitchItemClass(false)}
@@ -101,15 +112,12 @@ function ContextualViewSwitch(props: {
                     <Files className="h-4 w-4" aria-hidden="true" />
                     Files
                 </Link>
-                <Link
-                    to="/agents/$agentId"
-                    params={{ agentId: agent.id }}
-                    aria-current="page"
-                    className={getViewSwitchItemClass(true)}
-                >
-                    <Info className="h-4 w-4" aria-hidden="true" />
-                    Details
-                </Link>
+                <ViewLink
+                    to={logsTarget}
+                    label="Logs"
+                    icon={<ScrollText className="h-4 w-4" aria-hidden="true" />}
+                    active={props.context.kind === "logs"}
+                />
             </ViewSwitch>
         );
     }
@@ -124,6 +132,12 @@ function ContextualViewSwitch(props: {
                   : "files";
         return (
             <ViewSwitch label="Directory view">
+                <ViewLink
+                    to={agentTarget}
+                    label="Agent"
+                    icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
+                    active={false}
+                />
                 <ViewLink
                     to={pathTarget}
                     label="Files"
@@ -144,6 +158,12 @@ function ContextualViewSwitch(props: {
                     icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                     active={activeView === "sync"}
                 />
+                <ViewLink
+                    to={logsTarget}
+                    label="Logs"
+                    icon={<ScrollText className="h-4 w-4" aria-hidden="true" />}
+                    active={false}
+                />
             </ViewSwitch>
         );
     }
@@ -158,6 +178,12 @@ function ContextualViewSwitch(props: {
                 : "details";
     return (
         <ViewSwitch label="File view">
+            <ViewLink
+                to={agentTarget}
+                label="Agent"
+                icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
+                active={false}
+            />
             <ViewLink
                 to={pathTarget}
                 label="Details"
@@ -186,6 +212,12 @@ function ContextualViewSwitch(props: {
                 label="Sync"
                 icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                 active={activeView === "sync"}
+            />
+            <ViewLink
+                to={logsTarget}
+                label="Logs"
+                icon={<ScrollText className="h-4 w-4" aria-hidden="true" />}
+                active={false}
             />
         </ViewSwitch>
     );

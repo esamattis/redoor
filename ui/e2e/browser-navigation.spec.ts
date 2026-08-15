@@ -952,7 +952,9 @@ test.describe.serial("File Browser Navigation", () => {
         // Navigation still commits the missing path in the URL.
         await expect(page).toHaveURL(missingUrl);
         // Browser chrome stays mounted so the path can be corrected in place.
-        await expect(page.getByLabel("File browser actions")).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "Agent home" }),
+        ).toBeVisible();
         await expect(
             page.getByRole("table", { name: "File list" }),
         ).toBeVisible();
