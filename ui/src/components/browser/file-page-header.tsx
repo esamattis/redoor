@@ -1,13 +1,9 @@
 import React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowUp, File, GitCompareArrows, Info, RefreshCw } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
-import {
-    BrowserPageHeader,
-    ViewSwitch,
-    getViewSwitchItemClass,
-} from "#ui/components/browser/navigation";
+import { BrowserPageHeader } from "#ui/components/browser/navigation";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import {
     getBrowserPathHref,
@@ -15,12 +11,10 @@ import {
 } from "#ui/components/browser/utils";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 
-/** Keeps parent navigation and both file representations identical across views. */
+/** Keeps parent navigation identical across every file representation. */
 function FileViewNavigation(props: {
     agent: Agent;
-    path: string;
     parentPath: string | null;
-    activeView: "details" | "view" | "diff" | "sync";
 }) {
     return (
         <>
@@ -36,60 +30,6 @@ function FileViewNavigation(props: {
                     Up
                 </Link>
             </Tooltip>
-            <ViewSwitch label="File view">
-                <Link
-                    to={getBrowserPathHref(props.agent, props.path)}
-                    search={{}}
-                    aria-current={
-                        props.activeView === "details" ? "page" : undefined
-                    }
-                    className={getViewSwitchItemClass(
-                        props.activeView === "details",
-                    )}
-                >
-                    <Info className="h-4 w-4" />
-                    Details
-                </Link>
-                <Link
-                    to={getBrowserPathHref(props.agent, props.path)}
-                    search={{ view: "edit" }}
-                    aria-current={
-                        props.activeView === "view" ? "page" : undefined
-                    }
-                    className={getViewSwitchItemClass(
-                        props.activeView === "view",
-                    )}
-                >
-                    <File className="h-4 w-4" />
-                    View
-                </Link>
-                <Link
-                    to={getBrowserPathHref(props.agent, props.path)}
-                    search={{ view: "diff" }}
-                    aria-current={
-                        props.activeView === "diff" ? "page" : undefined
-                    }
-                    className={getViewSwitchItemClass(
-                        props.activeView === "diff",
-                    )}
-                >
-                    <GitCompareArrows className="h-4 w-4" />
-                    Diff
-                </Link>
-                <Link
-                    to={getBrowserPathHref(props.agent, props.path)}
-                    search={{ view: "sync" }}
-                    aria-current={
-                        props.activeView === "sync" ? "page" : undefined
-                    }
-                    className={getViewSwitchItemClass(
-                        props.activeView === "sync",
-                    )}
-                >
-                    <RefreshCw className="h-4 w-4" />
-                    Sync
-                </Link>
-            </ViewSwitch>
         </>
     );
 }
@@ -135,9 +75,7 @@ export function FilePageHeader(props: {
             navigation={
                 <FileViewNavigation
                     agent={props.agent}
-                    path={props.path}
                     parentPath={parentPath}
-                    activeView={props.activeView}
                 />
             }
             actions={

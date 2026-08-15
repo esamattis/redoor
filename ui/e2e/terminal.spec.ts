@@ -255,7 +255,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             throw new Error("replacement terminal sockets were not created");
         }
         await page
-            .getByRole("tab", { name: "agent2_custom, connected" })
+            .getByRole("link", { name: "agent2_custom, connected" })
             .click();
         // Agent navigation retains tabs and their live shell connections.
         expect(terminalSockets).toHaveLength(5);
@@ -389,7 +389,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(firstTerminal).toBeFocused();
 
         await page
-            .getByRole("tab", { name: "agent2_custom, connected" })
+            .getByRole("link", { name: "agent2_custom, connected" })
             .click();
         await page.keyboard.press("Escape");
         await page.keyboard.press("t");
@@ -401,7 +401,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("tab", { name: "agent1_src 1" }),
         ).toBeVisible();
 
-        await page.getByRole("tab", { name: "agent1_src, connected" }).click();
+        await page.getByRole("link", { name: "agent1_src, connected" }).click();
         await page.keyboard.press("Escape");
         await page.keyboard.press("t");
         // Returning to an agent focuses its existing live terminal.

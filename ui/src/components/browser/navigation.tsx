@@ -7,9 +7,7 @@ import {
     HardDrive,
     Home,
     Info,
-    List,
     Pencil,
-    RefreshCw,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
@@ -79,7 +77,7 @@ export function BrowserPageHeader(props: {
     );
 }
 
-/** Visually binds alternate representations while exposing their shared purpose. */
+/** Presents route-backed representations as a compact tab strip without changing link semantics. */
 export function ViewSwitch(props: {
     label: string;
     children: React.ReactNode;
@@ -87,19 +85,19 @@ export function ViewSwitch(props: {
     return (
         <div
             aria-label={props.label}
-            className="flex gap-0.5 rounded-md border border-slate-800 bg-slate-950/60 p-0.5"
+            className="top-tab-strip flex min-w-max items-end gap-1 overflow-x-auto overscroll-x-contain"
         >
             {props.children}
         </div>
     );
 }
 
-/** Makes the active representation unmistakable without changing control size. */
+/** Recreates the raised active-tab treatment while retaining current-page semantics on links. */
 export function getViewSwitchItemClass(isActive: boolean) {
     const baseClass =
-        "inline-flex items-center gap-2 rounded border px-3 py-1.5 text-sm font-medium transition-colors";
+        "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm font-medium transition-colors";
     return isActive
-        ? `${baseClass} border-blue-500/40 bg-blue-500/15 text-blue-200 shadow-sm`
+        ? `${baseClass} border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset] [&_svg]:text-blue-400`
         : `${baseClass} border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-100`;
 }
 
@@ -175,64 +173,6 @@ export function BrowserHeader(props: {
                             Up
                         </Link>
                     </Tooltip>
-                    {!pathUnavailable ? (
-                        <ViewSwitch label="Directory view">
-                            <Link
-                                to={getBrowserPathHref(
-                                    props.agent,
-                                    props.directoryPath,
-                                )}
-                                search={{}}
-                                aria-current={
-                                    props.activeView === "files"
-                                        ? "page"
-                                        : undefined
-                                }
-                                className={getViewSwitchItemClass(
-                                    props.activeView === "files",
-                                )}
-                            >
-                                <List className="h-4 w-4" />
-                                Files
-                            </Link>
-                            <Link
-                                to={getBrowserPathHref(
-                                    props.agent,
-                                    props.directoryPath,
-                                )}
-                                search={{ view: "details" }}
-                                aria-current={
-                                    props.activeView === "details"
-                                        ? "page"
-                                        : undefined
-                                }
-                                className={getViewSwitchItemClass(
-                                    props.activeView === "details",
-                                )}
-                            >
-                                <Info className="h-4 w-4" />
-                                Details
-                            </Link>
-                            <Link
-                                to={getBrowserPathHref(
-                                    props.agent,
-                                    props.directoryPath,
-                                )}
-                                search={{ view: "sync" }}
-                                aria-current={
-                                    props.activeView === "sync"
-                                        ? "page"
-                                        : undefined
-                                }
-                                className={getViewSwitchItemClass(
-                                    props.activeView === "sync",
-                                )}
-                            >
-                                <RefreshCw className="h-4 w-4" />
-                                Sync
-                            </Link>
-                        </ViewSwitch>
-                    ) : null}
                 </>
             }
             actions={

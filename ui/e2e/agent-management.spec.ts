@@ -192,17 +192,17 @@ test.describe.serial("Agent management", () => {
 
         // Submission dynamically adds and opens the managed tab without a server restart.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: new RegExp(`^${CREATED_SSH_AGENT}, `),
             }),
         ).toBeVisible({ timeout: 15_000 });
 
         // A connected tab proves the form-created config can prepare and run as redoor.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${CREATED_SSH_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
         const connected = await getAgent(page.request, CREATED_SSH_AGENT);
         expect(connected.managed).toBe(true);
         expect(connected.connection_id).not.toBeNull();
@@ -234,10 +234,10 @@ test.describe.serial("Agent management", () => {
         expect(createResponse.ok()).toBe(true);
         await page.goto(`${WEB_BASE_URL}/`);
         await page
-            .getByRole("tab", { name: `${originalName}, stopped` })
+            .getByRole("link", { name: `${originalName}, stopped` })
             .click();
         await expect(
-            page.getByRole("tab", { name: `${originalName}, connected` }),
+            page.getByRole("link", { name: `${originalName}, connected` }),
         ).toBeVisible({ timeout: 60_000 });
         await page.getByRole("link", { name: `Edit ${originalName}` }).click();
 
@@ -261,14 +261,14 @@ test.describe.serial("Agent management", () => {
             new RegExp(`/agents/${RUNNING_EDIT_AGENT}/edit$`),
         );
         await page
-            .getByRole("tab", { name: `${RUNNING_EDIT_AGENT}, stopped` })
+            .getByRole("link", { name: `${RUNNING_EDIT_AGENT}, stopped` })
             .click();
         // Starting the renamed tab proves the edited configuration remains operational.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${RUNNING_EDIT_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
     });
 
     test("adds and connects an SSH agent with password auth", async ({
@@ -299,10 +299,10 @@ test.describe.serial("Agent management", () => {
 
         // Password auth must prepare and connect without a TTY or ssh-agent key.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${CREATED_SSH_PASSWORD_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
         const connected = await getAgent(
             page.request,
             CREATED_SSH_PASSWORD_AGENT,
@@ -332,10 +332,10 @@ test.describe.serial("Agent management", () => {
         await page.getByLabel("SSH password", { exact: true }).fill(password);
         await page.getByRole("button", { name: "Add managed agent" }).click();
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
 
         await page
             .getByRole("link", {
@@ -368,16 +368,16 @@ test.describe.serial("Agent management", () => {
         expect(body.password).toBeNull();
 
         await page
-            .getByRole("tab", {
+            .getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, stopped`,
             })
             .click();
         // Live auth must now succeed as the key user after the password is removed.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
         await page
             .getByRole("link", {
                 name: `Edit ${CREATED_SSH_MODE_SWITCH_AGENT}`,
@@ -439,16 +439,16 @@ test.describe.serial("Agent management", () => {
         );
 
         await page
-            .getByRole("tab", {
+            .getByRole("link", {
                 name: `${CREATED_SSH_PASSWORD_CHANGE_AGENT}, stopped`,
             })
             .click();
         // The corrected secret must authenticate as redoor-password after the edit.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: `${CREATED_SSH_PASSWORD_CHANGE_AGENT}, connected`,
             }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 60_000 });
+        ).toHaveAttribute("aria-current", "page", { timeout: 60_000 });
     });
 
     test("shows an actionable error when SSH needs an omitted password", async ({
@@ -477,7 +477,7 @@ test.describe.serial("Agent management", () => {
         expect(createResponse.ok()).toBe(true);
         await page.goto(`${WEB_BASE_URL}/`);
         await page
-            .getByRole("tab", {
+            .getByRole("link", {
                 name: `${CREATED_SSH_MISSING_PASSWORD_AGENT}, stopped`,
             })
             .click();
@@ -511,7 +511,11 @@ test.describe.serial("Agent management", () => {
     test("shows managed inventory before lazy startup", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/agents`);
         await expect(
-            page.getByRole("heading", { name: "Agents", exact: true }),
+            page.getByRole("heading", {
+                level: 1,
+                name: "Agents",
+                exact: true,
+            }),
         ).toBeVisible();
 
         const externalOne = page.getByRole("row", { name: "Agent agent1_src" });
@@ -580,7 +584,7 @@ test.describe.serial("Agent management", () => {
         );
         await page.goto(`${WEB_BASE_URL}/`);
         await page
-            .getByRole("tab", { name: `${VALID_AGENT}, stopped` })
+            .getByRole("link", { name: `${VALID_AGENT}, stopped` })
             .click();
 
         // Immediate navigation guarantees users see progress even when local registration is fast.
@@ -604,8 +608,8 @@ test.describe.serial("Agent management", () => {
             .toBe("connected");
         // Successful startup redirects to file browsing while preserving the active agent tab.
         await expect(
-            page.getByRole("tab", { name: `${VALID_AGENT}, connected` }),
-        ).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
+            page.getByRole("link", { name: `${VALID_AGENT}, connected` }),
+        ).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
     });
 
     test("shuts down and restarts from the management row", async ({

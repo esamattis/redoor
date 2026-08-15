@@ -203,12 +203,12 @@ test.describe("First-run demo", () => {
             ).toBeVisible();
 
             // Clicking the stopped local tab triggers lazy start and opens its browser root.
-            await page.getByRole("tab", { name: "local, stopped" }).click();
+            await page.getByRole("link", { name: "local, stopped" }).click();
             await expect(
                 page.getByRole("heading", { name: "Starting local" }),
             ).toBeVisible();
             await expect(
-                page.getByRole("tab", { name: "local, connected" }),
+                page.getByRole("link", { name: "local, connected" }),
             ).toBeVisible({ timeout: 30_000 });
             // The server log lives in the process user's home, proving the local agent uses the new default.
             await expect(

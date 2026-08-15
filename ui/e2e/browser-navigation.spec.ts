@@ -1093,7 +1093,7 @@ test.describe.serial("File Browser Navigation", () => {
         await page.goto(agent1DirectoryUrl);
         // The first tab must capture its directory before another agent becomes active.
         await expect(
-            page.getByRole("tab", {
+            page.getByRole("link", {
                 name: new RegExp(`^${ctx.agentName}, connected$`),
             }),
         ).toHaveAttribute(
@@ -1102,7 +1102,7 @@ test.describe.serial("File Browser Navigation", () => {
         );
 
         await page
-            .getByRole("tab", { name: "agent2_custom, connected" })
+            .getByRole("link", { name: "agent2_custom, connected" })
             .click();
         await page.goto(agent2DirectoryUrl);
         await page
@@ -1112,7 +1112,7 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page).toHaveURL(agent2FileUrl);
 
         await page
-            .getByRole("tab", {
+            .getByRole("link", {
                 name: new RegExp(`^${ctx.agentName}, connected$`),
             })
             .click();
@@ -1121,7 +1121,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         await page.reload();
         await page
-            .getByRole("tab", { name: "agent2_custom, connected" })
+            .getByRole("link", { name: "agent2_custom, connected" })
             .click();
         // Reloading must not discard the inactive tab's remembered file.
         await expect(page).toHaveURL(agent2FileUrl);
@@ -1130,7 +1130,7 @@ test.describe.serial("File Browser Navigation", () => {
         ).toContainText("nested3.txt");
 
         await page
-            .getByRole("tab", {
+            .getByRole("link", {
                 name: new RegExp(`^${ctx.agentName}, connected$`),
             })
             .click();

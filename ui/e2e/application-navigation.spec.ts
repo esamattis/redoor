@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { WEB_BASE_URL } from "./helpers";
 
 test.describe("Application navigation", () => {
-    test("keeps the sidebar visible on desktop", async ({ page }) => {
+    test("keeps both side menus visible on desktop", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/`);
 
         // Desktop navigation must not require opening an overlay first.
@@ -11,6 +11,15 @@ test.describe("Application navigation", () => {
             name: "Application",
         });
         await expect(applicationNavigation).toBeVisible();
+        const agentNavigation = page.getByRole("navigation", {
+            name: "Agents",
+        });
+        // Agent selection persists on the opposite side of the central route content.
+        await expect(agentNavigation).toBeVisible();
+        const applicationBox = await applicationNavigation.boundingBox();
+        const agentBox = await agentNavigation.boundingBox();
+        // Physical placement matches each menu's application and agent responsibilities.
+        expect(applicationBox?.x ?? 1).toBeLessThan(agentBox?.x ?? 0);
         const logoutBox = await applicationNavigation
             .getByRole("button", { name: "Log out" })
             .boundingBox();
@@ -20,7 +29,10 @@ test.describe("Application navigation", () => {
         );
         // The burger is reserved for viewports where the sidebar cannot remain visible.
         await expect(
-            page.getByRole("button", { name: "Open menu" }),
+            page.getByRole("button", { name: "Open application menu" }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Open agent menu" }),
         ).toBeHidden();
     });
 
@@ -30,7 +42,9 @@ test.describe("Application navigation", () => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`${WEB_BASE_URL}/`);
 
-        const openMenuButton = page.getByRole("button", { name: "Open menu" });
+        const openMenuButton = page.getByRole("button", {
+            name: "Open application menu",
+        });
         // Mobile navigation starts closed so content retains the viewport width.
         await expect(
             page.getByRole("navigation", { name: "Application" }),
@@ -40,7 +54,9 @@ test.describe("Application navigation", () => {
         expect(triggerBox?.x ?? 390).toBeLessThan(24);
         await openMenuButton.click();
 
-        const menuDialog = page.getByRole("dialog", { name: "Menu" });
+        const menuDialog = page.getByRole("dialog", {
+            name: "Application menu",
+        });
         // Opening the burger exposes the same application destinations in a modal drawer.
         await expect(menuDialog).toBeVisible();
         await expect(
@@ -53,6 +69,39 @@ test.describe("Application navigation", () => {
         // A pointer press on the backdrop must dismiss the mobile drawer.
         await expect(menuDialog).toBeHidden();
         await expect(openMenuButton).toHaveAttribute("aria-expanded", "false");
+    });
+
+    test("coordinates independently placed mobile drawers and restores focus", async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${WEB_BASE_URL}/`);
+        const applicationTrigger = page.getByRole("button", {
+            name: "Open application menu",
+        });
+        const agentTrigger = page.getByRole("button", {
+            name: "Open agent menu",
+        });
+
+        await applicationTrigger.click();
+        // Opening the opposite drawer closes the first rather than stacking modal surfaces.
+        await agentTrigger.evaluate((trigger) => {
+            if (trigger instanceof HTMLButtonElement) {
+                trigger.click();
+            }
+        });
+        await expect(
+            page.getByRole("dialog", { name: "Application menu" }),
+        ).toBeHidden();
+        const agentDialog = page.getByRole("dialog", { name: "Agent menu" });
+        await expect(agentDialog).toBeVisible();
+        const dialogBox = await agentDialog.locator("aside").boundingBox();
+        // The agent drawer enters from and remains aligned to the viewport's right edge.
+        expect((dialogBox?.x ?? 0) + (dialogBox?.width ?? 0)).toBe(390);
+        await page.keyboard.press("Escape");
+        // Escape dismisses the active modal and returns keyboard focus to its trigger.
+        await expect(agentDialog).toBeHidden();
+        await expect(agentTrigger).toBeFocused();
     });
 
     test("keeps overlay panels visible during horizontal touch scrolling", async ({

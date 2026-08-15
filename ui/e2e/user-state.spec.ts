@@ -119,9 +119,15 @@ test.describe.serial("User state", () => {
             name: "Color theme: System",
         });
         const triggerBox = await themeButton.boundingBox();
-        // The compact control remains at the right edge of the application header.
-        expect((triggerBox?.x ?? 0) + (triggerBox?.width ?? 0)).toBeGreaterThan(
-            1200,
+        const agentMenuBox = await page
+            .getByRole("navigation", { name: "Agents" })
+            .boundingBox();
+        // The compact control remains at the right edge of central chrome, immediately before the agent menu.
+        expect(
+            (triggerBox?.x ?? 0) + (triggerBox?.width ?? 0),
+        ).toBeLessThanOrEqual(agentMenuBox?.x ?? 0);
+        expect(triggerBox?.x ?? 0).toBeGreaterThan(
+            (agentMenuBox?.x ?? 0) - 100,
         );
 
         await page.emulateMedia({ colorScheme: "light" });
@@ -160,10 +166,17 @@ test.describe.serial("User state", () => {
         );
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
-        // Active light-theme controls need dark blue text rather than the dark theme's pale tint.
-        await expect(
-            page.getByRole("link", { name: "Files", exact: true }),
-        ).toHaveCSS("color", "rgb(30, 64, 175)");
+        const activeFilesTab = page.getByRole("link", {
+            name: "Files",
+            exact: true,
+        });
+        // The raised active tab keeps high-contrast neutral text in the light theme.
+        await expect(activeFilesTab).toHaveCSS("color", "rgb(15, 23, 42)");
+        // Its icon retains the blue current-view accent used by the earlier tab treatment.
+        await expect(activeFilesTab.locator("svg")).toHaveCSS(
+            "color",
+            "rgb(37, 99, 235)",
+        );
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
         // Server readback proves the choice lives in user state rather than local storage.

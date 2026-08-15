@@ -11,20 +11,7 @@ import {
 import { useAtomValue, useSetAtom } from "jotai";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
-import {
-    HardDrive,
-    X,
-    Files,
-    Trash2,
-    LoaderCircle,
-    ArrowLeftRight,
-    LogOut,
-    Home,
-    Menu,
-    ScrollText,
-    Users,
-    Pencil,
-} from "lucide-react";
+import { X, Files, Trash2, LoaderCircle } from "lucide-react";
 import {
     ApiClient,
     isLsDirectoryResponse,
@@ -32,7 +19,6 @@ import {
     type TransferProgressEntry,
     type ServerInfoResponse,
 } from "#ui/api-client";
-import { AddButton } from "#ui/components/add-button";
 import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 
 import {
@@ -52,15 +38,7 @@ import { TerminalPanel } from "#ui/components/terminal-panel";
 import { getParentPath } from "#ui/utils/path";
 import { GlobalFileImportHandler } from "#ui/components/global-file-import-handler";
 import { UploadQueueManager } from "#ui/upload-queue";
-import {
-    agentTabLocationsAtom,
-    getAgentTabLocation,
-    rememberAgentTabLocationAtom,
-} from "#ui/agent-tab-locations";
-import {
-    agentStartStatesAtom,
-    getStartErrorMessage,
-} from "#ui/agent-start-state";
+import { rememberAgentTabLocationAtom } from "#ui/agent-tab-locations";
 import {
     agentsQueryOptions,
     serverInfoQueryOptions,
@@ -68,11 +46,17 @@ import {
 } from "#ui/queries";
 import { userStateQueryOptions } from "#ui/user-state";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
-import { ThemeManager, ThemeToggle } from "#ui/components/theme-toggle";
+import { ThemeManager } from "#ui/components/theme-toggle";
 import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 import { emptyServerInfo } from "#ui/empty-server-info";
 import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
+import { ApplicationNavigation } from "#ui/components/application-navigation";
+import { AgentNavigation } from "#ui/components/agent-navigation";
+import {
+    ContextualTopBar,
+    type AgentViewContext,
+} from "#ui/components/contextual-top-bar";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -126,13 +110,97 @@ function RootRouteLayout() {
     return location.pathname === "/login" ? <Outlet /> : <RootLayout />;
 }
 
+/** Derives contextual view navigation strictly from already loaded route and agent data. */
+function useAgentViewContext(
+    agents: RootLoaderData["agents"],
+    activeAgent: RootLoaderData["agents"][number] | undefined,
+    pathname: string,
+) {
+    const browserViewLocation = useMatches({
+        select: (matches) => {
+            const browserMatch = matches.find(
+                (match) => match.routeId === "/agents/$agentId/browser/$",
+            );
+            const browserData = browserMatch?.loaderData;
+            if (!browserData?.lsResult) {
+                return null;
+            }
+            if (isLsDirectoryResponse(browserData.lsResult)) {
+                return {
+                    kind: "directory" as const,
+                    agentId: browserData.agentId,
+                    path: browserData.path,
+                };
+            }
+            if (isLsFileResponse(browserData.lsResult)) {
+                return {
+                    kind: "file" as const,
+                    agentId: browserData.agentId,
+                    path: browserData.path,
+                };
+            }
+            return null;
+        },
+    });
+
+    if (browserViewLocation) {
+        const browserAgent = agents.find(
+            (agent) => agent.id === browserViewLocation.agentId,
+        );
+        if (browserAgent) {
+            return {
+                kind: browserViewLocation.kind,
+                agent: browserAgent,
+                path: browserViewLocation.path,
+            } satisfies AgentViewContext;
+        }
+    }
+    if (
+        activeAgent?.status === "connected" &&
+        activeAgent.cwd !== null &&
+        pathname === `/agents/${encodeURIComponent(activeAgent.id)}`
+    ) {
+        return { kind: "agent", agent: activeAgent } satisfies AgentViewContext;
+    }
+    return null;
+}
+
+/** Polls only while managed startup can change shell navigation without a refresh event. */
+function useManagedAgentRefresh(
+    agents: RootLoaderData["agents"],
+    router: ReturnType<typeof useRouter>,
+) {
+    React.useEffect(() => {
+        if (
+            !agents.some(
+                (agent) => agent.managed && agent.status === "starting",
+            )
+        ) {
+            return;
+        }
+        let invalidating = false;
+        const timer = window.setInterval(() => {
+            if (invalidating) return;
+            invalidating = true;
+            void router.invalidate().finally(() => {
+                invalidating = false;
+            });
+        }, 1000);
+        return () => window.clearInterval(timer);
+    }, [agents, router]);
+}
+
 function RootLayout() {
     const { agents, transferProgress: initialTransferProgress } =
         Route.useLoaderData();
     const location = useLocation();
     const router = useRouter();
     const { api, queryClient } = Route.useRouteContext();
-    const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+    const [openMenu, setOpenMenu] = React.useState<
+        "application" | "agents" | null
+    >(null);
+    const applicationMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
+    const agentMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const { data: transferProgress } = useQuery({
         ...transfersQueryOptions(api),
         initialData: initialTransferProgress,
@@ -207,6 +275,12 @@ function RootLayout() {
                   cwd: terminalCwd ?? activeAgent.cwd,
               }
             : null;
+    const agentViewContext = useAgentViewContext(
+        agents,
+        activeAgent,
+        location.pathname,
+    );
+    const activeView = new URLSearchParams(location.searchStr).get("view");
     const logoutMutation = useMutation({
         mutationFn: () => api.logout(),
         onSuccess: () => {
@@ -235,24 +309,7 @@ function RootLayout() {
         });
     }, [activeAgent, location.pathname, rememberAgentTabLocation]);
 
-    React.useEffect(() => {
-        if (
-            !agents.some(
-                (agent) => agent.managed && agent.status === "starting",
-            )
-        ) {
-            return;
-        }
-        let invalidating = false;
-        const timer = window.setInterval(() => {
-            if (invalidating) return;
-            invalidating = true;
-            void router.invalidate().finally(() => {
-                invalidating = false;
-            });
-        }, 1000);
-        return () => window.clearInterval(timer);
-    }, [agents, router]);
+    useManagedAgentRefresh(agents, router);
 
     React.useEffect(() => {
         /** Lets Escape leave text controls globally. */
@@ -287,18 +344,23 @@ function RootLayout() {
             />
             <ApplicationNavigation
                 pathname={location.pathname}
-                isOpen={isMenuOpen}
+                isOpen={openMenu === "application"}
                 isLoggingOut={logoutMutation.isPending}
-                onClose={() => setIsMenuOpen(false)}
+                triggerRef={applicationMenuTriggerRef}
+                onClose={() => setOpenMenu(null)}
                 onLogout={() => logoutMutation.mutate()}
             />
             <OverlayChromeLayout
                 topChrome={
-                    <TopTabStrip
-                        agents={sortedAgents}
-                        pathname={location.pathname}
-                        isMenuOpen={isMenuOpen}
-                        onOpenMenu={() => setIsMenuOpen(true)}
+                    <ContextualTopBar
+                        context={agentViewContext}
+                        view={activeView}
+                        isApplicationMenuOpen={openMenu === "application"}
+                        isAgentMenuOpen={openMenu === "agents"}
+                        applicationTriggerRef={applicationMenuTriggerRef}
+                        agentTriggerRef={agentMenuTriggerRef}
+                        onOpenApplicationMenu={() => setOpenMenu("application")}
+                        onOpenAgentMenu={() => setOpenMenu("agents")}
                     />
                 }
                 bottomChrome={
@@ -317,6 +379,13 @@ function RootLayout() {
             >
                 <Outlet />
             </OverlayChromeLayout>
+            <AgentNavigation
+                agents={sortedAgents}
+                pathname={location.pathname}
+                isOpen={openMenu === "agents"}
+                triggerRef={agentMenuTriggerRef}
+                onClose={() => setOpenMenu(null)}
+            />
             <TanStackDevtools
                 config={{
                     position: "bottom-right",
@@ -329,330 +398,6 @@ function RootLayout() {
                 ]}
             />
         </div>
-    );
-}
-
-/** Lifts the active retained agent so navigation reads like browser tabs. */
-function TopTabStrip(props: {
-    agents: RootLoaderData["agents"];
-    pathname: string;
-    isMenuOpen: boolean;
-    onOpenMenu: () => void;
-}) {
-    const agentTabLocations = useAtomValue(agentTabLocationsAtom);
-    const setStartStates = useSetAtom(agentStartStatesAtom);
-    const router = useRouter();
-    const startMutation = useMutation({
-        mutationFn: (agent: RootLoaderData["agents"][number]) => agent.start(),
-        onMutate: (agent) => {
-            setStartStates((states) => ({
-                ...states,
-                [agent.id]: {
-                    starting: true,
-                    error: null,
-                    autoRedirect: true,
-                },
-            }));
-            void router.navigate({
-                to: "/agents/$agentId",
-                params: { agentId: agent.id },
-            });
-        },
-        onSuccess: () => router.invalidate(),
-        onError: (error, agent) => {
-            setStartStates((states) => ({
-                ...states,
-                [agent.id]: {
-                    starting: false,
-                    error: getStartErrorMessage(error),
-                    autoRedirect: true,
-                },
-            }));
-        },
-    });
-
-    /** Opens status immediately, then starts the managed process without blocking navigation. */
-    const openManagedAgent = (agent: RootLoaderData["agents"][number]) => {
-        startMutation.mutate(agent);
-    };
-
-    return (
-        <header
-            aria-label="Primary navigation"
-            className="flex min-h-0 min-w-0 items-end gap-1 border-b border-slate-800 bg-[#0f1218] px-3 pt-2"
-        >
-            <Tooltip content="Open menu" className="shrink-0 md:hidden">
-                <button
-                    type="button"
-                    aria-label="Open menu"
-                    aria-haspopup="dialog"
-                    aria-expanded={props.isMenuOpen}
-                    onClick={props.onOpenMenu}
-                    className="flex items-center justify-center rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                >
-                    <Menu className="h-5 w-5" />
-                </button>
-            </Tooltip>
-            <div
-                role="tablist"
-                aria-label="Agents"
-                className="top-tab-strip flex min-h-0 min-w-0 flex-1 items-end gap-1 overflow-x-auto overscroll-x-contain pb-0"
-            >
-                {props.agents.length === 0 ? (
-                    <span className="px-3 pb-2 text-sm text-slate-500">
-                        No agents configured or connected
-                    </span>
-                ) : (
-                    props.agents.map((agent) => {
-                        const agentPrefix = `/agents/${encodeURIComponent(agent.id)}`;
-                        const isActive =
-                            props.pathname === agentPrefix ||
-                            props.pathname.startsWith(`${agentPrefix}/`);
-                        const canBrowse =
-                            agent.status === "connected" && agent.cwd !== null;
-                        const target = canBrowse
-                            ? getAgentTabLocation(
-                                  agentTabLocations,
-                                  agent.id,
-                                  agent.getBrowserUrl(agent.cwd),
-                              )
-                            : `/agents/${encodeURIComponent(agent.id)}`;
-                        const shouldStart =
-                            agent.managed &&
-                            (agent.status === "stopped" ||
-                                agent.status === "disconnected");
-                        return (
-                            <div
-                                key={agent.id}
-                                className={`group flex max-w-64 shrink-0 items-center rounded-t-lg border border-b-0 text-sm transition-colors ${isActive ? "border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset]" : "border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-200"}`}
-                            >
-                                <Link
-                                    to={target}
-                                    onClick={(event) => {
-                                        if (shouldStart) {
-                                            event.preventDefault();
-                                            openManagedAgent(agent);
-                                        }
-                                    }}
-                                    role="tab"
-                                    aria-label={`${agent.name}, ${agent.status}`}
-                                    aria-selected={isActive}
-                                    className="flex min-w-0 items-center gap-2 whitespace-nowrap py-2 pl-4 pr-2"
-                                >
-                                    <HardDrive
-                                        className={`h-4 w-4 shrink-0 ${isActive ? "text-blue-400" : "text-slate-500 group-hover:text-slate-300"}`}
-                                    />
-                                    <span className="truncate font-medium">
-                                        {agent.name}
-                                    </span>
-                                </Link>
-                                {agent.configurationEditable ? (
-                                    <Tooltip content={`Edit ${agent.name}`}>
-                                        <Link
-                                            to="/agents/$agentId/edit"
-                                            params={{ agentId: agent.id }}
-                                            aria-label={`Edit ${agent.name}`}
-                                            className="mr-1 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-slate-200"
-                                        >
-                                            <Pencil
-                                                className="h-3.5 w-3.5"
-                                                aria-hidden="true"
-                                            />
-                                        </Link>
-                                    </Tooltip>
-                                ) : null}
-                            </div>
-                        );
-                    })
-                )}
-                <AddButton tooltip="Add managed agent">
-                    <Link to="/agents/new" aria-label="Add managed agent" />
-                </AddButton>
-            </div>
-            <div className="shrink-0 pb-1">
-                <ThemeToggle />
-            </div>
-        </header>
-    );
-}
-
-/** Presents persistent desktop navigation and an overlay drawer on small screens. */
-function ApplicationNavigation(props: {
-    pathname: string;
-    isOpen: boolean;
-    isLoggingOut: boolean;
-    onClose: () => void;
-    onLogout: () => void;
-}) {
-    React.useEffect(() => {
-        if (!props.isOpen || props.isLoggingOut) {
-            return;
-        }
-
-        /** Lets keyboard users dismiss the mobile navigation drawer. */
-        const closeMenuOnEscape = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                props.onClose();
-            }
-        };
-
-        document.addEventListener("keydown", closeMenuOnEscape);
-        return () => document.removeEventListener("keydown", closeMenuOnEscape);
-    }, [props.isLoggingOut, props.isOpen, props.onClose]);
-
-    const menu = (
-        <ApplicationMenu
-            pathname={props.pathname}
-            isLoggingOut={props.isLoggingOut}
-            onClose={props.onClose}
-            onLogout={props.onLogout}
-        />
-    );
-
-    return (
-        <>
-            <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-800 bg-[#0f1218] p-3 md:flex">
-                <BrandMark />
-                {menu}
-            </aside>
-            {props.isOpen ? (
-                <div
-                    className="fixed inset-0 z-50 bg-black/60 md:hidden"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Application menu"
-                    onMouseDown={(event) => {
-                        if (
-                            event.target === event.currentTarget &&
-                            !props.isLoggingOut
-                        ) {
-                            props.onClose();
-                        }
-                    }}
-                >
-                    <aside className="flex h-full w-72 max-w-[85vw] flex-col border-r border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/50">
-                        <div className="flex items-start justify-between gap-4">
-                            <BrandMark />
-                            <Tooltip content="Close menu">
-                                <button
-                                    type="button"
-                                    aria-label="Close menu"
-                                    onClick={props.onClose}
-                                    disabled={props.isLoggingOut}
-                                    className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    <X className="h-4 w-4" />
-                                </button>
-                            </Tooltip>
-                        </div>
-                        {menu}
-                    </aside>
-                </div>
-            ) : null}
-        </>
-    );
-}
-
-/** Shares the application destinations between desktop and mobile navigation. */
-function ApplicationMenu(props: {
-    pathname: string;
-    isLoggingOut: boolean;
-    onClose: () => void;
-    onLogout: () => void;
-}) {
-    const menuItems = [
-        { to: "/", label: "Home", ariaLabel: "Server home", icon: Home },
-        {
-            to: "/agents",
-            label: "Agents",
-            ariaLabel: "Manage agents",
-            icon: Users,
-        },
-        { to: "/logs", label: "Server logs", icon: ScrollText },
-        { to: "/transfers", label: "Transfers", icon: ArrowLeftRight },
-    ] as const;
-
-    return (
-        <nav
-            aria-label="Application"
-            className="mt-3 flex min-h-0 flex-1 flex-col gap-1"
-        >
-            {menuItems.map((item) => {
-                const isActive =
-                    item.to === "/transfers"
-                        ? props.pathname.startsWith(item.to)
-                        : props.pathname === item.to;
-                const Icon = item.icon;
-                return (
-                    <Link
-                        key={item.to}
-                        to={item.to}
-                        aria-label={
-                            "ariaLabel" in item ? item.ariaLabel : undefined
-                        }
-                        aria-current={isActive ? "page" : undefined}
-                        onClick={props.onClose}
-                        className={`flex items-center gap-2.5 rounded px-3 py-2.5 text-sm transition-colors ${
-                            isActive
-                                ? "bg-white/5 text-slate-100"
-                                : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                        }`}
-                    >
-                        <Icon
-                            className="h-4 w-4 shrink-0 text-slate-400"
-                            aria-hidden="true"
-                        />
-                        {item.label}
-                    </Link>
-                );
-            })}
-            <button
-                type="button"
-                onClick={props.onLogout}
-                disabled={props.isLoggingOut}
-                className="mt-auto flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
-            >
-                {props.isLoggingOut ? (
-                    <LoaderCircle
-                        className="h-4 w-4 shrink-0 animate-spin text-slate-400"
-                        aria-hidden="true"
-                    />
-                ) : (
-                    <LogOut
-                        className="h-4 w-4 shrink-0 text-slate-400"
-                        aria-hidden="true"
-                    />
-                )}
-                {props.isLoggingOut ? "Logging out…" : "Log out"}
-            </button>
-        </nav>
-    );
-}
-
-/** Links the product identity back to the server home. */
-function BrandMark(props: { className?: string }) {
-    return (
-        <Link
-            to="/"
-            tabIndex={-1}
-            className={`mr-2 flex shrink-0 items-center gap-2 px-2 pb-2 text-slate-200 hover:text-white ${props.className ?? ""}`}
-        >
-            <span className="relative h-12 w-12 shrink-0" aria-hidden="true">
-                <img
-                    src="/logo-dark-transparent.svg"
-                    alt=""
-                    className="theme-logo-dark absolute inset-0 h-12 w-12"
-                />
-                <img
-                    src="/logo-light-transparent.svg"
-                    alt=""
-                    className="theme-logo-light absolute inset-0 h-12 w-12"
-                />
-            </span>
-            <span className="text-2xl font-semibold tracking-tight">
-                Redoor
-            </span>
-        </Link>
     );
 }
 

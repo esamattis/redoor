@@ -43,12 +43,12 @@ test.describe("Restart", () => {
         await expect(
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();
-        // Agents in the tab strip prove the suite's external processes are connected before restart.
+        // Agents in the right menu prove the suite's external processes are connected before restart.
         await expect(
-            page.getByRole("tab", { name: /agent1_src/ }),
+            page.getByRole("link", { name: /agent1_src/ }),
         ).toBeVisible();
         await expect(
-            page.getByRole("tab", { name: /agent2_custom/ }),
+            page.getByRole("link", { name: /agent2_custom/ }),
         ).toBeVisible();
 
         // Restart is available directly alongside server identity details.
@@ -72,15 +72,15 @@ test.describe("Restart", () => {
         await expect(
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();
-        await expect(page.getByRole("tab", { name: /agent1_src/ })).toBeVisible(
-            { timeout: 30_000 },
-        );
         await expect(
-            page.getByRole("tab", { name: /agent2_custom/ }),
+            page.getByRole("link", { name: /agent1_src/ }),
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(
+            page.getByRole("link", { name: /agent2_custom/ }),
         ).toBeVisible({ timeout: 30_000 });
         // Self-exec recreates TOML inventory as dormant rather than eagerly restarting children.
         await expect(
-            page.getByRole("tab", { name: "lazy_managed, stopped" }),
+            page.getByRole("link", { name: "lazy_managed, stopped" }),
         ).toBeVisible({ timeout: 30_000 });
     });
 
