@@ -44,7 +44,7 @@ export function CollapsibleBottomPanel(props: {
                     ? { height: resize.expandedHeight }
                     : undefined
             }
-            className="sticky bottom-0 z-10 flex shrink-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
+            className="z-10 flex shrink-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
         >
             {isCollapsed ? null : (
                 <div

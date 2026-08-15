@@ -288,7 +288,7 @@ function RootLayout() {
     }, []);
 
     return (
-        <div className="flex h-screen bg-[#0b0d12]">
+        <div className="flex h-dvh overflow-hidden bg-[#0b0d12]">
             <ThemeManager />
             <RouteLoadingIndicator />
             <UserStatePersistToast />
