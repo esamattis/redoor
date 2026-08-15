@@ -149,6 +149,15 @@ impl RouterState {
             return;
         }
 
+        if transfers::r#move::finish_transfer(
+            self,
+            response.agent_id.clone(),
+            response.request_id,
+            response.result.clone(),
+        ) {
+            return;
+        }
+
         if transfers::copy::finish_transfer(
             self,
             response.agent_id.clone(),

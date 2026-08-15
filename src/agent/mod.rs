@@ -30,6 +30,8 @@ pub(crate) enum AgentCommandError {
     #[error(transparent)]
     LocalCopy(#[from] transfers::copy::LocalCopyError),
     #[error(transparent)]
+    LocalMove(#[from] transfers::r#move::LocalMoveError),
+    #[error(transparent)]
     TarUpload(#[from] transfers::upload::TarUploadError),
     #[error("{message}")]
     RawUpload {
@@ -43,6 +45,7 @@ impl AgentCommandError {
     pub(crate) fn kind(&self) -> redoor::commands::CommandErrorKind {
         match self {
             Self::LocalCopy(error) => error.kind(),
+            Self::LocalMove(error) => error.kind(),
             Self::TarUpload(error) => error.kind(),
             Self::RawUpload { kind, .. } => kind.clone(),
         }
