@@ -15,15 +15,19 @@ Diagnose and repair the Android build on `main`, then keep iterating until the r
 4. Inspect the newest relevant run with `gh run view <run-id> --json jobs,headSha,displayTitle,url`.
 5. Locate the exact job named `build (ubuntu-latest, aarch64-linux-android, redoor-aarch64-android)` and fetch its failed log with `gh run view <run-id> --job <job-id> --log-failed`.
 6. Diagnose from the first actionable compiler or linker error, not from the workflow's final exit-code line. Check multiple failed runs when necessary to distinguish a persistent regression from a transient failure.
+7. Expect the event suffix such as `(push)` to appear in the GitHub UI but not necessarily in the job name returned by `gh`.
 
 ## Implement And Verify
 
 - Make the smallest correct fix that preserves non-Android behavior.
 - Treat Android as `target_os = "android"`, not Linux, when writing Cargo target predicates or Rust `cfg` attributes.
 - Keep unsupported platform dependencies out of the Android dependency graph rather than patching third-party source in CI.
+- Review every target-specific import and value under the Android `cfg`: CI sets `RUSTFLAGS=-D warnings`, and an excluded branch can leave unused imports or ambiguous types in the Android branch.
+- A crate may still be downloaded because it remains in `Cargo.lock`; verify that Cargo does not compile it for Android rather than treating a download line as proof that the target predicate failed.
 - Use async Tokio APIs in application code and keep large-file operations streaming.
-- Run `mise exec -- pn test` with a timeout of at least 300 seconds after changes.
-- When useful, validate dependency selection with `cargo tree --target aarch64-linux-android` or `cargo metadata --filter-platform aarch64-linux-android`.
+- Android cannot be built locally in this repository. Do not run local Android `cargo check`, `cargo build`, or `cargo ndk` commands; use the GitHub Actions job as the Android compiler and verification environment.
+- Before creating a commit, run `mise exec -- pn test` with a timeout of at least 300 seconds and require it to pass. Skip this only when the user explicitly grants an exception for the current run; do not carry that exception into future uses of this skill.
+- When useful, inspect dependency selection without compiling by using `cargo tree --target aarch64-linux-android` or `cargo metadata --filter-platform aarch64-linux-android`.
 
 ## Commit And Push
 
@@ -34,7 +38,7 @@ Diagnose and repair the Android build on `main`, then keep iterating until the r
 
 ## Monitor And Iterate
 
-1. Find the push run whose `headSha` equals the pushed commit.
+1. Read the full pushed commit SHA with `git rev-parse HEAD`. Try `gh run list --workflow "Build and maybe release" --commit <full-sha>`, then fall back to listing the workflow on the current branch and select the run whose `headSha` exactly matches.
 2. Watch it with `gh run watch <run-id> --exit-status`. The matrix may fail fast and cancel unrelated jobs when Android fails.
 3. Confirm the exact Android job conclusion with `gh run view <run-id> --json jobs,url`; do not infer success only from local checks.
 4. If Android fails, fetch that job's failed log, implement the next root-cause fix, run the relevant local verification, commit, push, and watch again.
