@@ -35,6 +35,7 @@ import {
 } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
+import type { MountPoint } from "#bindings/MountPoint";
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync";
@@ -52,17 +53,14 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
     }),
     loaderDeps: ({ search }) => ({ view: search.view }),
     loader: async ({ context, deps, params, parentMatchPromise }) => {
-        const rootMatch = await parentMatchPromise;
-        const rootLoaderData = rootMatch.loaderData;
-        if (!rootLoaderData) {
-            throw new Error("Agent list unavailable");
+        const agentMatch = await parentMatchPromise;
+        const agentLoaderData = agentMatch.loaderData;
+        if (!agentLoaderData) {
+            throw new Error("Agent details unavailable");
         }
 
-        const agent = rootLoaderData.agents.find(
-            (entry) => entry.id === params.agentId,
-        );
-        if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
-        if (agent.status !== "connected" || agent.cwd === null) {
+        const agent = agentLoaderData.agent;
+        if (agentLoaderData.kind !== "connected" || agent.cwd === null) {
             throw redirect({
                 to: "/agents/$agentId",
                 params: { agentId: params.agentId },
@@ -98,7 +96,8 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 lsResult,
                 downloadUrl,
                 metadata,
-                agents: rootLoaderData.agents,
+                agents: agentLoaderData.agents,
+                mountPoints: agentLoaderData.details.mount_points,
                 pathError: null,
             };
         } catch (error) {
@@ -114,7 +113,8 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 lsResult: null,
                 downloadUrl: undefined,
                 metadata: null,
-                agents: rootLoaderData.agents,
+                agents: agentLoaderData.agents,
+                mountPoints: agentLoaderData.details.mount_points,
                 pathError,
             };
         }
@@ -171,6 +171,7 @@ function FileBrowser() {
                 path={path}
                 parentPath={parentPath}
                 lsResult={lsResult}
+                mountPoints={data.mountPoints}
                 view={search.view}
             />
         );
@@ -307,6 +308,7 @@ function DirectoryBrowserPage(props: {
     path: string;
     parentPath: string | null;
     lsResult: LsDirectoryResponse;
+    mountPoints: MountPoint[];
     view?: "details" | "edit" | "diff" | "sync";
 }) {
     const [userState, setUserState] = useUserState();
@@ -372,6 +374,10 @@ function DirectoryBrowserPage(props: {
                             agentName={props.agentName}
                             directoryPath={props.path}
                             files={[...directories, ...regularFiles]}
+                            mountPoint={getMountPointForPath(
+                                props.mountPoints,
+                                props.path,
+                            )}
                             actions={
                                 <DirectoryFilesActions
                                     api={props.api}
@@ -393,5 +399,23 @@ function DirectoryBrowserPage(props: {
                 )}
             </div>
         </div>
+    );
+}
+
+/** Selects the most specific filesystem mount containing the browsed directory. */
+function getMountPointForPath(
+    mountPoints: MountPoint[],
+    path: string,
+): MountPoint | null {
+    return (
+        mountPoints
+            .filter(
+                (mountPoint) =>
+                    mountPoint.path === "/" ||
+                    path === mountPoint.path ||
+                    path.startsWith(`${mountPoint.path}/`),
+            )
+            .sort((left, right) => right.path.length - left.path.length)[0] ??
+        null
     );
 }

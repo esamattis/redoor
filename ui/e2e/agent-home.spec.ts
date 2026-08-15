@@ -27,7 +27,7 @@ test.describe.serial("Agent home", () => {
         await expect(mounts).toBeVisible();
         // Column labels prove the section exposes both capacity values and filesystem format.
         await expect(
-            mounts.getByRole("columnheader", { name: "Available / Total" }),
+            mounts.getByRole("columnheader", { name: "Used / Available" }),
         ).toBeVisible();
         await expect(
             mounts.getByRole("columnheader", { name: "Type" }),
@@ -65,5 +65,9 @@ test.describe.serial("Agent home", () => {
         await expect(page).toHaveURL(
             new RegExp(`/agents/${context.agentId}/browser/?$`),
         );
+        const filesystem = page.getByLabel("Filesystem information");
+        // The browser reuses the agent mount data to identify the current filesystem.
+        await expect(filesystem).toContainText(/Disk usage: .+ \/ .+/);
+        await expect(filesystem).toContainText(/Filesystem: \S+/);
     });
 });

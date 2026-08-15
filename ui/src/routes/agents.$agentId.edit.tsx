@@ -8,7 +8,7 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { ManagedAgentForm } from "#ui/components/managed-agent-form";
 import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions } from "#ui/queries";
-import { getAgentFromRootLoaderData, Route as RootRoute } from "./__root";
+import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/edit")({
     loader: async ({ context, params, parentMatchPromise }) => {
@@ -16,10 +16,7 @@ export const Route = createFileRoute("/agents/$agentId/edit")({
         if (!parentMatch.loaderData) {
             throw redirect({ to: "/agents" });
         }
-        const agent = getAgentFromRootLoaderData(
-            parentMatch.loaderData,
-            params.agentId,
-        );
+        const agent = parentMatch.loaderData.agent;
         if (!agent?.configurationEditable) {
             throw redirect({ to: "/agents" });
         }

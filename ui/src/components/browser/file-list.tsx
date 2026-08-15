@@ -20,6 +20,7 @@ import {
     Trash2,
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
+import type { MountPoint } from "#bindings/MountPoint";
 import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
@@ -153,6 +154,7 @@ export function FileList(props: {
     directoryPath: string;
     actions: React.ReactNode;
     files: LsEntry[];
+    mountPoint: MountPoint | null;
 }) {
     const navigate = useNavigate();
     const agent = props.agent;
@@ -295,7 +297,40 @@ export function FileList(props: {
                     onSort={changeSort}
                 />
             )}
+            <FilesystemFooter mountPoint={props.mountPoint} />
         </div>
+    );
+}
+
+/** Keeps current filesystem capacity visible below local and recursive file results. */
+function FilesystemFooter(props: { mountPoint: MountPoint | null }) {
+    const mountPoint = props.mountPoint;
+    const availableBytes = mountPoint?.available_bytes ?? null;
+    const totalBytes = mountPoint?.total_bytes ?? null;
+    const usedBytes =
+        totalBytes !== null && availableBytes !== null
+            ? Math.max(0, totalBytes - availableBytes)
+            : null;
+    const usage =
+        usedBytes === null || availableBytes === null
+            ? "Unavailable"
+            : `${formatSize(usedBytes)} / ${formatSize(availableBytes)}`;
+
+    return (
+        <footer
+            aria-label="Filesystem information"
+            className="flex flex-wrap items-center justify-end gap-x-5 gap-y-1 border-t border-slate-800 bg-slate-900/35 px-3 py-2 font-mono text-xs text-slate-400"
+        >
+            <span>
+                Disk usage: <span className="text-slate-200">{usage}</span>
+            </span>
+            <span>
+                Filesystem:{" "}
+                <span className="text-slate-200">
+                    {mountPoint?.mount_type ?? "Unavailable"}
+                </span>
+            </span>
+        </footer>
     );
 }
 

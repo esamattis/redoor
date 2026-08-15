@@ -2,19 +2,15 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertCircle, HardDrive } from "lucide-react";
 
 import { LogViewer } from "#ui/components/log-viewer";
-import { getAgentFromRootLoaderData } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/logs")({
-    loader: async ({ params, parentMatchPromise }) => {
-        const rootMatch = await parentMatchPromise;
-        const loaderData = rootMatch.loaderData;
+    loader: async ({ parentMatchPromise }) => {
+        const agentMatch = await parentMatchPromise;
+        const loaderData = agentMatch.loaderData;
         if (!loaderData) {
-            throw new Error("Root loader data is unavailable");
+            throw new Error("Agent loader data is unavailable");
         }
-        const agent = getAgentFromRootLoaderData(loaderData, params.agentId);
-        if (!agent) {
-            throw new Error(`Agent not found: ${params.agentId}`);
-        }
+        const agent = loaderData.agent;
         return { agent };
     },
     component: AgentLogsPage,

@@ -181,7 +181,7 @@ function RootLayout() {
             }
 
             const detailsMatch = matches.find(
-                (match) => match.routeId === "/agents/$agentId/",
+                (match) => match.routeId === "/agents/$agentId",
             );
             return detailsMatch?.loaderData?.kind === "connected"
                 ? detailsMatch.loaderData.agent.cwd

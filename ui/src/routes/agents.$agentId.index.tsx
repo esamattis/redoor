@@ -36,13 +36,13 @@ import {
 } from "#ui/agent-tab-locations";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
 import { CopyablePath } from "#ui/components/copyable-code-row";
-import { RouteError } from "#ui/components/route-error";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { UpgradeButton } from "#ui/components/upgrade-button";
 import { agentsQueryOptions } from "#ui/queries";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { formatSize } from "#ui/utils/path";
 import { Route as RootRoute } from "./__root";
+import { Route as AgentRoute } from "./agents.$agentId";
 
 const HIDDEN_MOUNT_TYPES = new Set([
     "devpts",
@@ -62,22 +62,7 @@ const HIDDEN_MOUNT_TYPES = new Set([
 ]);
 
 export const Route = createFileRoute("/agents/$agentId/")({
-    loader: async ({ params, parentMatchPromise }) => {
-        const rootMatch = await parentMatchPromise;
-        const agents = rootMatch.loaderData?.agents ?? [];
-        const agent = agents.find((entry) => entry.id === params.agentId);
-        if (!agent) throw new Error(`Agent not found: ${params.agentId}`);
-        if (agent.status !== "connected") {
-            return { kind: "lifecycle" as const, agent };
-        }
-        return {
-            kind: "connected" as const,
-            agent,
-            details: await agent.getDetails(),
-        };
-    },
     component: AgentBoundary,
-    errorComponent: RouteError,
 });
 
 /** Proves a force-installed agent loaded the exact executable running the server. */
@@ -96,7 +81,7 @@ function matchesServerIdentity(
 
 /** Renders retained lifecycle state without issuing connected-only commands prematurely. */
 function AgentBoundary() {
-    const data = Route.useLoaderData();
+    const data = AgentRoute.useLoaderData();
     if (data.kind === "connected") {
         return <AgentDetails agent={data.agent} details={data.details} />;
     }
@@ -465,7 +450,7 @@ function MountPoints(props: {
                                 Path
                             </th>
                             <th scope="col" className="px-4 py-2 font-medium">
-                                Available / Total
+                                Used / Available
                             </th>
                             <th scope="col" className="px-4 py-2 font-medium">
                                 Type
@@ -495,11 +480,14 @@ function MountPoints(props: {
                                         </Link>
                                     </td>
                                     <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-200">
-                                        {formatCapacity(
+                                        {formatUsedCapacity(
+                                            mountPoint.total_bytes,
                                             mountPoint.available_bytes,
                                         )}{" "}
                                         /{" "}
-                                        {formatCapacity(mountPoint.total_bytes)}
+                                        {formatCapacity(
+                                            mountPoint.available_bytes,
+                                        )}
                                     </td>
                                     <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-300">
                                         {mountPoint.mount_type ?? "Unavailable"}
@@ -516,6 +504,15 @@ function MountPoints(props: {
 /** Keeps unavailable platform capacity distinct from a real zero-byte value. */
 function formatCapacity(bytes: number | null): string {
     return bytes === null ? "Unavailable" : formatSize(bytes);
+}
+
+/** Derives consumed capacity without presenting unavailable totals as real usage. */
+function formatUsedCapacity(
+    totalBytes: number | null,
+    availableBytes: number | null,
+): string {
+    if (totalBytes === null || availableBytes === null) return "Unavailable";
+    return formatSize(Math.max(0, totalBytes - availableBytes));
 }
 
 /** Keeps restart controls isolated from the static detail cards and their data. */
