@@ -144,7 +144,9 @@ test.describe.serial("Copy Operations", () => {
         const fileListingAfter = await fileListing.boundingBox();
 
         // Selection controls must not make their containing row taller.
-        expect(selectedActionsAfter?.height).toBe(selectedActionsBefore?.height);
+        expect(selectedActionsAfter?.height).toBe(
+            selectedActionsBefore?.height,
+        );
         // The file list must remain at the same vertical position after selection.
         expect(fileListingAfter?.y).toBe(fileListingBefore?.y);
 

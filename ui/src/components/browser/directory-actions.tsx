@@ -343,9 +343,7 @@ export function SelectedFilesCard(props: {
                         <p className="text-sm font-medium text-slate-200">
                             {fileCount} {fileCount === 1 ? "file" : "files"},{" "}
                             {directoryCount}{" "}
-                            {directoryCount === 1
-                                ? "directory"
-                                : "directories"}{" "}
+                            {directoryCount === 1 ? "directory" : "directories"}{" "}
                             selected
                         </p>
                         {selectedFiles.length > 0 ? (
