@@ -21,6 +21,10 @@ export function useTouchChromeVisibility() {
             return;
         }
 
+        // The drawer slot stays compact; the absolutely positioned panel is what covers content when open.
+        const bottomPanel = bottomChrome.querySelector<HTMLElement>(
+            "[data-overlay-bottom-panel]",
+        );
         // Keep endpoint space synchronized with overlay chrome as panels and responsive content resize.
         const updateScrollInsets = () => {
             scrollArea.style.setProperty(
@@ -29,12 +33,15 @@ export function useTouchChromeVisibility() {
             );
             scrollArea.style.setProperty(
                 "--bottom-chrome-height",
-                `${bottomChrome.offsetHeight}px`,
+                `${(bottomPanel ?? bottomChrome).offsetHeight}px`,
             );
         };
         const resizeObserver = new ResizeObserver(updateScrollInsets);
         resizeObserver.observe(topChrome);
         resizeObserver.observe(bottomChrome);
+        if (bottomPanel) {
+            resizeObserver.observe(bottomPanel);
+        }
         updateScrollInsets();
         return () => resizeObserver.disconnect();
     }, []);

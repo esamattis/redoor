@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 import { WEB_BASE_URL } from "./helpers";
 
@@ -109,6 +109,47 @@ test.describe("Server home", () => {
         ).toHaveCount(0);
     });
 
+    test("grows overlay scroll padding when the bottom drawer opens", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const panel = page.getByRole("region", {
+            name: "Application tools",
+        });
+        const scrollArea = page.getByRole("main");
+
+        await expect(
+            panel.getByRole("button", { name: "Expand bottom drawer" }),
+        ).toBeVisible();
+
+        // The minimized bar still needs a matching inset so the last page row is not covered.
+        await expect
+            .poll(async () => {
+                const inset = await readBottomChromeHeight(scrollArea);
+                const panelHeight = (await panel.boundingBox())?.height ?? 0;
+                return Math.abs(inset - panelHeight);
+            })
+            .toBeLessThan(1);
+
+        await panel.getByRole("tab", { name: "Terminal" }).click();
+        await expect(
+            panel.getByRole("button", { name: "Minimize bottom drawer" }),
+        ).toBeVisible();
+
+        // Opening the drawer must grow the inset so page content can scroll above the full panel.
+        await expect
+            .poll(async () => {
+                const inset = await readBottomChromeHeight(scrollArea);
+                const panelHeight = (await panel.boundingBox())?.height ?? 0;
+                return {
+                    matchesPanel: Math.abs(inset - panelHeight) < 1,
+                    isExpanded: inset > 100,
+                };
+            })
+            .toEqual({ matchesPanel: true, isExpanded: true });
+    });
+
     test("renders a working hostname-defaulted agent config", async ({
         page,
     }) => {
@@ -136,6 +177,17 @@ server = "${serverProtocol}//${browserUrl.host}"
         expect(expectedConfig).not.toMatch(/^(name|log)\s*=/m);
     });
 });
+
+/** Reads the measured overlay inset used to keep page content above the drawer. */
+async function readBottomChromeHeight(scrollArea: Locator) {
+    return scrollArea.evaluate((element) =>
+        Number.parseFloat(
+            getComputedStyle(element).getPropertyValue(
+                "--bottom-chrome-height",
+            ),
+        ),
+    );
+}
 
 /** Builds deterministic transfer snapshots for the minimized-bar progress test. */
 function createTransfers(
