@@ -194,10 +194,14 @@ async fn rename_without_replacement(
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
         let dest = CString::new(dest.as_os_str().as_bytes())
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        // SAFETY: both pointers come from live NUL-terminated CStrings, the directory descriptors
-        // and flag are valid renameat2 values, and the syscall does not retain either pointer.
+        // musl does not export glibc's `renameat2` wrapper, so the Linux syscall is used
+        // directly to keep static musl binaries linkable.
+        // SAFETY: both pointers come from live NUL-terminated CStrings, the directory
+        // descriptors and flag are valid renameat2 values, and the syscall does not retain
+        // either pointer.
         let result = unsafe {
-            libc::renameat2(
+            libc::syscall(
+                libc::SYS_renameat2,
                 libc::AT_FDCWD,
                 source.as_ptr(),
                 libc::AT_FDCWD,
@@ -267,5 +271,87 @@ mod tests {
             !can_use_atomic_rename(true, true),
             "existing destinations need copy placement semantics before source deletion"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn rename_without_replacement_moves_missing_destination() {
+        let root =
+            std::env::temp_dir().join(format!("redoor-rename-noreplace-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("rename test root should be created");
+        let source = root.join("source.txt");
+        let dest = root.join("dest.txt");
+        tokio::fs::write(&source, "moved")
+            .await
+            .expect("rename source should be written");
+
+        let result = rename_without_replacement(source.clone(), dest.clone())
+            .await
+            .expect("missing destinations should rename");
+        assert!(
+            matches!(result, AtomicRenameResult::Renamed),
+            "same-mount missing destinations should use the no-replace syscall"
+        );
+        assert!(
+            !tokio::fs::try_exists(&source).await.expect("source lookup"),
+            "a successful atomic rename must remove the source path"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("renamed destination should be readable"),
+            "moved",
+            "destination must contain the renamed source contents"
+        );
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("rename test root should be cleaned up");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn rename_without_replacement_refuses_existing_destination() {
+        let root =
+            std::env::temp_dir().join(format!("redoor-rename-exists-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("rename test root should be created");
+        let source = root.join("source.txt");
+        let dest = root.join("dest.txt");
+        tokio::fs::write(&source, "source")
+            .await
+            .expect("rename source should be written");
+        tokio::fs::write(&dest, "keep")
+            .await
+            .expect("existing destination should be written");
+
+        let result = rename_without_replacement(source.clone(), dest.clone())
+            .await
+            .expect("existing destinations should fall back instead of failing the move");
+        assert!(
+            matches!(result, AtomicRenameResult::FallbackRequired),
+            "an occupied destination must not be overwritten by atomic rename"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&source)
+                .await
+                .expect("source should remain after a refused rename"),
+            "source",
+            "source contents must stay in place when rename is refused"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("destination should remain after a refused rename"),
+            "keep",
+            "existing destination contents must be preserved"
+        );
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("rename test root should be cleaned up");
     }
 }
