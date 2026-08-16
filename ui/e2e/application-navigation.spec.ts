@@ -150,19 +150,27 @@ test.describe("Application navigation", () => {
                 document.documentElement.hasAttribute("data-touch-scrolling");
 
             dispatchTouch("touchstart", 200, 200);
-            dispatchTouch("touchmove", 185, 100);
+            dispatchTouch("touchmove", 200, 150);
+            const hiddenAtVerticalThreshold =
+                document.documentElement.hasAttribute("data-touch-scrolling");
+
+            dispatchTouch("touchstart", 200, 200);
+            dispatchTouch("touchmove", 200, 149);
             const hiddenAfterVerticalGesture =
                 document.documentElement.hasAttribute("data-touch-scrolling");
 
             return {
                 hiddenAfterHorizontalGesture,
+                hiddenAtVerticalThreshold,
                 hiddenAfterVerticalGesture,
             };
         });
 
         // Horizontal content scrolling must leave the overlay controls available.
         expect(gestureStates.hiddenAfterHorizontalGesture).toBe(false);
-        // Vertical scrolling still hides the panels to expose more content.
+        // The full threshold is allowed before hiding overlay controls.
+        expect(gestureStates.hiddenAtVerticalThreshold).toBe(false);
+        // Crossing the vertical threshold hides the panels to expose more content.
         expect(gestureStates.hiddenAfterVerticalGesture).toBe(true);
     });
 });

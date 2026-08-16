@@ -48,7 +48,7 @@ export function useTouchChromeVisibility() {
             document.documentElement.removeAttribute("data-touch-scrolling");
             touchStartScrollTopRef.current = null;
             restoreTimerRef.current = null;
-        }, 500);
+        }, 100);
     };
 
     /** Starts restoration only after scroll events have stopped arriving. */
@@ -93,7 +93,7 @@ export function useTouchChromeVisibility() {
             startY !== null &&
             currentX !== undefined &&
             currentY !== undefined &&
-            Math.abs(currentY - startY) > 10 &&
+            Math.abs(currentY - startY) > 50 &&
             Math.abs(currentY - startY) > Math.abs(currentX - startX)
         ) {
             document.documentElement.setAttribute(
@@ -115,7 +115,7 @@ export function useTouchChromeVisibility() {
         const startScrollTop = touchStartScrollTopRef.current;
         if (
             startScrollTop === null ||
-            Math.abs(event.currentTarget.scrollTop - startScrollTop) <= 10
+            Math.abs(event.currentTarget.scrollTop - startScrollTop) <= 50
         ) {
             return;
         }
