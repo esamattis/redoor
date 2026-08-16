@@ -376,6 +376,9 @@ function DirectoryBrowserPage(props: {
                         agents={props.agents}
                         destinationAgent={props.agent}
                         directoryPath={props.path}
+                        destinationFileNames={props.lsResult.files.map(
+                            (file) => file.name,
+                        )}
                     />
                     <FileList
                         key={props.path}

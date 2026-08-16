@@ -21,7 +21,7 @@ import { Dialog } from "#ui/components/dialog";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
-import type { Agent, ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient, CopyExistingMode } from "#ui/api-client";
 import {
     selectedFilesAtom,
     clearSelectedFilesAtom,
@@ -33,6 +33,7 @@ import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import { CopySelectedFilesTrigger } from "#ui/components/browser/copy-conflict-dialog";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
 type CopySelectedFilesState =
@@ -50,6 +51,7 @@ function CopySelectedFilesAction(props: {
     agents: Agent[];
     destinationAgent: Agent;
     directoryPath: string;
+    destinationFileNames: string[];
 }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
@@ -62,12 +64,15 @@ function CopySelectedFilesAction(props: {
     const activeCopyRef = React.useRef<AbortController | null>(null);
     const queryClient = useQueryClient();
     const copyStartsMutation = useMutation({
-        mutationFn: (filesToCopy: SelectedPath[]) => {
+        mutationFn: (request: {
+            filesToCopy: SelectedPath[];
+            existingMode: CopyExistingMode;
+        }) => {
             const agentsById = new Map(
                 props.agents.map((agent) => [agent.id, agent]),
             );
             return Promise.allSettled(
-                filesToCopy.map((file) => {
+                request.filesToCopy.map((file) => {
                     const sourceAgent = agentsById.get(file.agentId);
 
                     if (!sourceAgent) {
@@ -87,6 +92,7 @@ function CopySelectedFilesAction(props: {
                             ),
                         },
                         file.path,
+                        { on_existing: request.existingMode },
                     );
                 }),
             );
@@ -115,7 +121,8 @@ function CopySelectedFilesAction(props: {
         !isCopying &&
         !isRoutePending;
 
-    const handleCopySelectedFiles = async () => {
+    /** Starts every selected copy with one consistent destination conflict policy. */
+    const copySelectedFiles = async (mode: CopyExistingMode) => {
         if (selectedFiles.length === 0) {
             return;
         }
@@ -130,7 +137,10 @@ function CopySelectedFilesAction(props: {
             itemCount: filesToCopy.length,
         });
 
-        const results = await copyStartsMutation.mutateAsync(filesToCopy);
+        const results = await copyStartsMutation.mutateAsync({
+            filesToCopy,
+            existingMode: mode,
+        });
         if (controller.signal.aborted) return;
 
         const completedFiles: SelectedPath[] = [];
@@ -215,19 +225,14 @@ function CopySelectedFilesAction(props: {
 
     return (
         <>
-            {canCopy ? (
-                <Tooltip content="Copy selected items to this directory">
-                    <button
-                        type="button"
-                        onClick={handleCopySelectedFiles}
-                        aria-label="Copy selected items to this directory"
-                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
-                    >
-                        <Copy className="h-3.5 w-3.5" />
-                        Copy
-                    </button>
-                </Tooltip>
-            ) : null}
+            <CopySelectedFilesTrigger
+                selectedFiles={selectedFiles}
+                destinationAgent={props.destinationAgent}
+                directoryPath={props.directoryPath}
+                destinationFileNames={props.destinationFileNames}
+                canCopy={canCopy}
+                onCopy={(mode) => void copySelectedFiles(mode)}
+            />
             {statusMessage ? (
                 <Toast
                     tone={
@@ -254,6 +259,7 @@ export function SelectedFilesCard(props: {
     agents: Agent[];
     destinationAgent: Agent;
     directoryPath: string;
+    destinationFileNames: string[];
 }) {
     const router = useRouter();
     const selectedFiles = useAtomValue(selectedFilesAtom);
@@ -388,6 +394,7 @@ export function SelectedFilesCard(props: {
                         agents={props.agents}
                         destinationAgent={props.destinationAgent}
                         directoryPath={props.directoryPath}
+                        destinationFileNames={props.destinationFileNames}
                     />
                     {selectedFiles.length > 0 && !deleteMutation.isPending ? (
                         <Tooltip content="Delete selected items">
