@@ -53,7 +53,10 @@ test.describe.serial("File Detail View", () => {
             page.getByRole("link", { name: "Download", exact: true }),
         ).toBeVisible();
         await expect(
-            page.getByRole("link", { name: "Up", exact: true }),
+            page.getByRole("link", {
+                name: "Go to the parent directory",
+                exact: true,
+            }),
         ).toBeVisible();
         const fileView = page.getByLabel("File view");
         // File details use the same explicit active-state semantics as directory views.
@@ -219,7 +222,7 @@ test.describe.serial("File Detail View", () => {
             .click();
 
         const backButton = page.getByRole("link", {
-            name: "Up",
+            name: "Go to the parent directory",
             exact: true,
         });
         await backButton.click();
@@ -295,7 +298,10 @@ test.describe.serial("File Detail View", () => {
         await expect(page.getByText("Size")).toBeVisible();
         await expect(page.getByText("Full Path")).toBeVisible();
 
-        const backLink = page.getByRole("link", { name: "Up", exact: true });
+        const backLink = page.getByRole("link", {
+            name: "Go to the parent directory",
+            exact: true,
+        });
         await backLink.click();
 
         // These assertions verify the nested directory listing is restored after using the back link.

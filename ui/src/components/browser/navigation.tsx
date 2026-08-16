@@ -242,11 +242,11 @@ export function BrowserHeader(props: {
                                       )
                                     : props.agent.getBrowserUrl("/")
                             }
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+                            aria-label="Go to the parent directory"
+                            className="inline-flex items-center rounded-md p-2 text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
                             disabled={props.parentPath === null}
                         >
-                            <ArrowUp className="h-4 w-4" />
-                            Up
+                            <ArrowUp className="h-4 w-4" aria-hidden="true" />
                         </Link>
                     </Tooltip>
                 </>
@@ -429,7 +429,7 @@ function Breadcrumbs(props: {
                         ) : (
                             <Link
                                 to={props.agent.getBrowserUrl("/")}
-                                className="shrink-0 text-blue-400 hover:underline"
+                                className="-my-1 shrink-0 rounded px-1.5 py-1 text-blue-400 hover:underline"
                             >
                                 /
                             </Link>
@@ -457,7 +457,7 @@ function Breadcrumbs(props: {
                                             to={props.agent.getBrowserUrl(
                                                 accumulatedPath,
                                             )}
-                                            className="whitespace-nowrap font-medium text-blue-400 hover:underline"
+                                            className={`whitespace-nowrap font-medium text-blue-400 hover:underline ${part.length < 3 ? "-my-1 rounded px-1.5 py-1" : ""}`}
                                         >
                                             {part}
                                         </Link>

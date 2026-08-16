@@ -50,7 +50,7 @@ test.describe("Agent view navigation", () => {
             .getByRole("link", { name: "Agent home" })
             .boundingBox();
         const upBox = await page
-            .getByRole("link", { name: "Up" })
+            .getByRole("link", { name: "Go to the parent directory" })
             .boundingBox();
         const breadcrumbsBox = await page
             .getByRole("navigation", { name: "Breadcrumbs" })

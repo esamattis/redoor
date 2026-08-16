@@ -35,6 +35,7 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         const now = Date.now();
+        const hidden = ".hidden.txt";
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         const modifiedAt = Math.floor(
             (now - ((3 * 24 + 2) * 60 + 3) * 60_000) / 1000,
@@ -64,6 +65,16 @@ test.describe.serial("File Browser Navigation", () => {
                             },
                             {
                                 name: "alpha.txt",
+                                type: "file",
+                                size: 10,
+                                owner: "bravo",
+                                group: "beta",
+                                uid: 1000,
+                                gid: 1000,
+                                modified_at: modifiedAt,
+                            },
+                            {
+                                name: hidden,
                                 type: "file",
                                 size: 10,
                                 owner: "bravo",
@@ -125,34 +136,41 @@ test.describe.serial("File Browser Navigation", () => {
             ).toEqual(expectedLabels);
         };
 
+        // The default directory ordering keeps hidden files after visible peers.
+        await expectOrder(["z-directory", "alpha.txt", "beta.txt", hidden]);
         await page
             .getByRole("button", { name: "Sort by Name ascending" })
             .click();
-        await expectOrder(["alpha.txt", "beta.txt", "z-directory"]);
+        await expectOrder(["alpha.txt", "beta.txt", "z-directory", hidden]);
         await page
             .getByRole("button", { name: "Sort by Name descending" })
             .click();
-        await expectOrder(["z-directory", "beta.txt", "alpha.txt"]);
+        await expectOrder(["z-directory", "beta.txt", "alpha.txt", hidden]);
         await page
             .getByRole("button", { name: "Sort by Type ascending" })
             .click();
-        await expectOrder(["z-directory", "alpha.txt", "beta.txt"]);
+        await expectOrder(["z-directory", "alpha.txt", "beta.txt", hidden]);
         await page
             .getByRole("button", { name: "Sort by Size ascending" })
             .click();
-        await expectOrder(["z-directory", "alpha.txt", "beta.txt"]);
+        await expectOrder(["z-directory", "alpha.txt", hidden, "beta.txt"]);
         await page
             .getByRole("button", { name: "Sort by Modified ascending" })
             .click();
-        await expectOrder(["alpha.txt", "beta.txt", "z-directory"]);
+        await expectOrder(["alpha.txt", hidden, "beta.txt", "z-directory"]);
         await page
             .getByRole("button", { name: "Sort by Owner ascending" })
             .click();
-        await expectOrder(["beta.txt", "alpha.txt", "z-directory"]);
+        await expectOrder(["beta.txt", "alpha.txt", hidden, "z-directory"]);
+        await page
+            .getByRole("button", { name: "Sort by Owner descending" })
+            .click();
+        // Descending metadata still keeps a hidden entry after its visible tie.
+        await expectOrder(["z-directory", "alpha.txt", hidden, "beta.txt"]);
         await page
             .getByRole("button", { name: "Sort by Group ascending" })
             .click();
-        await expectOrder(["beta.txt", "alpha.txt", "z-directory"]);
+        await expectOrder(["beta.txt", "alpha.txt", hidden, "z-directory"]);
     });
 
     test("should navigate to subdirectory and display files", async ({
@@ -307,7 +325,10 @@ test.describe.serial("File Browser Navigation", () => {
 
         // Parent navigation stays in the shared header instead of moving with the search controls.
         await expect(
-            page.getByRole("link", { name: "Up", exact: true }),
+            page.getByRole("link", {
+                name: "Go to the parent directory",
+                exact: true,
+            }),
         ).toBeVisible();
     });
 
@@ -374,7 +395,10 @@ test.describe.serial("File Browser Navigation", () => {
         // Upward movement returns to the preceding entry.
         await expect(firstFileEntry).toBeFocused();
 
-        const upLink = page.getByRole("link", { name: "Up", exact: true });
+        const upLink = page.getByRole("link", {
+            name: "Go to the parent directory",
+            exact: true,
+        });
         await upLink.hover();
         // Parent navigation advertises the equivalent keyboard shortcut.
         await expect(page.getByRole("tooltip")).toHaveText(
@@ -947,7 +971,9 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(fs.readFile(missingFilePath, "utf8")).resolves.toBe("");
     });
 
-    test("should navigate using Up button", async ({ page }) => {
+    test("should navigate using the parent directory button", async ({
+        page,
+    }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page
             .locator(
@@ -967,7 +993,12 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "nested3.txt", exact: true }),
         ).toBeVisible();
 
-        await page.getByRole("link", { name: "Up", exact: true }).click();
+        await page
+            .getByRole("link", {
+                name: "Go to the parent directory",
+                exact: true,
+            })
+            .click();
 
         // One Up click should remove only the deepest path segment.
         await expect(page).toHaveURL(
@@ -983,7 +1014,7 @@ test.describe.serial("File Browser Navigation", () => {
         ).toContainText("subdir2");
 
         const upButton = page.getByRole("link", {
-            name: "Up",
+            name: "Go to the parent directory",
             exact: true,
         });
         await upButton.click();

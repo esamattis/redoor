@@ -177,8 +177,7 @@ export function FileList(props: {
     );
     const displayedFiles = sort
         ? [...filteredFiles].sort((left, right) => {
-              const comparison = compareFileEntries(left, right, sort.column);
-              return sort.direction === "ascending" ? comparison : -comparison;
+              return compareFileEntries(left, right, sort);
           })
         : filteredFiles;
     const recursiveSearch = useQuery(

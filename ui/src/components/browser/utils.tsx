@@ -32,14 +32,14 @@ export function getPathLoadError(cause: unknown): PathLoadError | null {
 }
 
 /**
- * Sort entries case-insensitively with dot-prefixed entries first.
+ * Sort entries case-insensitively with dot-prefixed entries last.
  */
 export function sortFileEntries<T extends { name: string }>(entries: T[]): T[] {
     return [...entries].sort((a, b) => {
         const aIsDot = a.name.startsWith(".");
         const bIsDot = b.name.startsWith(".");
         if (aIsDot !== bIsDot) {
-            return aIsDot ? -1 : 1;
+            return aIsDot ? 1 : -1;
         }
         return a.name.localeCompare(b.name, undefined, {
             sensitivity: "base",
@@ -73,29 +73,38 @@ export function formatModifiedAge(modifiedAt: number, now: number): string {
     return `${parts.join(" ")} ago`;
 }
 
-/** Compares one selected metadata column and uses the name to keep ties stable. */
+/** Compares one selected column, keeping hidden entries last when names break ties. */
 export function compareFileEntries(
     left: LsEntry,
     right: LsEntry,
-    column: FileSortColumn,
+    sort: { column: FileSortColumn; direction: FileSortDirection },
 ): number {
-    let comparison: number;
-    if (column === "size") {
+    let comparison = 0;
+    if (sort.column === "size") {
         comparison = left.size - right.size;
-    } else if (column === "modified") {
+    } else if (sort.column === "modified") {
         comparison = left.modified_at - right.modified_at;
-    } else {
-        const leftValue = column === "name" ? left.name : (left[column] ?? "");
-        const rightValue =
-            column === "name" ? right.name : (right[column] ?? "");
+    } else if (sort.column !== "name") {
+        const leftValue = left[sort.column] ?? "";
+        const rightValue = right[sort.column] ?? "";
         comparison = leftValue.localeCompare(rightValue, undefined, {
             sensitivity: "base",
         });
     }
-    if (comparison !== 0 || column === "name") return comparison;
-    return left.name.localeCompare(right.name, undefined, {
+    if (comparison !== 0) {
+        return sort.direction === "ascending" ? comparison : -comparison;
+    }
+
+    const leftIsHidden = left.name.startsWith(".");
+    const rightIsHidden = right.name.startsWith(".");
+    if (leftIsHidden !== rightIsHidden) {
+        return leftIsHidden ? 1 : -1;
+    }
+
+    const nameComparison = left.name.localeCompare(right.name, undefined, {
         sensitivity: "base",
     });
+    return sort.direction === "ascending" ? nameComparison : -nameComparison;
 }
 
 export function joinBrowserPath(directoryPath: string, fileName: string) {
