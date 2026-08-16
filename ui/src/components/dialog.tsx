@@ -145,7 +145,7 @@ export function Dialog(props: {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
-            className="m-auto w-[calc(100%-2rem)] max-w-md overflow-visible border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60"
+            className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60"
             onCancel={(event) => {
                 event.preventDefault();
                 if (!props.isBusy) {

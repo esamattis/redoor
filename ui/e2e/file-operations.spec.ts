@@ -378,6 +378,49 @@ test.describe.serial("File Operations", () => {
         expect(createdDirectoryStats.isDirectory()).toBe(true);
     });
 
+    test("should scroll a dialog that is taller than the mobile viewport", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page.getByRole("button", { name: "New", exact: true }).click();
+        await page
+            .getByRole("button", { name: "New directory", exact: true })
+            .click();
+        await page.setViewportSize({ width: 390, height: 240 });
+
+        const dialog = page.getByRole("dialog", { name: "Create directory" });
+        await dialog
+            .getByRole("textbox", { name: "Directory name" })
+            .fill("a-very-long-directory-name-that-wraps-in-the-path-preview");
+
+        const initialScrollState = await dialog.evaluate((element) => ({
+            clientHeight: element.clientHeight,
+            overflowY: getComputedStyle(element).overflowY,
+            scrollHeight: element.scrollHeight,
+            scrollTop: element.scrollTop,
+        }));
+        // A constrained dialog must own the overflow instead of placing its actions beyond the viewport.
+        expect(initialScrollState.scrollHeight).toBeGreaterThan(
+            initialScrollState.clientHeight,
+        );
+        expect(initialScrollState.overflowY).toBe("auto");
+
+        await dialog.hover({ position: { x: 20, y: 100 } });
+        await page.mouse.wheel(0, 200);
+        // Scrolling over the modal must move its contents so touch users can reach every action.
+        await expect
+            .poll(() => dialog.evaluate((element) => element.scrollTop))
+            .toBeGreaterThan(initialScrollState.scrollTop);
+        await expect(
+            dialog.getByRole("button", {
+                name: "Create directory",
+                exact: true,
+            }),
+        ).toBeInViewport();
+    });
+
     test("should create a new file and open it in the editor", async ({
         page,
     }) => {
