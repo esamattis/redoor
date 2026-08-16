@@ -1,6 +1,10 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+    useMutation,
+    useQueryClient,
+    type QueryClient,
+} from "@tanstack/react-query";
 import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
     ClipboardPaste,
@@ -10,6 +14,7 @@ import {
     FilePlus,
     FolderPlus,
     Files,
+    FolderInput,
     Plus,
     Trash2,
     Upload,
@@ -33,218 +38,287 @@ import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
-import { CopySelectedFilesTrigger } from "#ui/components/browser/copy-conflict-dialog";
+import {
+    SelectedFilesTransferTrigger,
+    type SelectedFilesTransferOperation,
+} from "#ui/components/browser/selected-files-transfer-dialog";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
-type CopySelectedFilesState =
+type TransferSelectedFilesState =
     | { type: "idle" }
-    | { type: "copying"; itemCount: number }
+    | { type: "transferring"; itemCount: number }
     | { type: "success"; message: string }
     | { type: "error"; message: string };
 
 /**
- * Copies the global selection into this directory so the destination is clear
- * at the point where the action is performed.
+ * Copy and Move share polling and selection cleanup so only the start API
+ * and user-facing verbs differ.
  */
-function CopySelectedFilesAction(props: {
+const transferActionCopy = {
+    failed: "Copy failed",
+    dismissAriaLabel: "Dismiss copy status",
+    Icon: Copy,
+};
+
+const transferActionMove = {
+    failed: "Move failed",
+    dismissAriaLabel: "Dismiss move status",
+    Icon: FolderInput,
+};
+
+/**
+ * Polls public transfer rows so only finished items are unselected. Returns
+ * false when the run was aborted and the caller must not update UI state.
+ */
+async function waitForPendingTransfers(props: {
+    api: ApiClient;
+    queryClient: QueryClient;
+    pendingTransfers: Map<number, SelectedPath>;
+    completedFiles: SelectedPath[];
+    failures: unknown[];
+    failedLabel: string;
+    signal: AbortSignal;
+}): Promise<boolean> {
+    try {
+        while (props.pendingTransfers.size > 0 && !props.signal.aborted) {
+            const progress = await props.queryClient.fetchQuery({
+                ...transfersQueryOptions(props.api),
+                retry: false,
+                staleTime: 0,
+            });
+            if (props.signal.aborted) {
+                return false;
+            }
+
+            for (const transfer of progress.transfers) {
+                const file = props.pendingTransfers.get(transfer.request_id);
+                if (!file) continue;
+                if (transfer.state === "completed") {
+                    props.completedFiles.push(file);
+                    props.pendingTransfers.delete(transfer.request_id);
+                } else if (transfer.state === "errored") {
+                    props.failures.push(transfer.error ?? props.failedLabel);
+                    props.pendingTransfers.delete(transfer.request_id);
+                }
+            }
+
+            if (props.pendingTransfers.size > 0) {
+                await new Promise((resolve) => window.setTimeout(resolve, 500));
+            }
+        }
+    } catch (error) {
+        props.failures.push(error);
+    }
+
+    return !props.signal.aborted;
+}
+
+/**
+ * Starts every selected item into this directory so the destination is clear
+ * at the point where Copy or Move is performed. Sibling in-flight state is
+ * owned by the card so the other action cannot race the same sources.
+ */
+function TransferSelectedFilesAction(props: {
+    operation: SelectedFilesTransferOperation;
     api: ApiClient;
     agents: Agent[];
     destinationAgent: Agent;
     directoryPath: string;
     destinationFileNames: string[];
+    isSiblingTransferring: boolean;
+    onTransferringChange: (isTransferring: boolean) => void;
 }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const unselectFile = useSetAtom(unselectFileAtom);
     const isRoutePending = useRouterState({
         select: (state) => state.status === "pending",
     });
-    const [copyState, setCopyState] = React.useState<CopySelectedFilesState>({
-        type: "idle",
-    });
-    const activeCopyRef = React.useRef<AbortController | null>(null);
+    const [transferState, setTransferState] =
+        React.useState<TransferSelectedFilesState>({
+            type: "idle",
+        });
+    const activeTransferRef = React.useRef<AbortController | null>(null);
     const queryClient = useQueryClient();
-    const copyStartsMutation = useMutation({
+    const isCopy = props.operation === "copy";
+    const labels = isCopy ? transferActionCopy : transferActionMove;
+    const transferStartsMutation = useMutation({
         mutationFn: (request: {
-            filesToCopy: SelectedPath[];
+            filesToTransfer: SelectedPath[];
             existingMode: CopyExistingMode;
         }) => {
             const agentsById = new Map(
                 props.agents.map((agent) => [agent.id, agent]),
             );
             return Promise.allSettled(
-                request.filesToCopy.map((file) => {
+                request.filesToTransfer.map(async (file) => {
                     const sourceAgent = agentsById.get(file.agentId);
 
                     if (!sourceAgent) {
-                        return Promise.reject(
-                            new Error(
-                                `Source agent unavailable for selected item: ${file.agentId}`,
-                            ),
+                        throw new Error(
+                            `Source agent unavailable for selected item: ${file.agentId}`,
                         );
                     }
 
-                    return sourceAgent.copyTo(
-                        {
-                            agent: props.destinationAgent.id,
-                            path: joinBrowserPath(
-                                props.directoryPath,
-                                file.fileName,
-                            ),
-                        },
+                    const destination = {
+                        agent: props.destinationAgent.id,
+                        path: joinBrowserPath(
+                            props.directoryPath,
+                            file.fileName,
+                        ),
+                    };
+                    const options = { on_existing: request.existingMode };
+
+                    if (isCopy) {
+                        const response = await sourceAgent.copyTo(
+                            destination,
+                            file.path,
+                            options,
+                        );
+                        return response.copy_request_id;
+                    }
+
+                    const response = await sourceAgent.moveTo(
+                        destination,
                         file.path,
-                        { on_existing: request.existingMode },
+                        options,
                     );
+                    return response.move_request_id;
                 }),
             );
         },
     });
 
     React.useEffect(() => {
-        return () => activeCopyRef.current?.abort();
+        return () => activeTransferRef.current?.abort();
     }, []);
 
     const statusMessage =
-        copyState.type === "copying"
-            ? `Copying ${copyState.itemCount} ${copyState.itemCount === 1 ? "item" : "items"}...`
-            : copyState.type === "idle"
+        transferState.type === "transferring"
+            ? `${isCopy ? "Copying" : "Moving"} ${transferState.itemCount} ${transferState.itemCount === 1 ? "item" : "items"}...`
+            : transferState.type === "idle"
               ? null
-              : copyState.message;
-    const isCopying = copyState.type === "copying";
+              : transferState.message;
+    const isTransferring = transferState.type === "transferring";
     const isCurrentDirectorySelected = selectedFiles.every(
         (file) =>
             file.agentId === props.destinationAgent.id &&
             file.path === joinBrowserPath(props.directoryPath, file.fileName),
     );
-    const canCopy =
+    const canTransfer =
         selectedFiles.length > 0 &&
         !isCurrentDirectorySelected &&
-        !isCopying &&
+        !isTransferring &&
+        !props.isSiblingTransferring &&
         !isRoutePending;
 
-    /** Starts every selected copy with one consistent destination conflict policy. */
-    const copySelectedFiles = async (mode: CopyExistingMode) => {
+    /** Starts every selected transfer with one consistent destination conflict policy. */
+    const transferSelectedFiles = async (mode: CopyExistingMode) => {
         if (selectedFiles.length === 0) {
             return;
         }
 
-        const filesToCopy = [...selectedFiles];
+        const filesToTransfer = [...selectedFiles];
         const controller = new AbortController();
-        activeCopyRef.current?.abort();
-        activeCopyRef.current = controller;
+        activeTransferRef.current?.abort();
+        activeTransferRef.current = controller;
 
-        setCopyState({
-            type: "copying",
-            itemCount: filesToCopy.length,
+        setTransferState({
+            type: "transferring",
+            itemCount: filesToTransfer.length,
         });
-
-        const results = await copyStartsMutation.mutateAsync({
-            filesToCopy,
-            existingMode: mode,
-        });
-        if (controller.signal.aborted) return;
-
-        const completedFiles: SelectedPath[] = [];
-        const failures: unknown[] = [];
-        const pendingCopies = new Map(
-            results.flatMap((result, index) => {
-                const file = filesToCopy[index];
-                if (result.status === "rejected") {
-                    failures.push(result.reason);
-                    return [];
-                }
-                return file
-                    ? [[result.value.copy_request_id, file] as const]
-                    : [];
-            }),
-        );
+        props.onTransferringChange(true);
 
         try {
-            while (pendingCopies.size > 0 && !controller.signal.aborted) {
-                const progress = await queryClient.fetchQuery({
-                    ...transfersQueryOptions(props.api),
-                    retry: false,
-                    staleTime: 0,
-                });
-                if (controller.signal.aborted) return;
+            const results = await transferStartsMutation.mutateAsync({
+                filesToTransfer,
+                existingMode: mode,
+            });
+            if (controller.signal.aborted) return;
 
-                for (const transfer of progress.transfers) {
-                    const file = pendingCopies.get(transfer.request_id);
-                    if (!file) continue;
-                    if (transfer.state === "completed") {
-                        completedFiles.push(file);
-                        pendingCopies.delete(transfer.request_id);
-                    } else if (transfer.state === "errored") {
-                        failures.push(transfer.error ?? "Copy failed");
-                        pendingCopies.delete(transfer.request_id);
+            const completedFiles: SelectedPath[] = [];
+            const failures: unknown[] = [];
+            const pendingTransfers = new Map(
+                results.flatMap((result, index) => {
+                    const file = filesToTransfer[index];
+                    if (result.status === "rejected") {
+                        failures.push(result.reason);
+                        return [];
                     }
-                }
+                    return file ? [[result.value, file] as const] : [];
+                }),
+            );
 
-                if (pendingCopies.size > 0) {
-                    await new Promise((resolve) =>
-                        window.setTimeout(resolve, 500),
-                    );
-                }
+            const stillActive = await waitForPendingTransfers({
+                api: props.api,
+                queryClient,
+                pendingTransfers,
+                completedFiles,
+                failures,
+                failedLabel: labels.failed,
+                signal: controller.signal,
+            });
+            if (!stillActive) return;
+            activeTransferRef.current = null;
+
+            completedFiles.forEach((file) => {
+                unselectFile({
+                    agentId: file.agentId,
+                    path: file.path,
+                });
+            });
+
+            if (failures.length > 0) {
+                const failureMessage = getErrorMessage(
+                    failures[0],
+                    labels.failed,
+                ).replace(/^Upload failed$/, labels.failed);
+
+                setTransferState({
+                    type: "error",
+                    message:
+                        completedFiles.length > 0
+                            ? `${isCopy ? "Copied" : "Moved"} ${completedFiles.length} of ${filesToTransfer.length} items. ${failureMessage}`
+                            : failureMessage,
+                });
+                return;
             }
-        } catch (error) {
-            failures.push(error);
-        }
-        if (controller.signal.aborted) return;
-        activeCopyRef.current = null;
 
-        completedFiles.forEach((file) => {
-            unselectFile({
-                agentId: file.agentId,
-                path: file.path,
-            });
-        });
-
-        if (failures.length > 0) {
-            const failureMessage = getErrorMessage(
-                failures[0],
-                "Copy failed",
-            ).replace(/^Upload failed$/, "Copy failed");
-
-            setCopyState({
-                type: "error",
+            setTransferState({
+                type: "success",
                 message:
-                    completedFiles.length > 0
-                        ? `Copied ${completedFiles.length} of ${filesToCopy.length} items. ${failureMessage}`
-                        : failureMessage,
+                    filesToTransfer.length === 1
+                        ? `${isCopy ? "Copied" : "Moved"} ${filesToTransfer[0]?.fileName ?? "item"}`
+                        : `${isCopy ? "Copied" : "Moved"} ${filesToTransfer.length} items`,
             });
-            return;
+        } finally {
+            // Sibling Copy/Move must become usable again even if this run aborted.
+            props.onTransferringChange(false);
         }
-
-        setCopyState({
-            type: "success",
-            message:
-                filesToCopy.length === 1
-                    ? `Copied ${filesToCopy[0]?.fileName ?? "item"}`
-                    : `Copied ${filesToCopy.length} items`,
-        });
     };
 
     return (
         <>
-            <CopySelectedFilesTrigger
+            <SelectedFilesTransferTrigger
+                operation={props.operation}
                 selectedFiles={selectedFiles}
                 destinationAgent={props.destinationAgent}
                 directoryPath={props.directoryPath}
                 destinationFileNames={props.destinationFileNames}
-                canCopy={canCopy}
-                onCopy={(mode) => void copySelectedFiles(mode)}
+                canTransfer={canTransfer}
+                onConfirm={(mode) => void transferSelectedFiles(mode)}
             />
             {statusMessage ? (
                 <Toast
                     tone={
-                        copyState.type === "copying"
+                        transferState.type === "transferring"
                             ? "info"
-                            : copyState.type === "error"
+                            : transferState.type === "error"
                               ? "error"
                               : "success"
                     }
-                    icon={<Copy className="h-4 w-4" />}
-                    dismissAriaLabel="Dismiss copy status"
-                    onDismiss={() => setCopyState({ type: "idle" })}
+                    icon={<labels.Icon className="h-4 w-4" />}
+                    dismissAriaLabel={labels.dismissAriaLabel}
+                    onDismiss={() => setTransferState({ type: "idle" })}
                 >
                     {statusMessage}
                 </Toast>
@@ -267,6 +341,9 @@ export function SelectedFilesCard(props: {
     const clearSelectedFiles = useSetAtom(clearSelectedFilesAtom);
     const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+    // One lock so Copy cannot start while Move is still reading or deleting sources.
+    const [busyTransferOperation, setBusyTransferOperation] =
+        React.useState<SelectedFilesTransferOperation | null>(null);
     const fileCount = selectedFiles.filter(
         (file) => file.entryType === "file",
     ).length;
@@ -377,12 +454,33 @@ export function SelectedFilesCard(props: {
                     </div>
                 </div>
                 <div className="flex min-h-10 flex-wrap items-center gap-2">
-                    <CopySelectedFilesAction
+                    <TransferSelectedFilesAction
+                        operation="copy"
                         api={props.api}
                         agents={props.agents}
                         destinationAgent={props.destinationAgent}
                         directoryPath={props.directoryPath}
                         destinationFileNames={props.destinationFileNames}
+                        isSiblingTransferring={busyTransferOperation === "move"}
+                        onTransferringChange={(isTransferring) =>
+                            setBusyTransferOperation(
+                                isTransferring ? "copy" : null,
+                            )
+                        }
+                    />
+                    <TransferSelectedFilesAction
+                        operation="move"
+                        api={props.api}
+                        agents={props.agents}
+                        destinationAgent={props.destinationAgent}
+                        directoryPath={props.directoryPath}
+                        destinationFileNames={props.destinationFileNames}
+                        isSiblingTransferring={busyTransferOperation === "copy"}
+                        onTransferringChange={(isTransferring) =>
+                            setBusyTransferOperation(
+                                isTransferring ? "move" : null,
+                            )
+                        }
                     />
                     {selectedFiles.length > 0 && !deleteMutation.isPending ? (
                         <Tooltip content="Delete selected items">

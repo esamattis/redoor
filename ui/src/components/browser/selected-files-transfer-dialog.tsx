@@ -1,12 +1,13 @@
 import React from "react";
-import { Copy } from "lucide-react";
+import { Copy, FolderInput } from "lucide-react";
 import type { Agent, CopyExistingMode } from "#ui/api-client";
 import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import { joinBrowserPath } from "#ui/components/browser/utils";
 import type { SelectedPath } from "#ui/selected-files";
 
-const copyExistingOptions: Array<{
+/** Shared conflict policies so Copy and Move ask the same destination question. */
+const existingItemOptions: Array<{
     value: CopyExistingMode;
     label: string;
     description: string;
@@ -30,18 +31,47 @@ const copyExistingOptions: Array<{
     },
 ];
 
+/**
+ * Operation-specific chrome lives here so Copy keeps its existing accessible
+ * names while Move can reuse the same conflict gate.
+ */
+const transferTriggerCopy = {
+    buttonLabel: "Copy",
+    buttonTooltip: "Copy selected items to this directory",
+    buttonAriaLabel: "Copy selected items to this directory",
+    closeAriaLabel: "Close copy conflict dialog",
+    confirmLabel: "Continue copying",
+    radioGroupName: "copy-on-existing",
+    Icon: Copy,
+};
+
+const transferTriggerMove = {
+    buttonLabel: "Move",
+    buttonTooltip: "Move selected items to this directory",
+    buttonAriaLabel: "Move selected items to this directory",
+    closeAriaLabel: "Close move conflict dialog",
+    confirmLabel: "Continue moving",
+    radioGroupName: "move-on-existing",
+    Icon: FolderInput,
+};
+
+export type SelectedFilesTransferOperation = "copy" | "move";
+
 /** Prompts for the API conflict policy only when the loaded destination needs one. */
-export function CopySelectedFilesTrigger(props: {
+export function SelectedFilesTransferTrigger(props: {
+    operation: SelectedFilesTransferOperation;
     selectedFiles: SelectedPath[];
     destinationAgent: Agent;
     directoryPath: string;
     destinationFileNames: string[];
-    canCopy: boolean;
-    onCopy: (mode: CopyExistingMode) => void;
+    canTransfer: boolean;
+    onConfirm: (mode: CopyExistingMode) => void;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
     const [existingMode, setExistingMode] =
         React.useState<CopyExistingMode>("error");
+    const copy = props.operation === "copy";
+    const labels = copy ? transferTriggerCopy : transferTriggerMove;
     const destinationFileNames = new Set(props.destinationFileNames);
     const conflictingFiles = props.selectedFiles.filter((file) => {
         const destinationPath = joinBrowserPath(
@@ -55,9 +85,9 @@ export function CopySelectedFilesTrigger(props: {
     });
 
     /** Starts immediately when safe, otherwise opens the policy choice. */
-    const handleCopy = () => {
+    const handleStart = () => {
         if (conflictingFiles.length === 0) {
-            props.onCopy("error");
+            props.onConfirm("error");
             return;
         }
         setExistingMode("error");
@@ -66,16 +96,16 @@ export function CopySelectedFilesTrigger(props: {
 
     return (
         <>
-            {props.canCopy ? (
-                <Tooltip content="Copy selected items to this directory">
+            {props.canTransfer ? (
+                <Tooltip content={labels.buttonTooltip}>
                     <button
                         type="button"
-                        onClick={handleCopy}
-                        aria-label="Copy selected items to this directory"
+                        onClick={handleStart}
+                        aria-label={labels.buttonAriaLabel}
                         className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
                     >
-                        <Copy className="h-3.5 w-3.5" />
-                        Copy
+                        <labels.Icon className="h-3.5 w-3.5" />
+                        {labels.buttonLabel}
                     </button>
                 </Tooltip>
             ) : null}
@@ -83,12 +113,12 @@ export function CopySelectedFilesTrigger(props: {
                 isOpen={isOpen}
                 title="Destination items already exist"
                 description={`${conflictingFiles.length} selected ${conflictingFiles.length === 1 ? "item has" : "items have"} the same name as an item in this directory. Choose how to handle the existing destination.`}
-                closeAriaLabel="Close copy conflict dialog"
+                closeAriaLabel={labels.closeAriaLabel}
                 onClose={() => setIsOpen(false)}
             >
                 <fieldset className="mt-5 grid gap-3">
                     <legend className="sr-only">Existing item action</legend>
-                    {copyExistingOptions.map((option) => (
+                    {existingItemOptions.map((option) => (
                         <label
                             key={option.value}
                             className={`flex cursor-pointer gap-3 rounded-lg border px-4 py-3 transition ${
@@ -99,7 +129,7 @@ export function CopySelectedFilesTrigger(props: {
                         >
                             <input
                                 type="radio"
-                                name="copy-on-existing"
+                                name={labels.radioGroupName}
                                 value={option.value}
                                 checked={existingMode === option.value}
                                 onChange={() => setExistingMode(option.value)}
@@ -128,11 +158,11 @@ export function CopySelectedFilesTrigger(props: {
                         type="button"
                         onClick={() => {
                             setIsOpen(false);
-                            props.onCopy(existingMode);
+                            props.onConfirm(existingMode);
                         }}
                         className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
                     >
-                        Continue copying
+                        {labels.confirmLabel}
                     </button>
                 </div>
             </Dialog>
