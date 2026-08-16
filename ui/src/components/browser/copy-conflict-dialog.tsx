@@ -25,7 +25,7 @@ const copyExistingOptions: Array<{
     },
     {
         value: "merge",
-        label: "Merge directories",
+        label: "Merge directories and replace files",
         description: "Replace conflicts but preserve destination-only entries.",
     },
 ];
@@ -86,11 +86,6 @@ export function CopySelectedFilesTrigger(props: {
                 closeAriaLabel="Close copy conflict dialog"
                 onClose={() => setIsOpen(false)}
             >
-                <p className="mt-4 rounded-lg border border-slate-700 bg-slate-950/50 px-4 py-3 text-sm leading-6 text-slate-300">
-                    For files, Replace and Merge both replace the existing file.
-                    For directories, Replace removes destination-only entries,
-                    while Merge preserves them.
-                </p>
                 <fieldset className="mt-5 grid gap-3">
                     <legend className="sr-only">Existing item action</legend>
                     {copyExistingOptions.map((option) => (

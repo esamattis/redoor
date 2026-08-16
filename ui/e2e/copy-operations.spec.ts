@@ -263,10 +263,6 @@ test.describe.serial("Copy Operations", () => {
         });
         // A same-named destination must interrupt the copy before any request starts.
         await expect(dialog).toBeVisible();
-        // The policy explanation must clarify that files do not have distinct merge behavior.
-        await expect(dialog).toContainText(
-            "For files, Replace and Merge both replace the existing file.",
-        );
         // Keeping the destination is the safe default conflict policy.
         await expect(
             dialog.getByRole("radio", { name: "Keep existing" }),
@@ -392,7 +388,11 @@ test.describe.serial("Copy Operations", () => {
         const dialog = page.getByRole("dialog", {
             name: "Destination items already exist",
         });
-        await dialog.getByRole("radio", { name: "Merge directories" }).check();
+        await dialog
+            .getByRole("radio", {
+                name: "Merge directories and replace files",
+            })
+            .check();
         const copyRequest = page.waitForRequest(
             (request) =>
                 request.url() === `${WEB_BASE_URL}/api/v1/copy` &&
@@ -552,7 +552,11 @@ test.describe.serial("Copy Operations", () => {
         });
         // The dialog must count only the conflicting member of the directory batch.
         await expect(dialog).toContainText("1 selected item has the same name");
-        await dialog.getByRole("radio", { name: "Merge directories" }).check();
+        await dialog
+            .getByRole("radio", {
+                name: "Merge directories and replace files",
+            })
+            .check();
         await dialog.getByRole("button", { name: "Continue copying" }).click();
         await expect(
             page.getByRole("button", { name: "Clear selection" }),
