@@ -386,7 +386,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // The shortcut must land in the shell so the user can type immediately.
         await expect(firstTerminal).toBeFocused();
 
-        await page.keyboard.press("Escape");
+        await page.getByRole("tab", { name: "agent1_src 1" }).click();
         await page.keyboard.press("t");
         // A second press reuses the live tab instead of creating another shell.
         await expect(
@@ -452,7 +452,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
         ).toBe(ctx.testDirPath);
 
-        await page.keyboard.press("Escape");
+        await page.getByRole("tab", { name: "agent1_src 2" }).click();
         await page.keyboard.press("t");
         // A second press in the same directory still reuses that directory's live tab.
         await expect(
@@ -496,6 +496,17 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const terminalInput = page.getByRole("textbox", {
             name: `agent1_src 1 for ${ctx.agentName}`,
         });
+        const terminalPanel = page.getByRole("tabpanel", {
+            name: "agent1_src 1",
+        });
+        await expect(terminalInput).toBeFocused();
+        // A focused shell must show a blue frame so keyboard ownership is visible.
+        await expect(terminalPanel).toHaveCSS(
+            "border-color",
+            "oklch(0.623 0.214 259.815)",
+        );
+        await page.keyboard.press("Escape");
+        // Escape must stay in the shell so control sequences remain available.
         await expect(terminalInput).toBeFocused();
         await page.keyboard.type("tfdj");
         // Shell input must not create tabs or trigger file-browser character shortcuts.

@@ -842,7 +842,7 @@ function TerminalSession(props: TerminalSessionProps) {
             aria-labelledby={`terminal-tab-${props.tab.id}`}
             aria-hidden={!props.isActive}
             hidden={!props.isActive}
-            className="relative h-full"
+            className="relative h-full rounded-md border border-transparent focus-within:border-blue-500"
         >
             <div
                 ref={hostRef}

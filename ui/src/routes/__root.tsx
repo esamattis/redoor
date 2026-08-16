@@ -339,16 +339,14 @@ function RootLayout() {
     useManagedAgentRefresh(agents, router);
 
     React.useEffect(() => {
-        /** Lets Escape leave text controls globally. */
+        /** Lets Escape leave ordinary text controls without stealing keys from the shell. */
         const handleGlobalFocusKeys = (event: KeyboardEvent) => {
             const activeElement = document.activeElement;
             if (
                 event.key === "Escape" &&
-                (isTextEntryElement(activeElement) ||
-                    isTerminalInputTarget(activeElement)) &&
-                activeElement instanceof HTMLElement
+                isTextEntryElement(activeElement) &&
+                !isTerminalInputTarget(activeElement)
             ) {
-                // Search inputs and the shell keep Escape unless the application owns the key.
                 event.preventDefault();
                 activeElement.blur();
             }
