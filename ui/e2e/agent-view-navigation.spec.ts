@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
+    encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
@@ -21,7 +22,7 @@ test.describe("Agent view navigation", () => {
     test("switches connected agent views and selects an agent from the mobile drawer", async ({
         page,
     }) => {
-        await page.setViewportSize({ width: 390, height: 844 });
+        await page.setViewportSize({ width: 360, height: 844 });
         await page.goto(`${WEB_BASE_URL}/agents/${context.agentId}`);
 
         const agentView = page.getByLabel("Agent view");
@@ -29,6 +30,20 @@ test.describe("Agent view navigation", () => {
             name: "Agent",
             exact: true,
         });
+        const agentViewScroll = await agentView.evaluate((element) => {
+            element.scrollLeft = element.scrollWidth;
+            return {
+                clientWidth: element.clientWidth,
+                scrollLeft: element.scrollLeft,
+                scrollWidth: element.scrollWidth,
+            };
+        });
+        // The tab strip under the touch point must own the mobile overflow.
+        expect(agentViewScroll.scrollWidth).toBeGreaterThan(
+            agentViewScroll.clientWidth,
+        );
+        // Moving the tab strip itself proves the overflow is not stranded on its parent.
+        expect(agentViewScroll.scrollLeft).toBeGreaterThan(0);
         // Agent details must be represented by the first current contextual top tab.
         await expect(agentLink).toHaveAttribute("aria-current", "page");
         await expect(agentView.getByRole("link").first()).toHaveText("Agent");
@@ -76,6 +91,24 @@ test.describe("Agent view navigation", () => {
         expect((moreBox?.y ?? 0) + (moreBox?.height ?? 0) / 2).toBeCloseTo(
             uploadCenter,
         );
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${context.agentId}/browser/${encodeFilesystemPath(`${context.testDirPath}/file1.txt`)}`,
+        );
+        const fileView = page.getByLabel("File view");
+        const fileViewScroll = await fileView.evaluate((element) => {
+            element.scrollLeft = element.scrollWidth;
+            return {
+                clientWidth: element.clientWidth,
+                scrollLeft: element.scrollLeft,
+                scrollWidth: element.scrollWidth,
+            };
+        });
+        // File representation tabs must use the same touch-scrollable strip.
+        expect(fileViewScroll.scrollWidth).toBeGreaterThan(
+            fileViewScroll.clientWidth,
+        );
+        // The final file tab must be reachable by horizontal scrolling on mobile.
+        expect(fileViewScroll.scrollLeft).toBeGreaterThan(0);
         await browserAgentView
             .getByRole("link", { name: "Agent", exact: true })
             .click();

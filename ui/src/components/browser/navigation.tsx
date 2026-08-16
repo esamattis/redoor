@@ -158,7 +158,7 @@ export function ViewSwitch(props: {
     return (
         <div
             aria-label={props.label}
-            className="top-tab-strip flex min-w-max items-end gap-1 overflow-x-auto overscroll-x-contain"
+            className="top-tab-strip flex w-full min-w-0 items-end gap-1 overflow-x-auto overscroll-x-contain"
         >
             {props.children}
         </div>
