@@ -11,6 +11,7 @@ import {
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { refreshBrowserPath } from "#ui/components/browser/refresh";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -305,6 +306,15 @@ function PathMoreActions(props: {
                                     <Pencil className="h-4 w-4 text-slate-400" />
                                     Rename
                                 </ActionMenuButton>
+                                <BookmarkMenuButton
+                                    close={close}
+                                    bookmark={{
+                                        agentId: props.agent.id,
+                                        path: props.path,
+                                        name: props.currentName,
+                                        entryType: props.entryType,
+                                    }}
+                                />
                                 {props.onDelete ? (
                                     <>
                                         <div className="my-1 border-t border-slate-800" />

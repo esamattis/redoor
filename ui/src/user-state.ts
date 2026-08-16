@@ -7,10 +7,21 @@ import { queryKeys } from "#ui/queries";
 
 const rootRouteApi = getRouteApi("__root__");
 
+/** One remembered path so the agent list can restore a specific file or directory. */
+export const bookmarkSchema = z.object({
+    agentId: z.string(),
+    path: z.string(),
+    name: z.string(),
+    entryType: z.enum(["file", "directory"]),
+});
+
+export type Bookmark = z.infer<typeof bookmarkSchema>;
+
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
     theme: z.enum(["system", "dark", "light"]).catch("system"),
+    bookmarks: z.array(bookmarkSchema).catch([]),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
@@ -18,7 +29,31 @@ export type UserState = z.infer<typeof userStateSchema>;
 export const defaultUserState: UserState = {
     showHiddenFiles: true,
     theme: "system",
+    bookmarks: [],
 };
+
+/** Identifies one bookmarked path so the same file cannot be stored twice. */
+export function getBookmarkKey(bookmark: Pick<Bookmark, "agentId" | "path">) {
+    return `${bookmark.agentId}:${bookmark.path}`;
+}
+
+/** Lets menus and the agent list share one membership check. */
+export function isPathBookmarked(
+    bookmarks: Bookmark[],
+    target: Pick<Bookmark, "agentId" | "path">,
+) {
+    const targetKey = getBookmarkKey(target);
+    return bookmarks.some((bookmark) => getBookmarkKey(bookmark) === targetKey);
+}
+
+/** Bookmarking is a toggle so the same menu item can add or remove. */
+export function toggleBookmark(bookmarks: Bookmark[], bookmark: Bookmark) {
+    if (isPathBookmarked(bookmarks, bookmark)) {
+        const targetKey = getBookmarkKey(bookmark);
+        return bookmarks.filter((entry) => getBookmarkKey(entry) !== targetKey);
+    }
+    return [...bookmarks, bookmark];
+}
 
 type UserStateUpdater = (prev: UserState) => UserState;
 

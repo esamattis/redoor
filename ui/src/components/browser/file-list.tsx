@@ -23,6 +23,7 @@ import type { LsEntry } from "#bindings/LsEntry";
 import type { MountPoint } from "#bindings/MountPoint";
 import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
+import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -765,6 +766,15 @@ function FileEntryActions(props: {
                                             Download
                                         </a>
                                     )}
+                                    <BookmarkMenuButton
+                                        close={close}
+                                        bookmark={{
+                                            agentId: props.agentId,
+                                            path: props.fullPath,
+                                            name: props.entryName,
+                                            entryType: entryType,
+                                        }}
+                                    />
                                     <div className="my-1 border-t border-slate-800" />
                                     <ActionMenuButton
                                         tone="danger"

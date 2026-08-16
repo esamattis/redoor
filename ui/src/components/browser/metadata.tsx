@@ -18,6 +18,7 @@ import type {
 } from "#ui/api-client";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import {
@@ -368,6 +369,15 @@ function FileDetailMenu(props: {
                                     <Pencil className="h-4 w-4 text-slate-400" />
                                     Rename
                                 </ActionMenuButton>
+                                <BookmarkMenuButton
+                                    close={close}
+                                    bookmark={{
+                                        agentId: props.agent.id,
+                                        path: props.path,
+                                        name: props.fileName,
+                                        entryType: "file",
+                                    }}
+                                />
                                 <ActionMenuButton
                                     tone="danger"
                                     disabled={parentPath === null}
