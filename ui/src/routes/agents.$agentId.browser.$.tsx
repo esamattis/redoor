@@ -27,11 +27,7 @@ import {
 } from "#ui/components/browser/metadata";
 import { FileDiffView } from "#ui/components/browser/file-diff-view";
 import { SyncView } from "#ui/components/browser/sync";
-import {
-    FileEditView,
-    FileImageView,
-    UnsupportedFileView,
-} from "#ui/components/browser/file-views";
+import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
 import {
     getImmediateParentPath,
     getPathLoadError,
@@ -39,6 +35,7 @@ import {
 } from "#ui/components/browser/utils";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
+import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
 
 type BrowserSearch = {
@@ -82,14 +79,16 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             const metadata = isLsFileResponse(lsResult)
                 ? await agent.metadata(lsResult.path)
                 : null;
-            if (
-                deps.view === "edit" &&
-                isLsFileResponse(lsResult) &&
-                metadata?.editable === true
-            ) {
-                await context.queryClient.fetchQuery(
-                    fileContentQueryOptions(agent, lsResult.path),
-                );
+            if (isLsFileResponse(lsResult)) {
+                replaceUnsupportedOrLegacyFileView(params, deps.view, metadata);
+                if (
+                    wantsFileContentView(deps.view) &&
+                    metadata?.editable === true
+                ) {
+                    await context.queryClient.fetchQuery(
+                        fileContentQueryOptions(agent, lsResult.path),
+                    );
+                }
             }
 
             return {
@@ -135,6 +134,7 @@ function BrowserRouteShell(props: {
     parentPath: string | null;
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
+    editable?: boolean;
     constrainContent?: boolean;
     /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
     fillAvailableHeight?: boolean;
@@ -157,6 +157,7 @@ function BrowserRouteShell(props: {
                 parentPath={props.parentPath}
                 entryType={props.entryType}
                 activeView={props.activeView}
+                editable={props.editable}
                 pathUnavailable={props.pathUnavailable}
                 startEditingPath={props.startEditingPath}
             />
@@ -247,9 +248,9 @@ function FileBrowser() {
                 ? "diff"
                 : search.view === "sync"
                   ? "sync"
-                  : search.view === "edit"
-                    ? "view"
-                    : "details";
+                  : search.view === "details"
+                    ? "details"
+                    : "view";
         const isEditView = activeView === "view" && editable;
         const content =
             activeView === "diff" ? (
@@ -286,12 +287,6 @@ function FileBrowser() {
                     fileName={fileName}
                     downloadUrl={downloadUrl}
                 />
-            ) : activeView === "view" ? (
-                <UnsupportedFileView
-                    agent={agent}
-                    fileName={fileName}
-                    downloadUrl={downloadUrl}
-                />
             ) : (
                 <FileDetailView
                     agent={agent}
@@ -311,6 +306,7 @@ function FileBrowser() {
                 parentPath={parentPath}
                 entryType="file"
                 activeView={activeView}
+                editable={editable}
                 constrainContent={!isEditView}
                 fillAvailableHeight={isEditView}
             >
@@ -424,6 +420,37 @@ function DirectoryBrowserPage(props: {
             )}
         </BrowserRouteShell>
     );
+}
+
+/** Content is the file default, including leftover ?view=edit bookmarks. */
+function wantsFileContentView(view: BrowserSearch["view"]) {
+    return view === undefined || view === "edit";
+}
+
+/** Replaces history so unsupported files and legacy edit URLs do not stay on the stack. */
+function replaceUnsupportedOrLegacyFileView(
+    params: { agentId: string; _splat?: string },
+    view: BrowserSearch["view"],
+    metadata: MetadataResponse | null,
+) {
+    const canShowContent =
+        metadata?.editable === true || metadata?.viewable_image === true;
+    if (wantsFileContentView(view) && !canShowContent) {
+        throw redirect({
+            to: "/agents/$agentId/browser/$",
+            params,
+            search: { view: "details" },
+            replace: true,
+        });
+    }
+    if (view === "edit") {
+        throw redirect({
+            to: "/agents/$agentId/browser/$",
+            params,
+            search: {},
+            replace: true,
+        });
+    }
 }
 
 /** Selects the most specific filesystem mount containing the browsed directory. */

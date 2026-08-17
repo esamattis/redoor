@@ -450,7 +450,7 @@ test.describe.serial("File Operations", () => {
 
         // New files open directly in edit mode so content can be entered immediately.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
         // The editor being ready proves the empty upload produced an editable text file.
         await expect(
@@ -704,6 +704,7 @@ test.describe.serial("File Operations", () => {
         await page
             .getByRole("link", { name: "delete-me.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         await page
             .getByRole("button", { name: "File actions", exact: true })

@@ -99,7 +99,7 @@ test.describe.serial("Bookmarks", () => {
         const fileName = "file2.txt";
         const filePath = path.join(ctx.testDirPath, fileName);
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=details`,
         );
 
         await page

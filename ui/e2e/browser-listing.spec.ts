@@ -90,9 +90,7 @@ test.describe.serial("File Browser Listing", () => {
             .click();
         // Reloading must not discard the inactive tab's remembered file.
         await expect(page).toHaveURL(agent2FileUrl);
-        await expect(
-            page.getByRole("heading", { name: "File name" }),
-        ).toContainText("nested3.txt");
+        await expect(page.getByLabel("File editor")).toBeVisible();
 
         await page
             .getByRole("link", {

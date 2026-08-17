@@ -185,10 +185,8 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
-        // The detail heading proves the file loader has committed before cwd is captured.
-        await expect(
-            page.getByRole("heading", { name: "File name" }),
-        ).toContainText("file1.txt");
+        // The editor proves the file loader has committed before cwd is captured.
+        await expect(page.getByLabel("File editor")).toBeVisible();
         await page.getByRole("tab", { name: "Terminal" }).click();
         await page
             .getByRole("button", { name: "New terminal", exact: true })

@@ -367,35 +367,54 @@ function SearchReplaceActions(props: {
                 <SearchActionButton
                     label="Find previous"
                     tooltip="Find previous (Shift+Ctrl+G)"
-                    icon={<ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />}
+                    icon={
+                        <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                    }
                     disabled={!props.canSearch}
                     onClick={props.onFindPrevious}
                 />
                 <SearchActionButton
                     label="Find next"
                     tooltip="Find next (Ctrl+G)"
-                    icon={<ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
+                    icon={
+                        <ChevronDown
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                        />
+                    }
                     disabled={!props.canSearch}
                     onClick={props.onFindNext}
                 />
                 <SearchActionButton
                     label="Select all"
                     tooltip="Select all matches"
-                    icon={<TextSelect className="h-3.5 w-3.5" aria-hidden="true" />}
+                    icon={
+                        <TextSelect
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                        />
+                    }
                     disabled={!props.canSearch}
                     onClick={props.onSelectAll}
                 />
                 <SearchActionButton
                     label="Replace"
                     tooltip="Replace the current match"
-                    icon={<Replace className="h-3.5 w-3.5" aria-hidden="true" />}
+                    icon={
+                        <Replace className="h-3.5 w-3.5" aria-hidden="true" />
+                    }
                     disabled={!props.canReplace}
                     onClick={props.onReplaceNext}
                 />
                 <SearchActionButton
                     label="Replace all"
                     tooltip="Replace all matches"
-                    icon={<ReplaceAll className="h-3.5 w-3.5" aria-hidden="true" />}
+                    icon={
+                        <ReplaceAll
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                        />
+                    }
                     disabled={!props.canReplace}
                     onClick={props.onReplaceAll}
                 />

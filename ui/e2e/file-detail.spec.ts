@@ -31,6 +31,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -63,9 +64,9 @@ test.describe.serial("File Detail View", () => {
         await expect(
             fileView.getByRole("link", { name: "Details", exact: true }),
         ).toHaveAttribute("aria-current", "page");
-        // Every file exposes its alternate View representation in the same switch.
+        // Editable files keep Edit as the first alternate representation in the same switch.
         await expect(
-            fileView.getByRole("link", { name: "View", exact: true }),
+            fileView.getByRole("link", { name: "Edit", exact: true }),
         ).toBeVisible();
     });
 
@@ -82,6 +83,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         const sizeText = await page.getByLabel("File size value").textContent();
 
@@ -124,9 +126,7 @@ test.describe.serial("File Detail View", () => {
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file2.txt"))}`,
         );
-        await expect(
-            page.getByRole("heading", { name: "File name" }),
-        ).toHaveText("file2.txt");
+        await expect(page.getByLabel("File editor")).toBeVisible();
     });
 
     test("should sync a file with explicit override", async ({ page }) => {
@@ -179,7 +179,7 @@ test.describe.serial("File Detail View", () => {
         const renamedPath = path.join(ctx.testDirPath, renamedName);
         await fs.writeFile(originalPath, "rename content");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}?view=details`,
         );
 
         await page
@@ -198,7 +198,7 @@ test.describe.serial("File Detail View", () => {
 
         // Navigation follows the renamed file so reloads do not target the stale source path.
         await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(renamedPath)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(renamedPath)}?view=details`,
         );
         // The details heading and filesystem contents both reflect the atomic rename result.
         await expect(
@@ -220,6 +220,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         const backButton = page.getByRole("link", {
             name: "Go to the parent directory",
@@ -238,7 +239,7 @@ test.describe.serial("File Detail View", () => {
 
     test("should navigate from a file with Backspace", async ({ page }) => {
         const filePath = path.join(ctx.testDirPath, "file1.txt");
-        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`;
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=details`;
         await page.goto(fileUrl);
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -269,6 +270,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         const backToAgentButton = page.getByRole("link", {
             name: ctx.agentName,
@@ -291,6 +293,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "nested1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -326,6 +329,7 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         const shareableLinks = page.getByRole("region", {
             name: "Shareable links",

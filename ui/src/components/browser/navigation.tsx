@@ -65,6 +65,8 @@ export function ViewToggle(props: {
     path: string;
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
+    /** Names the content tab Edit only after the agent marks the file writable. */
+    editable?: boolean;
 }) {
     const pathTarget = getBrowserPathHref(props.agent, props.path);
     if (props.entryType === "directory") {
@@ -94,20 +96,28 @@ export function ViewToggle(props: {
         );
     }
 
+    const contentLabel = props.editable === true ? "Edit" : "View";
+    const contentIcon =
+        props.editable === true ? (
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+        ) : (
+            <File className="h-4 w-4" aria-hidden="true" />
+        );
+
     return (
         <ViewSwitch label="File view">
             <ViewToggleLink
                 to={pathTarget}
-                label="Details"
-                icon={<Info className="h-4 w-4" aria-hidden="true" />}
-                active={props.activeView === "details"}
+                label={contentLabel}
+                icon={contentIcon}
+                active={props.activeView === "view"}
             />
             <ViewToggleLink
                 to={pathTarget}
-                search={{ view: "edit" }}
-                label="View"
-                icon={<File className="h-4 w-4" aria-hidden="true" />}
-                active={props.activeView === "view"}
+                search={{ view: "details" }}
+                label="Details"
+                icon={<Info className="h-4 w-4" aria-hidden="true" />}
+                active={props.activeView === "details"}
             />
             <ViewToggleLink
                 to={pathTarget}
@@ -182,6 +192,8 @@ export function BrowserHeader(props: {
     parentPath: string | null;
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
+    /** Forwards the content-tab label so file chrome matches the editable gate. */
+    editable?: boolean;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
 }) {
@@ -257,6 +269,7 @@ export function BrowserHeader(props: {
                     path={props.path}
                     entryType={props.entryType}
                     activeView={props.activeView}
+                    editable={props.editable}
                 />
             }
         />

@@ -273,37 +273,3 @@ export function FileImageView(props: {
         </div>
     );
 }
-
-/** Explains that the agent did not mark this path as text-editable or image-viewable. */
-export function UnsupportedFileView(props: {
-    agent: Agent;
-    fileName: string;
-    downloadUrl: string;
-}) {
-    return (
-        <div>
-            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-                <header className="border-b border-slate-800 p-6 md:p-8">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                        Unsupported file
-                    </p>
-                    <h1
-                        aria-label="File name"
-                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                    >
-                        {props.fileName}
-                    </h1>
-                </header>
-
-                <div className="p-6 md:p-8">
-                    <p
-                        aria-label="Unsupported file type"
-                        className="text-sm text-slate-300"
-                    >
-                        Viewing this file type is not supported
-                    </p>
-                </div>
-            </article>
-        </div>
-    );
-}

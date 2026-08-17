@@ -32,25 +32,7 @@ test.describe.serial("File Edit View", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("should link View for plain text files", async ({ page }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-
-        // View links to the text representation after UTF-8 sniffing marks the file editable.
-        await expect(
-            page.getByRole("link", { name: "View", exact: true }),
-        ).toBeVisible();
-    });
-
-    test("should open edit view via query param and load content", async ({
+    test("should open editable files in the Edit tab by default", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
@@ -63,23 +45,47 @@ test.describe.serial("File Edit View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
-        await page.getByRole("link", { name: "View", exact: true }).click();
 
-        await expect(page).toHaveURL(/\?view=edit$/);
+        const fileView = page.getByLabel("File view");
+        // Editable files use Edit as the first tab so opening a file starts in the editor.
+        await expect(fileView.getByRole("link").first()).toHaveText("Edit");
+        await expect(
+            fileView.getByRole("link", { name: "Edit", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        await expect(page).not.toHaveURL(/[?&]view=/);
         // The editor should contain the on-disk contents so edits start from truth.
         await expectEditorText(page.getByLabel("File editor"), "content1");
-        // The switch identifies View as the active file representation while editing.
-        await expect(
-            page
-                .getByLabel("File view")
-                .getByRole("link", { name: "View", exact: true }),
-        ).toHaveAttribute("aria-current", "page");
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toBeDisabled();
         await expect(
             page.getByRole("button", { name: "Restore file contents" }),
         ).toBeDisabled();
+    });
+
+    test("should open details from the second file tab", async ({ page }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .locator(
+                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
+            )
+            .click();
+
+        await page
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+        await page.getByRole("link", { name: "Details", exact: true }).click();
+
+        // Details is addressable only through the query so the default file URL stays on Edit.
+        await expect(page).toHaveURL(/\?view=details$/);
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "Details", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("file1.txt");
     });
 
     test("should download editable file contents once", async ({ page }) => {
@@ -98,7 +104,7 @@ test.describe.serial("File Edit View", () => {
         });
 
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
         const editor = page.getByLabel("File editor");
         await expectEditorText(editor, "content1");
@@ -113,20 +119,20 @@ test.describe.serial("File Edit View", () => {
             name: "Details",
             exact: true,
         });
-        const viewLink = fileView.getByRole("link", {
-            name: "View",
+        const editLink = fileView.getByRole("link", {
+            name: "Edit",
             exact: true,
         });
         // Intent preload re-runs the edit loader; a stale buffer would download again.
         await detailsLink.hover();
-        await viewLink.hover();
+        await editLink.hover();
         await detailsLink.hover();
-        await viewLink.hover();
+        await editLink.hover();
 
         // Leaving and returning remounts the editor and re-runs fetchQuery on the same key.
         await detailsLink.click();
         await expect(detailsLink).toHaveAttribute("aria-current", "page");
-        await viewLink.click();
+        await editLink.click();
         await expectEditorText(editor, "content1");
 
         // Preload and remount must reuse the cached buffer instead of hitting /raw again.
@@ -147,7 +153,7 @@ test.describe.serial("File Edit View", () => {
         ];
         await fs.writeFile(filePath, lines.join("\n"));
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -187,7 +193,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "focus-refresh.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
         const editor = page.getByLabel("File editor");
         await expectEditorText(editor, "original buffer");
@@ -205,7 +211,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "focus-dirty.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
         const editor = page.getByLabel("File editor");
         await expectEditorText(editor, "original buffer");
@@ -220,7 +226,7 @@ test.describe.serial("File Edit View", () => {
 
     test("should restore unsaved edits", async ({ page }) => {
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -238,7 +244,7 @@ test.describe.serial("File Edit View", () => {
     test("should save edits to disk", async ({ page }) => {
         const filePath = path.join(ctx.testDirPath, "file1.txt");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -258,7 +264,7 @@ test.describe.serial("File Edit View", () => {
             .toBe("saved from ui");
     });
 
-    test("should show unsupported message for binary files", async ({
+    test("should replace-navigate unsupported binaries to details", async ({
         page,
     }) => {
         const binaryPath = path.join(ctx.testDirPath, "binary.bin");
@@ -278,18 +284,18 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "binary.bin", exact: true })
             .click();
 
-        // Non-image binaries still expose View so users get an explicit unsupported state.
-        await page.getByRole("link", { name: "View", exact: true }).click();
-        await expect(page).toHaveURL(/\?view=edit$/);
-        await expect(page.getByLabel("Unsupported file type")).toHaveText(
-            "Viewing this file type is not supported",
-        );
+        // Unviewable files skip the empty content tab so Backspace/history stay on the listing.
+        await expect(page).toHaveURL(/\?view=details$/);
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("binary.bin");
+        await page.goBack();
+        await expect(
+            page.getByRole("link", { name: "binary.bin", exact: true }),
+        ).toBeVisible();
     });
 
-    test("should show unsupported message for large text files", async ({
+    test("should replace-navigate oversized text to details", async ({
         page,
     }) => {
         const largePath = path.join(ctx.testDirPath, "large.txt");
@@ -308,11 +314,8 @@ test.describe.serial("File Edit View", () => {
             .getByRole("link", { name: "large.txt", exact: true })
             .click();
 
-        // Size gating routes oversized text to the unsupported view instead of a huge textarea.
-        await page.getByRole("link", { name: "View", exact: true }).click();
-        await expect(page.getByLabel("Unsupported file type")).toHaveText(
-            "Viewing this file type is not supported",
-        );
+        // Size gating must not open a huge editor, so the default content URL is replaced.
+        await expect(page).toHaveURL(/\?view=details$/);
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("large.txt");
@@ -338,10 +341,9 @@ test.describe.serial("File Edit View", () => {
         await page
             .getByRole("link", { name: "photo.bin", exact: true })
             .click();
-        await page.getByRole("link", { name: "View", exact: true }).click();
 
-        await expect(page).toHaveURL(/\?view=edit$/);
-        // Image representation is selected in the same View switch used by the text editor.
+        await expect(page).not.toHaveURL(/[?&]view=/);
+        // Images keep the View label because they are display-only, not editable text.
         await expect(
             page
                 .getByLabel("File view")
@@ -361,7 +363,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "shortcut-save.txt");
         await fs.writeFile(filePath, "shortcut original");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -385,7 +387,7 @@ test.describe.serial("File Edit View", () => {
         page,
     }) => {
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
 
         await expect(page.getByLabel("File editor")).toBeVisible();
@@ -402,7 +404,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, ".bashrc");
         await fs.writeFile(filePath, "export FOO=1");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         // Filename-based shell mapping must still produce an editable File editor.
@@ -416,7 +418,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "backspace-guard.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -427,7 +429,7 @@ test.describe.serial("File Edit View", () => {
         await page.keyboard.press("Backspace");
 
         // CodeMirror is contenteditable; Backspace must edit text, not leave the file.
-        await expect(page).toHaveURL(/\?view=edit$/);
+        await expect(page).not.toHaveURL(/[?&]view=/);
         await expect(
             page.getByRole("dialog", { name: "Discard unsaved changes?" }),
         ).toBeHidden();
@@ -440,7 +442,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "leave-cancel.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -462,7 +464,7 @@ test.describe.serial("File Edit View", () => {
         await expect(confirmDialog).toBeVisible();
         await confirmDialog.getByRole("button", { name: "Cancel" }).click();
         await expect(confirmDialog).toBeHidden();
-        await expect(page).toHaveURL(/\?view=edit$/);
+        await expect(page).not.toHaveURL(/[?&]view=/);
         await expectEditorText(editor, "keep this draft");
     });
 
@@ -472,7 +474,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "leave-confirm.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -513,7 +515,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "leave-after-restore.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");
@@ -545,7 +547,7 @@ test.describe.serial("File Edit View", () => {
         const filePath = path.join(ctx.testDirPath, "reload-guard.txt");
         await fs.writeFile(filePath, "original buffer");
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
         const editor = page.getByLabel("File editor");

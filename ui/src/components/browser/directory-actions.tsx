@@ -781,7 +781,6 @@ function CreateFileAction(props: {
         onSuccess: async (_, file) => {
             await navigate({
                 to: props.agent.getBrowserUrl(file.path),
-                search: { view: "edit" },
             });
             resetDialog();
         },

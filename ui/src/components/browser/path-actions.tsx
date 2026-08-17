@@ -31,7 +31,7 @@ function RenamePathDialog(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "diff" | "sync";
     navigateAfterRename: boolean;
     isOpen: boolean;
     onClose: () => void;
@@ -71,13 +71,11 @@ function RenamePathDialog(props: {
                 search:
                     props.view === "details"
                         ? { view: "details" }
-                        : props.view === "edit"
-                          ? { view: "edit" }
-                          : props.view === "diff"
-                            ? { view: "diff" }
-                            : props.view === "sync"
-                              ? { view: "sync" }
-                              : {},
+                        : props.view === "diff"
+                          ? { view: "diff" }
+                          : props.view === "sync"
+                            ? { view: "sync" }
+                            : {},
             });
         },
     });
@@ -194,7 +192,7 @@ export function RenamePathAction(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "diff" | "sync";
     navigateAfterRename?: boolean;
     children: (action: {
         open: () => void;
@@ -229,7 +227,7 @@ function PathMoreActions(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "diff" | "sync";
     isEditorDirty?: boolean;
     onDelete?: () => void;
 }) {
@@ -362,7 +360,7 @@ export function PersistentPathActions(props: {
     path: string;
     currentName: string;
     entryType: "file" | "directory";
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "diff" | "sync";
     downloadUrl: string;
     downloadName: string;
     /** Explains archive packaging when the download is a directory tarball. */

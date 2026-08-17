@@ -349,6 +349,7 @@ function FileDetailMenu(props: {
             path={props.path}
             currentName={props.fileName}
             entryType="file"
+            view="details"
         >
             {(renameAction) => (
                 <>

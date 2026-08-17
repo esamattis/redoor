@@ -92,9 +92,7 @@ test.describe.serial("Transfer Path Links", () => {
                     `/agents/${ctx.agentId}/browser/.*${uploadFileName}$`,
                 ),
             );
-            await expect(
-                page.getByRole("heading", { name: "File name" }),
-            ).toContainText(uploadFileName);
+            await expect(page.getByLabel("File editor")).toBeVisible();
         } finally {
             await fs.rm(uploadSourceDir, { force: true, recursive: true });
         }
