@@ -632,6 +632,8 @@ pub struct AgentInfoResponse {
     pub managed: bool,
     /// Whether this managed entry is SSH-backed and supported by the configuration editor.
     pub configuration_editable: bool,
+    /// Configured SSH destination so list views can label remotes without a second request.
+    pub ssh_target: Option<String>,
     pub status: AgentConnectionStatus,
     pub connected_at: Option<UnixTimestampSeconds>,
     /// Current WebSocket generation; changes whenever this agent reconnects.

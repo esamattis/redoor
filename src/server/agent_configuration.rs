@@ -109,7 +109,11 @@ async fn create_ssh_agent(
     .await
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
-    Ok(stopped_agent_response(registered_id, config.home))
+    Ok(stopped_agent_response(
+        registered_id,
+        config.home,
+        Some(config.target),
+    ))
 }
 
 /// Replaces durable and runtime configuration while the old supervisor is dormant.
@@ -149,7 +153,11 @@ async fn update_ssh_agent(
     persist_ssh_replacement(state, old_id, &new_id, &config).await?;
     unregister_runtime_agent(state, old_id).await?;
     ensure_ssh_agent_registered(state, config.clone()).await?;
-    Ok(stopped_agent_response(new_id.into(), config.home))
+    Ok(stopped_agent_response(
+        new_id.into(),
+        config.home,
+        Some(config.target),
+    ))
 }
 
 /// Deletes durable configuration only after confirming no managed process is running.
@@ -283,6 +291,7 @@ async fn ensure_ssh_agent_registered(
                     agent_id: agent_id.clone().into(),
                     default_directory: config.home,
                     configuration_editable: true,
+                    ssh_target: Some(config.target),
                     reply,
                 })
             })
@@ -357,6 +366,7 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, String) {
 fn stopped_agent_response(
     agent_id: redoor::types::AgentId,
     home: Option<String>,
+    ssh_target: Option<String>,
 ) -> AgentInfoResponse {
     AgentInfoResponse {
         id: agent_id.clone(),
@@ -364,6 +374,7 @@ fn stopped_agent_response(
         cwd: home,
         managed: true,
         configuration_editable: true,
+        ssh_target,
         status: AgentConnectionStatus::Stopped,
         connected_at: None,
         connection_id: None,

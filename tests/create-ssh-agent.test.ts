@@ -90,6 +90,7 @@ describe("SSH agent configuration API", () => {
             cwd: "/srv/app",
             managed: true,
             configuration_editable: true,
+            ssh_target: "example-host",
             status: "stopped",
         });
         const inventory = await apiClient.listAgents();
@@ -102,6 +103,13 @@ describe("SSH agent configuration API", () => {
             inventory.find((agent) => agent.id === LOCAL_AGENT_NAME)
                 ?.configurationEditable,
         ).toBe(false);
+        // List inventory must carry the SSH destination so UI chips need no extra fetch.
+        expect(
+            inventory.find((agent) => agent.name === AGENT_NAME)?.sshTarget,
+        ).toBe("example-host");
+        expect(
+            inventory.find((agent) => agent.id === LOCAL_AGENT_NAME)?.sshTarget,
+        ).toBeNull();
 
         const editedConfig = readFileSync(configPath, "utf8");
         // toml_edit must preserve unrelated operator comments while appending every explicit field.

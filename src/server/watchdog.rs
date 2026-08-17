@@ -60,6 +60,10 @@ pub(crate) async fn register_agent(
     let agent_id = AgentId::from(key.clone());
     let default_directory = configured_directory(&config);
     let configuration_editable = matches!(config, AgentConfig::SshBacked(_));
+    let ssh_target = match &config {
+        AgentConfig::SshBacked(config) => Some(config.target.clone()),
+        AgentConfig::Local(_) => None,
+    };
     let callback_router = router.clone();
     let callback_agent_id = agent_id.clone();
     let (snapshot_sender, mut snapshot_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -91,6 +95,7 @@ pub(crate) async fn register_agent(
                 agent_id: agent_id.clone(),
                 default_directory,
                 configuration_editable,
+                ssh_target,
                 reply,
             })
         })

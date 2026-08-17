@@ -516,6 +516,7 @@ mod tests {
                 default_directory: Some("/tmp".to_string()),
                 managed: false,
                 configuration_editable: false,
+                ssh_target: None,
                 status: crate::commands::AgentConnectionStatus::Connected,
                 connected_at: list_agents[0].connected_at,
                 connection_id: list_agents[0].connection_id.clone(),

@@ -70,6 +70,7 @@ export async function createToxiproxyAgent(options: {
             cwd: options.agent.cwd,
             managed: options.agent.managed,
             configuration_editable: options.agent.configurationEditable,
+            ssh_target: options.agent.sshTarget,
             status: options.agent.status,
             connected_at: options.agent.connectedAt,
             connection_id: options.agent.connectionId,

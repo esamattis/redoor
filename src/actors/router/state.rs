@@ -69,6 +69,8 @@ pub struct KnownAgent {
     pub managed: bool,
     /// Whether this entry is SSH-backed and supported by the configuration editor.
     pub configuration_editable: bool,
+    /// Configured SSH destination retained so list projections need no TOML reread.
+    pub ssh_target: Option<String>,
     /// Current public lifecycle state.
     pub status: AgentConnectionStatus,
     /// Timestamp for the current authoritative connection only.

@@ -12,7 +12,11 @@ export type AgentInfoResponse = { id: AgentId, name: string, cwd: string | null,
 /**
  * Whether this managed entry is SSH-backed and supported by the configuration editor.
  */
-configuration_editable: boolean, status: AgentConnectionStatus, connected_at: UnixTimestampSeconds | null, 
+configuration_editable: boolean, 
+/**
+ * Configured SSH destination so list views can label remotes without a second request.
+ */
+ssh_target: string | null, status: AgentConnectionStatus, connected_at: UnixTimestampSeconds | null, 
 /**
  * Current WebSocket generation; changes whenever this agent reconnects.
  */

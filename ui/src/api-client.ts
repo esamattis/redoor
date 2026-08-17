@@ -289,6 +289,11 @@ export class Agent {
         return this.info.configuration_editable;
     }
 
+    /** Returns the configured SSH destination for inventory labels. */
+    get sshTarget(): string | null {
+        return this.info.ssh_target;
+    }
+
     /** Returns the retained public lifecycle state. */
     get status(): AgentConnectionStatus {
         return this.info.status;

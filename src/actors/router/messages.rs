@@ -56,6 +56,8 @@ pub struct AgentListEntry {
     pub managed: bool,
     /// Whether this retained entry can be changed through the SSH configuration API.
     pub configuration_editable: bool,
+    /// Configured SSH destination when this inventory row is SSH-backed.
+    pub ssh_target: Option<String>,
     /// Current public lifecycle state.
     pub status: AgentConnectionStatus,
     /// Start of the current authoritative connection.
@@ -82,6 +84,8 @@ pub struct RegisterManagedAgentRequest {
     pub default_directory: Option<String>,
     /// Distinguishes SSH-backed entries supported by the managed-agent form from local entries.
     pub configuration_editable: bool,
+    /// Configured SSH destination copied into inventory so list clients can label remotes.
+    pub ssh_target: Option<String>,
     /// Acknowledges inventory visibility before HTTP serving begins.
     pub reply: RouterReply<()>,
 }

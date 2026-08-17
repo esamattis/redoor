@@ -78,6 +78,7 @@ pub(super) async fn list_agent_snapshots(
             cwd: agent.default_directory,
             managed: agent.managed,
             configuration_editable: agent.configuration_editable,
+            ssh_target: agent.ssh_target,
             status: agent.status,
             connected_at: agent.connected_at,
             connection_id: agent.connection_id,

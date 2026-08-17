@@ -714,6 +714,7 @@ describe("Agents API", () => {
                 cwd: "/tmp",
                 managed: false,
                 configuration_editable: false,
+                ssh_target: null,
                 status: "disconnected",
                 connected_at: null,
                 connection_id: null,
