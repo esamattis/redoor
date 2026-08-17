@@ -15,15 +15,19 @@ type TooltipProps = {
 /**
  * Shows a small tooltip for its child content on hover, keyboard focus, and touch.
  *
- * On touch devices the tooltip opens on the trigger's touchstart and stays open
- * until the next touchstart anywhere on the page, so users can read it without
- * hover. This wrapper is also useful for disabled controls when the tooltip
- * needs to be attached to a non-disabled parent element instead of the control.
+ * Pointer activation focuses links and buttons, but that focus must not keep the
+ * tooltip open after the cursor leaves. Keyboard and programmatic focus still
+ * open it. On touch devices the tooltip opens on the trigger's touchstart and
+ * stays open until the next touchstart anywhere on the page, so users can read
+ * it without hover. This wrapper is also useful for disabled controls when the
+ * tooltip needs to be attached to a non-disabled parent element instead of the
+ * control.
  */
 export function Tooltip(props: TooltipProps) {
     const tooltipId = React.useId();
     const triggerRef = React.useRef<HTMLSpanElement>(null);
     const tooltipRef = React.useRef<HTMLSpanElement>(null);
+    const ignoreFocusFromPointerRef = React.useRef(false);
     const [isHovered, setIsHovered] = React.useState(false);
     const [isFocused, setIsFocused] = React.useState(false);
     const [isTouchOpen, setIsTouchOpen] = React.useState(false);
@@ -161,13 +165,38 @@ export function Tooltip(props: TooltipProps) {
     };
     const child = React.cloneElement(props.children, tooltipChildProps);
 
+    /** Prevents a click-induced focus from pinning the tooltip after mouseleave. */
+    const handlePointerDown = () => {
+        ignoreFocusFromPointerRef.current = true;
+        setIsFocused(false);
+    };
+
+    /** Drops the pointer flag when this press never focused the trigger. */
+    const handlePointerUp = () => {
+        window.setTimeout(() => {
+            ignoreFocusFromPointerRef.current = false;
+        }, 0);
+    };
+
+    /** Opens on keyboard or programmatic focus, but not on the focus that follows a click. */
+    const handleFocus = () => {
+        if (ignoreFocusFromPointerRef.current) {
+            ignoreFocusFromPointerRef.current = false;
+            return;
+        }
+        setIsFocused(true);
+    };
+
     return (
         <span
             ref={triggerRef}
             className={`inline-flex ${props.className ?? ""}`}
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
-            onFocus={() => setIsFocused(true)}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onFocus={handleFocus}
             onBlur={() => setIsFocused(false)}
             onTouchStart={() => setIsTouchOpen(true)}
         >

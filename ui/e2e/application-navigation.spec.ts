@@ -41,6 +41,36 @@ test.describe("Application navigation", () => {
         ).toBeHidden();
     });
 
+    test("hides tooltips after a click once the cursor leaves", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const themeButton = page.getByRole("button", {
+            name: /Color theme:/,
+        });
+        await themeButton.hover();
+        await expect(page.getByRole("tooltip")).toBeVisible();
+        await themeButton.click();
+        // Click focuses the control, but the tooltip must follow the cursor rather than stay pinned.
+        await page
+            .getByRole("region", { name: "Agent names" })
+            .getByRole("heading", { name: "Agents" })
+            .hover();
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+        const agentLink = page
+            .getByRole("region", { name: "Agent names" })
+            .getByRole("link")
+            .first();
+        await agentLink.hover();
+        await expect(page.getByRole("tooltip")).toBeVisible();
+        await agentLink.click();
+        // The same focus-after-click trap applies to links that remain interactive after navigation.
+        await page.getByRole("heading", { name: "Mount Points" }).hover();
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+    });
+
     test("opens and dismisses the sidebar from outside on mobile", async ({
         page,
     }) => {
