@@ -46,7 +46,7 @@ export function Button(props: NativeButtonProps | AnchorButtonProps) {
     );
 
     if (props.as === "a") {
-        const anchorProps = { ...props };
+        const anchorProps: Partial<AnchorButtonProps> = { ...props };
         delete anchorProps.as;
         delete anchorProps.variant;
         delete anchorProps.size;
@@ -55,7 +55,7 @@ export function Button(props: NativeButtonProps | AnchorButtonProps) {
         return <a {...anchorProps} className={className} />;
     }
 
-    const buttonProps = { ...props };
+    const buttonProps: Partial<NativeButtonProps> = { ...props };
     delete buttonProps.as;
     delete buttonProps.variant;
     delete buttonProps.size;
