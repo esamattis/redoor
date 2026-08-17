@@ -61,15 +61,18 @@ function FileEditActions(props: {
                 </Button>
             </Tooltip>
             <Tooltip content="Download file">
-                <a
+                <Button
+                    as="a"
                     href={props.downloadUrl}
                     download={props.fileName}
                     aria-label="Download file"
-                    className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-800/80 px-3.5 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-700"
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-md bg-slate-800/80 px-3.5 font-semibold hover:bg-slate-700"
                 >
                     <Download className="h-4 w-4" aria-hidden="true" />
                     Download
-                </a>
+                </Button>
             </Tooltip>
             {props.statusMessage ? (
                 <span
