@@ -136,13 +136,20 @@ function BrowserRouteShell(props: {
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
     constrainContent?: boolean;
+    /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
     fillAvailableHeight?: boolean;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
     children: ReactNode;
 }) {
     return (
-        <div className="flex min-h-full flex-col p-2 lg:p-4">
+        <div
+            className={
+                props.fillAvailableHeight === true
+                    ? "absolute inset-x-0 top-[var(--top-chrome-height,0px)] bottom-[var(--bottom-chrome-height,0px)] flex min-h-0 flex-col overflow-hidden p-2 lg:p-4"
+                    : "flex min-h-full flex-col p-2 lg:p-4"
+            }
+        >
             <BrowserHeader
                 agent={props.agent}
                 agentId={props.agentId}
@@ -158,7 +165,7 @@ function BrowserRouteShell(props: {
                     props.constrainContent ? "mx-auto max-w-6xl" : "w-full"
                 } ${
                     props.fillAvailableHeight === true
-                        ? "flex min-h-0 flex-1 flex-col"
+                        ? "flex min-h-0 flex-1 flex-col overflow-hidden"
                         : ""
                 }`}
             >

@@ -133,6 +133,54 @@ test.describe.serial("File Edit View", () => {
         expect(rawGets.length).toBe(downloadsAfterOpen);
     });
 
+    test("should keep large files inside the editor viewport", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "large-viewport.txt");
+        const lines = [
+            "FIRST_VISIBLE_LINE",
+            ...Array.from(
+                { length: 498 },
+                (_, index) => `middle line ${index + 2}`,
+            ),
+            "LAST_BUFFER_LINE",
+        ];
+        await fs.writeFile(filePath, lines.join("\n"));
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        const editorViewport = page.getByRole("region", {
+            name: "Editor viewport",
+        });
+        await expect(editor.getByText("FIRST_VISIBLE_LINE")).toBeVisible();
+
+        const editorBox = await editorViewport.boundingBox();
+        const viewport = page.viewportSize();
+        expect(editorBox).not.toBeNull();
+        expect(viewport).not.toBeNull();
+        if (editorBox === null || viewport === null) {
+            throw new Error("expected editor and viewport measurements");
+        }
+        // The visible editor surface must stay inside the window, not grow with the buffer.
+        expect(editorBox.height).toBeLessThan(viewport.height);
+
+        const pageScroll = await page.getByRole("main").evaluate((element) => ({
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+        }));
+        // Vertical scrolling must stay in CodeMirror, not the overlay page scroller.
+        expect(pageScroll.scrollHeight).toBeLessThanOrEqual(
+            pageScroll.clientHeight + 1,
+        );
+
+        // Distant lines stay out of the DOM until the editor scroller reaches them.
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toHaveCount(0);
+        await editor.press("Control+End");
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toBeVisible();
+    });
+
     test("should refresh a clean editor when the tab is focused", async ({
         page,
     }) => {

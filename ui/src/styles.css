@@ -209,6 +209,18 @@ code {
     background-clip: content-box;
 }
 
+/*
+ * CodeMirror virtualizes from its own scroller. A page-tall editor would
+ * render the whole document and defeat that viewport.
+ */
+[data-file-editor] .cm-editor {
+    height: 100%;
+}
+
+[data-file-editor] .cm-scroller {
+    overflow: auto;
+}
+
 /* Keep overflowing tabs scrollable without letting a scrollbar change the header height. */
 .top-tab-strip {
     scrollbar-width: none;

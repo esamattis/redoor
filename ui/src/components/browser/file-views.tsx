@@ -65,7 +65,7 @@ function FileEditActions(props: {
     );
 }
 
-/** Edits file contents in a full-height CodeMirror with explicit save/restore. */
+/** Edits file contents in a viewport-bounded CodeMirror with explicit save/restore. */
 export function FileEditView(props: {
     agent: Agent;
     fileName: string;
