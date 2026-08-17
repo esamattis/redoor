@@ -25,7 +25,11 @@ import { initializeGhostty } from "#ui/terminal/ghostty";
 import { AddButton } from "#ui/components/add-button";
 import { Dialog } from "#ui/components/dialog";
 import { Tooltip } from "#ui/components/tooltip";
-import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
+import {
+    isEditorInputTarget,
+    isUnmodifiedAltKey,
+    shouldIgnoreKeyboardShortcut,
+} from "#ui/utils/keyboard";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 
 type TerminalState =
@@ -240,10 +244,13 @@ export function TerminalPanel(props: {
     React.useEffect(() => {
         /** Opens the routed shell or asks for an agent when the route has no terminal target. */
         const handleShortcut = (event: KeyboardEvent) => {
-            if (
-                event.key !== "t" ||
-                shouldIgnoreKeyboardShortcut(event, { shift: true })
-            ) {
+            const isEditorAltT =
+                isUnmodifiedAltKey(event, "t") &&
+                isEditorInputTarget(event.target);
+            const isGlobalT =
+                event.key === "t" &&
+                !shouldIgnoreKeyboardShortcut(event, { shift: true });
+            if (!isEditorAltT && !isGlobalT) {
                 return;
             }
 
@@ -271,8 +278,10 @@ export function TerminalPanel(props: {
             setFocusRequestId((current) => current + 1);
         };
 
-        window.addEventListener("keydown", handleShortcut);
-        return () => window.removeEventListener("keydown", handleShortcut);
+        // Capture so Alt+t reaches the terminal action before Vim consumes t.
+        window.addEventListener("keydown", handleShortcut, true);
+        return () =>
+            window.removeEventListener("keydown", handleShortcut, true);
     }, [
         activeTabId,
         activateBottomDrawerTab,
@@ -427,7 +436,7 @@ function TerminalTabActions(props: {
             </div>
             {props.activeTarget ? (
                 <AddButton
-                    tooltip={`New terminal in ${props.activeTarget.agent.name} (t)`}
+                    tooltip={`New terminal in ${props.activeTarget.agent.name} (t, Alt+t)`}
                 >
                     <button
                         type="button"

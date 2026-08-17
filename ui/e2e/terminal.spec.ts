@@ -367,7 +367,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             .hover();
         // The plus action advertises the equivalent keyboard shortcut.
         await expect(page.getByRole("tooltip")).toHaveText(
-            `New terminal in ${ctx.agentName} (t)`,
+            `New terminal in ${ctx.agentName} (t, Alt+t)`,
         );
         await page.mouse.move(0, 0);
 

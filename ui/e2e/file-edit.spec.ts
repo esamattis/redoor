@@ -578,4 +578,71 @@ test.describe.serial("File Edit View", () => {
         // A clean buffer must not trap refresh or tab close.
         expect(cleanReloadBlocked).toBe(false);
     });
+
+    test("should move focus between the editor and terminal with alt shortcuts", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "alt-focus.txt");
+        await fs.writeFile(filePath, "content1");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        const editorViewport = page.getByRole("region", {
+            name: "Editor viewport",
+        });
+        await expectEditorText(editor, "content1");
+        await editor.focus();
+        await expect(editor).toBeFocused();
+        // A focused editor must show the same blue frame as a focused shell.
+        await expect(editorViewport).toHaveCSS(
+            "border-color",
+            "oklch(0.623 0.214 259.815)",
+        );
+
+        await page.keyboard.press("ControlOrMeta+a");
+        await page.keyboard.type("t");
+        // Typing t into CodeMirror must edit the buffer instead of opening a terminal.
+        await expectEditorText(editor, "t");
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(0);
+
+        await page.keyboard.press("Alt+t");
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        const terminalInput = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        // Alt+t from the editor must reuse the same open-or-focus action as t.
+        await expect(terminalInput).toBeFocused();
+        await expectEditorText(editor, "t");
+
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .hover();
+        // The plus action advertises both the global and editor-scoped shortcuts.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            `New terminal in ${ctx.agentName} (t, Alt+t)`,
+        );
+        await page.mouse.move(0, 0);
+        await terminalInput.click();
+        await expect(terminalInput).toBeFocused();
+
+        await page.keyboard.type("e");
+        // A focused shell must keep e as input instead of jumping to the editor.
+        await expect(terminalInput).toBeFocused();
+        await expect(editor).not.toBeFocused();
+
+        await page.keyboard.press("Alt+e");
+        // Alt+e from the terminal must return keyboard ownership to CodeMirror.
+        await expect(editor).toBeFocused();
+        await expect(editorViewport).toHaveCSS(
+            "border-color",
+            "oklch(0.623 0.214 259.815)",
+        );
+        await expectEditorText(editor, "t");
+    });
 });

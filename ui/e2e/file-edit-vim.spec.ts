@@ -79,4 +79,34 @@ test.describe.serial("File editor Vim mode", () => {
         await expect(page.getByText("--NORMAL--")).toBeVisible();
         await expect(page.getByLabel("File editor")).toHaveText("content1");
     });
+
+    test("should open the terminal with Alt+t from Vim normal mode", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "vim-mode.txt");
+        await fs.writeFile(filePath, "content1");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        await page.getByRole("button", { name: "Vim mode" }).click();
+        const editor = page.getByLabel("File editor");
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+        await editor.focus();
+        await expect(editor).toBeFocused();
+
+        await page.keyboard.press("Alt+t");
+        const terminalInput = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        // Vim must not treat Alt+t as till, or the buffer and mode would change.
+        await expect(terminalInput).toBeFocused();
+        await expect(editor).toHaveText("content1");
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+
+        await page.keyboard.press("Alt+e");
+        // Returning from the shell must restore the Vim editor, not a browser control.
+        await expect(editor).toBeFocused();
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+    });
 });

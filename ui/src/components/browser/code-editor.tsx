@@ -10,6 +10,7 @@ import {
     type EditorSearchHandle,
 } from "#ui/components/browser/editor-search";
 import { languageFromFileName } from "#ui/utils/editor-language";
+import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
 
 /** Lets :w call the current save handler without re-registering the global ex command. */
 const vimWriteRef = { current: () => {} };
@@ -101,6 +102,32 @@ export function CodeEditor(props: {
         ];
     }, [props.fileName, props.vimMode]);
 
+    React.useEffect(() => {
+        if (view === null) {
+            return;
+        }
+
+        /** Returns from a focused shell without typing e into the session. */
+        const handleFocusEditorShortcut = (event: KeyboardEvent) => {
+            if (
+                !isUnmodifiedAltKey(event, "e") ||
+                !isTerminalInputTarget(event.target)
+            ) {
+                return;
+            }
+            event.preventDefault();
+            view.focus();
+        };
+
+        window.addEventListener("keydown", handleFocusEditorShortcut, true);
+        return () =>
+            window.removeEventListener(
+                "keydown",
+                handleFocusEditorShortcut,
+                true,
+            );
+    }, [view]);
+
     return (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <EditorSearch
@@ -114,7 +141,7 @@ export function CodeEditor(props: {
                 data-vim-mode={props.vimMode ? "true" : "false"}
                 role="region"
                 aria-label="Editor viewport"
-                className="min-h-0 flex-1 overflow-hidden"
+                className="min-h-0 flex-1 overflow-hidden rounded-md border border-transparent p-1.5 focus-within:border-blue-500"
             >
                 <CodeMirror
                     ref={editorRef}

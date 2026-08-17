@@ -32,6 +32,21 @@ export function isVimEditorTarget(target: EventTarget | null): boolean {
     );
 }
 
+/**
+ * Identifies Alt+letter chords used to escape the editor or terminal without
+ * stealing Ctrl/Meta OS bindings or Shift-modified characters.
+ */
+export function isUnmodifiedAltKey(event: KeyboardEvent, key: string) {
+    return (
+        event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        (event.key.toLowerCase() === key.toLowerCase() ||
+            event.code === `Key${key.toUpperCase()}`)
+    );
+}
+
 /** Keeps unmodified application shortcuts separate from browser and text-editing keys. */
 export function shouldIgnoreKeyboardShortcut(
     event: KeyboardEvent,
