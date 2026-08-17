@@ -29,6 +29,7 @@ export function CodeEditor(props: {
     fileName: string;
     editable: boolean;
     vimMode: boolean;
+    wrapLines: boolean;
     onChange: (value: string) => void;
     onSave: () => void;
 }) {
@@ -49,11 +50,13 @@ export function CodeEditor(props: {
         const language = languageFromFileName(props.fileName);
         return [
             ...(props.vimMode ? [vim({ status: true })] : []), // Vim must precede other keymaps so normal-mode keys win.
+            ...(props.wrapLines ? [EditorView.lineWrapping] : []),
             search(),
             EditorView.contentAttributes.of({
                 "aria-label": "File editor",
                 "data-file-editor": "",
                 "data-vim-mode": props.vimMode ? "true" : "false",
+                "data-wrap-lines": props.wrapLines ? "true" : "false",
             }),
             EditorView.theme({
                 "&": {
@@ -106,7 +109,7 @@ export function CodeEditor(props: {
             ),
             ...(language === undefined ? [] : [language]),
         ];
-    }, [props.fileName, props.vimMode]);
+    }, [props.fileName, props.vimMode, props.wrapLines]);
 
     React.useEffect(() => {
         if (view === null) {
@@ -145,6 +148,7 @@ export function CodeEditor(props: {
             <div
                 data-file-editor=""
                 data-vim-mode={props.vimMode ? "true" : "false"}
+                data-wrap-lines={props.wrapLines ? "true" : "false"}
                 role="region"
                 aria-label="Editor viewport"
                 className="min-h-0 flex-1 overflow-hidden rounded-md border border-transparent p-1.5 focus-within:border-blue-500"

@@ -31,6 +31,7 @@ test.describe.serial("Bookmarks", () => {
                 theme: "system",
                 bookmarks: [],
                 vimMode: false,
+                wrapEditorLines: false,
             },
         });
     });

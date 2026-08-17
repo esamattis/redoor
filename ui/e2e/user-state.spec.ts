@@ -31,6 +31,7 @@ test.describe.serial("User state", () => {
                 theme: "system",
                 bookmarks: [],
                 vimMode: false,
+                wrapEditorLines: false,
             },
         });
     });

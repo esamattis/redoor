@@ -23,6 +23,7 @@ export const userStateSchema = z.object({
     theme: z.enum(["system", "dark", "light"]).catch("system"),
     bookmarks: z.array(bookmarkSchema).catch([]),
     vimMode: z.boolean().catch(false),
+    wrapEditorLines: z.boolean().catch(false),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
@@ -32,6 +33,7 @@ export const defaultUserState: UserState = {
     theme: "system",
     bookmarks: [],
     vimMode: false,
+    wrapEditorLines: false,
 };
 
 /** Identifies one bookmarked path so the same file cannot be stored twice. */

@@ -11,7 +11,7 @@ import {
     type TestContext,
 } from "./helpers";
 
-test.describe.serial("File editor Vim mode", () => {
+test.describe.serial("File editor options", () => {
     let ctx: TestContext;
 
     test.beforeAll(async () => {
@@ -32,6 +32,7 @@ test.describe.serial("File editor Vim mode", () => {
                 theme: "system",
                 bookmarks: [],
                 vimMode: false,
+                wrapEditorLines: false,
             },
         });
     });
@@ -47,7 +48,13 @@ test.describe.serial("File editor Vim mode", () => {
 
         const editor = page.getByLabel("File editor");
         await expect(editor).toHaveText("content1");
-        const vimToggle = page.getByRole("button", { name: "Vim mode" });
+        const optionsButton = page.getByRole("button", {
+            name: "Editor options",
+        });
+        await expect(optionsButton).toHaveAttribute("aria-expanded", "false");
+        await optionsButton.click();
+        const options = page.getByRole("dialog", { name: "Editor options" });
+        const vimToggle = options.getByRole("button", { name: "Vim mode" });
         // Vim stays off by default so existing editor shortcuts keep working.
         await expect(vimToggle).toHaveAttribute("aria-pressed", "false");
 
@@ -61,6 +68,9 @@ test.describe.serial("File editor Vim mode", () => {
             .poll(async () => (await api.getUserState()).state)
             .toMatchObject({ vimMode: true });
 
+        await options
+            .getByRole("button", { name: "Close editor options" })
+            .click();
         await expect(page.getByText("--NORMAL--")).toBeVisible();
         await editor.focus();
         await expect(editor).toBeFocused();
@@ -73,11 +83,56 @@ test.describe.serial("File editor Vim mode", () => {
 
         await page.reload();
         // Reload must restore the persisted keymap from the server.
+        await page.getByRole("button", { name: "Editor options" }).click();
         await expect(
             page.getByRole("button", { name: "Vim mode" }),
         ).toHaveAttribute("aria-pressed", "true");
+        await page
+            .getByRole("button", { name: "Close editor options" })
+            .click();
         await expect(page.getByText("--NORMAL--")).toBeVisible();
         await expect(page.getByLabel("File editor")).toHaveText("content1");
+    });
+
+    test("should persist line wrapping and apply it to the editor", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "wrap-lines.txt");
+        await fs.writeFile(filePath, "x".repeat(500));
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        // Long lines remain horizontally scrollable until the preference is enabled.
+        await expect(editor).toHaveAttribute("data-wrap-lines", "false");
+        await page.getByRole("button", { name: "Editor options" }).click();
+        const options = page.getByRole("dialog", { name: "Editor options" });
+        const wrapToggle = options.getByRole("button", { name: "Wrap lines" });
+        await expect(wrapToggle).toHaveAttribute("aria-pressed", "false");
+
+        await wrapToggle.click();
+        // The CodeMirror extension must update immediately rather than waiting for reload.
+        await expect(wrapToggle).toHaveAttribute("aria-pressed", "true");
+        await expect(editor).toHaveAttribute("data-wrap-lines", "true");
+
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        // Server readback proves wrapping follows the other persisted editor options.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ wrapEditorLines: true });
+
+        await page.reload();
+        // Reload must restore both the control state and the wrapping extension.
+        await expect(page.getByLabel("File editor")).toHaveAttribute(
+            "data-wrap-lines",
+            "true",
+        );
+        await page.getByRole("button", { name: "Editor options" }).click();
+        await expect(
+            page.getByRole("button", { name: "Wrap lines" }),
+        ).toHaveAttribute("aria-pressed", "true");
     });
 
     test("should open the terminal with Alt+t from Vim normal mode", async ({
@@ -89,7 +144,11 @@ test.describe.serial("File editor Vim mode", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
+        await page.getByRole("button", { name: "Editor options" }).click();
         await page.getByRole("button", { name: "Vim mode" }).click();
+        await page
+            .getByRole("button", { name: "Close editor options" })
+            .click();
         const editor = page.getByLabel("File editor");
         await expect(page.getByText("--NORMAL--")).toBeVisible();
         await editor.focus();
@@ -117,7 +176,11 @@ test.describe.serial("File editor Vim mode", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
+        await page.getByRole("button", { name: "Editor options" }).click();
         await page.getByRole("button", { name: "Vim mode" }).click();
+        await page
+            .getByRole("button", { name: "Close editor options" })
+            .click();
         const editor = page.getByLabel("File editor");
         await expect(page.getByText("--NORMAL--")).toBeVisible();
         await editor.focus();

@@ -1,7 +1,9 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
+import { MoreHorizontal } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import { getErrorMessage } from "#ui/components/browser/utils";
@@ -74,33 +76,53 @@ function FileEditActions(props: {
     );
 }
 
-/** Lives above the editor so the keymap can change without opening a settings page. */
-function VimModeToggle() {
+/** Keeps editor-specific preferences close to the surface they immediately affect. */
+function EditorOptionsMenu() {
     const [userState, setUserState] = useUserState();
 
     return (
-        <Tooltip
-            content={
-                userState.vimMode
-                    ? "Disable Vim keybindings"
-                    : "Enable Vim keybindings"
-            }
+        <ActionMenu
+            label="Editor options"
+            title="Editor options"
+            closeAriaLabel="Close editor options"
+            hideLabel
+            hideTitle={false}
+            icon={<MoreHorizontal className="h-4 w-4" />}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md p-0 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
         >
-            <span>
-                <Checkbox
-                    checked={userState.vimMode}
-                    label="Vim mode"
-                    onCheckedChange={(checked) => {
-                        setUserState((current) => ({
-                            ...current,
-                            vimMode: checked,
-                        }));
-                    }}
-                >
-                    Vim
-                </Checkbox>
-            </span>
-        </Tooltip>
+            {() => (
+                <>
+                    <Checkbox
+                        checked={userState.wrapEditorLines}
+                        label="Wrap lines"
+                        title={false}
+                        className="w-full px-3 py-2"
+                        onCheckedChange={(checked) => {
+                            setUserState((current) => ({
+                                ...current,
+                                wrapEditorLines: checked,
+                            }));
+                        }}
+                    >
+                        Wrap lines
+                    </Checkbox>
+                    <Checkbox
+                        checked={userState.vimMode}
+                        label="Vim mode"
+                        title={false}
+                        className="w-full px-3 py-2"
+                        onCheckedChange={(checked) => {
+                            setUserState((current) => ({
+                                ...current,
+                                vimMode: checked,
+                            }));
+                        }}
+                    >
+                        Vim mode
+                    </Checkbox>
+                </>
+            )}
+        </ActionMenu>
     );
 }
 
@@ -223,7 +245,7 @@ export function FileEditView(props: {
                                 onSave={handleSave}
                             />
                         </div>
-                        <VimModeToggle />
+                        <EditorOptionsMenu />
                     </div>
                 </header>
 
@@ -245,6 +267,7 @@ export function FileEditView(props: {
                             fileName={props.fileName}
                             editable={canEdit}
                             vimMode={userState.vimMode}
+                            wrapLines={userState.wrapEditorLines}
                             onChange={(nextContent) => {
                                 setDraft(nextContent);
                                 if (saveMutation.isSuccess) {
