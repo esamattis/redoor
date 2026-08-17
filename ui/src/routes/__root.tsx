@@ -46,7 +46,11 @@ import {
 import { userStateQueryOptions } from "#ui/user-state";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
 import { ThemeManager } from "#ui/components/theme-toggle";
-import { isTerminalInputTarget, isTextEntryElement } from "#ui/utils/keyboard";
+import {
+    isEditorInputTarget,
+    isTerminalInputTarget,
+    isTextEntryElement,
+} from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 import { emptyServerInfo } from "#ui/empty-server-info";
 import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
@@ -343,8 +347,10 @@ function RootLayout() {
             const activeElement = document.activeElement;
             if (
                 event.key === "Escape" &&
-                isTextEntryElement(activeElement) &&
-                !isTerminalInputTarget(activeElement)
+                (isTextEntryElement(activeElement) ||
+                    isEditorInputTarget(activeElement)) &&
+                !isTerminalInputTarget(activeElement) &&
+                activeElement instanceof HTMLElement
             ) {
                 event.preventDefault();
                 activeElement.blur();

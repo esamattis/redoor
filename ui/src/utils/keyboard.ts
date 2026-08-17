@@ -16,6 +16,14 @@ export function isTerminalInputTarget(target: EventTarget | null): boolean {
     );
 }
 
+/** Treats CodeMirror as text entry so Backspace cannot leave the page and drop a draft. */
+export function isEditorInputTarget(target: EventTarget | null): boolean {
+    return (
+        target instanceof Element &&
+        target.closest("[data-file-editor]") !== null
+    );
+}
+
 /** Keeps unmodified application shortcuts separate from browser and text-editing keys. */
 export function shouldIgnoreKeyboardShortcut(
     event: KeyboardEvent,
@@ -27,6 +35,7 @@ export function shouldIgnoreKeyboardShortcut(
         event.metaKey ||
         (options?.shift === true && event.shiftKey) ||
         isTextEntryElement(event.target) ||
-        isTerminalInputTarget(event.target)
+        isTerminalInputTarget(event.target) ||
+        isEditorInputTarget(event.target)
     );
 }

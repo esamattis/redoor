@@ -39,8 +39,17 @@ export default defineConfig({
     /* Configure projects for major browsers */
     projects: [
         {
+            // Server log history is a 500-line window; this file must run before
+            // the rest of the suite evicts the startup fixtures.
+            name: "chromium-early-logs",
+            use: { ...devices["Desktop Chrome"] },
+            testMatch: /server-logs\.spec\.ts/,
+        },
+        {
             name: "chromium",
             use: { ...devices["Desktop Chrome"] },
+            testIgnore: /server-logs\.spec\.ts/,
+            dependencies: ["chromium-early-logs"],
         },
 
         // {

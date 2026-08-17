@@ -136,12 +136,13 @@ function BrowserRouteShell(props: {
     entryType: "directory" | "file";
     activeView: "files" | "details" | "view" | "diff" | "sync";
     constrainContent?: boolean;
+    fillAvailableHeight?: boolean;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
     children: ReactNode;
 }) {
     return (
-        <div className="p-2 lg:p-4">
+        <div className="flex min-h-full flex-col p-2 lg:p-4">
             <BrowserHeader
                 agent={props.agent}
                 agentId={props.agentId}
@@ -153,9 +154,13 @@ function BrowserRouteShell(props: {
                 startEditingPath={props.startEditingPath}
             />
             <div
-                className={
+                className={`${
                     props.constrainContent ? "mx-auto max-w-6xl" : "w-full"
-                }
+                } ${
+                    props.fillAvailableHeight === true
+                        ? "flex min-h-0 flex-1 flex-col"
+                        : ""
+                }`}
             >
                 {props.children}
             </div>
@@ -238,6 +243,7 @@ function FileBrowser() {
                   : search.view === "edit"
                     ? "view"
                     : "details";
+        const isEditView = activeView === "view" && editable;
         const content =
             activeView === "diff" ? (
                 <FileDiffView
@@ -298,7 +304,8 @@ function FileBrowser() {
                 parentPath={parentPath}
                 entryType="file"
                 activeView={activeView}
-                constrainContent
+                constrainContent={!isEditView}
+                fillAvailableHeight={isEditView}
             >
                 {content}
             </BrowserRouteShell>

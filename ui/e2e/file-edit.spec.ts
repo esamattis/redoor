@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Locator } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -9,6 +9,17 @@ import {
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
+
+/** CodeMirror is contenteditable, so assertions use text content instead of input value. */
+async function expectEditorText(editor: Locator, text: string) {
+    await expect(editor).toHaveText(text);
+}
+
+/** Replaces the whole buffer without depending on CodeMirror class names. */
+async function fillEditor(editor: Locator, text: string) {
+    await editor.click();
+    await editor.fill(text);
+}
 
 test.describe.serial("File Edit View", () => {
     let ctx: TestContext;
@@ -55,8 +66,8 @@ test.describe.serial("File Edit View", () => {
         await page.getByRole("link", { name: "View", exact: true }).click();
 
         await expect(page).toHaveURL(/\?view=edit$/);
-        // The textarea should contain the on-disk contents so edits start from truth.
-        await expect(page.getByLabel("File editor")).toHaveValue("content1");
+        // The editor should contain the on-disk contents so edits start from truth.
+        await expectEditorText(page.getByLabel("File editor"), "content1");
         // The switch identifies View as the active file representation while editing.
         await expect(
             page
@@ -90,7 +101,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
         );
         const editor = page.getByLabel("File editor");
-        await expect(editor).toHaveValue("content1");
+        await expectEditorText(editor, "content1");
 
         const downloadsAfterOpen = rawGets.length;
         // Loader plus a StrictMode/preload duplicate may share one transfer or repeat it once.
@@ -116,7 +127,7 @@ test.describe.serial("File Edit View", () => {
         await detailsLink.click();
         await expect(detailsLink).toHaveAttribute("aria-current", "page");
         await viewLink.click();
-        await expect(editor).toHaveValue("content1");
+        await expectEditorText(editor, "content1");
 
         // Preload and remount must reuse the cached buffer instead of hitting /raw again.
         expect(rawGets.length).toBe(downloadsAfterOpen);
@@ -131,13 +142,13 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
         );
         const editor = page.getByLabel("File editor");
-        await expect(editor).toHaveValue("original buffer");
+        await expectEditorText(editor, "original buffer");
 
         await fs.writeFile(filePath, "changed on disk");
         await simulateTabRefocus(page);
 
         // A clean editor should pick up external writes after the user returns to the tab.
-        await expect(editor).toHaveValue("changed on disk");
+        await expectEditorText(editor, "changed on disk");
     });
 
     test("should keep unsaved edits when the tab is focused", async ({
@@ -149,14 +160,14 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
         );
         const editor = page.getByLabel("File editor");
-        await expect(editor).toHaveValue("original buffer");
-        await editor.fill("unsaved local edit");
+        await expectEditorText(editor, "original buffer");
+        await fillEditor(editor, "unsaved local edit");
 
         await fs.writeFile(filePath, "changed on disk");
         await simulateTabRefocus(page);
 
         // Dirty text must survive refocus so an external change cannot wipe in-progress edits.
-        await expect(editor).toHaveValue("unsaved local edit");
+        await expectEditorText(editor, "unsaved local edit");
     });
 
     test("should restore unsaved edits", async ({ page }) => {
@@ -165,15 +176,15 @@ test.describe.serial("File Edit View", () => {
         );
 
         const editor = page.getByLabel("File editor");
-        await expect(editor).toHaveValue("content1");
+        await expectEditorText(editor, "content1");
 
-        await editor.fill("temporary unsaved text");
-        await expect(editor).toHaveValue("temporary unsaved text");
+        await fillEditor(editor, "temporary unsaved text");
+        await expectEditorText(editor, "temporary unsaved text");
         // Restore must undo in-memory edits without writing to disk.
         await page
             .getByRole("button", { name: "Restore file contents" })
             .click();
-        await expect(editor).toHaveValue("content1");
+        await expectEditorText(editor, "content1");
     });
 
     test("should save edits to disk", async ({ page }) => {
@@ -183,9 +194,8 @@ test.describe.serial("File Edit View", () => {
         );
 
         const editor = page.getByLabel("File editor");
-        await expect(editor).toHaveValue("content1");
-        await editor.click();
-        await editor.fill("saved from ui");
+        await expectEditorText(editor, "content1");
+        await fillEditor(editor, "saved from ui");
         // Wait until React marks the buffer dirty so Save is actually clickable.
         await expect(
             page.getByRole("button", { name: "Save file" }),
@@ -295,5 +305,227 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("photo.bin");
+    });
+
+    test("should save edits with the conventional shortcut", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "shortcut-save.txt");
+        await fs.writeFile(filePath, "shortcut original");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "shortcut original");
+        await fillEditor(editor, "saved with shortcut");
+        // The shortcut must wait for a dirty buffer just like the Save button.
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+        await page.keyboard.press("ControlOrMeta+s");
+
+        // Status feedback confirms Mod-s used the same upload path as the button.
+        await expect(page.getByLabel("File edit status")).toHaveText("Saved");
+        // Polling the filesystem verifies the shortcut actually replaced remote bytes.
+        await expect
+            .poll(async () => fs.readFile(filePath, "utf8"))
+            .toBe("saved with shortcut");
+    });
+
+    test("should expose the save shortcut on the Save control", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}?view=edit`,
+        );
+
+        await expect(page.getByLabel("File editor")).toBeVisible();
+        await page.getByRole("button", { name: "Save file" }).hover();
+        // The tooltip keeps the accessible name as Save file while advertising Ctrl+S.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Save file (Ctrl+S)",
+        );
+    });
+
+    test("should open shell-style files in the file editor", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, ".bashrc");
+        await fs.writeFile(filePath, "export FOO=1");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        // Filename-based shell mapping must still produce an editable File editor.
+        await expect(page.getByLabel("File editor")).toBeVisible();
+        await expectEditorText(page.getByLabel("File editor"), "export FOO=1");
+    });
+
+    test("should keep the editor focused draft when Backspace is pressed", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "backspace-guard.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "original buffer");
+        await fillEditor(editor, "keep this draft");
+        await editor.click();
+        await page.keyboard.press("Home");
+        await page.keyboard.press("Backspace");
+
+        // CodeMirror is contenteditable; Backspace must edit text, not leave the file.
+        await expect(page).toHaveURL(/\?view=edit$/);
+        await expect(
+            page.getByRole("dialog", { name: "Discard unsaved changes?" }),
+        ).toBeHidden();
+        await expectEditorText(editor, "keep this draft");
+    });
+
+    test("should keep unsaved edits when in-app navigation is cancelled", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "leave-cancel.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "original buffer");
+        await fillEditor(editor, "keep this draft");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+
+        await page
+            .getByLabel("File view")
+            .getByRole("link", { name: "Details", exact: true })
+            .click();
+
+        const confirmDialog = page.getByRole("dialog", {
+            name: "Discard unsaved changes?",
+        });
+        // In-app links must not drop the draft without an explicit confirm.
+        await expect(confirmDialog).toBeVisible();
+        await confirmDialog.getByRole("button", { name: "Cancel" }).click();
+        await expect(confirmDialog).toBeHidden();
+        await expect(page).toHaveURL(/\?view=edit$/);
+        await expectEditorText(editor, "keep this draft");
+    });
+
+    test("should discard unsaved edits when leaving is confirmed", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "leave-confirm.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "original buffer");
+        await fillEditor(editor, "throw this draft away");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+
+        await page
+            .getByLabel("File view")
+            .getByRole("link", { name: "Details", exact: true })
+            .click();
+
+        const confirmDialog = page.getByRole("dialog", {
+            name: "Discard unsaved changes?",
+        });
+        await expect(confirmDialog).toBeVisible();
+        await confirmDialog
+            .getByRole("button", { name: "Discard changes" })
+            .click();
+
+        // Confirming leave must complete the Details navigation after the user accepts data loss.
+        await expect(confirmDialog).toBeHidden();
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "Details", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+        await expect
+            .poll(async () => fs.readFile(filePath, "utf8"))
+            .toBe("original buffer");
+    });
+
+    test("should allow navigation after restoring unsaved edits", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "leave-after-restore.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await fillEditor(editor, "temporary draft");
+        await page
+            .getByRole("button", { name: "Restore file contents" })
+            .click();
+        await expectEditorText(editor, "original buffer");
+
+        await page
+            .getByLabel("File view")
+            .getByRole("link", { name: "Details", exact: true })
+            .click();
+
+        // A clean buffer must not prompt, otherwise Restore would not actually clear the guard.
+        await expect(
+            page.getByRole("dialog", { name: "Discard unsaved changes?" }),
+        ).toBeHidden();
+        await expect(
+            page
+                .getByLabel("File view")
+                .getByRole("link", { name: "Details", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+    });
+
+    test("should warn before reload when the editor is dirty", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "reload-guard.txt");
+        await fs.writeFile(filePath, "original buffer");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "original buffer");
+        await fillEditor(editor, "do not lose this");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+
+        // Playwright auto-accepts beforeunload, so assert the same window listener the browser uses.
+        const dirtyReloadBlocked = await page.evaluate(() => {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event.defaultPrevented;
+        });
+        expect(dirtyReloadBlocked).toBe(true);
+        await expectEditorText(editor, "do not lose this");
+
+        await page
+            .getByRole("button", { name: "Restore file contents" })
+            .click();
+        await expectEditorText(editor, "original buffer");
+        const cleanReloadBlocked = await page.evaluate(() => {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event.defaultPrevented;
+        });
+        // A clean buffer must not trap refresh or tab close.
+        expect(cleanReloadBlocked).toBe(false);
     });
 });

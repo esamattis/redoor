@@ -34,7 +34,7 @@ export function useEditorRefreshRegistration(state: EditorRefreshState) {
 }
 
 /**
- * Reloads ls/metadata, and the editor buffer only when the textarea is still clean.
+ * Reloads ls/metadata, and the editor buffer only when the editor is still clean.
  * Window focus and the More menu share this so dirty edits are never overwritten.
  */
 export async function refreshBrowserPath(options: {
