@@ -1,6 +1,7 @@
 import React from "react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { copilot } from "@uiw/codemirror-theme-copilot";
+import { bbedit } from "@uiw/codemirror-theme-bbedit";
+import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { search } from "@codemirror/search";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -11,6 +12,7 @@ import {
 } from "#ui/components/browser/editor-search";
 import { languageFromFileName } from "#ui/utils/editor-language";
 import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
+import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 
 /** Lets :w call the current save handler without re-registering the global ex command. */
 const vimWriteRef = { current: () => {} };
@@ -34,6 +36,7 @@ export function CodeEditor(props: {
     onFocus: () => void;
     onSave: () => void;
 }) {
+    const resolvedTheme = useResolvedTheme();
     const onSaveRef = React.useRef(props.onSave);
     onSaveRef.current = props.onSave;
     /** Saves without leaving CodeMirror so Mod-s and :w cannot dump the user into chrome. */
@@ -85,6 +88,9 @@ export function CodeEditor(props: {
             EditorView.theme({
                 "&": {
                     height: "100%",
+                },
+                "&.cm-focused": {
+                    outline: "none",
                 },
                 ".cm-scroller": {
                     overflow: "auto",
@@ -182,7 +188,7 @@ export function CodeEditor(props: {
                     value={props.value}
                     height="100%"
                     width="100%"
-                    theme={copilot}
+                    theme={resolvedTheme === "light" ? bbedit : tokyoNight}
                     editable={props.editable}
                     basicSetup={{ searchKeymap: false }}
                     extensions={extensions}
