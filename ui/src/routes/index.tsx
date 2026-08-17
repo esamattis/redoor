@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useAtom } from "jotai";
 import {
     AppWindow,
     FileCode2,
     Globe2,
     HardDrive,
     KeyRound,
+    PanelRightOpen,
     Server,
 } from "lucide-react";
 
@@ -15,6 +17,9 @@ import {
     CopyableCodeRow,
     CopyablePath,
 } from "#ui/components/copyable-code-row";
+import { Tooltip } from "#ui/components/tooltip";
+import { openSideMenuAtom } from "#ui/side-menu-state";
+import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -63,6 +68,30 @@ function PathField(props: {
     );
 }
 
+/** Maps lifecycle and diagnostics onto the three colors the home chips can show. */
+function agentStatusDotClass(agent: Agent): string {
+    if (agent.connectionIssue) {
+        return "bg-red-500";
+    }
+    if (agent.status === "connected") {
+        return "bg-emerald-500";
+    }
+    return "bg-amber-400";
+}
+
+/** Distinguishes TOML-owned local/SSH agents from observation-only remotes. */
+function agentOriginTooltip(agent: Agent): string {
+    if (!agent.managed) {
+        return "Remote";
+    }
+    if (agent.configurationEditable) {
+        return agent.sshTarget
+            ? `Managed, ssh ${agent.sshTarget}`
+            : "Managed, ssh";
+    }
+    return "Managed, local";
+}
+
 /** Packs known agent names into a dense wrap so several fit on one home row. */
 function AgentNameGrid(props: { agents: Agent[] }) {
     const sortedAgents = [...props.agents].sort(
@@ -79,18 +108,53 @@ function AgentNameGrid(props: { agents: Agent[] }) {
             ) : (
                 <div className="flex flex-wrap gap-1.5">
                     {sortedAgents.map((agent) => (
-                        <Link
+                        <Tooltip
                             key={agent.id}
-                            to="/agents/$agentId"
-                            params={{ agentId: agent.id }}
-                            className="rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm text-slate-200 hover:border-slate-600 hover:bg-white/5"
+                            content={agentOriginTooltip(agent)}
                         >
-                            {agent.name}
-                        </Link>
+                            <Link
+                                to="/agents/$agentId"
+                                params={{ agentId: agent.id }}
+                                className="inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm text-slate-200 hover:border-slate-600 hover:bg-white/5"
+                            >
+                                <span
+                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${agentStatusDotClass(agent)}`}
+                                    aria-hidden="true"
+                                />
+                                {agent.name}
+                            </Link>
+                        </Tooltip>
                     ))}
                 </div>
             )}
+            <OpenAgentSidebarButton />
         </section>
+    );
+}
+
+/** Offers the agent drawer only when the persistent right sidebar is not already on screen. */
+function OpenAgentSidebarButton() {
+    const canToggleSidebar = useIsBelowBreakpoint("xl");
+    const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
+    if (!canToggleSidebar) {
+        return null;
+    }
+
+    return (
+        <Tooltip content="Open agent sidebar">
+            <button
+                type="button"
+                aria-label="Open agent sidebar"
+                aria-haspopup="dialog"
+                aria-controls="agent-menu-drawer"
+                aria-expanded={openMenu === "agents"}
+                onClick={() => setOpenMenu("agents")}
+                className="mt-2 inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm text-slate-200 hover:border-slate-600 hover:bg-white/5"
+            >
+                <PanelRightOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                Agent menu
+            </button>
+        </Tooltip>
     );
 }
 

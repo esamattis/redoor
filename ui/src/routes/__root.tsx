@@ -8,7 +8,7 @@ import {
     useRouterState,
     createRootRouteWithContext,
 } from "@tanstack/react-router";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { ArrowUpDown, Files, SquareTerminal, X } from "lucide-react";
@@ -60,6 +60,7 @@ import {
     bottomDrawerActivationAtom,
     type BottomDrawerTabId,
 } from "#ui/bottom-drawer-state";
+import { openSideMenuAtom } from "#ui/side-menu-state";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -247,9 +248,7 @@ function RootLayout() {
     const location = useLocation();
     const router = useRouter();
     const { api, queryClient } = Route.useRouteContext();
-    const [openMenu, setOpenMenu] = React.useState<
-        "application" | "agents" | null
-    >(null);
+    const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
     const applicationMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const agentMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const { data: transferProgress } = useQuery({

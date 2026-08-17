@@ -205,6 +205,11 @@ server = "${serverProtocol}//${browserUrl.host}"
         await expect(appName).toBeVisible();
         await expect(serverHeading).toBeVisible();
 
+        // The persistent desktop sidebar already shows agents, so no extra drawer control.
+        await expect(
+            page.getByRole("button", { name: "Open agent sidebar" }),
+        ).toHaveCount(0);
+
         // Several names share a row instead of stacking as a single-column list.
         const firstBox = await firstAgent.boundingBox();
         const secondBox = await secondAgent.boundingBox();
@@ -218,6 +223,28 @@ server = "${serverProtocol}//${browserUrl.host}"
         await expect(
             page.getByRole("heading", { name: "Agent name" }),
         ).toContainText("agent1_src");
+    });
+
+    test("opens the agent sidebar from the home agent list on narrow viewports", async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const agentNames = page.getByRole("region", { name: "Agent names" });
+        const openSidebar = agentNames.getByRole("button", {
+            name: "Open agent sidebar",
+        });
+        // The persistent right sidebar is gone, so the list must expose a drawer control.
+        await expect(openSidebar).toBeVisible();
+        await openSidebar.click();
+
+        const agentMenu = page.getByRole("dialog", { name: "Agent menu" });
+        // The home control must open the same drawer as the top-bar trigger.
+        await expect(agentMenu).toBeVisible();
+        await expect(
+            agentMenu.getByRole("navigation", { name: "Agents" }),
+        ).toBeVisible();
     });
 });
 
