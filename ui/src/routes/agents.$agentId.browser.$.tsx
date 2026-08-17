@@ -279,7 +279,9 @@ function FileBrowser() {
                     fileName={fileName}
                     filePath={lsResult.path}
                     mimeType={data.metadata?.mime_type ?? "text/plain"}
-                    downloadUrl={downloadUrl}
+                    downloadUrl={agent.getRawUrl(lsResult.path, {
+                        download: true,
+                    })}
                 />
             ) : activeView === "view" && viewableImage ? (
                 <FileImageView

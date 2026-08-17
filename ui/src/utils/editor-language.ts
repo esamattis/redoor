@@ -44,7 +44,10 @@ const SHELL_BASENAMES = new Set([
  * Chooses a CodeMirror language from basename + extension, not MIME.
  * Unknown names stay unhighlighted so every editable file remains writable.
  */
-export function languageFromFileName(fileName: string): Extension | undefined {
+export function languageFromFileName(
+    fileName: string,
+    content = "",
+): Extension | undefined {
     const baseName = fileName.split("/").pop() ?? fileName;
     const lowerName = baseName.toLowerCase();
 
@@ -62,7 +65,7 @@ export function languageFromFileName(fileName: string): Extension | undefined {
 
     const lastDot = lowerName.lastIndexOf(".");
     if (lastDot <= 0) {
-        return undefined;
+        return languageFromHashBang(content);
     }
 
     switch (lowerName.slice(lastDot + 1)) {
@@ -138,4 +141,58 @@ export function languageFromFileName(fileName: string): Extension | undefined {
         default:
             return undefined;
     }
+}
+
+/** Uses an extensionless script's interpreter as the syntax-highlighting fallback. */
+function languageFromHashBang(content: string): Extension | undefined {
+    const firstLineEnd = content.indexOf("\n");
+    const firstLine = content.slice(
+        0,
+        firstLineEnd === -1 ? content.length : firstLineEnd,
+    );
+    const match = /^#!\s*(.+)$/.exec(firstLine);
+    if (match === null) {
+        return undefined;
+    }
+
+    const command = match[1];
+    if (command === undefined) {
+        return undefined;
+    }
+    const parts = command.trim().split(/\s+/);
+    let interpreter = parts[0]?.split("/").pop()?.toLowerCase();
+    if (interpreter === "env") {
+        interpreter = parts
+            .slice(1)
+            .find((part) => !part.startsWith("-") && !part.includes("="))
+            ?.split("/")
+            .pop()
+            ?.toLowerCase();
+    }
+
+    if (interpreter === undefined) {
+        return undefined;
+    }
+    if (["sh", "bash", "zsh", "ksh", "dash", "ash"].includes(interpreter)) {
+        return StreamLanguage.define(shell);
+    }
+    if (interpreter.startsWith("python")) {
+        return python();
+    }
+    if (interpreter === "ruby") {
+        return StreamLanguage.define(ruby);
+    }
+    if (interpreter === "perl") {
+        return StreamLanguage.define(perl);
+    }
+    if (interpreter === "lua") {
+        return StreamLanguage.define(lua);
+    }
+    if (["ts-node", "tsx"].includes(interpreter)) {
+        return javascript({ typescript: true });
+    }
+    if (["node", "nodejs", "deno", "bun"].includes(interpreter)) {
+        return javascript();
+    }
+    return undefined;
 }

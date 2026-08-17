@@ -31,6 +31,7 @@ export function CodeEditor(props: {
     vimMode: boolean;
     wrapLines: boolean;
     onChange: (value: string) => void;
+    onFocus: () => void;
     onSave: () => void;
 }) {
     const onSaveRef = React.useRef(props.onSave);
@@ -43,11 +44,24 @@ export function CodeEditor(props: {
     vimWriteRef.current = saveFromEditor;
     const editorRef = React.useRef<ReactCodeMirrorRef>(null);
     const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
+    const onFocusRef = React.useRef(props.onFocus);
+    onFocusRef.current = props.onFocus;
+    const hasReceivedFocusRef = React.useRef(false);
     const [view, setView] = React.useState<EditorView | null>(null);
     const [documentRevision, setDocumentRevision] = React.useState(0);
+    const firstLineEnd = props.value.indexOf("\n");
+    const firstLine = props.value.slice(
+        0,
+        firstLineEnd === -1 ? props.value.length : firstLineEnd,
+    );
+    const baseName = props.fileName.split("/").pop() ?? props.fileName;
+    const languageContent =
+        baseName.lastIndexOf(".") <= 0 && firstLine.startsWith("#!")
+            ? firstLine
+            : "";
 
     const extensions = React.useMemo(() => {
-        const language = languageFromFileName(props.fileName);
+        const language = languageFromFileName(props.fileName, languageContent);
         return [
             ...(props.vimMode ? [vim({ status: true })] : []), // Vim must precede other keymaps so normal-mode keys win.
             ...(props.wrapLines ? [EditorView.lineWrapping] : []),
@@ -57,6 +71,16 @@ export function CodeEditor(props: {
                 "data-file-editor": "",
                 "data-vim-mode": props.vimMode ? "true" : "false",
                 "data-wrap-lines": props.wrapLines ? "true" : "false",
+            }),
+            EditorView.domEventHandlers({
+                focus: () => {
+                    // The initial load is already fresh, so only later focus entries refetch.
+                    if (hasReceivedFocusRef.current) {
+                        onFocusRef.current();
+                    } else {
+                        hasReceivedFocusRef.current = true;
+                    }
+                },
             }),
             EditorView.theme({
                 "&": {
@@ -109,7 +133,7 @@ export function CodeEditor(props: {
             ),
             ...(language === undefined ? [] : [language]),
         ];
-    }, [props.fileName, props.vimMode, props.wrapLines]);
+    }, [languageContent, props.fileName, props.vimMode, props.wrapLines]);
 
     React.useEffect(() => {
         if (view === null) {
