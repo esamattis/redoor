@@ -36,4 +36,14 @@ print('hello')`,
         // Unknown text remains editable without installing an incorrect parser.
         expect(extension).toBeUndefined();
     });
+
+    test.each(["notes.md", "notes.markdown"])(
+        "highlights %s as markdown with fenced code languages",
+        (fileName) => {
+            const extension = languageFromFileName(fileName);
+
+            // Markdown files need the nested fence parsers, not an unknown-text fallback.
+            expect(extension).toBeDefined();
+        },
+    );
 });

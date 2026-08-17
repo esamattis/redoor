@@ -5,11 +5,13 @@ import { html } from "@codemirror/lang-html";
 import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { rust } from "@codemirror/lang-rust";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
 import { StreamLanguage } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
 import { lua } from "@codemirror/legacy-modes/mode/lua";
 import { perl } from "@codemirror/legacy-modes/mode/perl";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
@@ -107,6 +109,13 @@ export function languageFromFileName(
             return xml();
         case "css":
             return css();
+        case "md":
+        case "markdown":
+            // Nested parsers highlight fenced blocks from the language tag.
+            return markdown({
+                base: markdownLanguage,
+                codeLanguages: languages,
+            });
         case "java":
             return java();
         case "sh":
