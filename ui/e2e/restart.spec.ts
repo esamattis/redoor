@@ -44,15 +44,21 @@ test.describe("Restart", () => {
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();
         // Agents in the right menu prove the suite's external processes are connected before restart.
+        const agentNavigation = page.getByRole("navigation", {
+            name: "Agents",
+        });
         await expect(
-            page.getByRole("link", { name: /agent1_src/ }),
+            agentNavigation.getByRole("link", { name: /agent1_src/ }),
         ).toBeVisible();
         await expect(
-            page.getByRole("link", { name: /agent2_custom/ }),
+            agentNavigation.getByRole("link", { name: /agent2_custom/ }),
         ).toBeVisible();
 
-        // Restart is available directly alongside server identity details.
-        await page.getByRole("button", { name: "Restart" }).click();
+        // Restart lives in the left application menu so it stays available on every page.
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("button", { name: "Restart server" })
+            .click();
         const dialog = page.getByRole("dialog", { name: "Restart server?" });
         await expect(dialog).toBeVisible();
         await dialog.getByRole("button", { name: "Restart" }).click();
@@ -73,14 +79,16 @@ test.describe("Restart", () => {
             page.getByRole("heading", { name: "Server", exact: true }),
         ).toBeVisible();
         await expect(
-            page.getByRole("link", { name: /agent1_src/ }),
+            agentNavigation.getByRole("link", { name: /agent1_src/ }),
         ).toBeVisible({ timeout: 30_000 });
         await expect(
-            page.getByRole("link", { name: /agent2_custom/ }),
+            agentNavigation.getByRole("link", { name: /agent2_custom/ }),
         ).toBeVisible({ timeout: 30_000 });
         // Self-exec recreates TOML inventory as dormant rather than eagerly restarting children.
         await expect(
-            page.getByRole("link", { name: "lazy_managed, stopped" }),
+            agentNavigation.getByRole("link", {
+                name: "lazy_managed, stopped",
+            }),
         ).toBeVisible({ timeout: 30_000 });
     });
 

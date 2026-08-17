@@ -374,6 +374,7 @@ function RootLayout() {
                 triggerRef={applicationMenuTriggerRef}
                 onClose={() => setOpenMenu(null)}
                 onLogout={() => logoutMutation.mutate()}
+                api={api}
             />
             <OverlayChromeLayout
                 topChrome={

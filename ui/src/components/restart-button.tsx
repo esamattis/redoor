@@ -15,6 +15,8 @@ export function RestartButton(props: {
     description: React.ReactNode;
     restart: () => Promise<unknown>;
     waitUntilReady: () => Promise<void>;
+    className?: string;
+    ariaLabel?: string;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
     const restartMutation = useMutation({
@@ -33,19 +35,27 @@ export function RestartButton(props: {
         restartMutation.reset();
     };
 
+    const button = (
+        <button
+            type="button"
+            aria-label={props.ariaLabel}
+            onClick={() => {
+                restartMutation.reset();
+                setIsOpen(true);
+            }}
+            className={
+                props.className ??
+                "inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
+            }
+        >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            Restart
+        </button>
+    );
+
     return (
         <>
-            <button
-                type="button"
-                onClick={() => {
-                    restartMutation.reset();
-                    setIsOpen(true);
-                }}
-                className="inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
-            >
-                <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                Restart
-            </button>
+            {button}
             <ConfirmationDialog
                 isOpen={isOpen}
                 title={`Restart ${props.target}?`}

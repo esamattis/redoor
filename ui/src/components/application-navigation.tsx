@@ -1,4 +1,5 @@
-import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { Link, useRouter } from "@tanstack/react-router";
 import {
     ArrowLeftRight,
     Home,
@@ -9,7 +10,10 @@ import {
 } from "lucide-react";
 import type * as React from "react";
 
+import type { ApiClient } from "#ui/api-client";
+import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { SideMenu } from "#ui/components/side-menu";
+import { serverInfoQueryOptions } from "#ui/queries";
 
 /** Places application-level destinations in the shared left-side presentation. */
 export function ApplicationNavigation(props: {
@@ -19,6 +23,7 @@ export function ApplicationNavigation(props: {
     triggerRef: React.RefObject<HTMLButtonElement | null>;
     onClose: () => void;
     onLogout: () => void;
+    api: ApiClient;
 }) {
     return (
         <SideMenu
@@ -33,6 +38,7 @@ export function ApplicationNavigation(props: {
             <ApplicationMenu
                 pathname={props.pathname}
                 isLoggingOut={props.isLoggingOut}
+                api={props.api}
                 onClose={props.onClose}
                 onLogout={props.onLogout}
             />
@@ -40,13 +46,16 @@ export function ApplicationNavigation(props: {
     );
 }
 
-/** Shares application destinations and the account action between desktop and mobile menus. */
+/** Shares application destinations, server restart, and logout between desktop and mobile menus. */
 function ApplicationMenu(props: {
     pathname: string;
     isLoggingOut: boolean;
+    api: ApiClient;
     onClose: () => void;
     onLogout: () => void;
 }) {
+    const router = useRouter();
+    const queryClient = useQueryClient();
     const menuItems = [
         { to: "/", label: "Home", ariaLabel: "Server home", icon: Home },
         {
@@ -93,25 +102,54 @@ function ApplicationMenu(props: {
                     </Link>
                 );
             })}
-            <button
-                type="button"
-                onClick={props.onLogout}
-                disabled={props.isLoggingOut}
-                className="mt-auto flex items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
-            >
-                {props.isLoggingOut ? (
-                    <LoaderCircle
-                        className="h-4 w-4 shrink-0 animate-spin text-slate-400"
-                        aria-hidden="true"
-                    />
-                ) : (
-                    <LogOut
-                        className="h-4 w-4 shrink-0 text-slate-400"
-                        aria-hidden="true"
-                    />
-                )}
-                {props.isLoggingOut ? "Logging out…" : "Log out"}
-            </button>
+            <div className="mt-auto flex flex-col gap-1">
+                <RestartButton
+                    target="server"
+                    ariaLabel="Restart server"
+                    className="flex w-full items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                    description="The server will restart and re-read its configuration. Connected agents reconnect automatically. In-flight transfers and terminals are interrupted."
+                    restart={() => props.api.restartServer()}
+                    waitUntilReady={() => {
+                        let oldServerClosed = false;
+                        return waitForRestart(async () => {
+                            try {
+                                await queryClient.fetchQuery({
+                                    ...serverInfoQueryOptions(props.api),
+                                    staleTime: 0,
+                                });
+                            } catch (error) {
+                                oldServerClosed = true;
+                                throw error;
+                            }
+                            if (!oldServerClosed) {
+                                throw new Error(
+                                    "Old server is still shutting down",
+                                );
+                            }
+                            await router.invalidate();
+                        }, "Server did not come back after restart");
+                    }}
+                />
+                <button
+                    type="button"
+                    onClick={props.onLogout}
+                    disabled={props.isLoggingOut}
+                    className="flex w-full items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+                >
+                    {props.isLoggingOut ? (
+                        <LoaderCircle
+                            className="h-4 w-4 shrink-0 animate-spin text-slate-400"
+                            aria-hidden="true"
+                        />
+                    ) : (
+                        <LogOut
+                            className="h-4 w-4 shrink-0 text-slate-400"
+                            aria-hidden="true"
+                        />
+                    )}
+                    {props.isLoggingOut ? "Logging out…" : "Log out"}
+                </button>
+            </div>
         </nav>
     );
 }

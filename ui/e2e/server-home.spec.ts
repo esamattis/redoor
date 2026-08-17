@@ -176,6 +176,49 @@ server = "${serverProtocol}//${browserUrl.host}"
         // Omitting both options preserves hostname naming and conventional file logging defaults.
         expect(expectedConfig).not.toMatch(/^(name|log)\s*=/m);
     });
+
+    test("lists agent names in a compact grid before server details", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const agentNames = page.getByRole("region", { name: "Agent names" });
+        const serverHeading = page.getByRole("heading", {
+            name: "Server",
+            exact: true,
+        });
+        const appName = page.getByRole("heading", { name: "App name" });
+        const firstAgent = agentNames.getByRole("link", {
+            name: "agent1_src",
+            exact: true,
+        });
+        const secondAgent = agentNames.getByRole("link", {
+            name: "agent2_custom",
+            exact: true,
+        });
+
+        // Names sit above identity details so operators can jump to an agent first.
+        const agentBox = await agentNames.boundingBox();
+        const appNameBox = await appName.boundingBox();
+        expect(agentBox?.y ?? 1).toBeLessThan(appNameBox?.y ?? 0);
+        // App name is a card section rather than a badge beside the Server heading.
+        await expect(appName).toBeVisible();
+        await expect(serverHeading).toBeVisible();
+
+        // Several names share a row instead of stacking as a single-column list.
+        const firstBox = await firstAgent.boundingBox();
+        const secondBox = await secondAgent.boundingBox();
+        expect(Math.abs((firstBox?.y ?? 0) - (secondBox?.y ?? 1))).toBeLessThan(
+            8,
+        );
+
+        await firstAgent.click();
+        // A name is a shortcut to that agent's own home.
+        await expect(page).toHaveURL(/\/agents\/[^/]+$/);
+        await expect(
+            page.getByRole("heading", { name: "Agent name" }),
+        ).toContainText("agent1_src");
+    });
 });
 
 /** Reads the measured overlay inset used to keep page content above the drawer. */

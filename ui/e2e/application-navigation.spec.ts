@@ -20,9 +20,14 @@ test.describe("Application navigation", () => {
         const agentBox = await agentNavigation.boundingBox();
         // Physical placement matches each menu's application and agent responsibilities.
         expect(applicationBox?.x ?? 1).toBeLessThan(agentBox?.x ?? 0);
+        const restartBox = await applicationNavigation
+            .getByRole("button", { name: "Restart server" })
+            .boundingBox();
         const logoutBox = await applicationNavigation
             .getByRole("button", { name: "Log out" })
             .boundingBox();
+        // Process restart sits just above logout so account actions remain last.
+        expect(restartBox?.y ?? 1).toBeLessThan(logoutBox?.y ?? 0);
         // Account actions stay anchored near the bottom edge of the full-height sidebar.
         expect((logoutBox?.y ?? 0) + (logoutBox?.height ?? 0)).toBeGreaterThan(
             680,
