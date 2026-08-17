@@ -109,4 +109,30 @@ test.describe.serial("File editor Vim mode", () => {
         await expect(editor).toBeFocused();
         await expect(page.getByText("--NORMAL--")).toBeVisible();
     });
+
+    test("should keep editor focus after :w", async ({ page }) => {
+        const filePath = path.join(ctx.testDirPath, "vim-write.txt");
+        await fs.writeFile(filePath, "content1");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        await page.getByRole("button", { name: "Vim mode" }).click();
+        const editor = page.getByLabel("File editor");
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+        await editor.focus();
+        await page.keyboard.press("i");
+        await page.keyboard.type("x");
+        await page.keyboard.press("Escape");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+
+        await page.keyboard.type(":w");
+        await page.keyboard.press("Enter");
+        await expect(page.getByLabel("File edit status")).toHaveText("Saved");
+        // :w must not bounce focus to chrome, or the next Vim motion leaves the buffer.
+        await expect(editor).toBeFocused();
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+    });
 });

@@ -30,7 +30,9 @@ function FileEditActions(props: {
                     type="button"
                     aria-label="Save file"
                     onClick={props.onSave}
-                    disabled={!props.canEdit || !props.isDirty}
+                    disabled={
+                        !props.canEdit || !props.isDirty || props.isSaving
+                    }
                     className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     {props.isSaving ? "Saving..." : "Save"}
@@ -41,7 +43,9 @@ function FileEditActions(props: {
                     type="button"
                     aria-label="Restore file contents"
                     onClick={props.onRestore}
-                    disabled={!props.canEdit || !props.isDirty}
+                    disabled={
+                        !props.canEdit || !props.isDirty || props.isSaving
+                    }
                     className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     Restore
@@ -124,13 +128,17 @@ export function FileEditView(props: {
                 fileContentQueryOptions(props.agent, props.filePath).queryKey,
                 nextContent,
             );
-            setDraft(null);
+            // Keep a newer draft so a save cannot wipe keystrokes typed during the upload.
+            setDraft((current) =>
+                current === null || current === nextContent ? null : current,
+            );
         },
     });
     const savedContent = contentQuery.data ?? "";
     const content = draft ?? savedContent;
     const isDirty = draft !== null && draft !== savedContent;
-    const canEdit = contentQuery.isSuccess && !saveMutation.isPending;
+    // Saving must not flip CodeMirror read-only, or Mod-s and :w steal editor focus.
+    const canEdit = contentQuery.isSuccess;
 
     useEditorRefreshRegistration({
         agentId: props.agent.id,
@@ -140,7 +148,7 @@ export function FileEditView(props: {
     const navigationBlocker = useUnsavedEditorNavigationGuard(isDirty);
 
     const handleRestore = () => {
-        if (!canEdit) {
+        if (!canEdit || saveMutation.isPending) {
             return;
         }
         setDraft(null);
@@ -148,7 +156,7 @@ export function FileEditView(props: {
     };
 
     const handleSave = React.useCallback(() => {
-        if (!canEdit || !isDirty) {
+        if (!canEdit || saveMutation.isPending || !isDirty) {
             return;
         }
         saveMutation.mutate(content);

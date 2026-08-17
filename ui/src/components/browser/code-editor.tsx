@@ -34,7 +34,12 @@ export function CodeEditor(props: {
 }) {
     const onSaveRef = React.useRef(props.onSave);
     onSaveRef.current = props.onSave;
-    vimWriteRef.current = props.onSave;
+    /** Saves without leaving CodeMirror so Mod-s and :w cannot dump the user into chrome. */
+    const saveFromEditor = () => {
+        onSaveRef.current();
+        editorRef.current?.view?.focus();
+    };
+    vimWriteRef.current = saveFromEditor;
     const editorRef = React.useRef<ReactCodeMirrorRef>(null);
     const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const [view, setView] = React.useState<EditorView | null>(null);
@@ -64,6 +69,7 @@ export function CodeEditor(props: {
                         key: "Mod-s",
                         run: () => {
                             onSaveRef.current();
+                            editorRef.current?.view?.focus();
                             return true;
                         },
                     },

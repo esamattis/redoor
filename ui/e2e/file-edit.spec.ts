@@ -381,6 +381,8 @@ test.describe.serial("File Edit View", () => {
         await expect
             .poll(async () => fs.readFile(filePath, "utf8"))
             .toBe("saved with shortcut");
+        // Mod-s must leave the caret in CodeMirror so the next keystroke still edits.
+        await expect(editor).toBeFocused();
     });
 
     test("should expose the save shortcut on the Save control", async ({
