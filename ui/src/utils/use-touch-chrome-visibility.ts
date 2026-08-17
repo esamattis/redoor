@@ -10,6 +10,7 @@ export function useTouchChromeVisibility() {
     const touchStartScrollTopRef = React.useRef<number | null>(null);
     const isTouchActiveRef = React.useRef(false);
     const isScrollingRef = React.useRef(false);
+    const canHideChromeOnScrollRef = React.useRef(false);
     const scrollStopTimerRef = React.useRef<number | null>(null);
     const restoreTimerRef = React.useRef<number | null>(null);
 
@@ -27,24 +28,46 @@ export function useTouchChromeVisibility() {
         );
         // Keep endpoint space synchronized with overlay chrome as panels and responsive content resize.
         const updateScrollInsets = () => {
+            const topHeight = topChrome.offsetHeight;
+            const bottomHeight = (bottomPanel ?? bottomChrome).offsetHeight;
             scrollArea.style.setProperty(
                 "--top-chrome-height",
-                `${topChrome.offsetHeight}px`,
+                `${topHeight}px`,
             );
             scrollArea.style.setProperty(
                 "--bottom-chrome-height",
-                `${(bottomPanel ?? bottomChrome).offsetHeight}px`,
+                `${bottomHeight}px`,
             );
+            // The hide transform cannot use 100% because the expanded panel overflows this compact slot.
+            bottomChrome.style.setProperty(
+                "--bottom-chrome-height",
+                `${bottomHeight}px`,
+            );
+            // Auto-hide is only useful when overlays already leave less than half the viewport.
+            const viewportHeight = scrollArea.clientHeight;
+            canHideChromeOnScrollRef.current =
+                viewportHeight > 0 &&
+                viewportHeight - topHeight - bottomHeight <
+                    viewportHeight * 0.5;
         };
         const resizeObserver = new ResizeObserver(updateScrollInsets);
         resizeObserver.observe(topChrome);
         resizeObserver.observe(bottomChrome);
+        resizeObserver.observe(scrollArea);
         if (bottomPanel) {
             resizeObserver.observe(bottomPanel);
         }
         updateScrollInsets();
         return () => resizeObserver.disconnect();
     }, []);
+
+    /** Slides chrome away only when the remaining content viewport is already cramped. */
+    const hideChromeIfCrowded = () => {
+        if (!canHideChromeOnScrollRef.current) {
+            return;
+        }
+        document.documentElement.setAttribute("data-touch-scrolling", "true");
+    };
 
     /** Replaces an older restore so momentum scrolling keeps chrome hidden. */
     const scheduleRestore = () => {
@@ -103,10 +126,7 @@ export function useTouchChromeVisibility() {
             Math.abs(currentY - startY) > 50 &&
             Math.abs(currentY - startY) > Math.abs(currentX - startX)
         ) {
-            document.documentElement.setAttribute(
-                "data-touch-scrolling",
-                "true",
-            );
+            hideChromeIfCrowded();
         }
     };
 
@@ -127,7 +147,7 @@ export function useTouchChromeVisibility() {
             return;
         }
 
-        document.documentElement.setAttribute("data-touch-scrolling", "true");
+        hideChromeIfCrowded();
     };
 
     /** Leaves content unobstructed briefly after scrolling or touch cancellation finishes. */

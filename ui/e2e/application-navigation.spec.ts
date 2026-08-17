@@ -131,51 +131,97 @@ test.describe("Application navigation", () => {
         await expect(agentTrigger).toBeFocused();
     });
 
-    test("keeps overlay panels visible during horizontal touch scrolling", async ({
+    test("hides overlay panels during touch scrolling only when content is cramped", async ({
         page,
     }) => {
+        await page.setViewportSize({ width: 390, height: 800 });
         await page.goto(`${WEB_BASE_URL}/`);
 
-        const gestureStates = await page.locator("main").evaluate((main) => {
-            const dispatchTouch = (
-                type: string,
-                clientX: number,
-                clientY: number,
-            ) => {
-                const event = new Event(type, { bubbles: true });
-                Object.defineProperty(event, "touches", {
-                    value: [{ clientX, clientY }],
-                });
-                main.dispatchEvent(event);
-            };
+        const dispatchGestures = () =>
+            page.locator("main").evaluate((main) => {
+                const dispatchTouch = (
+                    type: string,
+                    clientX: number,
+                    clientY: number,
+                ) => {
+                    const event = new Event(type, { bubbles: true });
+                    Object.defineProperty(event, "touches", {
+                        value: [{ clientX, clientY }],
+                    });
+                    main.dispatchEvent(event);
+                };
 
-            dispatchTouch("touchstart", 200, 200);
-            dispatchTouch("touchmove", 100, 215);
-            const hiddenAfterHorizontalGesture =
-                document.documentElement.hasAttribute("data-touch-scrolling");
+                dispatchTouch("touchstart", 200, 200);
+                dispatchTouch("touchmove", 100, 215);
+                const hiddenAfterHorizontalGesture =
+                    document.documentElement.hasAttribute(
+                        "data-touch-scrolling",
+                    );
 
-            dispatchTouch("touchstart", 200, 200);
-            dispatchTouch("touchmove", 200, 150);
-            const hiddenAtVerticalThreshold =
-                document.documentElement.hasAttribute("data-touch-scrolling");
+                dispatchTouch("touchstart", 200, 200);
+                dispatchTouch("touchmove", 200, 150);
+                const hiddenAtVerticalThreshold =
+                    document.documentElement.hasAttribute(
+                        "data-touch-scrolling",
+                    );
 
-            dispatchTouch("touchstart", 200, 200);
-            dispatchTouch("touchmove", 200, 149);
-            const hiddenAfterVerticalGesture =
-                document.documentElement.hasAttribute("data-touch-scrolling");
+                dispatchTouch("touchstart", 200, 200);
+                dispatchTouch("touchmove", 200, 149);
+                const hiddenAfterVerticalGesture =
+                    document.documentElement.hasAttribute(
+                        "data-touch-scrolling",
+                    );
 
-            return {
-                hiddenAfterHorizontalGesture,
-                hiddenAtVerticalThreshold,
-                hiddenAfterVerticalGesture,
-            };
-        });
+                return {
+                    hiddenAfterHorizontalGesture,
+                    hiddenAtVerticalThreshold,
+                    hiddenAfterVerticalGesture,
+                };
+            });
 
+        const spaciousStates = await dispatchGestures();
         // Horizontal content scrolling must leave the overlay controls available.
-        expect(gestureStates.hiddenAfterHorizontalGesture).toBe(false);
+        expect(spaciousStates.hiddenAfterHorizontalGesture).toBe(false);
+        // Compact chrome already leaves most of the viewport readable.
+        expect(spaciousStates.hiddenAtVerticalThreshold).toBe(false);
+        expect(spaciousStates.hiddenAfterVerticalGesture).toBe(false);
+
+        const panel = page.getByRole("region", { name: "Application tools" });
+        await panel.getByRole("tab", { name: "Terminal" }).click();
+        await expect(
+            panel.getByRole("button", { name: "Minimize bottom drawer" }),
+        ).toBeVisible();
+        // Force a cramped content area so the hide threshold is independent of default drawer height.
+        await panel.evaluate((drawer) => {
+            drawer.style.height = "500px";
+        });
+        await expect
+            .poll(async () =>
+                page
+                    .locator("main")
+                    .evaluate((main) =>
+                        Number.parseFloat(
+                            getComputedStyle(main).getPropertyValue(
+                                "--bottom-chrome-height",
+                            ),
+                        ),
+                    ),
+            )
+            .toBe(500);
+
+        const crampedStates = await dispatchGestures();
+        // Horizontal content scrolling must leave the overlay controls available.
+        expect(crampedStates.hiddenAfterHorizontalGesture).toBe(false);
         // The full threshold is allowed before hiding overlay controls.
-        expect(gestureStates.hiddenAtVerticalThreshold).toBe(false);
+        expect(crampedStates.hiddenAtVerticalThreshold).toBe(false);
         // Crossing the vertical threshold hides the panels to expose more content.
-        expect(gestureStates.hiddenAfterVerticalGesture).toBe(true);
+        expect(crampedStates.hiddenAfterVerticalGesture).toBe(true);
+        await expect
+            .poll(async () => {
+                const box = await panel.boundingBox();
+                // Fully clipped counts as hidden; a partial slide would still report a y below the viewport.
+                return box === null || box.y >= 800;
+            })
+            .toBe(true);
     });
 });

@@ -219,15 +219,16 @@ code {
         var(--bottom-chrome-height, 0px);
 }
 
-/* Touch scrolling moves compact chrome without changing the scroll area's layout. */
+/* Touch scrolling moves overlay chrome without changing the scroll area's layout. */
 [data-touch-scrolling] .touch-hide-top-shell {
     pointer-events: none;
     transform: translateY(-100%);
 }
 
+/* Measured height is required because the expanded drawer overflows its compact slot. */
 [data-touch-scrolling] .touch-hide-bottom-stack {
     pointer-events: none;
-    transform: translateY(100%);
+    transform: translateY(var(--bottom-chrome-height, 100%));
 }
 
 .route-loading-progress-bar {
