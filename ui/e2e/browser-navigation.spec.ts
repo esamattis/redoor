@@ -971,6 +971,48 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(fs.readFile(missingFilePath, "utf8")).resolves.toBe("");
     });
 
+    test("should hide the create form after breadcrumb navigation to an existing parent", async ({
+        page,
+    }) => {
+        const missingParent = `missing-parent-${Date.now()}`;
+        const missingChild = "missing-child";
+        const missingPath = `${ctx.testDirPath}/${missingParent}/${missingChild}`;
+        const missingUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(missingPath)}`;
+        const existingParentUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(missingUrl);
+
+        // The missing nested path must show the create form before breadcrumb navigation.
+        await expect(
+            page.getByRole("heading", { name: "Create new" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("textbox", { name: "File name" }),
+        ).toHaveValue(missingChild);
+
+        const breadcrumbs = page.getByRole("navigation", {
+            name: "Breadcrumbs",
+        });
+        await breadcrumbs.getByText(missingParent, { exact: true }).click();
+        await breadcrumbs.getByText(ctx.testDirName, { exact: true }).click();
+
+        // Breadcrumb navigation to an existing ancestor must leave the missing-path URL.
+        await expect(page).toHaveURL(existingParentUrl);
+        // An existing directory must not keep the create form from the previous missing path.
+        await expect(
+            page.getByRole("heading", { name: "Create new" }),
+        ).not.toBeVisible();
+        await expect(
+            page.getByRole("textbox", { name: "File name" }),
+        ).not.toBeVisible();
+        // Parent directory contents confirm the listing replaced the create form.
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("searchbox", { name: "Filter files" }),
+        ).toBeVisible();
+    });
+
     test("should navigate using the parent directory button", async ({
         page,
     }) => {
