@@ -23,6 +23,28 @@ function FileEditActions(props: {
 }) {
     return (
         <>
+            <Tooltip content="Save file (Ctrl+S)">
+                <button
+                    type="button"
+                    aria-label="Save file"
+                    onClick={props.onSave}
+                    disabled={!props.canEdit || !props.isDirty}
+                    className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    {props.isSaving ? "Saving..." : "Save"}
+                </button>
+            </Tooltip>
+            <Tooltip content="Restore the last saved file contents">
+                <button
+                    type="button"
+                    aria-label="Restore file contents"
+                    onClick={props.onRestore}
+                    disabled={!props.canEdit || !props.isDirty}
+                    className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    Restore
+                </button>
+            </Tooltip>
             {props.statusMessage ? (
                 <span
                     role="status"
@@ -39,28 +61,6 @@ function FileEditActions(props: {
                     {props.statusMessage}
                 </span>
             ) : null}
-            <Tooltip content="Restore the last saved file contents">
-                <button
-                    type="button"
-                    aria-label="Restore file contents"
-                    onClick={props.onRestore}
-                    disabled={!props.canEdit || !props.isDirty}
-                    className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    Restore
-                </button>
-            </Tooltip>
-            <Tooltip content="Save file (Ctrl+S)">
-                <button
-                    type="button"
-                    aria-label="Save file"
-                    onClick={props.onSave}
-                    disabled={!props.canEdit || !props.isDirty}
-                    className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    {props.isSaving ? "Saving..." : "Save"}
-                </button>
-            </Tooltip>
         </>
     );
 }
@@ -161,16 +161,10 @@ export function FileEditView(props: {
         <div className="flex min-h-0 flex-1 flex-col">
             <article className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
                 <header className="shrink-0 border-b border-slate-800 p-4">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                        Edit file
-                    </p>
-                    <h1
-                        aria-label="File name"
-                        className="break-all text-xl font-bold tracking-tight text-slate-50 md:text-2xl"
-                    >
+                    <h1 aria-label="File name" className="sr-only">
                         {props.fileName}
                     </h1>
-                    <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                    <div className="flex flex-wrap items-center justify-start gap-2">
                         <FileEditActions
                             statusMessage={statusMessage}
                             hasError={

@@ -9,6 +9,13 @@ import {
     setSearchQuery,
 } from "@codemirror/search";
 import type { EditorView } from "@codemirror/view";
+import {
+    ChevronDown,
+    ChevronUp,
+    Replace,
+    ReplaceAll,
+    TextSelect,
+} from "lucide-react";
 import { Checkbox } from "#ui/components/checkbox";
 import { FoldingSection } from "#ui/components/folding-section";
 import { Tooltip } from "#ui/components/tooltip";
@@ -138,7 +145,7 @@ export function EditorSearch(props: {
     };
 
     return (
-        <div className="shrink-0 px-3 pt-3">
+        <div className="shrink-0 px-3 pt-3 pb-3">
             <FoldingSection
                 title="Search & Replace"
                 open={open}
@@ -360,30 +367,35 @@ function SearchReplaceActions(props: {
                 <SearchActionButton
                     label="Find previous"
                     tooltip="Find previous (Shift+Ctrl+G)"
+                    icon={<ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />}
                     disabled={!props.canSearch}
                     onClick={props.onFindPrevious}
                 />
                 <SearchActionButton
                     label="Find next"
                     tooltip="Find next (Ctrl+G)"
+                    icon={<ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
                     disabled={!props.canSearch}
                     onClick={props.onFindNext}
                 />
                 <SearchActionButton
                     label="Select all"
                     tooltip="Select all matches"
+                    icon={<TextSelect className="h-3.5 w-3.5" aria-hidden="true" />}
                     disabled={!props.canSearch}
                     onClick={props.onSelectAll}
                 />
                 <SearchActionButton
                     label="Replace"
                     tooltip="Replace the current match"
+                    icon={<Replace className="h-3.5 w-3.5" aria-hidden="true" />}
                     disabled={!props.canReplace}
                     onClick={props.onReplaceNext}
                 />
                 <SearchActionButton
                     label="Replace all"
                     tooltip="Replace all matches"
+                    icon={<ReplaceAll className="h-3.5 w-3.5" aria-hidden="true" />}
                     disabled={!props.canReplace}
                     onClick={props.onReplaceAll}
                 />
@@ -433,6 +445,7 @@ function SearchReplaceActions(props: {
 function SearchActionButton(props: {
     label: string;
     tooltip: string;
+    icon: React.ReactNode;
     disabled: boolean;
     onClick: () => void;
 }) {
@@ -443,8 +456,9 @@ function SearchActionButton(props: {
                 aria-label={props.label}
                 disabled={props.disabled}
                 onClick={props.onClick}
-                className="inline-flex items-center rounded-md border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
+                {props.icon}
                 {props.label}
             </button>
         </Tooltip>
