@@ -298,7 +298,7 @@ export function TerminalPanel(props: {
                     onTabKeyDown={handleTabKeyDown}
                 />
             </div>
-            <div className="terminal-surface relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12] p-2">
+            <div className="terminal-surface relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12]">
                 {tabs.map((tab) => (
                     <TerminalSession
                         key={tab.id}
@@ -842,7 +842,7 @@ function TerminalSession(props: TerminalSessionProps) {
             aria-labelledby={`terminal-tab-${props.tab.id}`}
             aria-hidden={!props.isActive}
             hidden={!props.isActive}
-            className="relative h-full rounded-md border border-transparent focus-within:border-blue-500"
+            className="relative h-full rounded-md border border-transparent p-1.5 focus-within:border-blue-500"
         >
             <div
                 ref={hostRef}
