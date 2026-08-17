@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
     mkdirSync,
@@ -209,16 +209,20 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
             );
             await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
-            const foregroundRelayPid = processManager.spawn(
+            const foregroundRelayCommand = [
                 SERVER_PATH,
-                [
-                    "agent",
-                    "relay",
-                    "start",
-                    relayIds[0],
-                    "--config",
-                    configPath,
-                ],
+                "agent",
+                "relay",
+                "start",
+                relayIds[0],
+                "--config",
+                configPath,
+            ]
+                .map(shellQuote)
+                .join(" ");
+            const foregroundRelayParent = spawn(
+                "sh",
+                ["-c", `${foregroundRelayCommand}; true`],
                 {
                     env: {
                         ...process.env,
@@ -228,6 +232,15 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
                     },
                 },
             );
+            onTestFinished(() => {
+                if (foregroundRelayParent.pid !== undefined) {
+                    try {
+                        process.kill(foregroundRelayParent.pid, "SIGKILL");
+                    } catch {
+                        // The parent-death assertion may already have reaped the shell.
+                    }
+                }
+            });
             await relayCommand({
                 home,
                 appName,
@@ -278,8 +291,13 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
                     "Foreground relay metadata unexpectedly missing",
                 );
             }
-            // The first runtime record proves the non-daemon command itself owns the watchdog.
-            expect(firstMetadata.pid).toBe(foregroundRelayPid);
+            if (foregroundRelayParent.pid === undefined) {
+                throw new Error(
+                    "foreground relay parent shell should have a pid",
+                );
+            }
+            // The relay must remain a child of the shell whose lifetime it watches.
+            expect(firstMetadata.pid).not.toBe(foregroundRelayParent.pid);
 
             const connected = await waitForValue({
                 predicate: async () => {
@@ -369,10 +387,19 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
                 expect(currentMetadata.pid).toBe(originalMetadata.pid);
             }
 
-            await relayCommand({
-                home,
-                appName,
-                args: ["agent", "relay", "stop", relayIds[0]],
+            process.kill(foregroundRelayParent.pid, "SIGKILL");
+            await waitForValue({
+                predicate: async () => {
+                    try {
+                        process.kill(firstMetadata.pid, 0);
+                        return undefined;
+                    } catch {
+                        return true;
+                    }
+                },
+                timeoutMs: 10_000,
+                description:
+                    "foreground relay to exit after its parent is killed",
             });
             const survivingAgent = await waitForValue({
                 predicate: async () => {

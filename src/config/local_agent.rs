@@ -27,6 +27,7 @@ pub(crate) async fn spawn_local_agent(
 
     let mut command = Command::new(&bin);
     command
+        .env_remove(crate::process_control::DETACHED_ENV)
         .env(crate::process_control::MANAGED_AGENT_ENV, "1")
         .arg("--app-name")
         .arg(crate::app_name::app_name()?)

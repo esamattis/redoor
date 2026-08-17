@@ -10,7 +10,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { onTestFinished, describe, expect, test, vi } from "vitest";
-import { getAvailablePort, SERVER_PATH } from "./test-utils";
+import { ApiClient } from "#ui/api-client";
+import {
+    getAvailablePort,
+    SERVER_PATH,
+    waitForPort,
+    waitForValue,
+} from "./test-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,12 +24,17 @@ const execFileAsync = promisify(execFile);
 function isolatedProcess(role: "agent" | "server") {
     const home = mkdtempSync(join(tmpdir(), `redoor-${role}-lifecycle-`));
     const appName = `redoor-${role}-${process.pid}-${Date.now()}`;
-    const env = {
+    const env: NodeJS.ProcessEnv & {
+        HOME: string;
+        REDOOR_APP_NAME: string;
+        REDOOR_AGENT_NOTIFICATION: string;
+    } = {
         ...process.env,
         HOME: home,
         REDOOR_APP_NAME: appName,
         REDOOR_AGENT_NOTIFICATION: "off",
     };
+    delete env.REDOOR_PORT;
     const pidFile = join(home, ".local", "share", appName, `${role}.pid`);
     const stopArgs = [role, "stop"];
 
@@ -52,6 +63,25 @@ async function waitForPid(pidFile: string, stalePid?: number): Promise<number> {
         }
     });
     return pid;
+}
+
+/** Starts a foreground command beneath a shell that can be SIGKILLed independently. */
+function spawnWithKillableParent(args: string[], env: NodeJS.ProcessEnv) {
+    const command = [SERVER_PATH, ...args]
+        .map((value) => `'${value.replaceAll("'", `'\\''`)}'`)
+        .join(" ");
+    return spawn("sh", ["-c", `${command}; true`], { env });
+}
+
+/** Best-effort cleanup prevents failed parent-death assertions from leaking processes. */
+function killOnTestFinished(pid: number) {
+    onTestFinished(() => {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch {
+            // The parent-death assertion may already have reaped the process.
+        }
+    });
 }
 
 describe("process lifecycle commands", () => {
@@ -171,21 +201,33 @@ port = ${port}
         const isolated = isolatedProcess("agent");
 
         await expect(
-            execFileAsync(SERVER_PATH, ["agent", "relay", "status", "production"], {
-                env: isolated.env,
-            }),
+            execFileAsync(
+                SERVER_PATH,
+                ["agent", "relay", "status", "production"],
+                {
+                    env: isolated.env,
+                },
+            ),
         ).rejects.toMatchObject({
             // Empty namespaces must report the selected relay instead of requiring TOML startup fields.
-            stderr: expect.stringContaining("relay 'production' is not running"),
+            stderr: expect.stringContaining(
+                "relay 'production' is not running",
+            ),
         });
 
         await expect(
-            execFileAsync(SERVER_PATH, ["agent", "relay", "stop", "production"], {
-                env: isolated.env,
-            }),
+            execFileAsync(
+                SERVER_PATH,
+                ["agent", "relay", "stop", "production"],
+                {
+                    env: isolated.env,
+                },
+            ),
         ).rejects.toMatchObject({
             // Stop must use the same isolated runtime identity as status.
-            stderr: expect.stringContaining("relay 'production' is not running"),
+            stderr: expect.stringContaining(
+                "relay 'production' is not running",
+            ),
         });
     });
 
@@ -212,38 +254,18 @@ port = ${port}
 `,
             );
 
-            const quotedServer = `'${SERVER_PATH.replaceAll("'", `'\\''`)}'`;
-            const quotedConfig = `'${configPath.replaceAll("'", `'\\''`)}'`;
-            const parent = spawn(
-                "sh",
-                [
-                    "-c",
-                    `${quotedServer} server --config ${quotedConfig}; true`,
-                ],
-                { env: isolated.env },
+            const parent = spawnWithKillableParent(
+                ["server", "--config", configPath],
+                isolated.env,
             );
-            onTestFinished(() => {
-                if (parent.pid !== undefined) {
-                    try {
-                        process.kill(parent.pid, "SIGKILL");
-                    } catch {
-                        // The SIGKILL under test may already have reaped this shell.
-                    }
-                }
-            });
 
             const serverPid = await waitForPid(isolated.pidFile);
-            onTestFinished(() => {
-                try {
-                    process.kill(serverPid, "SIGKILL");
-                } catch {
-                    // Parent-death should already have terminated the server.
-                }
-            });
 
             if (parent.pid === undefined) {
                 throw new Error("parent shell should have a pid");
             }
+            killOnTestFinished(parent.pid);
+            killOnTestFinished(serverPid);
             // bash execs a lone `sh -c` command; `; true` keeps a real parent to SIGKILL.
             expect(parent.pid).not.toBe(serverPid);
             process.kill(parent.pid, "SIGKILL");
@@ -252,5 +274,108 @@ port = ${port}
                 expect(() => process.kill(serverPid, 0)).toThrow();
             });
         },
+    );
+
+    test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+        "foreground standalone agent exits when its parent is killed",
+        async () => {
+            const isolated = isolatedProcess("agent");
+            const port = await getAvailablePort();
+            const parent = spawnWithKillableParent(
+                [
+                    "agent",
+                    `ws://127.0.0.1:${port}/ws`,
+                    "--token",
+                    "lifecycle-token",
+                    "--name",
+                    "foreground-lifecycle-agent",
+                ],
+                isolated.env,
+            );
+            const agentPid = await waitForPid(isolated.pidFile);
+
+            if (parent.pid === undefined) {
+                throw new Error("parent shell should have a pid");
+            }
+            killOnTestFinished(parent.pid);
+            killOnTestFinished(agentPid);
+            // The agent command must remain below the shell whose death it watches.
+            expect(parent.pid).not.toBe(agentPid);
+            process.kill(parent.pid, "SIGKILL");
+            await vi.waitFor(() => {
+                // The reconnect loop must not outlive a killed foreground supervisor.
+                expect(() => process.kill(agentPid, 0)).toThrow();
+            });
+        },
+    );
+
+    test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+        "managed local agent exits when its daemon server is killed",
+        async () => {
+            const isolated = isolatedProcess("server");
+            const port = await getAvailablePort();
+            const configDirectory = join(
+                isolated.env.HOME,
+                ".config",
+                isolated.env.REDOOR_APP_NAME,
+            );
+            const configPath = join(configDirectory, "config.toml");
+            const agentHome = join(isolated.env.HOME, "managed-agent-home");
+            mkdirSync(configDirectory, { recursive: true });
+            mkdirSync(agentHome, { recursive: true });
+            writeFileSync(
+                configPath,
+                `agent_token = "lifecycle-token"
+
+[server]
+username = "lifecycle-user"
+password = "lifecycle-password"
+port = ${port}
+
+[[agents]]
+local = true
+name = "managed-lifecycle-agent"
+home = "${agentHome}"
+`,
+            );
+
+            await execFileAsync(
+                SERVER_PATH,
+                ["server", "--config", configPath, "--daemon"],
+                { env: isolated.env },
+            );
+            const serverPid = await waitForPid(isolated.pidFile);
+            killOnTestFinished(serverPid);
+            await waitForPort(port);
+            const apiClient = new ApiClient(`http://127.0.0.1:${port}`);
+            await apiClient.login("lifecycle-user", "lifecycle-password");
+            const configuredAgent = await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listAgents()).find(
+                        (agent) => agent.name === "managed-lifecycle-agent",
+                    ),
+                description: "managed lifecycle agent registration",
+            });
+            await configuredAgent.start();
+            const connectedAgent = await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listAgents()).find(
+                        (agent) =>
+                            agent.name === "managed-lifecycle-agent" &&
+                            agent.status === "connected",
+                    ),
+                timeoutMs: 15_000,
+                description: "managed lifecycle agent connection",
+            });
+            const agentPid = (await connectedAgent.getDetails()).pid;
+            killOnTestFinished(agentPid);
+
+            process.kill(serverPid, "SIGKILL");
+            await vi.waitFor(() => {
+                // A daemon marker inherited from the server must not detach its managed child.
+                expect(() => process.kill(agentPid, 0)).toThrow();
+            });
+        },
+        30_000,
     );
 });
