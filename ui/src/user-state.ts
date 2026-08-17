@@ -22,6 +22,7 @@ export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
     theme: z.enum(["system", "dark", "light"]).catch("system"),
     bookmarks: z.array(bookmarkSchema).catch([]),
+    vimMode: z.boolean().catch(false),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
@@ -30,6 +31,7 @@ export const defaultUserState: UserState = {
     showHiddenFiles: true,
     theme: "system",
     bookmarks: [],
+    vimMode: false,
 };
 
 /** Identifies one bookmarked path so the same file cannot be stored twice. */

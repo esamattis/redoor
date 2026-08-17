@@ -24,6 +24,14 @@ export function isEditorInputTarget(target: EventTarget | null): boolean {
     );
 }
 
+/** Escape must reach Vim instead of blurring, otherwise visual and insert modes cannot exit. */
+export function isVimEditorTarget(target: EventTarget | null): boolean {
+    return (
+        target instanceof Element &&
+        target.closest("[data-vim-mode='true']") !== null
+    );
+}
+
 /** Keeps unmodified application shortcuts separate from browser and text-editing keys. */
 export function shouldIgnoreKeyboardShortcut(
     event: KeyboardEvent,

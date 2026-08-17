@@ -50,6 +50,7 @@ import {
     isEditorInputTarget,
     isTerminalInputTarget,
     isTextEntryElement,
+    isVimEditorTarget,
 } from "#ui/utils/keyboard";
 import { RefreshListener } from "#ui/refresh-listener";
 import { emptyServerInfo } from "#ui/empty-server-info";
@@ -349,6 +350,8 @@ function RootLayout() {
                 event.key === "Escape" &&
                 (isTextEntryElement(activeElement) ||
                     isEditorInputTarget(activeElement)) &&
+                !isVimEditorTarget(activeElement) &&
+                !isVimEditorTarget(event.target) &&
                 !isTerminalInputTarget(activeElement) &&
                 activeElement instanceof HTMLElement
             ) {

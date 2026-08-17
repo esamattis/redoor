@@ -26,7 +26,12 @@ test.describe.serial("User state", () => {
         await api.login("test-user", "test-password");
         // Later browser tests assume the default user preferences.
         await api.updateUserState({
-            state: { showHiddenFiles: true, theme: "system", bookmarks: [] },
+            state: {
+                showHiddenFiles: true,
+                theme: "system",
+                bookmarks: [],
+                vimMode: false,
+            },
         });
     });
 

@@ -4,26 +4,36 @@ import { copilot } from "@uiw/codemirror-theme-copilot";
 import { search } from "@codemirror/search";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
+import { vim, Vim } from "@replit/codemirror-vim";
 import {
     EditorSearch,
     type EditorSearchHandle,
 } from "#ui/components/browser/editor-search";
 import { languageFromFileName } from "#ui/utils/editor-language";
 
+/** Lets :w call the current save handler without re-registering the global ex command. */
+const vimWriteRef = { current: () => {} };
+
+Vim.defineEx("write", "w", () => {
+    vimWriteRef.current();
+});
+
 /**
  * Presentational CodeMirror surface so FileEditView can keep query/draft ownership.
  * A bounded height lets CodeMirror virtualize the viewport instead of growing the page.
- * Extensions are memoized on the file name because recreating them remounts the editor.
+ * Extensions are memoized on the file name and keymap because recreating them remounts the editor.
  */
 export function CodeEditor(props: {
     value: string;
     fileName: string;
     editable: boolean;
+    vimMode: boolean;
     onChange: (value: string) => void;
     onSave: () => void;
 }) {
     const onSaveRef = React.useRef(props.onSave);
     onSaveRef.current = props.onSave;
+    vimWriteRef.current = props.onSave;
     const editorRef = React.useRef<ReactCodeMirrorRef>(null);
     const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const [view, setView] = React.useState<EditorView | null>(null);
@@ -32,10 +42,12 @@ export function CodeEditor(props: {
     const extensions = React.useMemo(() => {
         const language = languageFromFileName(props.fileName);
         return [
+            ...(props.vimMode ? [vim({ status: true })] : []), // Vim must precede other keymaps so normal-mode keys win.
             search(),
             EditorView.contentAttributes.of({
                 "aria-label": "File editor",
                 "data-file-editor": "",
+                "data-vim-mode": props.vimMode ? "true" : "false",
             }),
             EditorView.theme({
                 "&": {
@@ -87,7 +99,7 @@ export function CodeEditor(props: {
             ),
             ...(language === undefined ? [] : [language]),
         ];
-    }, [props.fileName]);
+    }, [props.fileName, props.vimMode]);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -99,6 +111,7 @@ export function CodeEditor(props: {
             />
             <div
                 data-file-editor=""
+                data-vim-mode={props.vimMode ? "true" : "false"}
                 role="region"
                 aria-label="Editor viewport"
                 className="min-h-0 flex-1 overflow-hidden"

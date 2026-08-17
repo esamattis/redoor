@@ -4,11 +4,13 @@ import { useBlocker } from "@tanstack/react-router";
 import type { Agent } from "#ui/api-client";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import { getErrorMessage } from "#ui/components/browser/utils";
+import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
+import { useUserState } from "#ui/user-state";
 
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
@@ -65,6 +67,36 @@ function FileEditActions(props: {
     );
 }
 
+/** Lives above the editor so the keymap can change without opening a settings page. */
+function VimModeToggle() {
+    const [userState, setUserState] = useUserState();
+
+    return (
+        <Tooltip
+            content={
+                userState.vimMode
+                    ? "Disable Vim keybindings"
+                    : "Enable Vim keybindings"
+            }
+        >
+            <span>
+                <Checkbox
+                    checked={userState.vimMode}
+                    label="Vim mode"
+                    onCheckedChange={(checked) => {
+                        setUserState((current) => ({
+                            ...current,
+                            vimMode: checked,
+                        }));
+                    }}
+                >
+                    Vim
+                </Checkbox>
+            </span>
+        </Tooltip>
+    );
+}
+
 /** Edits file contents in a viewport-bounded CodeMirror with explicit save/restore. */
 export function FileEditView(props: {
     agent: Agent;
@@ -74,6 +106,7 @@ export function FileEditView(props: {
     downloadUrl: string;
 }) {
     const queryClient = useQueryClient();
+    const [userState] = useUserState();
     const contentQuery = useQuery(
         fileContentQueryOptions(props.agent, props.filePath),
     );
@@ -164,19 +197,22 @@ export function FileEditView(props: {
                     <h1 aria-label="File name" className="sr-only">
                         {props.fileName}
                     </h1>
-                    <div className="flex flex-wrap items-center justify-start gap-2">
-                        <FileEditActions
-                            statusMessage={statusMessage}
-                            hasError={
-                                contentQuery.isError || saveMutation.isError
-                            }
-                            isSaved={saveMutation.isSuccess}
-                            canEdit={canEdit}
-                            isDirty={isDirty}
-                            isSaving={saveMutation.isPending}
-                            onRestore={handleRestore}
-                            onSave={handleSave}
-                        />
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center justify-start gap-2">
+                            <FileEditActions
+                                statusMessage={statusMessage}
+                                hasError={
+                                    contentQuery.isError || saveMutation.isError
+                                }
+                                isSaved={saveMutation.isSuccess}
+                                canEdit={canEdit}
+                                isDirty={isDirty}
+                                isSaving={saveMutation.isPending}
+                                onRestore={handleRestore}
+                                onSave={handleSave}
+                            />
+                        </div>
+                        <VimModeToggle />
                     </div>
                 </header>
 
@@ -197,6 +233,7 @@ export function FileEditView(props: {
                             value={content}
                             fileName={props.fileName}
                             editable={canEdit}
+                            vimMode={userState.vimMode}
                             onChange={(nextContent) => {
                                 setDraft(nextContent);
                                 if (saveMutation.isSuccess) {
