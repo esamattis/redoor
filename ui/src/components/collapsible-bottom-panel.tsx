@@ -1,13 +1,15 @@
 import * as React from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { BottomDrawerTabId } from "#ui/bottom-drawer-state";
+import { Tooltip } from "#ui/components/tooltip";
+import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 
 /** Describes one mounted pane and its compact representation in the drawer tab strip. */
 export type BottomDrawerTab = {
     id: BottomDrawerTabId;
     label: string;
     icon?: React.ReactNode;
-    badge?: React.ReactNode;
+    badge?: string;
     content: React.ReactNode;
 };
 
@@ -100,37 +102,17 @@ export function TabbedBottomDrawer(props: {
                             aria-label="Application tools"
                             className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain"
                         >
-                            {props.tabs.map((tab, tabIndex) => {
-                                const isActive = tab.id === props.activeTab;
-                                return (
-                                    <button
-                                        key={tab.id}
-                                        id={`bottom-drawer-tab-${tab.id}`}
-                                        type="button"
-                                        role="tab"
-                                        aria-selected={isActive}
-                                        aria-controls={`bottom-drawer-panel-${tab.id}`}
-                                        tabIndex={isActive ? 0 : -1}
-                                        onClick={() => activateTab(tab.id)}
-                                        onKeyDown={(event) =>
-                                            handleTabKeyDown(event, tabIndex)
-                                        }
-                                        className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-md px-2.5 text-xs font-medium transition-colors sm:px-3 ${
-                                            isActive
-                                                ? "bg-slate-800 text-slate-100"
-                                                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                                        }`}
-                                    >
-                                        {tab.icon}
-                                        <span>{tab.label}</span>
-                                        {tab.badge ? (
-                                            <span className="max-w-32 truncate rounded bg-slate-950/60 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400 sm:max-w-48">
-                                                {tab.badge}
-                                            </span>
-                                        ) : null}
-                                    </button>
-                                );
-                            })}
+                            {props.tabs.map((tab, tabIndex) => (
+                                <BottomDrawerTabButton
+                                    key={tab.id}
+                                    tab={tab}
+                                    isActive={tab.id === props.activeTab}
+                                    onActivate={() => activateTab(tab.id)}
+                                    onKeyDown={(event) =>
+                                        handleTabKeyDown(event, tabIndex)
+                                    }
+                                />
+                            ))}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                             <div className="mx-1 h-5 w-px bg-slate-800" />
@@ -178,6 +160,56 @@ export function TabbedBottomDrawer(props: {
                 </div>
             </section>
         </div>
+    );
+}
+
+/** Builds the compact tooltip from the same label and badge the wide tabs already show. */
+function tabDetails(tab: BottomDrawerTab): string {
+    return tab.badge ? `${tab.label} ${tab.badge}` : tab.label;
+}
+
+/** Hides label text on small screens while keeping the tab name available to assistive tech. */
+function BottomDrawerTabButton(props: {
+    tab: BottomDrawerTab;
+    isActive: boolean;
+    onActivate: () => void;
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+}) {
+    const isBelowSm = useIsBelowBreakpoint("sm");
+    const button = (
+        <button
+            id={`bottom-drawer-tab-${props.tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={props.isActive}
+            aria-controls={`bottom-drawer-panel-${props.tab.id}`}
+            tabIndex={props.isActive ? 0 : -1}
+            onClick={props.onActivate}
+            onKeyDown={props.onKeyDown}
+            className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-md px-2.5 text-xs font-medium transition-colors sm:px-3 ${
+                props.isActive
+                    ? "bg-slate-800 text-slate-100"
+                    : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+            }`}
+        >
+            {props.tab.icon}
+            <span className="sr-only sm:not-sr-only">{props.tab.label}</span>
+            {props.tab.badge ? (
+                <span className="sr-only sm:not-sr-only sm:max-w-32 sm:truncate sm:rounded sm:bg-slate-950/60 sm:px-1.5 sm:py-0.5 sm:text-[10px] sm:tabular-nums sm:text-slate-400 sm:max-w-48">
+                    {props.tab.badge}
+                </span>
+            ) : null}
+        </button>
+    );
+
+    if (!isBelowSm) {
+        return button;
+    }
+
+    return (
+        <Tooltip content={tabDetails(props.tab)} className="shrink-0">
+            {button}
+        </Tooltip>
     );
 }
 
