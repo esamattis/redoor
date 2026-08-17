@@ -109,6 +109,86 @@ test.describe("Server home", () => {
         ).toHaveCount(0);
     });
 
+    test("shows a measuring badge until a directory archive total arrives", async ({
+        page,
+    }) => {
+        const startedAt = Math.floor(Date.now() / 1000) - 10;
+        let totalBytes = 0;
+        let sendTransfersChanged = () => {};
+        await page.routeWebSocket("**/api/v1/ui/ws", (ws) => {
+            const server = ws.connectToServer();
+            ws.onMessage((message) => {
+                server.send(message);
+            });
+            server.onMessage((message) => {
+                ws.send(message);
+            });
+            sendTransfersChanged = () => {
+                ws.send(JSON.stringify({ type: "transfers_changed" }));
+            };
+        });
+        await page.route("**/api/v1/transfers/progress", async (route) => {
+            await route.fulfill({
+                json: {
+                    transfers: [
+                        {
+                            request_id: 1,
+                            agent_id: "agent-1",
+                            path: "/tmp/archive-dir",
+                            source: null,
+                            dest: null,
+                            direction: "download",
+                            total_bytes: totalBytes,
+                            transferred_bytes: 50_000_000,
+                            started_at: startedAt,
+                            ended_at: null,
+                            state: "active",
+                            error: null,
+                        },
+                    ],
+                },
+            });
+        });
+
+        await page.goto(`${WEB_BASE_URL}/`);
+        const panel = page.getByRole("region", {
+            name: "Application tools",
+        });
+        await panel.getByRole("tab", { name: /Transfers/ }).press("Enter");
+
+        const archiveRow = panel
+            .getByRole("row")
+            .filter({ hasText: "archive-dir" });
+        const measuringBadge = archiveRow.getByRole("img", {
+            name: "Archive size is still being calculated",
+        });
+        // Unknown totals must keep transferred bytes visible without inventing a percent.
+        await expect(measuringBadge).toBeVisible();
+        await expect(archiveRow.getByText("47.7 MB")).toBeVisible();
+        await expect(
+            archiveRow.getByRole("img", { name: /Transfer progress .+\/s$/ }),
+        ).toBeVisible();
+        await expect(archiveRow.getByText(/%/)).toHaveCount(0);
+
+        await measuringBadge.hover();
+        await expect(
+            page.getByRole("tooltip", {
+                name: "The archive size is being measured while the download already runs.",
+            }),
+        ).toBeVisible();
+
+        totalBytes = 100_000_000;
+        sendTransfersChanged();
+
+        // Once a total exists on the same row the badge drops and percent/ETA appear.
+        await expect(measuringBadge).toHaveCount(0);
+        await expect(
+            archiveRow.getByRole("img", {
+                name: /Transfer progress \d+% .+\/s .+ remaining$/,
+            }),
+        ).toBeVisible();
+    });
+
     test("grows overlay scroll padding when the bottom drawer opens", async ({
         page,
     }) => {

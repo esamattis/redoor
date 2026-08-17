@@ -306,7 +306,11 @@ impl RouterState {
                     transfers::copy::start(&mut self, request);
                 }
                 RouterMsg::TransferProgressUpdate(request) => {
-                    transfers::copy::update_progress(&mut self, request);
+                    // Downloads publish a discovered tar total on this message;
+                    // copies still overwrite both counts through their own path.
+                    if !transfers::download::update_progress(&mut self, &request) {
+                        transfers::copy::update_progress(&mut self, request);
+                    }
                 }
                 RouterMsg::OpenTerminal(request) => {
                     agents::open_terminal(&self, request);

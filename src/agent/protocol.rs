@@ -52,10 +52,14 @@ async fn handle_command_message(
                 .tar_download(
                     path,
                     include_root,
-                    request_id,
-                    &write_binary,
-                    cancel_receiver,
-                    active_downloads.clone(),
+                    super::transfers::download::TarDownloadContext {
+                        request_id,
+                        write: &write_binary,
+                        write_text: &write_text,
+                        agent_id: &agent_id,
+                        cancel_receiver,
+                        active_downloads: active_downloads.clone(),
+                    },
                 )
                 .await;
         }

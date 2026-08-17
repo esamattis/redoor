@@ -235,18 +235,50 @@ pub(crate) fn set_copy_progress(
     }
 }
 
+/// Records a later-discovered download total without rewriting counted bytes.
+///
+/// Directory archives start with `total_bytes=0` and learn the tar size from a
+/// metadata walk. Chunk `increment_bytes` remains the source of transferred counts.
+pub(crate) fn set_download_total(
+    state: &mut RouterState,
+    transfer_id: TransferId,
+    total_bytes: u64,
+) {
+    let mut updated = false;
+    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+        if !matches!(progress.direction, TransferDirection::Download) {
+            return;
+        }
+        if !matches!(progress.state, TransferProgressState::Active) {
+            return;
+        }
+        progress.total_bytes = total_bytes;
+        state.progress.predicted_download_totals.insert(transfer_id);
+        updated = true;
+    }
+    if updated {
+        ui::notify_transfer_refresh(state);
+    }
+}
+
 /// Marks a transfer as completed and aligns transferred/total byte counts.
 ///
-/// Known-size downloads snap transferred bytes to the planned total. Directory tar
-/// downloads start with total_bytes=0 because the archive size is unknown up front;
-/// on completion the accumulated transferred count becomes the final total so the
-/// progress row does not reset to zero.
+/// Unknown totals promote the counted stream size so the row does not reset to
+/// zero. Known-size files still snap transferred to the planned total. A later
+/// directory prediction that disagrees keeps the counted tar bytes so completed
+/// UI does not display a stale archive estimate.
 pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: TransferId) {
     let mut updated = false;
     let mut routes_changed = false;
+    let had_predicted_download_total = state
+        .progress
+        .predicted_download_totals
+        .remove(&transfer_id);
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Completed;
-        if progress.total_bytes == 0 {
+        if progress.total_bytes == 0
+            || (had_predicted_download_total && progress.transferred_bytes != progress.total_bytes)
+        {
             progress.total_bytes = progress.transferred_bytes;
         } else {
             progress.transferred_bytes = progress.total_bytes;
@@ -298,6 +330,10 @@ pub(crate) fn mark_transfer_errored(
         progress.state = TransferProgressState::Errored;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = Some(error_message);
+        state
+            .progress
+            .predicted_download_totals
+            .remove(&transfer_id);
         updated = true;
     }
     if updated {
@@ -474,6 +510,136 @@ mod tests {
         assert!(
             matches!(progress_entry.state, TransferProgressState::Completed),
             "the refresh should correspond to a terminal completed progress entry"
+        );
+        assert_eq!(
+            progress_entry.transferred_bytes, 16,
+            "known-size file downloads still snap transferred to the planned total"
+        );
+        assert_eq!(
+            progress_entry.total_bytes, 16,
+            "a partial last-chunk count must not rewrite a known file size"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    fn download_progress_entry(
+        transfer_id: TransferId,
+        total_bytes: u64,
+        transferred_bytes: u64,
+        state: TransferProgressState,
+    ) -> TransferProgressEntry {
+        TransferProgressEntry {
+            request_id: transfer_id,
+            agent_id: AgentId::from("agent-1"),
+            path: "/tmp/archive".to_string(),
+            source: None,
+            dest: None,
+            direction: TransferDirection::Download,
+            total_bytes,
+            transferred_bytes,
+            started_at: UnixTimestampSeconds::new(1),
+            ended_at: None,
+            state,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn download_total_leaves_counted_bytes_alone() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let transfer_id = TransferId::new(11);
+        state.progress.entries.insert(
+            transfer_id,
+            download_progress_entry(transfer_id, 0, 4096, TransferProgressState::Active),
+        );
+
+        set_download_total(&mut state, transfer_id, 8192);
+
+        let progress = state
+            .progress
+            .entries
+            .get(&transfer_id)
+            .expect("active download should keep its progress row");
+        assert_eq!(
+            progress.total_bytes, 8192,
+            "the metadata walk should publish the predicted tar size once it is known"
+        );
+        assert_eq!(
+            progress.transferred_bytes, 4096,
+            "download totals must not overwrite bytes already counted from tar chunks"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    #[tokio::test]
+    async fn late_download_total_is_ignored_after_completion() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let transfer_id = TransferId::new(12);
+        state.progress.entries.insert(
+            transfer_id,
+            download_progress_entry(transfer_id, 2048, 2048, TransferProgressState::Completed),
+        );
+
+        set_download_total(&mut state, transfer_id, 9999);
+
+        let progress = state
+            .progress
+            .entries
+            .get(&transfer_id)
+            .expect("completed download should remain listed");
+        assert_eq!(
+            progress.total_bytes, 2048,
+            "a walk that finishes after the transfer must not rewrite the completed total"
+        );
+        assert_eq!(
+            progress.transferred_bytes, 2048,
+            "late totals must also leave the counted completion bytes untouched"
+        );
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    #[tokio::test]
+    async fn mismatched_download_prediction_keeps_counted_bytes() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let transfer_id = TransferId::new(13);
+        state.progress.entries.insert(
+            transfer_id,
+            download_progress_entry(transfer_id, 0, 4096, TransferProgressState::Active),
+        );
+        set_download_total(&mut state, transfer_id, 5000);
+
+        mark_transfer_completed(&mut state, transfer_id);
+
+        let progress = state
+            .progress
+            .entries
+            .get(&transfer_id)
+            .expect("completed download should remain listed");
+        assert_eq!(
+            progress.transferred_bytes, 4096,
+            "tree changes must keep the counted tar bytes instead of snapping to the prediction"
+        );
+        assert_eq!(
+            progress.total_bytes, 4096,
+            "completed UI reads the total, so a stale prediction must be replaced by the counted size"
         );
 
         state.ui.refresh_check_task.abort();

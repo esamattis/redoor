@@ -317,8 +317,9 @@ async fn stream_directory_archive(
                         include_root: true,
                     },
                     path: path.clone(),
-                    // Archive length is discovered while streaming; progress promotes the
-                    // transferred count to total_bytes when the transfer completes.
+                    // Archive length is unknown at start so the body can begin immediately
+                    // without Content-Length. A parallel metadata walk may publish a total
+                    // later; completion still promotes counted bytes if that walk is late.
                     // Counts are plain tar bytes from the agent, before REST-edge gzip.
                     total_bytes: 0,
                     full_size: None,

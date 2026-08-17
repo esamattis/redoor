@@ -8,6 +8,7 @@ import {
     MoveRight,
 } from "lucide-react";
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
+import { Tooltip } from "#ui/components/tooltip";
 import { formatSize, formatSpeed } from "#ui/utils/path";
 import {
     formatRemainingTime,
@@ -128,13 +129,20 @@ function TransferProgressCell(props: { transfer: TransferProgressEntry }) {
         animationFrame.refreshedAtMilliseconds,
     );
     const displayedBytes = Math.floor(progress.transferredBytes);
-    const pieDegrees = progress.percentage * 3.6;
+    const sizeUnknown = props.transfer.total_bytes <= 0;
+    const measuringArchive =
+        sizeUnknown && props.transfer.direction === "download";
+    const pieDegrees = sizeUnknown ? 0 : progress.percentage * 3.6;
     const remainingTime = formatRemainingTime(progress.remainingSeconds);
     const percentageLabel = `${Math.round(progress.percentage)}%`;
     const speedLabel = formatSpeed(speed);
     const remainingLabel =
         remainingTime === null ? null : `${remainingTime} remaining`;
-    const progressLabel = [percentageLabel, speedLabel, remainingLabel]
+    const progressLabel = [
+        sizeUnknown ? null : percentageLabel,
+        speedLabel,
+        sizeUnknown ? null : remainingLabel,
+    ]
         .filter((part) => part !== null)
         .join(" ");
 
@@ -149,9 +157,27 @@ function TransferProgressCell(props: { transfer: TransferProgressEntry }) {
                 aria-label={`Transfer progress ${progressLabel}`}
             />
             <div className="flex min-w-0 flex-1 flex-col gap-1 font-mono text-sm tabular-nums text-slate-300">
-                <span>
-                    {formatSize(displayedBytes)} /{" "}
-                    {formatSize(props.transfer.total_bytes)}
+                <span className="inline-flex items-center gap-1">
+                    {sizeUnknown ? (
+                        <>
+                            {formatSize(displayedBytes)}
+                            {measuringArchive ? (
+                                <Tooltip content="The archive size is being measured while the download already runs.">
+                                    <span
+                                        role="img"
+                                        aria-label="Archive size is still being calculated"
+                                    >
+                                        (!)
+                                    </span>
+                                </Tooltip>
+                            ) : null}
+                        </>
+                    ) : (
+                        <>
+                            {formatSize(displayedBytes)} /{" "}
+                            {formatSize(props.transfer.total_bytes)}
+                        </>
+                    )}
                 </span>
                 <span className="text-xs text-slate-500">{progressLabel}</span>
             </div>

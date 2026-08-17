@@ -7,7 +7,7 @@ use crate::streaming::{StreamChunk, StreamPayloadKind};
 use crate::terminal_registry::TerminalRegistry;
 use crate::types::{AgentId, ChunkIndex, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use axum::extract::ws::Message as WsMessage;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Bounded payload transport attached to one authoritative control connection.
@@ -266,6 +266,11 @@ impl CopyRegistry {
 pub struct TransferProgressStore {
     /// Progress entries keyed by their public transfer id.
     pub(crate) entries: HashMap<TransferId, TransferProgressEntry>,
+    /// Downloads that received a later-discovered archive total.
+    ///
+    /// Completion must keep counted tar bytes when that prediction disagrees,
+    /// instead of snapping transferred to a known-size file plan.
+    pub(crate) predicted_download_totals: HashSet<TransferId>,
 }
 
 /// UI subscriber state and throttled refresh scheduling owned by the router.

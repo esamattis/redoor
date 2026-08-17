@@ -3,15 +3,85 @@ use anyhow::{Context, Result, bail};
 use redoor::{
     Level, log,
     streaming::{StreamChunkFrameRequest, StreamPayloadKind},
-    types::{ChunkIndex, RequestId},
+    types::{AgentId, ChunkIndex, Message, RequestId},
 };
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
+/// One 512-byte tar record; headers, padding, and the two end blocks are all this size.
+const TAR_BLOCK_SIZE: u64 = 512;
+/// GNU ustar name field length; longer member names need an extra long-link record.
+const TAR_NAME_FIELD_LEN: usize = 100;
+
+/// Names the optional top-level archive member so include_root downloads keep
+/// the directory's own name after extraction.
+fn directory_archive_root(source_path: &Path, include_root: bool) -> Option<PathBuf> {
+    include_root.then(|| {
+        source_path
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("archive"))
+    })
+}
+
+/// Maps a source path to its archive member path using the same include_root rule
+/// as the tar builder so the size walk counts the same names.
+fn archive_member_path(
+    source_root: &Path,
+    entry_path: &Path,
+    archive_root: Option<&Path>,
+) -> Result<PathBuf> {
+    let source_relative_path = entry_path
+        .strip_prefix(source_root)
+        .with_context(|| {
+            format!(
+                "Failed to strip source prefix {} from {}",
+                source_root.display(),
+                entry_path.display()
+            )
+        })?
+        .to_path_buf();
+    Ok(match archive_root {
+        Some(archive_root) => archive_root.join(source_relative_path),
+        None => source_relative_path,
+    })
+}
+
+/// Encodes a member path the same way the tar crate writes it on this platform.
+fn tar_path_bytes(path: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().replace('\\', "/").into_bytes()
+    }
+}
+
+/// Rounds a payload up to the next tar block so predicted size matches `tar::Builder`.
+fn tar_padded_len(len: u64) -> u64 {
+    len.div_ceil(TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE
+}
+
+/// Counts one archive member as headers plus padded file bytes, including GNU long names.
+fn tar_member_encoded_len(archive_path: &Path, content_len: u64) -> u64 {
+    let path_bytes = tar_path_bytes(archive_path);
+    let long_name_len = if path_bytes.len() >= TAR_NAME_FIELD_LEN {
+        // GNU long-link records store the path plus a NUL, then pad to 512.
+        TAR_BLOCK_SIZE + tar_padded_len(path_bytes.len() as u64 + 1)
+    } else {
+        0
+    };
+    long_name_len + TAR_BLOCK_SIZE + tar_padded_len(content_len)
+}
+
 /// Appends a directory tree into a tar builder in stable order so streams are deterministic.
-fn append_directory_entries(
-    builder: &mut tar::Builder<ChannelTarWriter>,
+fn append_directory_entries<W: Write>(
+    builder: &mut tar::Builder<W>,
     source_root: &Path,
     current_path: &Path,
     archive_root: Option<&Path>,
@@ -25,20 +95,7 @@ fn append_directory_entries(
 
     for entry in entries {
         let entry_path = entry.path();
-        let source_relative_path = entry_path
-            .strip_prefix(source_root)
-            .with_context(|| {
-                format!(
-                    "Failed to strip source prefix {} from {}",
-                    source_root.display(),
-                    entry_path.display()
-                )
-            })?
-            .to_path_buf();
-        let archive_path = match archive_root {
-            Some(archive_root) => archive_root.join(source_relative_path),
-            None => source_relative_path,
-        };
+        let archive_path = archive_member_path(source_root, &entry_path, archive_root)?;
         let metadata = std::fs::symlink_metadata(&entry_path)
             .with_context(|| format!("Failed to read entry metadata: {}", entry_path.display()))?;
 
@@ -70,6 +127,118 @@ fn append_directory_entries(
     }
 
     Ok(())
+}
+
+/// Writes the same directory archive the download worker streams, without reading
+/// through a websocket adapter so tests can compare encoded length to the walk.
+fn write_directory_tar<W: Write>(writer: W, source_path: &Path, include_root: bool) -> Result<W> {
+    let mut builder = tar::Builder::new(writer);
+    // Sparse encoding would omit holes and disagree with a metadata-only size walk.
+    builder.sparse(false);
+    let archive_root = directory_archive_root(source_path, include_root);
+    if let Some(root) = archive_root.as_deref() {
+        builder.append_dir(root, source_path).with_context(|| {
+            format!(
+                "Failed to append root directory to tar: {}",
+                source_path.display()
+            )
+        })?;
+    }
+    append_directory_entries(
+        &mut builder,
+        source_path,
+        source_path,
+        archive_root.as_deref(),
+    )?;
+    builder.finish().context("Failed to finalize tar stream")?;
+    builder
+        .into_inner()
+        .context("Failed to unwrap finished tar writer")
+}
+
+/// Walks directory metadata only so a total can arrive without reading file contents
+/// or delaying the first tar byte.
+async fn measure_directory_tar_size(
+    source_path: &Path,
+    include_root: bool,
+    cancel: &watch::Receiver<bool>,
+) -> Result<Option<u64>> {
+    if *cancel.borrow() {
+        return Ok(None);
+    }
+
+    let archive_root = directory_archive_root(source_path, include_root);
+    let mut total = 0u64;
+    if let Some(root) = archive_root.as_deref() {
+        total = total.saturating_add(tar_member_encoded_len(root, 0));
+    }
+
+    let mut pending = vec![source_path.to_path_buf()];
+    while let Some(current_path) = pending.pop() {
+        if *cancel.borrow() {
+            return Ok(None);
+        }
+
+        let mut collected = Vec::new();
+        let mut reader = tokio::fs::read_dir(&current_path)
+            .await
+            .with_context(|| format!("Failed to read directory: {}", current_path.display()))?;
+        while let Some(entry) = reader.next_entry().await.with_context(|| {
+            format!("Failed to read directory entry: {}", current_path.display())
+        })? {
+            collected.push(entry);
+        }
+        collected.sort_by_key(|entry| entry.file_name());
+
+        for entry in collected {
+            if *cancel.borrow() {
+                return Ok(None);
+            }
+
+            let entry_path = entry.path();
+            let archive_path =
+                archive_member_path(source_path, &entry_path, archive_root.as_deref())?;
+            let metadata = tokio::fs::symlink_metadata(&entry_path)
+                .await
+                .with_context(|| {
+                    format!("Failed to read entry metadata: {}", entry_path.display())
+                })?;
+
+            if metadata.is_dir() {
+                total = total.saturating_add(tar_member_encoded_len(&archive_path, 0));
+                pending.push(entry_path);
+            } else if metadata.is_file() {
+                total = total.saturating_add(tar_member_encoded_len(&archive_path, metadata.len()));
+            } else {
+                bail!(
+                    "Unsupported directory entry type in copy source: {}",
+                    entry_path.display()
+                );
+            }
+        }
+    }
+
+    // Two empty end-of-archive blocks, matching `tar::Builder::finish`.
+    Ok(Some(total.saturating_add(TAR_BLOCK_SIZE * 2)))
+}
+
+/// Publishes the predicted tar size on the text lane so control stays usable
+/// while binary chunks continue streaming.
+async fn send_download_total_update(
+    write: &mpsc::Sender<WsMessage>,
+    agent_id: &AgentId,
+    request_id: RequestId,
+    total_bytes: u64,
+) {
+    let message = Message::TransferProgressUpdate {
+        agent_id: agent_id.clone(),
+        request_id,
+        transferred_bytes: 0,
+        total_bytes: Some(total_bytes),
+    };
+    if let Ok(json) = serde_json::to_string(&message) {
+        let _ = write.send(WsMessage::text(json)).await;
+    }
 }
 
 /// Bridges synchronous `tar::Builder` writes into the async websocket sender.
@@ -115,6 +284,9 @@ struct TarDownloadWorker {
     include_root: bool,
     request_id: RequestId,
     write: mpsc::Sender<WsMessage>,
+    /// Text lane carries the later-discovered total without mixing it into tar bytes.
+    write_text: mpsc::Sender<WsMessage>,
+    agent_id: AgentId,
     cancel_receiver: watch::Receiver<bool>,
     active_downloads: ActiveDownloads,
     chunk_index: ChunkIndex,
@@ -165,6 +337,47 @@ impl TarDownloadWorker {
         self.cleanup().await;
     }
 
+    /// Starts the metadata-only size walk beside the tar stream so HTTP can start now.
+    fn spawn_size_measure(&self, source_path: PathBuf) {
+        let write_text = self.write_text.clone();
+        let agent_id = self.agent_id.clone();
+        let request_id = self.request_id;
+        let include_root = self.include_root;
+        let cancel_receiver = self.cancel_receiver.clone();
+        tokio::spawn(async move {
+            match measure_directory_tar_size(&source_path, include_root, &cancel_receiver).await {
+                Ok(Some(total_bytes)) => {
+                    log!(
+                        Level::Info,
+                        "Tar download size measured: request_id={}, path={}, total_bytes={}",
+                        request_id,
+                        source_path.display(),
+                        total_bytes
+                    );
+                    send_download_total_update(&write_text, &agent_id, request_id, total_bytes)
+                        .await;
+                }
+                Ok(None) => {
+                    log!(
+                        Level::Info,
+                        "Tar download size measure canceled: request_id={}, path={}",
+                        request_id,
+                        source_path.display()
+                    );
+                }
+                Err(error) => {
+                    log!(
+                        Level::Warning,
+                        "Tar download size measure failed: request_id={}, path={}, error={}",
+                        request_id,
+                        source_path.display(),
+                        error
+                    );
+                }
+            }
+        });
+    }
+
     /// Runs the tar streaming loop until EOF, cancellation, or failure.
     async fn process(mut self) {
         let source_path = PathBuf::from(&self.path);
@@ -211,6 +424,12 @@ impl TarDownloadWorker {
             return;
         }
 
+        if self.include_root {
+            // REST directory downloads include the root; remote copies do not
+            // and already ignore this update, so skip the extra metadata walk.
+            self.spawn_size_measure(source_path.clone());
+        }
+
         let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
         let source_path_for_worker = source_path.clone();
         let include_root = self.include_root;
@@ -221,39 +440,7 @@ impl TarDownloadWorker {
                 sender: tar_sender,
                 runtime,
             };
-            let mut builder = tar::Builder::new(writer);
-
-            let archive_root = include_root.then(|| {
-                source_path_for_worker
-                    .file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("archive"))
-            });
-
-            let root_result = match archive_root.as_deref() {
-                Some(archive_root) => builder
-                    .append_dir(archive_root, &source_path_for_worker)
-                    .with_context(|| {
-                        format!(
-                            "Failed to append root directory to tar: {}",
-                            source_path_for_worker.display()
-                        )
-                    }),
-                None => Ok(()),
-            };
-
-            let result = root_result
-                .and_then(|_| {
-                    append_directory_entries(
-                        &mut builder,
-                        &source_path_for_worker,
-                        &source_path_for_worker,
-                        archive_root.as_deref(),
-                    )
-                })
-                .and_then(|_| builder.finish().context("Failed to finalize tar stream"));
-
-            if let Err(error) = result {
+            if let Err(error) = write_directory_tar(writer, &source_path_for_worker, include_root) {
                 log!(
                     Level::Error,
                     "Tar directory streaming failed: path={}, error={}",
@@ -325,33 +512,139 @@ impl TarDownloadWorker {
     }
 }
 
+/// Holds the control and payload lanes needed to start one tar download worker.
+pub(crate) struct TarDownloadContext<'a> {
+    pub(crate) request_id: RequestId,
+    pub(crate) write: &'a mpsc::Sender<WsMessage>,
+    /// Text lane is separate so the size update cannot stall behind tar bytes.
+    pub(crate) write_text: &'a mpsc::Sender<WsMessage>,
+    pub(crate) agent_id: &'a AgentId,
+    pub(crate) cancel_receiver: watch::Receiver<bool>,
+    pub(crate) active_downloads: ActiveDownloads,
+}
+
 impl AgentActor {
     /// Streams a directory as tar bytes to the server using the shared transfer frame size.
     pub(crate) async fn tar_download(
         &self,
         path: String,
         include_root: bool,
-        request_id: RequestId,
-        write: &mpsc::Sender<WsMessage>,
-        cancel_receiver: watch::Receiver<bool>,
-        active_downloads: ActiveDownloads,
+        context: TarDownloadContext<'_>,
     ) {
         log!(
             Level::Info,
             "Started tar download: request_id={}, path={}",
-            request_id,
+            context.request_id,
             path
         );
         TarDownloadWorker {
             path,
             include_root,
-            request_id,
-            write: write.clone(),
-            cancel_receiver,
-            active_downloads,
+            request_id: context.request_id,
+            write: context.write.clone(),
+            write_text: context.write_text.clone(),
+            agent_id: context.agent_id.clone(),
+            cancel_receiver: context.cancel_receiver,
+            active_downloads: context.active_downloads,
             chunk_index: ChunkIndex::new(0),
         }
         .process()
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_test_path(prefix: &str) -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        std::env::temp_dir().join(format!(
+            "redoor-{prefix}-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    async fn write_tree(root: &Path) {
+        tokio::fs::create_dir_all(root.join("nested").join("deeper"))
+            .await
+            .expect("nested directories should be created");
+        tokio::fs::create_dir_all(root.join("empty"))
+            .await
+            .expect("empty directory should be created");
+        tokio::fs::write(root.join("top.txt"), b"directory archive root file")
+            .await
+            .expect("root file should be written");
+        tokio::fs::write(
+            root.join("nested").join("deeper").join("child.txt"),
+            b"directory archive nested file",
+        )
+        .await
+        .expect("nested file should be written");
+        tokio::fs::write(root.join("a".repeat(120)), b"long name")
+            .await
+            .expect("long member name should be written so GNU long-link size is covered");
+    }
+
+    #[tokio::test]
+    async fn predicted_tar_size_matches_builder_stream() {
+        let source_root = unique_test_path("tar-size-tree");
+        write_tree(&source_root).await;
+
+        for include_root in [true, false] {
+            let predicted =
+                measure_directory_tar_size(&source_root, include_root, &watch::channel(false).1)
+                    .await
+                    .expect("metadata walk should succeed")
+                    .expect("uncanceled walk should return a size");
+            let encoded = write_directory_tar(Vec::new(), &source_root, include_root)
+                .expect("tar builder should encode the same tree");
+            assert_eq!(
+                predicted,
+                encoded.len() as u64,
+                "predicted tar size must include headers, padding, and end blocks for include_root={include_root}"
+            );
+        }
+
+        let empty_root = unique_test_path("tar-size-empty");
+        tokio::fs::create_dir_all(&empty_root)
+            .await
+            .expect("empty directory should be created");
+        let predicted_empty =
+            measure_directory_tar_size(&empty_root, true, &watch::channel(false).1)
+                .await
+                .expect("empty-directory walk should succeed")
+                .expect("uncanceled empty walk should return a size");
+        let encoded_empty = write_directory_tar(Vec::new(), &empty_root, true)
+            .expect("empty directory should still encode a root member and end blocks");
+        assert_eq!(
+            predicted_empty,
+            encoded_empty.len() as u64,
+            "empty directories still have a root header plus two end blocks"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&source_root).await;
+        let _ = tokio::fs::remove_dir_all(&empty_root).await;
+    }
+
+    #[tokio::test]
+    async fn canceled_size_walk_returns_none() {
+        let source_root = unique_test_path("tar-size-canceled");
+        tokio::fs::create_dir_all(&source_root)
+            .await
+            .expect("directory should be created");
+        let (_cancel_sender, cancel_receiver) = watch::channel(true);
+
+        let measured = measure_directory_tar_size(&source_root, true, &cancel_receiver)
+            .await
+            .expect("a canceled walk is not a filesystem failure");
+        assert_eq!(
+            measured, None,
+            "cancel must stop the walk before it publishes a stale total"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&source_root).await;
     }
 }

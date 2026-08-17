@@ -264,11 +264,12 @@ pub enum Message {
         result: crate::commands::CommandResult,
     },
 
-    /// Sent by an agent to report byte progress for a router-managed copy that
-    /// executes locally on one agent.
+    /// Sent by an agent to report copy byte progress or a later-discovered
+    /// directory-download tar total.
     ///
-    /// Direct uploads and downloads do not use this message because the router
-    /// derives their progress from streamed chunks instead.
+    /// Direct uploads and file downloads still derive transferred counts from
+    /// streamed chunks. Directory archives also send this once so the router can
+    /// set `total_bytes` without overwriting those counted bytes.
     #[serde(rename = "transfer_progress_update")]
     TransferProgressUpdate {
         agent_id: AgentId,

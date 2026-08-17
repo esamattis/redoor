@@ -1,5 +1,5 @@
 pub(super) mod copy;
 pub(super) mod destination;
-mod download;
+pub(super) mod download;
 pub(super) mod r#move;
 pub(super) mod upload;

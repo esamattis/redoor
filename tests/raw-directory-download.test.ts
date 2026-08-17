@@ -4,6 +4,7 @@ import { Agent } from "#ui/api-client";
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -68,6 +69,11 @@ describe("Raw Directory Archive Download API", () => {
             "directory archive nested file",
             "utf-8",
         );
+        // Large members keep the tar stream open after the metadata walk finishes.
+        await fs.writeFile(
+            path.join(sourceRoot, "payload.bin"),
+            Buffer.alloc(4 * 1024 * 1024, 7),
+        );
 
         const response = await testAgent.download(sourceRoot, {
             download: true,
@@ -82,6 +88,25 @@ describe("Raw Directory Archive Download API", () => {
         );
         // Unknown archive length must not claim a Content-Length that could truncate the body.
         expect(response.headers.get("Content-Length")).toBeNull();
+
+        const publishedTotal = await waitForValue({
+            description:
+                "directory archive total published while the download is still active",
+            predicate: async () => {
+                const progress = await apiClient.getTransferProgress();
+                return progress.transfers.find(
+                    (transfer: TransferProgressEntry) =>
+                        transfer.agent_id === testAgent.id &&
+                        transfer.path === sourceRoot &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.total_bytes > 0,
+                );
+            },
+        });
+        // Holding the HTTP body open until this point proves the walk did not
+        // wait for the stream to finish and did not invent the total at completion.
+        expect(publishedTotal.total_bytes).toBeGreaterThan(0);
 
         const archiveBytes = Buffer.from(await response.arrayBuffer());
         // A non-empty body proves the agent tar worker produced stream chunks that the server gzipped.
@@ -152,10 +177,16 @@ describe("Raw Directory Archive Download API", () => {
         });
         // Download direction keeps archive pulls on the same progress surface as file downloads.
         expect(completedTransfer.direction).toBe("download");
-        // Progress tracks plain agent tar bytes before REST gzip, so it can exceed the body size.
-        expect(completedTransfer.total_bytes).toBeGreaterThan(0);
+        // The live walk total must match counted tar bytes on an unchanged tree.
         expect(completedTransfer.transferred_bytes).toBe(
-            completedTransfer.total_bytes,
+            publishedTotal.total_bytes,
+        );
+        expect(completedTransfer.total_bytes).toBe(
+            publishedTotal.total_bytes,
+        );
+        // Progress tracks plain agent tar bytes before REST gzip, so it matches the unzipped archive.
+        expect(gunzipSync(archiveBytes).byteLength).toBe(
+            completedTransfer.transferred_bytes,
         );
     });
 

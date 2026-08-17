@@ -2,13 +2,52 @@ use super::super::RouterError;
 use super::super::RouterHandle;
 use super::super::messages::{
     ExecuteStreamRequest, FinishDownloadChunkRoute, RouteStreamChunkRequest, RouterMsg,
+    TransferProgressUpdateRequest,
 };
 use super::super::progress::{self, DownloadStartContext};
 use super::super::state::RouterState;
 use super::super::ui;
+use crate::commands::{TransferDirection, TransferProgressState};
 use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
+
+/// Applies a download-only total discovered after the stream already started.
+///
+/// Copy updates stay on their overwrite path. Returning false lets the router
+/// fall through when this request is not an active or terminal download.
+pub(crate) fn update_progress(
+    state: &mut RouterState,
+    request: &TransferProgressUpdateRequest,
+) -> bool {
+    let progress_id = state
+        .streams
+        .downloads
+        .get(&request.request_id)
+        .and_then(|transfer| {
+            (transfer.agent_id == request.agent_id).then_some(transfer.progress_id)
+        })
+        .flatten()
+        .unwrap_or_else(|| request.request_id.as_transfer_id());
+
+    let Some(progress) = state.progress.entries.get(&progress_id) else {
+        return false;
+    };
+    if progress.agent_id != request.agent_id {
+        return false;
+    }
+    if !matches!(progress.direction, TransferDirection::Download) {
+        return false;
+    }
+    if !matches!(progress.state, TransferProgressState::Active) {
+        return true;
+    }
+    let Some(total_bytes) = request.total_bytes else {
+        return true;
+    };
+    progress::set_download_total(state, progress_id, total_bytes);
+    true
+}
 
 /// Starts a direct download stream and records its progress entry.
 pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
