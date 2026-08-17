@@ -76,3 +76,5 @@ Never use ! to fix nullish issues in typescript. Always handle nullish values pr
 Reuse the overlay components in `ui/src/components`: `Toast` for transient live-region feedback, `Dialog` for modal workflows, and `Tooltip` for hover and keyboard-focus descriptions. Do not use the native `<dialog>` element for toasts or tooltips because they must remain non-modal.
 
 Use `Tooltip` to clarify the purpose of most buttons and other form controls, especially icon-only or potentially ambiguous actions.
+
+Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AddButton, Checkbox, ConfirmationDialog, CopyableCodeRow, CopyablePath, Dialog, LogViewer, OverlayChromeLayout, Password, SideMenu, TabbedBottomDrawer, TextField, ThemeToggle, Toast, Tooltip
