@@ -27,7 +27,7 @@ test.describe("Agent view navigation", () => {
 
         const agentView = page.getByLabel("Agent view");
         const agentLink = agentView.getByRole("link", {
-            name: "Agent",
+            name: context.agentName,
             exact: true,
         });
         const agentViewScroll = await agentView.evaluate((element) => {
@@ -46,7 +46,9 @@ test.describe("Agent view navigation", () => {
         expect(agentViewScroll.scrollLeft).toBeGreaterThan(0);
         // Agent details must be represented by the first current contextual top tab.
         await expect(agentLink).toHaveAttribute("aria-current", "page");
-        await expect(agentView.getByRole("link").first()).toHaveText("Agent");
+        await expect(agentView.getByRole("link").first()).toHaveText(
+            context.agentName,
+        );
 
         await agentView
             .getByRole("link", { name: "Files", exact: true })
@@ -110,7 +112,7 @@ test.describe("Agent view navigation", () => {
         // The final file tab must be reachable by horizontal scrolling on mobile.
         expect(fileViewScroll.scrollLeft).toBeGreaterThan(0);
         await browserAgentView
-            .getByRole("link", { name: "Agent", exact: true })
+            .getByRole("link", { name: context.agentName, exact: true })
             .click();
         // Returning to the agent page must restore the Agent tab as current.
         await expect(page).toHaveURL(new RegExp(`/agents/${context.agentId}$`));

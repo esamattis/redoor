@@ -1107,7 +1107,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("link", { name: "Agent home" }),
         ).toHaveAttribute("href", new URL(ctx.agentBrowserUrl).pathname);
         const backToAgentButton = page.getByRole("link", {
-            name: "Agent",
+            name: ctx.agentName,
             exact: true,
         });
         await backToAgentButton.click();

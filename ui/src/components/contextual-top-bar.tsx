@@ -90,7 +90,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
             <ViewSwitch label="Agent view">
                 <ViewLink
                     to={agentTarget}
-                    label="Agent"
+                    label={agent.name}
                     icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
                     active={props.context.kind === "agent"}
                 />
@@ -133,7 +133,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
         <ViewSwitch label="Agent view">
             <ViewLink
                 to={agentTarget}
-                label="Agent"
+                label={agent.name}
                 icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
                 active={false}
             />
