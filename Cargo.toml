@@ -21,7 +21,7 @@ chrono = "0.4.45"
 ts-rs = "12.0.1"
 sysinfo = "0.39.6"
 tower-http = { version = "0.7.0", features = ["cors"] }
-nix = { version = "0.31.3", features = ["user", "signal"] }
+nix = { version = "0.31.3", features = ["user", "signal", "process", "event"] }
 libc = "0.2"
 fastrand = "2.5.0"
 async-stream = "0.3.6"

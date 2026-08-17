@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
     mkdirSync,
     mkdtempSync,
@@ -188,4 +188,69 @@ port = ${port}
             stderr: expect.stringContaining("relay 'production' is not running"),
         });
     });
+
+    test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+        "foreground server exits when its parent is killed",
+        async () => {
+            const isolated = isolatedProcess("server");
+            const port = await getAvailablePort();
+            const configDirectory = join(
+                isolated.env.HOME,
+                ".config",
+                isolated.env.REDOOR_APP_NAME,
+            );
+            const configPath = join(configDirectory, "config.toml");
+            mkdirSync(configDirectory, { recursive: true });
+            writeFileSync(
+                configPath,
+                `agent_token = "lifecycle-token"
+
+[server]
+username = "lifecycle-user"
+password = "lifecycle-password"
+port = ${port}
+`,
+            );
+
+            const quotedServer = `'${SERVER_PATH.replaceAll("'", `'\\''`)}'`;
+            const quotedConfig = `'${configPath.replaceAll("'", `'\\''`)}'`;
+            const parent = spawn(
+                "sh",
+                [
+                    "-c",
+                    `${quotedServer} server --config ${quotedConfig}; true`,
+                ],
+                { env: isolated.env },
+            );
+            onTestFinished(() => {
+                if (parent.pid !== undefined) {
+                    try {
+                        process.kill(parent.pid, "SIGKILL");
+                    } catch {
+                        // The SIGKILL under test may already have reaped this shell.
+                    }
+                }
+            });
+
+            const serverPid = await waitForPid(isolated.pidFile);
+            onTestFinished(() => {
+                try {
+                    process.kill(serverPid, "SIGKILL");
+                } catch {
+                    // Parent-death should already have terminated the server.
+                }
+            });
+
+            if (parent.pid === undefined) {
+                throw new Error("parent shell should have a pid");
+            }
+            // bash execs a lone `sh -c` command; `; true` keeps a real parent to SIGKILL.
+            expect(parent.pid).not.toBe(serverPid);
+            process.kill(parent.pid, "SIGKILL");
+            await vi.waitFor(() => {
+                // SIGKILL of playwright-dev cannot run a trap; the server must exit itself.
+                expect(() => process.kill(serverPid, 0)).toThrow();
+            });
+        },
+    );
 });

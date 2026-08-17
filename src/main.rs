@@ -210,6 +210,7 @@ async fn main() {
         ssh::askpass::run();
         return;
     }
+    process_control::record_launch_parent();
     let cli = Cli::parse();
     app_name::initialize(cli.app_name);
     match cli.command {
@@ -301,6 +302,7 @@ async fn main() {
 
 /// Loads one named relay, establishes its isolated runtime identity, and starts it.
 async fn run_named_relay(args: RelayStartArgs) {
+    process_control::record_launch_parent();
     let config_path = match args.config.map(PathBuf::from) {
         Some(path) => path,
         None => match config::default_config_path() {
@@ -328,6 +330,7 @@ async fn run_named_relay(args: RelayStartArgs) {
         run_utility(process_control::spawn_relay_daemon(&relay.id)).await;
         return;
     }
+    process_control::bind_to_parent_lifetime();
     let agent_name = relay
         .agent
         .name
@@ -369,10 +372,12 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
+    process_control::record_launch_parent();
     if daemon {
         run_utility(process_control::spawn_daemon(slot)).await;
         return;
     }
+    process_control::bind_to_parent_lifetime();
     let pid_file = match process_control::acquire(slot).await {
         Ok(pid_file) => pid_file,
         Err(error) => {
