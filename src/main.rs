@@ -658,6 +658,12 @@ mod tests {
             "server launchd setup should parse under the server role"
         );
         assert!(
+            Cli::try_parse_from(["redoor", "server", "launchd", "--verbose", "start"]).is_ok()
+                && Cli::try_parse_from(["redoor", "server", "launchd", "start", "--verbose",])
+                    .is_ok(),
+            "launchd verbosity should parse on either side of its selected action"
+        );
+        assert!(
             Cli::try_parse_from(["redoor", "systemd", "status", "--mode", "agent"]).is_err(),
             "the former top-level systemd command must no longer be accepted"
         );

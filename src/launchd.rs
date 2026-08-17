@@ -21,6 +21,9 @@ use crate::ServiceRole;
 #[derive(Args)]
 #[command(author, version, about)]
 pub(crate) struct LaunchdArgs {
+    /// Show output from internal launchctl commands.
+    #[arg(long, global = true)]
+    verbose: bool,
     /// Selects the launchd operation while keeping service targeting consistent.
     #[command(subcommand)]
     command: LaunchdCommand,
@@ -78,15 +81,15 @@ pub(crate) async fn run(args: LaunchdArgs, role: ServiceRole) -> Result<()> {
     {
         ensure_non_root()?;
         match args.command {
-            LaunchdCommand::Setup(service) => setup(service, role).await,
+            LaunchdCommand::Setup(service) => setup(service, role, args.verbose).await,
             LaunchdCommand::Start(service) => {
-                manage_service(service, role, ServiceAction::Start).await
+                manage_service(service, role, ServiceAction::Start, args.verbose).await
             }
             LaunchdCommand::Stop(service) => {
-                manage_service(service, role, ServiceAction::Stop).await
+                manage_service(service, role, ServiceAction::Stop, args.verbose).await
             }
             LaunchdCommand::Restart(service) => {
-                manage_service(service, role, ServiceAction::Restart).await
+                manage_service(service, role, ServiceAction::Restart, args.verbose).await
             }
             LaunchdCommand::Logs(logs) => {
                 manage_service(
@@ -95,14 +98,15 @@ pub(crate) async fn run(args: LaunchdArgs, role: ServiceRole) -> Result<()> {
                     ServiceAction::Logs {
                         follow: logs.follow,
                     },
+                    args.verbose,
                 )
                 .await
             }
             LaunchdCommand::Status(service) => {
-                manage_service(service, role, ServiceAction::Status).await
+                manage_service(service, role, ServiceAction::Status, args.verbose).await
             }
             LaunchdCommand::Enable(service) => {
-                manage_service(service, role, ServiceAction::Enable).await
+                manage_service(service, role, ServiceAction::Enable, args.verbose).await
             }
         }
     }
@@ -138,7 +142,7 @@ fn resolve_service_name(mode: ServiceRole, service_name: Option<String>) -> Resu
 
 /// Installs a user LaunchAgent and enables it for future logins without starting it now.
 #[cfg(target_os = "macos")]
-async fn setup(args: ServiceArgs, role: ServiceRole) -> Result<()> {
+async fn setup(args: ServiceArgs, role: ServiceRole, verbose: bool) -> Result<()> {
     let service = resolve_service_name(role, args.service_name)?;
     let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(role, &config_path).await?;
@@ -164,7 +168,7 @@ async fn setup(args: ServiceArgs, role: ServiceRole) -> Result<()> {
     // A disabled override survives plist discovery, so explicitly clear it while
     // leaving the agent unloaded until the operator starts it or logs in again.
     let target = service_target(&service);
-    run_command("launchctl", &["enable", &target])
+    run_command("launchctl", &["enable", &target], verbose)
         .await
         .context("Failed to enable the LaunchAgent for user login")?;
 
@@ -186,7 +190,12 @@ enum ServiceAction {
 
 /// Executes one action against an installed LaunchAgent in the current GUI domain.
 #[cfg(target_os = "macos")]
-async fn manage_service(args: ServiceArgs, role: ServiceRole, action: ServiceAction) -> Result<()> {
+async fn manage_service(
+    args: ServiceArgs,
+    role: ServiceRole,
+    action: ServiceAction,
+    verbose: bool,
+) -> Result<()> {
     let service = resolve_service_name(role, args.service_name)?;
     let plist_path = launch_agent_path(&service)?;
     ensure_plist_exists(&plist_path, &service, role).await?;
@@ -199,37 +208,45 @@ async fn manage_service(args: ServiceArgs, role: ServiceRole, action: ServiceAct
     let target = service_target(&service);
     match action {
         ServiceAction::Start => {
-            if service_is_loaded(&target).await? {
-                run_command("launchctl", &["kickstart", "-k", &target]).await
+            if service_is_loaded(&target, verbose).await? {
+                run_command("launchctl", &["kickstart", "-k", &target], verbose).await
             } else {
                 run_command(
                     "launchctl",
                     &["bootstrap", &domain, &plist_path.to_string_lossy()],
+                    verbose,
                 )
                 .await
             }
         }
         ServiceAction::Stop => {
-            if service_is_loaded(&target).await? {
-                run_command("launchctl", &["bootout", &target]).await
+            if service_is_loaded(&target, verbose).await? {
+                run_command("launchctl", &["bootout", &target], verbose).await
             } else {
                 Ok(())
             }
         }
         ServiceAction::Restart => {
-            if service_is_loaded(&target).await? {
-                run_command("launchctl", &["bootout", &target])
+            if service_is_loaded(&target, verbose).await? {
+                run_command("launchctl", &["bootout", &target], verbose)
                     .await
                     .context("Failed to unload the running LaunchAgent before restart")?;
             }
             run_command(
                 "launchctl",
                 &["bootstrap", &domain, &plist_path.to_string_lossy()],
+                verbose,
             )
             .await
         }
-        ServiceAction::Status => run_command_inherited("launchctl", &["print", &target]).await,
-        ServiceAction::Enable => run_command("launchctl", &["enable", &target]).await,
+        ServiceAction::Status => {
+            if verbose {
+                run_command_inherited("launchctl", &["print", &target]).await
+            } else {
+                show_status(&service, &target).await
+            }
+        }
+        ServiceAction::Enable => run_command("launchctl", &["enable", &target], verbose).await,
         ServiceAction::Logs { .. } => unreachable!("logs return before launchctl dispatch"),
     }
 }
@@ -248,13 +265,56 @@ fn service_target(service: &str) -> String {
 
 /// Checks whether launchd currently has the service loaded.
 #[cfg(target_os = "macos")]
-async fn service_is_loaded(target: &str) -> Result<bool> {
-    let status = Command::new("launchctl")
-        .args(["print", target])
-        .status()
+async fn service_is_loaded(target: &str, verbose: bool) -> Result<bool> {
+    let status = run_status_command("launchctl", &["print", target], verbose)
         .await
         .context("Failed to ask launchd whether the service is loaded")?;
     Ok(status.success())
+}
+
+/// Summarizes both launchd registration and process state without exposing raw internals.
+#[cfg(target_os = "macos")]
+async fn show_status(service: &str, target: &str) -> Result<()> {
+    let output = Command::new("launchctl")
+        .args(["print", target])
+        .output()
+        .await
+        .context("Failed to ask launchd for the service status")?;
+    if !output.status.success() {
+        bail!("LaunchAgent '{service}' is not loaded, so it is not running");
+    }
+
+    let print_output = String::from_utf8_lossy(&output.stdout);
+    println!("{}", format_status(service, &print_output));
+    Ok(())
+}
+
+/// Converts launchctl's verbose property listing into an operator-facing status line.
+#[cfg(any(target_os = "macos", test))]
+fn format_status(service: &str, print_output: &str) -> String {
+    let property = |name: &str| {
+        print_output
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix(&format!("{name} = ")))
+    };
+    let state = property("state");
+    let pid = property("pid");
+
+    match (state, pid) {
+        (Some("running"), Some(pid)) => {
+            format!("LaunchAgent '{service}' is loaded and running with PID {pid}")
+        }
+        (Some("running"), None) => {
+            format!("LaunchAgent '{service}' is loaded and running")
+        }
+        (Some(state), _) => {
+            format!("LaunchAgent '{service}' is loaded but not running (state: {state})")
+        }
+        (None, _) => format!(
+            "LaunchAgent '{service}' is loaded, but launchd did not report its process state"
+        ),
+    }
 }
 
 /// Returns the conventional plist path for a user LaunchAgent label.
@@ -467,7 +527,15 @@ fn escape_xml(value: &str) -> String {
 
 /// Runs one finite administration command and preserves stderr on failure.
 #[cfg(target_os = "macos")]
-async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
+async fn run_command(program: &str, arguments: &[&str], verbose: bool) -> Result<()> {
+    if verbose {
+        let status = run_status_command(program, arguments, true).await?;
+        if status.success() {
+            return Ok(());
+        }
+        bail!("{} {} failed with {}", program, arguments.join(" "), status);
+    }
+
     let output = Command::new(program)
         .args(arguments)
         .output()
@@ -484,6 +552,25 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
         output.status,
         stderr.trim()
     )
+}
+
+/// Runs a command with visible streams only when launchd diagnostics were requested.
+#[cfg(target_os = "macos")]
+async fn run_status_command(
+    program: &str,
+    arguments: &[&str],
+    verbose: bool,
+) -> Result<std::process::ExitStatus> {
+    let mut command = Command::new(program);
+    command.args(arguments);
+    if !verbose {
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+    }
+    command
+        .status()
+        .await
+        .with_context(|| format!("Failed to run {program}"))
 }
 
 /// Runs a continuous command with inherited streams for interactive log following.
@@ -503,7 +590,7 @@ async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ServiceRole, escape_xml, render_plist, resolve_service_name};
+    use super::{ServiceRole, escape_xml, format_status, render_plist, resolve_service_name};
     use std::path::Path;
 
     /// Verifies default labels and safe custom labels remain stable.
@@ -574,6 +661,25 @@ mod tests {
             escape_xml("<&>\"'"),
             "&lt;&amp;&gt;&quot;&apos;",
             "dynamic plist values must not be able to alter the XML structure"
+        );
+    }
+
+    /// Keeps concise status explicit about the difference between loaded and running.
+    #[test]
+    fn formats_launchd_process_status() {
+        assert_eq!(
+            format_status(
+                "redoor-server",
+                "state = running
+pid = 1234",
+            ),
+            "LaunchAgent 'redoor-server' is loaded and running with PID 1234",
+            "a running service should include its process ID"
+        );
+        assert_eq!(
+            format_status("redoor-server", "state = waiting"),
+            "LaunchAgent 'redoor-server' is loaded but not running (state: waiting)",
+            "a registered service without a process must not be described as running"
         );
     }
 }
