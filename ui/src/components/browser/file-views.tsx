@@ -1,7 +1,7 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import { Download, MoreHorizontal } from "lucide-react";
+import { Download, MoreHorizontal, RefreshCw, Save } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
@@ -41,6 +41,7 @@ function FileEditActions(props: {
                     size="sm"
                     className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
                 >
+                    <Save className="h-4 w-4" aria-hidden="true" />
                     {props.isSaving ? "Saving..." : "Save"}
                 </Button>
             </Tooltip>
@@ -55,6 +56,7 @@ function FileEditActions(props: {
                     size="sm"
                     className="rounded-md bg-slate-800/80 px-3.5 font-semibold hover:bg-slate-700"
                 >
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
                     {props.isReloading ? "Reloading..." : "Reload"}
                 </Button>
             </Tooltip>
