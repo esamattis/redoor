@@ -10,6 +10,7 @@ import {
 import type * as React from "react";
 
 import type { Agent } from "#ui/api-client";
+import { IconButton } from "#ui/components/icon-button";
 import {
     getViewSwitchItemClass,
     ViewSwitch,
@@ -39,10 +40,11 @@ export function ContextualTopBar(props: {
             aria-label="View navigation"
             className="flex min-h-12 min-w-0 items-center gap-2 border-b border-slate-800 bg-[#0f1218] px-2 pt-2 md:px-3"
         >
-            <button
+            <IconButton
                 ref={props.applicationTriggerRef}
                 type="button"
-                aria-label="Open application menu"
+                label="Open application menu"
+                tooltipClassName="xl:hidden"
                 aria-haspopup="dialog"
                 aria-controls="application-menu-drawer"
                 aria-expanded={props.isApplicationMenuOpen}
@@ -50,15 +52,16 @@ export function ContextualTopBar(props: {
                 className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100 xl:hidden"
             >
                 <PanelLeftOpen className="h-5 w-5" aria-hidden="true" />
-            </button>
+            </IconButton>
             <div className="flex min-w-0 flex-1 self-stretch items-end overflow-x-auto overscroll-x-contain">
                 <ContextualViewSwitch context={props.context} />
             </div>
             <ThemeToggle />
-            <button
+            <IconButton
                 ref={props.agentTriggerRef}
                 type="button"
-                aria-label="Open agent menu"
+                label="Open agent menu"
+                tooltipClassName="xl:hidden"
                 aria-haspopup="dialog"
                 aria-controls="agent-menu-drawer"
                 aria-expanded={props.isAgentMenuOpen}
@@ -66,7 +69,7 @@ export function ContextualTopBar(props: {
                 className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100 xl:hidden"
             >
                 <PanelRightOpen className="h-5 w-5" aria-hidden="true" />
-            </button>
+            </IconButton>
         </header>
     );
 }

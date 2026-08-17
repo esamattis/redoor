@@ -13,6 +13,9 @@ import {
     RefreshCw,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { Button } from "#ui/components/button";
+import { InputControl } from "#ui/components/input-control";
+import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     getBrowserPathHref,
@@ -314,14 +317,15 @@ export function UnavailablePathState(props: {
                 </div>
             </div>
             <div className="mt-5 flex flex-wrap gap-2">
-                <button
+                <Button
                     type="button"
                     onClick={() => window.history.back()}
-                    className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                    size="sm"
+                    className="rounded-md"
                 >
                     <ArrowLeft className="h-4 w-4" aria-hidden="true" />
                     Go back
-                </button>
+                </Button>
                 {props.parentPath ? (
                     <Link
                         to={getBrowserPathHref(props.agent, props.parentPath)}
@@ -408,7 +412,7 @@ function Breadcrumbs(props: {
                     onSubmit={navigateToEditedPath}
                     className="flex min-w-0 flex-1 items-center gap-1"
                 >
-                    <input
+                    <InputControl
                         ref={pathInputRef}
                         type="text"
                         value={editedPath}
@@ -419,15 +423,15 @@ function Breadcrumbs(props: {
                             }
                         }}
                         aria-label="File path"
-                        className="min-w-0 w-full flex-1 rounded-md border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        className="min-w-0 w-full flex-1 border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm"
                     />
-                    <button
+                    <IconButton
                         type="submit"
-                        aria-label="Navigate to path"
+                        label="Navigate to path"
                         className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
                         <Check className="h-4 w-4" />
-                    </button>
+                    </IconButton>
                 </form>
             ) : (
                 <>
@@ -479,14 +483,14 @@ function Breadcrumbs(props: {
                             );
                         })}
                     </nav>
-                    <button
+                    <IconButton
                         type="button"
                         onClick={startEditing}
-                        aria-label="Edit file path"
+                        label="Edit file path"
                         className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-100"
                     >
                         <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                    </IconButton>
                 </>
             )}
         </div>

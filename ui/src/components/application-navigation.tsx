@@ -11,6 +11,7 @@ import {
 import type * as React from "react";
 
 import type { ApiClient } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { SideMenu } from "#ui/components/side-menu";
 import { serverInfoQueryOptions } from "#ui/queries";
@@ -106,7 +107,7 @@ function ApplicationMenu(props: {
                 <RestartButton
                     target="server"
                     ariaLabel="Restart server"
-                    className="flex w-full items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                    className="flex w-full items-center justify-start gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
                     description="The server will restart and re-read its configuration. Connected agents reconnect automatically. In-flight transfers and terminals are interrupted."
                     restart={() => props.api.restartServer()}
                     waitUntilReady={() => {
@@ -130,11 +131,12 @@ function ApplicationMenu(props: {
                         }, "Server did not come back after restart");
                     }}
                 />
-                <button
+                <Button
                     type="button"
+                    variant="subtle"
                     onClick={props.onLogout}
                     disabled={props.isLoggingOut}
-                    className="flex w-full items-center gap-2.5 rounded px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+                    className="flex w-full items-center justify-start gap-2.5 rounded px-3 py-2.5 text-left text-sm font-normal text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
                 >
                     {props.isLoggingOut ? (
                         <LoaderCircle
@@ -148,7 +150,7 @@ function ApplicationMenu(props: {
                         />
                     )}
                     {props.isLoggingOut ? "Logging out…" : "Log out"}
-                </button>
+                </Button>
             </div>
         </nav>
     );

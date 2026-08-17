@@ -35,6 +35,8 @@ import {
     getAgentTabLocation,
 } from "#ui/agent-tab-locations";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
+import { Button } from "#ui/components/button";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyablePath } from "#ui/components/copyable-code-row";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { UpgradeButton } from "#ui/components/upgrade-button";
@@ -95,6 +97,7 @@ function AgentLifecycle(props: { agent: Agent }) {
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const state = startStates[props.agent.id];
     const now = useNow();
+    const [isShutdownOpen, setIsShutdownOpen] = React.useState(false);
     const shouldAppearStarting =
         props.agent.status === "starting" || state?.starting === true;
 
@@ -125,6 +128,7 @@ function AgentLifecycle(props: { agent: Agent }) {
     const shutdownMutation = useMutation({
         mutationFn: () => props.agent.shutdown(),
         onSuccess: async () => {
+            setIsShutdownOpen(false);
             setStartStates((states) => {
                 const next = { ...states };
                 delete next[props.agent.id];
@@ -134,6 +138,18 @@ function AgentLifecycle(props: { agent: Agent }) {
         },
     });
     const start = startMutation.mutate;
+    const shutdownError = shutdownMutation.isError
+        ? shutdownMutation.error instanceof Error
+            ? shutdownMutation.error.message
+            : "Failed to shut down agent"
+        : null;
+
+    /** Leaves an in-flight shutdown modal in place until the request settles. */
+    const closeShutdown = () => {
+        if (shutdownMutation.isPending) return;
+        setIsShutdownOpen(false);
+        shutdownMutation.reset();
+    };
 
     React.useEffect(() => {
         if (
@@ -194,26 +210,35 @@ function AgentLifecycle(props: { agent: Agent }) {
                 ) : null}
                 {props.agent.managed ? (
                     <div className="mt-6 flex justify-center gap-3">
-                        <button
+                        <Button
                             type="button"
                             onClick={() => start()}
                             disabled={state?.starting === true}
-                            className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:opacity-50"
                         >
                             Retry Start
-                        </button>
+                        </Button>
                         {shouldAppearStarting ? (
-                            <button
+                            <Button
                                 type="button"
-                                onClick={() => shutdownMutation.mutate()}
-                                disabled={shutdownMutation.isPending}
-                                className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
+                                variant="secondary"
+                                onClick={() => setIsShutdownOpen(true)}
                             >
                                 Shutdown
-                            </button>
+                            </Button>
                         ) : null}
                     </div>
                 ) : null}
+                <ConfirmationDialog
+                    isOpen={isShutdownOpen}
+                    title={`Shut down ${props.agent.name}?`}
+                    description="Active transfers and terminals for this agent will be interrupted."
+                    confirmLabel="Shutdown"
+                    busyLabel="Shutting down…"
+                    isBusy={shutdownMutation.isPending}
+                    errorMessage={shutdownError}
+                    onClose={closeShutdown}
+                    onConfirm={() => shutdownMutation.mutate()}
+                />
             </section>
         </div>
     );

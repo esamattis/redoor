@@ -1,6 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { IconButton } from "#ui/components/icon-button";
 
 /**
  * Provides consistent modal structure and dismissal behavior for UI workflows.
@@ -92,15 +93,15 @@ export function Dialog(props: {
                             </div>
                         ) : null}
                     </div>
-                    <button
+                    <IconButton
                         type="button"
-                        aria-label={props.closeAriaLabel}
+                        label={props.closeAriaLabel}
                         onClick={props.onClose}
                         disabled={props.isBusy}
                         className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <X className="h-4 w-4" />
-                    </button>
+                    </IconButton>
                 </div>
             )}
 

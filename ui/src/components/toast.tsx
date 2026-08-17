@@ -1,5 +1,6 @@
 import React from "react";
 import { X } from "lucide-react";
+import { IconButton } from "#ui/components/icon-button";
 
 type ToastTone = "info" | "success" | "error";
 
@@ -29,16 +30,14 @@ export function Toast(props: {
             {props.icon}
             <span>{props.children}</span>
             {props.onDismiss ? (
-                <button
+                <IconButton
                     type="button"
-                    aria-label={
-                        props.dismissAriaLabel ?? "Dismiss notification"
-                    }
+                    label={props.dismissAriaLabel ?? "Dismiss notification"}
                     onClick={props.onDismiss}
                     className="ml-1 rounded p-1 hover:bg-white/10"
                 >
                     <X className="h-4 w-4" />
-                </button>
+                </IconButton>
             ) : null}
         </div>
     );

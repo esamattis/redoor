@@ -1,4 +1,5 @@
 import * as React from "react";
+import { InputControl } from "#ui/components/input-control";
 
 /** Keeps form controls visually and accessibly consistent without hiding labels. */
 export function TextField(props: {
@@ -31,7 +32,7 @@ export function TextField(props: {
                     {props.required ? "Required" : "Optional"}
                 </span>
             </div>
-            <input
+            <InputControl
                 id={inputId}
                 value={props.value}
                 placeholder={props.placeholder}
@@ -45,7 +46,7 @@ export function TextField(props: {
                 max={props.max}
                 disabled={props.disabled}
                 onChange={(event) => props.onChange(event.target.value)}
-                className="mt-2 w-full rounded-md border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
+                className="mt-2 w-full placeholder:text-slate-600 disabled:opacity-60"
             />
             <p id={descriptionId} className="mt-1.5 text-xs text-slate-500">
                 {props.description}

@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { FilePlus, FolderPlus } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { TextField } from "#ui/components/text-field";
 import {
     getErrorMessage,
@@ -103,23 +104,19 @@ export function MissingPathCreationForm(props: { agent: Agent; path: string }) {
                     </p>
                 ) : null}
                 <div className="mt-5 flex flex-wrap gap-3">
-                    <button
-                        type="submit"
-                        disabled={createMutation.isPending}
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
+                    <Button type="submit" isLoading={createMutation.isPending}>
                         <FilePlus className="h-4 w-4" aria-hidden="true" />
                         File
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={() => createEntry("directory")}
-                        disabled={createMutation.isPending}
-                        className="inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                        isLoading={createMutation.isPending}
                     >
                         <FolderPlus className="h-4 w-4" aria-hidden="true" />
                         Directory
-                    </button>
+                    </Button>
                 </div>
             </form>
         </section>

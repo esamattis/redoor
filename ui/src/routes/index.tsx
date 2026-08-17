@@ -13,6 +13,7 @@ import {
 
 import type { Agent, ServerAuthMode } from "#ui/api-client";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
+import { Button } from "#ui/components/button";
 import {
     CopyableCodeRow,
     CopyablePath,
@@ -142,18 +143,19 @@ function OpenAgentSidebarButton() {
 
     return (
         <Tooltip content="Open agent sidebar">
-            <button
+            <Button
                 type="button"
+                variant="subtle"
                 aria-label="Open agent sidebar"
                 aria-haspopup="dialog"
                 aria-controls="agent-menu-drawer"
                 aria-expanded={openMenu === "agents"}
                 onClick={() => setOpenMenu("agents")}
-                className="mt-2 inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm text-slate-200 hover:border-slate-600 hover:bg-white/5"
+                className="mt-2 inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm font-normal text-slate-200 hover:border-slate-600 hover:bg-white/5"
             >
                 <PanelRightOpen className="h-3.5 w-3.5" aria-hidden="true" />
                 Agent menu
-            </button>
+            </Button>
         </Tooltip>
     );
 }

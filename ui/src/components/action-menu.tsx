@@ -1,4 +1,5 @@
 import React from "react";
+import { twMerge } from "tailwind-merge";
 import { Dialog } from "./dialog";
 import { Tooltip } from "./tooltip";
 
@@ -7,23 +8,41 @@ import { Tooltip } from "./tooltip";
  */
 export function ActionMenu(props: {
     label: string;
+    triggerAriaLabel?: string;
+    closeAriaLabel?: string;
+    title?: string;
     icon?: React.ReactNode;
     hideLabel?: boolean;
+    hideTitle?: boolean;
+    tooltip?: React.ReactNode;
+    disabled?: boolean;
+    className?: string;
+    isOpen?: boolean;
+    onOpenChange?: (isOpen: boolean) => void;
     children: (close: () => void) => React.ReactNode;
 }) {
     const triggerRef = React.useRef<HTMLButtonElement>(null);
-    const [isOpen, setIsOpen] = React.useState(false);
+    const [internalIsOpen, setInternalIsOpen] = React.useState(false);
+    const isOpen = props.isOpen ?? internalIsOpen;
+    const setIsOpen = (nextIsOpen: boolean) => {
+        setInternalIsOpen(nextIsOpen);
+        props.onOpenChange?.(nextIsOpen);
+    };
     const close = () => setIsOpen(false);
 
     const trigger = (
         <button
             ref={triggerRef}
             type="button"
-            aria-label={props.label}
+            aria-label={props.triggerAriaLabel ?? props.label}
             aria-haspopup="dialog"
             aria-expanded={isOpen}
+            disabled={props.disabled}
             onClick={() => setIsOpen(true)}
-            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+            className={twMerge(
+                "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50",
+                props.className,
+            )}
         >
             {props.icon}
             {props.hideLabel ? null : props.label}
@@ -33,15 +52,20 @@ export function ActionMenu(props: {
     return (
         <>
             {props.hideLabel ? (
-                <Tooltip content={props.label}>{trigger}</Tooltip>
+                <Tooltip content={props.tooltip ?? props.label}>
+                    {trigger}
+                </Tooltip>
             ) : (
                 trigger
             )}
             <Dialog
                 isOpen={isOpen}
-                title={props.label}
-                hideTitle={props.hideLabel}
-                closeAriaLabel={`Close ${props.label.toLowerCase()} menu`}
+                title={props.title ?? props.label}
+                hideTitle={props.hideTitle ?? props.hideLabel}
+                closeAriaLabel={
+                    props.closeAriaLabel ??
+                    `Close ${props.label.toLowerCase()} menu`
+                }
                 anchorRef={triggerRef}
                 onClose={close}
             >
@@ -56,18 +80,30 @@ export function ActionMenuButton(props: {
     children: React.ReactNode;
     tone?: "default" | "danger";
     disabled?: boolean;
-    onClick: () => void;
+    asChild?: boolean;
+    onClick?: () => void;
 }) {
+    const className = `flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors ${
+        props.tone === "danger"
+            ? "text-red-300 hover:bg-red-500/10 hover:text-red-200 disabled:text-red-900"
+            : "text-slate-200 hover:bg-white/5 hover:text-white disabled:text-slate-600"
+    } disabled:cursor-not-allowed disabled:hover:bg-transparent`;
+
+    if (
+        props.asChild &&
+        React.isValidElement<{ className?: string }>(props.children)
+    ) {
+        return React.cloneElement(props.children, {
+            className: twMerge(className, props.children.props.className),
+        });
+    }
+
     return (
         <button
             type="button"
             onClick={props.onClick}
             disabled={props.disabled}
-            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors ${
-                props.tone === "danger"
-                    ? "text-red-300 hover:bg-red-500/10 hover:text-red-200 disabled:text-red-900"
-                    : "text-slate-200 hover:bg-white/5 hover:text-white disabled:text-slate-600"
-            } disabled:cursor-not-allowed disabled:hover:bg-transparent`}
+            className={className}
         >
             {props.children}
         </button>

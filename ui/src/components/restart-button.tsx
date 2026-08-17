@@ -2,6 +2,7 @@ import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 
+import { Button } from "./button";
 import { ConfirmationDialog } from "./confirmation-dialog";
 
 /** Normalizes failures from both API requests and readiness polling. */
@@ -36,21 +37,19 @@ export function RestartButton(props: {
     };
 
     const button = (
-        <button
+        <Button
             type="button"
+            variant={props.className ? "subtle" : "secondary"}
             aria-label={props.ariaLabel}
             onClick={() => {
                 restartMutation.reset();
                 setIsOpen(true);
             }}
-            className={
-                props.className ??
-                "inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-white/5"
-            }
+            className={props.className}
         >
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
             Restart
-        </button>
+        </Button>
     );
 
     return (

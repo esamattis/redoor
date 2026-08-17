@@ -20,7 +20,7 @@ async function openMoveConflict(props: {
         `${WEB_BASE_URL}/agents/${props.ctx.agentId}/browser/${props.ctx.testDirUrlPath}`,
     );
     await props.page
-        .getByRole("button", {
+        .getByRole("checkbox", {
             name: `Select ${props.sourceType} ${props.sourceName}`,
         })
         .click();
@@ -62,7 +62,7 @@ test.describe.serial("Move Operations", () => {
         await expect(moveButton).toHaveCount(0);
 
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
         // Moving onto the same path is unusable, so the action stays hidden at the source.
         await expect(moveButton).toHaveCount(0);
@@ -112,10 +112,10 @@ test.describe.serial("Move Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await page
-            .getByRole("button", { name: `Select file ${firstName}` })
+            .getByRole("checkbox", { name: `Select file ${firstName}` })
             .click();
         await page
-            .getByRole("button", { name: `Select file ${secondName}` })
+            .getByRole("checkbox", { name: `Select file ${secondName}` })
             .click();
         // The summary proves both source rows entered the persistent selection.
         await expect(

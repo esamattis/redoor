@@ -24,7 +24,10 @@ export function Tooltip(props: TooltipProps) {
     const tooltipId = React.useId();
     const triggerRef = React.useRef<HTMLSpanElement>(null);
     const tooltipRef = React.useRef<HTMLSpanElement>(null);
-    const [isOpen, setIsOpen] = React.useState(false);
+    const [isHovered, setIsHovered] = React.useState(false);
+    const [isFocused, setIsFocused] = React.useState(false);
+    const [isTouchOpen, setIsTouchOpen] = React.useState(false);
+    const isOpen = isHovered || isFocused || isTouchOpen;
     const [position, setPosition] = React.useState<{
         top: number;
         left: number;
@@ -105,13 +108,13 @@ export function Tooltip(props: TooltipProps) {
     }, [isOpen, props.content]);
 
     React.useEffect(() => {
-        if (!isOpen) {
+        if (!isTouchOpen) {
             return;
         }
 
         /** Dismisses a touch-opened tooltip on the next touch anywhere on the page. */
         const hideOnTouchStart = () => {
-            setIsOpen(false);
+            setIsTouchOpen(false);
         };
 
         // Defer so the opening touchstart does not immediately dismiss the tooltip.
@@ -123,7 +126,7 @@ export function Tooltip(props: TooltipProps) {
             window.clearTimeout(timeoutId);
             document.removeEventListener("touchstart", hideOnTouchStart);
         };
-    }, [isOpen]);
+    }, [isTouchOpen]);
 
     const tooltip = isOpen ? (
         <span
@@ -162,11 +165,11 @@ export function Tooltip(props: TooltipProps) {
         <span
             ref={triggerRef}
             className={`inline-flex ${props.className ?? ""}`}
-            onMouseEnter={() => setIsOpen(true)}
-            onMouseLeave={() => setIsOpen(false)}
-            onFocus={() => setIsOpen(true)}
-            onBlur={() => setIsOpen(false)}
-            onTouchStart={() => setIsOpen(true)}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onTouchStart={() => setIsTouchOpen(true)}
         >
             {child}
 

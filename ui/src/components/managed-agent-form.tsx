@@ -1,11 +1,13 @@
 import * as React from "react";
-import { Info, LoaderCircle, Server, TerminalSquare } from "lucide-react";
+import { LoaderCircle, Server, TerminalSquare } from "lucide-react";
 
 import type {
     CreateSshAgentRequest,
     ManagedSshAgentConfigurationResponse,
 } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { Password } from "#ui/components/password";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
 
@@ -198,10 +200,12 @@ export function ManagedAgentForm(props: {
                                       : "Add this SSH-backed agent to the server configuration")
                             }
                         >
-                            <button
+                            <Button
                                 type="submit"
+                                size="lg"
                                 disabled={isDisabled}
-                                className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                                isLoading={props.isSubmitting}
+                                className="shrink-0 rounded-md px-5 disabled:opacity-60"
                             >
                                 {props.isSubmitting ? (
                                     <LoaderCircle
@@ -218,7 +222,7 @@ export function ManagedAgentForm(props: {
                                       (isEdit
                                           ? "Save managed agent"
                                           : "Add managed agent"))}
-                            </button>
+                            </Button>
                         </Tooltip>
                     </div>
                     {props.children}
@@ -326,72 +330,39 @@ function AuthModeFields(props: {
     onChange: (mode: SshAuthMode) => void;
 }) {
     return (
-        <fieldset className="sm:col-span-2 grid gap-3">
-            <legend className="text-sm font-medium text-slate-300">
-                SSH authentication
-            </legend>
-            <p className="text-xs text-slate-500">
-                Password authentication stores the secret as plaintext in
-                config.toml. Key mode uses a preconfigured SSH key or ssh-agent.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-                <AuthModeOption
-                    value="key"
-                    label="Use preconfigured ssh key"
-                    description="Authenticate with a preconfigured SSH key or ssh-agent. Saving removes any stored password."
-                    checked={props.authMode === "key"}
-                    disabled={props.disabled}
-                    onChange={props.onChange}
-                />
-                <AuthModeOption
-                    value="password"
-                    label="Use ssh password"
-                    description="Enable the password field and store the SSH password as plaintext in config.toml."
-                    checked={props.authMode === "password"}
-                    disabled={props.disabled}
-                    onChange={props.onChange}
-                />
-            </div>
-        </fieldset>
-    );
-}
-
-/** Renders one native radio plus a tooltip without putting extra text into the accessible name. */
-function AuthModeOption(props: {
-    value: SshAuthMode;
-    label: string;
-    description: string;
-    checked: boolean;
-    disabled: boolean;
-    onChange: (mode: SshAuthMode) => void;
-}) {
-    return (
-        <div
-            className={`flex items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
-                props.checked
-                    ? "border-blue-500/60 bg-blue-500/10 text-blue-100"
-                    : "border-slate-700 bg-slate-950/50 text-slate-300"
-            }`}
+        <RadioCardGroup
+            legend="SSH authentication"
+            disabled={props.disabled}
+            description={
+                <p className="text-xs text-slate-500">
+                    Password authentication stores the secret as plaintext in
+                    config.toml. Key mode uses a preconfigured SSH key or
+                    ssh-agent.
+                </p>
+            }
+            className="sm:col-span-2"
+            legendClassName="text-sm font-medium text-slate-300"
+            optionsClassName="sm:grid-cols-2"
         >
-            <label className="flex min-w-0 cursor-pointer items-center gap-3 text-sm font-medium">
-                <input
-                    type="radio"
-                    name="ssh-auth-mode"
-                    value={props.value}
-                    checked={props.checked}
-                    disabled={props.disabled}
-                    onChange={() => props.onChange(props.value)}
-                    className="h-4 w-4 accent-blue-500"
-                />
-                {props.label}
-            </label>
-            <Tooltip content={props.description}>
-                <Info
-                    aria-label={`${props.label} help`}
-                    className="h-4 w-4 shrink-0 text-slate-400"
-                />
-            </Tooltip>
-        </div>
+            <RadioCardOption
+                name="ssh-auth-mode"
+                value="key"
+                label="Use preconfigured ssh key"
+                description="Authenticate with a preconfigured SSH key or ssh-agent. Saving removes any stored password."
+                checked={props.authMode === "key"}
+                layout="compact"
+                onChange={() => props.onChange("key")}
+            />
+            <RadioCardOption
+                name="ssh-auth-mode"
+                value="password"
+                label="Use ssh password"
+                description="Enable the password field and store the SSH password as plaintext in config.toml."
+                checked={props.authMode === "password"}
+                layout="compact"
+                onChange={() => props.onChange("password")}
+            />
+        </RadioCardGroup>
     );
 }
 

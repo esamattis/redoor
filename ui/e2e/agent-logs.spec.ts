@@ -92,7 +92,7 @@ test.describe.serial("Agent logs", () => {
 
         const autoScroll = page.getByRole("checkbox", { name: "Auto-scroll" });
         // Agent logs should follow the newest entry by default just like server logs.
-        await expect(autoScroll).toBeChecked();
+        await expect(autoScroll).toHaveAttribute("aria-checked", "true");
         await expect
             .poll(() =>
                 logRegion.evaluate(
@@ -105,7 +105,9 @@ test.describe.serial("Agent logs", () => {
             // A small layout rounding allowance still proves initial bottom positioning.
             .toBeLessThanOrEqual(1);
 
-        await autoScroll.uncheck();
+        await autoScroll.click();
+        // The button-based checkbox must expose the disabled auto-scroll state to assistive technology.
+        await expect(autoScroll).toHaveAttribute("aria-checked", "false");
         await logRegion.evaluate((element) => {
             element.scrollTop = 0;
         });
@@ -119,7 +121,9 @@ test.describe.serial("Agent logs", () => {
         await expect
             .poll(() => logRegion.evaluate((element) => element.scrollTop))
             .toBeLessThanOrEqual(1);
-        await autoScroll.check();
+        await autoScroll.click();
+        // The button-based checkbox must expose that bottom-following behavior is enabled again.
+        await expect(autoScroll).toHaveAttribute("aria-checked", "true");
         await expect
             .poll(() =>
                 logRegion.evaluate(

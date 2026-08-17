@@ -1,6 +1,8 @@
 import React from "react";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
+import { Button } from "./button";
 import { Dialog } from "./dialog";
+import { DialogActions } from "./dialog-actions";
 
 /**
  * Builds a consistent confirmation workflow on the shared modal foundation.
@@ -32,20 +34,22 @@ export function ConfirmationDialog(props: {
                 <div className="mt-4">{props.children}</div>
             ) : null}
 
-            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-                <button
+            <DialogActions stackOnMobile>
+                <Button
                     type="button"
+                    variant="secondary"
                     onClick={props.onClose}
                     disabled={props.isBusy}
-                    className="rounded-md border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-md hover:border-slate-600"
                 >
                     Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                     type="button"
+                    variant="danger"
                     onClick={props.onConfirm}
-                    disabled={props.isBusy}
-                    className="inline-flex items-center justify-center gap-2 rounded-md border border-red-500/40 bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-200 transition-colors hover:border-red-500/60 hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                    isLoading={props.isBusy}
+                    className="rounded-md border-red-500/40 bg-red-500/15 font-semibold text-red-200 hover:border-red-500/60 hover:bg-red-500/25"
                 >
                     {props.isBusy ? (
                         <LoaderCircle
@@ -58,8 +62,8 @@ export function ConfirmationDialog(props: {
                     {props.isBusy
                         ? (props.busyLabel ?? "Confirming...")
                         : props.confirmLabel}
-                </button>
-            </div>
+                </Button>
+            </DialogActions>
         </Dialog>
     );
 }

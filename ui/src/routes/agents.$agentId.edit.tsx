@@ -2,6 +2,7 @@ import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
+import { Button } from "#ui/components/button";
 
 import type { CreateSshAgentRequest } from "#ui/api-client";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -104,15 +105,16 @@ function EditManagedAgentPage() {
                                   : "Permanently delete this managed agent"
                         }
                     >
-                        <button
+                        <Button
                             type="button"
+                            variant="danger"
                             onClick={() => setIsDeleteOpen(true)}
                             disabled={isBusy}
-                            className="inline-flex items-center gap-2 rounded-md border border-red-800 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-950/30 disabled:opacity-60"
+                            className="rounded-md disabled:opacity-60"
                         >
                             <Trash2 className="h-4 w-4" aria-hidden="true" />
                             Delete managed agent
-                        </button>
+                        </Button>
                     </Tooltip>
                 </div>
             </ManagedAgentForm>

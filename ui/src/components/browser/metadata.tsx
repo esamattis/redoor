@@ -16,6 +16,8 @@ import type {
     LsDirectoryResponse,
     LsFileResponse,
 } from "#ui/api-client";
+import { Button } from "#ui/components/button";
+import { IconButton } from "#ui/components/icon-button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
@@ -291,10 +293,11 @@ function PathDetailHeader(props: {
                         Full Path
                     </p>
                     {props.onCopyPath ? (
-                        <button
+                        <Button
                             type="button"
+                            variant="subtle"
                             onClick={props.onCopyPath}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-200"
+                            className="inline-flex items-center gap-1.5 p-0 text-xs font-medium text-slate-500 transition hover:text-slate-200"
                             aria-label="Copy full path"
                         >
                             {props.pathCopied ? (
@@ -303,7 +306,7 @@ function PathDetailHeader(props: {
                                 <Copy className="h-3.5 w-3.5" />
                             )}
                             {props.pathCopied ? "Copied" : "Copy"}
-                        </button>
+                        </Button>
                     ) : null}
                 </div>
                 <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
@@ -575,17 +578,19 @@ function ShareableLinksSection(props: {
                         Create an anonymous link for a single download.
                     </p>
                 </div>
-                <button
+                <Button
                     type="button"
                     onClick={props.onCreate}
-                    disabled={props.isCreating}
-                    className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition hover:border-blue-500/50 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    variant="secondary"
+                    size="lg"
+                    isLoading={props.isCreating}
+                    className="rounded-lg border-blue-500/30 bg-blue-500/10 text-sm font-semibold text-blue-300 hover:border-blue-500/50 hover:bg-blue-500/20 disabled:opacity-60"
                 >
                     <Download className="h-4 w-4" />
                     {props.isCreating
                         ? "Creating link..."
                         : "Create shareable link"}
-                </button>
+                </Button>
             </div>
 
             {props.errorMessage ? (
@@ -647,12 +652,13 @@ function ShareableLinkCard(props: {
                 >
                     {shareableUrl}
                 </a>
-                <button
+                <IconButton
                     type="button"
+                    tooltipClassName="shrink-0"
                     onClick={() =>
                         props.onCopy(shareableUrl, `${copyKeyPrefix}-link`)
                     }
-                    aria-label={`Copy shareable link ${props.linkNumber}`}
+                    label={`Copy shareable link ${props.linkNumber}`}
                     className="shrink-0 rounded-md p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
                 >
                     {props.copiedCommand === `${copyKeyPrefix}-link` ? (
@@ -660,7 +666,7 @@ function ShareableLinkCard(props: {
                     ) : (
                         <Copy className="h-4 w-4" />
                     )}
-                </button>
+                </IconButton>
             </div>
             <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">
                 <CopyableCodeRow

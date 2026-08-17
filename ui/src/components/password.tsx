@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Eye, EyeOff } from "lucide-react";
 
+import { InputControl } from "#ui/components/input-control";
 import { Tooltip } from "#ui/components/tooltip";
 
 /**
@@ -39,7 +40,7 @@ export function Password(props: {
                 ) : null}
             </div>
             <div className="relative mt-2">
-                <input
+                <InputControl
                     id={inputId}
                     type={isVisible ? "text" : "password"}
                     autoComplete={props.autoComplete}
@@ -52,7 +53,7 @@ export function Password(props: {
                     }
                     disabled={props.disabled}
                     onChange={(event) => props.onChange(event.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-[#0b0d12] py-2 pr-10 pl-3 text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
+                    className="w-full pr-10 placeholder:text-slate-600 disabled:opacity-60"
                 />
                 <Tooltip
                     content={toggleLabel}

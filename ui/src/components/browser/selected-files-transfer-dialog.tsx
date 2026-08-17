@@ -1,7 +1,10 @@
 import React from "react";
 import { Copy, FolderInput } from "lucide-react";
 import type { Agent, CopyExistingMode } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { Dialog } from "#ui/components/dialog";
+import { DialogActions } from "#ui/components/dialog-actions";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
 import { joinBrowserPath } from "#ui/components/browser/utils";
 import type { SelectedPath } from "#ui/selected-files";
@@ -98,15 +101,16 @@ export function SelectedFilesTransferTrigger(props: {
         <>
             {props.canTransfer ? (
                 <Tooltip content={labels.buttonTooltip}>
-                    <button
+                    <Button
                         type="button"
                         onClick={handleStart}
                         aria-label={labels.buttonAriaLabel}
-                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+                        size="sm"
+                        className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
                     >
                         <labels.Icon className="h-3.5 w-3.5" />
                         {labels.buttonLabel}
-                    </button>
+                    </Button>
                 </Tooltip>
             ) : null}
             <Dialog
@@ -116,55 +120,44 @@ export function SelectedFilesTransferTrigger(props: {
                 closeAriaLabel={labels.closeAriaLabel}
                 onClose={() => setIsOpen(false)}
             >
-                <fieldset className="mt-5 grid gap-3">
-                    <legend className="sr-only">Existing item action</legend>
+                <RadioCardGroup
+                    legend="Existing item action"
+                    className="mt-5"
+                    legendClassName="sr-only"
+                >
                     {existingItemOptions.map((option) => (
-                        <label
+                        <RadioCardOption
                             key={option.value}
-                            className={`flex cursor-pointer gap-3 rounded-lg border px-4 py-3 transition ${
-                                existingMode === option.value
-                                    ? "border-blue-500/60 bg-blue-500/10"
-                                    : "border-slate-700 bg-slate-950/50 hover:border-slate-600"
-                            }`}
-                        >
-                            <input
-                                type="radio"
-                                name={labels.radioGroupName}
-                                value={option.value}
-                                checked={existingMode === option.value}
-                                onChange={() => setExistingMode(option.value)}
-                                className="mt-0.5 h-4 w-4 accent-blue-500"
-                            />
-                            <span>
-                                <span className="block text-sm font-medium text-slate-100">
-                                    {option.label}
-                                </span>
-                                <span className="mt-1 block text-xs leading-5 text-slate-400">
-                                    {option.description}
-                                </span>
-                            </span>
-                        </label>
+                            name={labels.radioGroupName}
+                            value={option.value}
+                            label={option.label}
+                            description={option.description}
+                            checked={existingMode === option.value}
+                            layout="descriptive"
+                            onChange={() => setExistingMode(option.value)}
+                        />
                     ))}
-                </fieldset>
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                </RadioCardGroup>
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={() => setIsOpen(false)}
-                        className="rounded-md border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/5"
+                        className="rounded-md text-slate-300"
                     >
                         Cancel
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                         type="button"
                         onClick={() => {
                             setIsOpen(false);
                             props.onConfirm(existingMode);
                         }}
-                        className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+                        className="rounded-md font-semibold"
                     >
                         {labels.confirmLabel}
-                    </button>
-                </div>
+                    </Button>
+                </DialogActions>
             </Dialog>
         </>
     );

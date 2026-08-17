@@ -2,6 +2,7 @@ import * as React from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { BottomDrawerTabId } from "#ui/bottom-drawer-state";
 import { Tooltip } from "#ui/components/tooltip";
+import { IconButton } from "#ui/components/icon-button";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 
 /** Describes one mounted pane and its compact representation in the drawer tab strip. */
@@ -116,10 +117,9 @@ export function TabbedBottomDrawer(props: {
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                             <div className="mx-1 h-5 w-px bg-slate-800" />
-                            <button
+                            <IconButton
                                 type="button"
-                                aria-label={toggleLabel}
-                                title={toggleLabel}
+                                label={toggleLabel}
                                 aria-expanded={!props.isCollapsed}
                                 onClick={() =>
                                     props.onCollapsedChange(!props.isCollapsed)
@@ -131,7 +131,7 @@ export function TabbedBottomDrawer(props: {
                                 ) : (
                                     <ChevronDown className="h-4 w-4" />
                                 )}
-                            </button>
+                            </IconButton>
                         </div>
                     </div>
 

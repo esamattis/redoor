@@ -21,7 +21,7 @@ async function openCopyConflict(props: {
         `${WEB_BASE_URL}/agents/${props.ctx.agentId}/browser/${props.ctx.testDirUrlPath}`,
     );
     await props.page
-        .getByRole("button", {
+        .getByRole("checkbox", {
             name: `Select ${props.sourceType} ${props.sourceName}`,
         })
         .click();
@@ -68,7 +68,7 @@ test.describe.serial("Copy Operations", () => {
         await expect(copyButton).toHaveCount(0);
 
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
 
         // Copying onto the same path is unusable, so the action remains hidden at the source.
@@ -120,7 +120,7 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
-            page.getByRole("button", { name: "Select file file1.txt" }),
+            page.getByRole("checkbox", { name: "Select file file1.txt" }),
         ).toBeVisible();
         // The selected-items drawer action is irrelevant until a selection exists.
         await expect(
@@ -135,11 +135,12 @@ test.describe.serial("Copy Operations", () => {
         const fileListingBefore = await fileListing.boundingBox();
 
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
+        // The button-backed checkbox must expose its selected state.
         await expect(
-            page.getByRole("button", { name: "Unselect file file1.txt" }),
-        ).toBeVisible();
+            page.getByRole("checkbox", { name: "Unselect file file1.txt" }),
+        ).toHaveAttribute("aria-checked", "true");
         const selectedActionsAfter = await selectedActions.boundingBox();
         const fileListingAfter = await fileListing.boundingBox();
 
@@ -169,14 +170,14 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
-            page.getByRole("button", { name: "Select file file1.txt" }),
+            page.getByRole("checkbox", { name: "Select file file1.txt" }),
         ).toBeVisible();
 
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
         await page
-            .getByRole("button", { name: "Select file file2.txt" })
+            .getByRole("checkbox", { name: "Select file file2.txt" })
             .click();
         // The summary proves both source rows entered the persistent selection.
         await expect(
@@ -451,12 +452,12 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await page
-            .getByRole("button", {
+            .getByRole("checkbox", {
                 name: `Select file ${conflictingName}`,
             })
             .click();
         await page
-            .getByRole("button", { name: `Select file ${availableName}` })
+            .getByRole("checkbox", { name: `Select file ${availableName}` })
             .click();
         await page.getByRole("link", { name: "subdir1", exact: true }).click();
         await page
@@ -531,12 +532,12 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await page
-            .getByRole("button", {
+            .getByRole("checkbox", {
                 name: `Select directory ${conflictingName}`,
             })
             .click();
         await page
-            .getByRole("button", {
+            .getByRole("checkbox", {
                 name: `Select directory ${availableName}`,
             })
             .click();
@@ -599,11 +600,11 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
         await page.getByRole("link", { name: "subdir1", exact: true }).click();
         await page
-            .getByRole("button", { name: "Select file nested1.txt" })
+            .getByRole("checkbox", { name: "Select file nested1.txt" })
             .click();
 
         // The mixed selection must expose Copy even though one item already has its destination path.
@@ -644,8 +645,8 @@ test.describe.serial("Copy Operations", () => {
             page.getByText("1 file, 0 directories selected"),
         ).toBeVisible();
         await expect(
-            page.getByRole("button", { name: "Unselect file nested1.txt" }),
-        ).toBeVisible();
+            page.getByRole("checkbox", { name: "Unselect file nested1.txt" }),
+        ).toHaveAttribute("aria-checked", "true");
         await expect(copyButton).toHaveCount(0);
 
         await page.getByRole("button", { name: "Clear selection" }).click();
@@ -675,7 +676,7 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
-            page.getByRole("button", { name: "Select file file1.txt" }),
+            page.getByRole("checkbox", { name: "Select file file1.txt" }),
         ).toBeVisible();
 
         // Create a new directory that will serve as the copy destination.
@@ -709,7 +710,7 @@ test.describe.serial("Copy Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
-            page.getByRole("button", { name: "Select file file1.txt" }),
+            page.getByRole("checkbox", { name: "Select file file1.txt" }),
         ).toBeVisible();
         await expect(
             page.getByRole("link", { name: copyTargetDirName, exact: true }),
@@ -725,7 +726,7 @@ test.describe.serial("Copy Operations", () => {
 
         // Select the source file from the parent directory.
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
 
         await page.getByRole("button", { name: "Show", exact: true }).click();
@@ -808,7 +809,7 @@ test.describe.serial("Copy Operations", () => {
 
         // Select the file on the source agent.
         await page
-            .getByRole("button", { name: "Select file file1.txt" })
+            .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
 
         // The source directory hides copy because it would overwrite the same path.

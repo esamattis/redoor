@@ -1,5 +1,6 @@
 import * as React from "react";
 import { X } from "lucide-react";
+import { IconButton } from "#ui/components/icon-button";
 
 const focusableSelector =
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -95,14 +96,15 @@ export function SideMenu(props: {
                         <div
                             className={`mb-2 flex ${props.placement === "left" ? "justify-end" : "justify-start"}`}
                         >
-                            <button
+                            <IconButton
                                 type="button"
-                                aria-label={`Close ${props.label.toLowerCase()}`}
+                                label={`Close ${props.label.toLowerCase()}`}
+                                tooltip={false}
                                 onClick={props.onClose}
                                 className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-slate-100"
                             >
                                 <X className="h-4 w-4" />
-                            </button>
+                            </IconButton>
                         </div>
                         {props.children}
                     </aside>

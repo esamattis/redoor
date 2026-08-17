@@ -22,9 +22,9 @@ import {
     type TerminalServerMessage,
 } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { AddButton } from "#ui/components/add-button";
-import { Dialog } from "#ui/components/dialog";
-import { Tooltip } from "#ui/components/tooltip";
+import { IconButton } from "#ui/components/icon-button";
 import {
     isEditorInputTarget,
     isUnmodifiedAltKey,
@@ -346,7 +346,6 @@ function TerminalTabActions(props: {
         tabIndex: number,
     ) => void;
 }) {
-    const pickerButtonRef = React.useRef<HTMLButtonElement>(null);
     const availableAgents = props.agents.filter(
         (agent) => agent.status === "connected" && agent.cwd !== null,
     );
@@ -411,25 +410,23 @@ function TerminalTabActions(props: {
                                 </span>
                             </button>
                             {tab.state.type === "disconnected" ? (
-                                <button
+                                <IconButton
                                     type="button"
-                                    aria-label={`Restart ${tab.title}`}
-                                    title={`Restart ${tab.title}`}
+                                    label={`Restart ${tab.title}`}
                                     onClick={() => props.onRestart(tab.id)}
                                     className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-blue-400 transition-colors hover:bg-blue-500/10 hover:text-blue-300"
                                 >
                                     <RotateCcw className="h-3.5 w-3.5" />
-                                </button>
+                                </IconButton>
                             ) : null}
-                            <button
+                            <IconButton
                                 type="button"
-                                aria-label={`Close ${tab.title}`}
-                                title={`Close ${tab.title}`}
+                                label={`Close ${tab.title}`}
                                 onClick={() => props.onClose(tab.id)}
                                 className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-200"
                             >
                                 <X className="h-3.5 w-3.5" />
-                            </button>
+                            </IconButton>
                         </div>
                     );
                 })}
@@ -450,57 +447,47 @@ function TerminalTabActions(props: {
                     />
                 </AddButton>
             ) : null}
-            <Tooltip
-                content={
+            <ActionMenu
+                label="Choose agent for new terminal"
+                title="New terminal"
+                closeAriaLabel="Close agent picker"
+                hideLabel
+                hideTitle={false}
+                tooltip={
                     props.activeTarget
                         ? "New terminal in another agent"
                         : "Choose agent for new terminal (t)"
                 }
-            >
-                <button
-                    ref={pickerButtonRef}
-                    type="button"
-                    aria-label="Choose agent for new terminal"
-                    aria-haspopup="dialog"
-                    aria-expanded={props.isPickerOpen}
-                    onClick={() => props.onPickerOpenChange(true)}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    <MoreHorizontal className="h-4 w-4" />
-                </button>
-            </Tooltip>
-            <Dialog
+                icon={<MoreHorizontal className="h-4 w-4" />}
                 isOpen={props.isPickerOpen}
-                title="New terminal"
-                closeAriaLabel="Close agent picker"
-                anchorRef={pickerButtonRef}
-                onClose={() => props.onPickerOpenChange(false)}
+                onOpenChange={props.onPickerOpenChange}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md p-0 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
             >
-                <div className="mt-2 grid gap-1">
-                    {availableAgents.map((agent) => (
-                        <button
-                            key={agent.id}
-                            type="button"
-                            onClick={() => {
-                                if (agent.cwd === null) {
-                                    return;
-                                }
-                                props.onCreate({ agent, cwd: agent.cwd });
-                                props.onPickerOpenChange(false);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                        >
-                            <HardDrive className="h-4 w-4 text-slate-500" />
-                            <span className="truncate">{agent.name}</span>
-                        </button>
-                    ))}
-                    {availableAgents.length === 0 ? (
-                        <p className="px-3 py-2 text-sm text-slate-500">
-                            No connected agents
-                        </p>
-                    ) : null}
-                </div>
-            </Dialog>
+                {(close) => (
+                    <>
+                        {availableAgents.map((agent) => (
+                            <ActionMenuButton
+                                key={agent.id}
+                                onClick={() => {
+                                    if (agent.cwd === null) {
+                                        return;
+                                    }
+                                    props.onCreate({ agent, cwd: agent.cwd });
+                                    close();
+                                }}
+                            >
+                                <HardDrive className="h-4 w-4 text-slate-500" />
+                                <span className="truncate">{agent.name}</span>
+                            </ActionMenuButton>
+                        ))}
+                        {availableAgents.length === 0 ? (
+                            <p className="px-3 py-2 text-sm text-slate-500">
+                                No connected agents
+                            </p>
+                        ) : null}
+                    </>
+                )}
+            </ActionMenu>
         </div>
     );
 }

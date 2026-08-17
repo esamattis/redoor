@@ -2,6 +2,10 @@ import React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Info, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
+import { Button } from "#ui/components/button";
+import { Checkbox } from "#ui/components/checkbox";
+import { InputControl } from "#ui/components/input-control";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { transfersQueryOptions } from "#ui/queries";
@@ -39,14 +43,14 @@ export function AgentPathFields(props: {
             </label>
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Path
-                <input
+                <InputControl
                     type="text"
                     aria-label={`${props.operation} path`}
                     value={props.path}
                     onChange={(event) => props.onPathChange(event.target.value)}
                     disabled={props.disabled}
                     required
-                    className="h-11 rounded-lg border border-slate-700 bg-slate-950 px-3 font-mono text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-11 rounded-lg bg-slate-950 font-mono text-sm focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
             </label>
         </div>
@@ -89,65 +93,45 @@ function SyncExistingControls(props: {
 }) {
     if (props.entryType === "file") {
         return (
-            <label className="flex w-fit cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/50 px-4 py-3 text-sm font-medium text-slate-200">
-                <input
-                    type="checkbox"
+            <Tooltip content="Replace the target file if it already exists. When unchecked, sync stops without changing it.">
+                <Checkbox
                     checked={props.overrideExistingFile}
-                    onChange={(event) =>
-                        props.onOverrideExistingFileChange(event.target.checked)
-                    }
+                    role="checkbox"
                     disabled={props.disabled}
-                    className="h-4 w-4 accent-blue-500"
-                />
-                Override existing
-                <Tooltip content="Replace the target file if it already exists. When unchecked, sync stops without changing it.">
+                    onCheckedChange={props.onOverrideExistingFileChange}
+                    className="w-fit gap-3 rounded-lg border border-slate-700 bg-slate-950/50 px-4 py-3 font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-950/50"
+                >
+                    Override existing
                     <Info
-                        aria-label="Override existing behavior"
+                        aria-hidden="true"
                         className="h-4 w-4 text-slate-400"
                     />
-                </Tooltip>
-            </label>
+                </Checkbox>
+            </Tooltip>
         );
     }
 
     return (
-        <fieldset disabled={props.disabled} className="grid gap-3">
-            <legend className="mb-1 text-sm font-medium text-slate-200">
-                If the target exists
-            </legend>
-            <div className="grid gap-3 md:grid-cols-3">
-                {existingModeOptions.map((option) => (
-                    <label
-                        key={option.value}
-                        className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-4 py-3 transition ${
-                            props.existingMode === option.value
-                                ? "border-blue-500/60 bg-blue-500/10 text-blue-100"
-                                : "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-slate-600"
-                        }`}
-                    >
-                        <span className="flex items-center gap-3 text-sm font-medium">
-                            <input
-                                type="radio"
-                                name="on-existing"
-                                value={option.value}
-                                checked={props.existingMode === option.value}
-                                onChange={() =>
-                                    props.onExistingModeChange(option.value)
-                                }
-                                className="h-4 w-4 accent-blue-500"
-                            />
-                            {option.label}
-                        </span>
-                        <Tooltip content={option.description}>
-                            <Info
-                                aria-label={`${option.label} behavior`}
-                                className="h-4 w-4 text-slate-400"
-                            />
-                        </Tooltip>
-                    </label>
-                ))}
-            </div>
-        </fieldset>
+        <RadioCardGroup
+            legend="If the target exists"
+            disabled={props.disabled}
+            legendClassName="mb-1 text-sm font-medium text-slate-200"
+            optionsClassName="md:grid-cols-3"
+        >
+            {existingModeOptions.map((option) => (
+                <RadioCardOption
+                    key={option.value}
+                    name="on-existing"
+                    value={option.value}
+                    label={option.label}
+                    description={option.description}
+                    checked={props.existingMode === option.value}
+                    layout="compact"
+                    helpAriaLabel={`${option.label} behavior`}
+                    onChange={() => props.onExistingModeChange(option.value)}
+                />
+            ))}
+        </RadioCardGroup>
     );
 }
 
@@ -258,10 +242,12 @@ export function SyncView(props: {
                 />
 
                 <div className="flex flex-wrap items-center gap-4">
-                    <button
+                    <Button
                         type="submit"
+                        size="lg"
                         disabled={isBusy || !selectedAgentId}
-                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        isLoading={isBusy}
+                        className="rounded-md text-sm font-semibold shadow-sm shadow-blue-950/30"
                     >
                         {isBusy ? (
                             <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -273,7 +259,7 @@ export function SyncView(props: {
                             : isActive
                               ? "Syncing..."
                               : "Sync"}
-                    </button>
+                    </Button>
                     {isActive ? (
                         <span role="status" className="text-sm text-slate-400">
                             {formatSize(transfer?.transferred_bytes ?? 0)}{" "}

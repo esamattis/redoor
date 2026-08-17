@@ -183,7 +183,8 @@ test.describe.serial("File Edit View", () => {
 
         // Distant lines stay out of the DOM until the editor scroller reaches them.
         await expect(editor.getByText("LAST_BUFFER_LINE")).toHaveCount(0);
-        await editor.press("Control+End");
+        // CodeMirror's Mod-End command must reveal the virtualized document end.
+        await editor.press("ControlOrMeta+End");
         await expect(editor.getByText("LAST_BUFFER_LINE")).toBeVisible();
     });
 

@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
 import { z } from "zod";
 import { ApiError } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 
 /** True for browser network failures that never received an HTTP response. */
 function isNetworkError(cause: unknown): boolean {
@@ -251,21 +252,24 @@ export function RouteError(
                     ) : null}
 
                     <div className="flex flex-wrap gap-2 pt-1">
-                        <button
+                        <Button
                             type="button"
                             onClick={retry}
-                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                            size="sm"
+                            className="rounded-md"
                         >
                             <RefreshCw className="h-4 w-4" aria-hidden="true" />
                             Try again
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                             type="button"
+                            variant="secondary"
                             onClick={() => window.location.reload()}
-                            className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5"
+                            size="sm"
+                            className="rounded-md"
                         >
                             Reload page
-                        </button>
+                        </Button>
                     </div>
                 </div>
             </div>

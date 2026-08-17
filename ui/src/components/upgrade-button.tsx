@@ -3,7 +3,9 @@ import { useMutation } from "@tanstack/react-query";
 import { PackageOpen } from "lucide-react";
 
 import type { ServerInfoResponse } from "#ui/api-client";
+import { Button } from "./button";
 import { ConfirmationDialog } from "./confirmation-dialog";
+import { InputControl } from "./input-control";
 
 type UpgradeAction = "published_release" | "running_server";
 
@@ -126,7 +128,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                     >
                         Target version
                     </label>
-                    <input
+                    <InputControl
                         id="agent-upgrade-target-version"
                         type="text"
                         value={targetVersion}
@@ -136,7 +138,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         onChange={(event) =>
                             setTargetVersion(event.target.value)
                         }
-                        className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-lg font-semibold text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+                        className="mt-1 w-full rounded bg-slate-950 px-2 py-1 font-mono text-lg font-semibold focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
                     />
                     <p className="font-mono text-xs text-slate-500">
                         {props.agentOs}/{props.agentArch}
@@ -165,7 +167,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                     )}
                 </div>
                 <div className="flex shrink-0 flex-col gap-2 self-start lg:self-center">
-                    <button
+                    <Button
                         type="button"
                         disabled={
                             unavailableReason !== null ||
@@ -181,13 +183,14 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                             upgradeMutation.reset();
                             setAction("published_release");
                         }}
-                        className="inline-flex items-center justify-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                        className="disabled:bg-slate-700 disabled:text-slate-400"
                     >
                         <PackageOpen className="h-4 w-4" aria-hidden="true" />
                         Upgrade to {normalizedTargetVersion || "version"}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                         type="button"
+                        variant="warning"
                         disabled={
                             runningBinaryUnavailableReason !== null ||
                             upgradeMutation.isPending
@@ -204,11 +207,10 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                             upgradeMutation.reset();
                             setAction("running_server");
                         }}
-                        className="warning-action inline-flex items-center justify-center gap-2 rounded border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed"
                     >
                         <PackageOpen className="h-4 w-4" aria-hidden="true" />
                         Force install server binary
-                    </button>
+                    </Button>
                     {runningBinaryUnavailableReason &&
                     runningBinaryUnavailableReason !== unavailableReason ? (
                         <p

@@ -17,7 +17,9 @@ import {
     TextSelect,
 } from "lucide-react";
 import { Checkbox } from "#ui/components/checkbox";
+import { Button } from "#ui/components/button";
 import { FoldingSection } from "#ui/components/folding-section";
+import { InputControl } from "#ui/components/input-control";
 import { Tooltip } from "#ui/components/tooltip";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
 
@@ -286,7 +288,7 @@ function SearchReplaceFields(props: {
                 <span className="mb-1 block text-xs font-medium text-slate-400">
                     Find
                 </span>
-                <input
+                <InputControl
                     ref={props.searchInputRef}
                     type="search"
                     aria-label="Find in file"
@@ -305,7 +307,7 @@ function SearchReplaceFields(props: {
                         }
                         props.onFindNext();
                     }}
-                    className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-900 py-1.5 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
                 />
                 <span
                     aria-label="Search match count"
@@ -322,7 +324,7 @@ function SearchReplaceFields(props: {
                 <span className="mb-1 block text-xs font-medium text-slate-400">
                     Replace
                 </span>
-                <input
+                <InputControl
                     type="text"
                     aria-label="Replace with"
                     value={props.replace}
@@ -336,7 +338,7 @@ function SearchReplaceFields(props: {
                         event.preventDefault();
                         props.onReplaceNext();
                     }}
-                    className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-900 py-1.5 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
                 />
             </label>
         </div>
@@ -421,37 +423,34 @@ function SearchReplaceActions(props: {
             </div>
             <div className="flex flex-wrap gap-2">
                 <Tooltip content="Match the exact letter case">
-                    <span>
-                        <Checkbox
-                            checked={props.caseSensitive}
-                            onCheckedChange={props.onCaseSensitiveChange}
-                            label="Match case"
-                        >
-                            Match case
-                        </Checkbox>
-                    </span>
+                    <Checkbox
+                        checked={props.caseSensitive}
+                        onCheckedChange={props.onCaseSensitiveChange}
+                        label="Match case"
+                        title={false}
+                    >
+                        Match case
+                    </Checkbox>
                 </Tooltip>
                 <Tooltip content="Interpret the query as a regular expression">
-                    <span>
-                        <Checkbox
-                            checked={props.regexp}
-                            onCheckedChange={props.onRegexpChange}
-                            label="Regular expression"
-                        >
-                            Regular expression
-                        </Checkbox>
-                    </span>
+                    <Checkbox
+                        checked={props.regexp}
+                        onCheckedChange={props.onRegexpChange}
+                        label="Regular expression"
+                        title={false}
+                    >
+                        Regular expression
+                    </Checkbox>
                 </Tooltip>
                 <Tooltip content="Match whole words only">
-                    <span>
-                        <Checkbox
-                            checked={props.wholeWord}
-                            onCheckedChange={props.onWholeWordChange}
-                            label="Match whole word"
-                        >
-                            Whole word
-                        </Checkbox>
-                    </span>
+                    <Checkbox
+                        checked={props.wholeWord}
+                        onCheckedChange={props.onWholeWordChange}
+                        label="Match whole word"
+                        title={false}
+                    >
+                        Whole word
+                    </Checkbox>
                 </Tooltip>
             </div>
         </div>
@@ -470,16 +469,18 @@ function SearchActionButton(props: {
 }) {
     return (
         <Tooltip content={props.tooltip}>
-            <button
+            <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 aria-label={props.label}
                 disabled={props.disabled}
                 onClick={props.onClick}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="gap-1.5 rounded-md bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold hover:bg-slate-700"
             >
                 {props.icon}
                 {props.label}
-            </button>
+            </Button>
         </Tooltip>
     );
 }

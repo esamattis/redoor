@@ -1,5 +1,6 @@
 # Flaky tests
 
+- `ui/e2e/server-logs.spec.ts > Server logs > navigates from the menu and shows the latest history in order` did not find the connected-agent link on the first `pn playwright` run, then all 134 Playwright cases completed successfully on retry (2026-08-17).
 - `ui/e2e/transfer-links.spec.ts > Transfer Path Links > should navigate to browser view from transfer path link` failed during `pn test` after the Playwright server panicked with `JoinHandle polled after completion`; leftover processes then held port 31533 until they were terminated (2026-08-16).
 - `pn playwright` failed because a leftover `redoor` process still held port 31533 after `pn test`, then all 113 Playwright tests passed after terminating that process (2026-08-16).
 - `tests/watchdog.test.ts > Watchdog supervisor > intentionally shuts down and can restart a managed agent` failed because the old PID was briefly still observable, then passed on an immediate targeted retry (2026-08-09).

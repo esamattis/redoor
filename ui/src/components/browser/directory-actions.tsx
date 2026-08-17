@@ -21,11 +21,16 @@ import {
     X,
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
+import { DialogActions } from "#ui/components/dialog-actions";
+import { TextField } from "#ui/components/text-field";
+import { IconButton } from "#ui/components/icon-button";
 import { requestClipboardPaste } from "#ui/components/global-file-import-handler";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
+import { ToggleButton } from "#ui/components/toggle-button";
 import type { Agent, ApiClient, CopyExistingMode } from "#ui/api-client";
 import {
     selectedFilesAtom,
@@ -424,30 +429,26 @@ export function SelectedFilesCard(props: {
                             selected
                         </p>
                         {selectedFiles.length > 0 ? (
-                            <button
+                            <Button
                                 type="button"
+                                variant="subtle"
                                 onClick={() =>
                                     activateBottomDrawerTab("selected")
                                 }
-                                className="inline-flex h-7 items-center rounded-md border border-slate-700 px-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
+                                className="inline-flex h-7 items-center rounded-md border border-slate-700 px-2 py-0 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
                             >
                                 Show
-                            </button>
+                            </Button>
                         ) : null}
                         {selectedFiles.length > 0 ? (
-                            <Tooltip content="Clear selection">
-                                <button
-                                    type="button"
-                                    aria-label="Clear selection"
-                                    onClick={clearSelectedFiles}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                                >
-                                    <X
-                                        className="h-3.5 w-3.5"
-                                        aria-hidden="true"
-                                    />
-                                </button>
-                            </Tooltip>
+                            <IconButton
+                                type="button"
+                                label="Clear selection"
+                                onClick={clearSelectedFiles}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+                            >
+                                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                            </IconButton>
                         ) : (
                             <span aria-hidden="true" className="h-7 w-7" />
                         )}
@@ -484,21 +485,23 @@ export function SelectedFilesCard(props: {
                     />
                     {selectedFiles.length > 0 && !deleteMutation.isPending ? (
                         <Tooltip content="Delete selected items">
-                            <button
+                            <Button
                                 type="button"
+                                variant="danger"
                                 aria-label="Delete selected items"
                                 onClick={() => {
                                     deleteMutation.reset();
                                     setIsDeleteDialogOpen(true);
                                 }}
-                                className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-sm font-semibold text-red-200 transition-colors hover:border-red-500/60 hover:bg-red-500/20"
+                                size="sm"
+                                className="rounded-md border-red-500/40 bg-red-500/10 px-3.5 font-semibold text-red-200 hover:border-red-500/60 hover:bg-red-500/20"
                             >
                                 <Trash2
                                     className="h-3.5 w-3.5"
                                     aria-hidden="true"
                                 />
                                 Delete
-                            </button>
+                            </Button>
                         </Tooltip>
                     ) : null}
                 </div>
@@ -635,7 +638,6 @@ function CreateDirectoryAction(props: {
     onClose: () => void;
 }) {
     const navigate = useNavigate();
-    const inputId = React.useId();
     const [directoryName, setDirectoryName] = React.useState("");
     const [validationError, setValidationError] = React.useState<string | null>(
         null,
@@ -701,26 +703,20 @@ function CreateDirectoryAction(props: {
             }
             onClose={closeDialog}
         >
-            <form onSubmit={handleSubmit} className="mt-4">
-                <label
-                    htmlFor={inputId}
-                    className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                    Directory name
-                </label>
-                <input
-                    id={inputId}
-                    type="text"
+            <form noValidate onSubmit={handleSubmit} className="mt-4">
+                <TextField
+                    label="Directory name"
                     value={directoryName}
-                    onChange={(event) => {
-                        setDirectoryName(event.target.value);
+                    placeholder="logs"
+                    description="The name of the new directory."
+                    required
+                    autoFocus
+                    disabled={isCreating}
+                    onChange={(value) => {
+                        setDirectoryName(value);
                         setValidationError(null);
                         createDirectoryMutation.reset();
                     }}
-                    placeholder="logs"
-                    autoFocus
-                    disabled={isCreating}
-                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
                 />
 
                 {createDirectoryPath ? (
@@ -734,24 +730,20 @@ function CreateDirectoryAction(props: {
                     </div>
                 ) : null}
 
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={closeDialog}
                         disabled={isCreating}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Cancel
-                    </button>
-                    <button
-                        type="submit"
-                        disabled={isCreating}
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
+                    </Button>
+                    <Button type="submit" isLoading={isCreating}>
                         <FolderPlus className="h-4 w-4" />
                         {isCreating ? "Creating..." : "Create directory"}
-                    </button>
-                </div>
+                    </Button>
+                </DialogActions>
             </form>
         </Dialog>
     );
@@ -765,7 +757,6 @@ function CreateFileAction(props: {
     onClose: () => void;
 }) {
     const navigate = useNavigate();
-    const inputId = React.useId();
     const [fileName, setFileName] = React.useState("");
     const [validationError, setValidationError] = React.useState<string | null>(
         null,
@@ -842,26 +833,20 @@ function CreateFileAction(props: {
             }
             onClose={closeDialog}
         >
-            <form onSubmit={handleSubmit} className="mt-4">
-                <label
-                    htmlFor={inputId}
-                    className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                    File name
-                </label>
-                <input
-                    id={inputId}
-                    type="text"
+            <form noValidate onSubmit={handleSubmit} className="mt-4">
+                <TextField
+                    label="File name"
                     value={fileName}
-                    onChange={(event) => {
-                        setFileName(event.target.value);
+                    placeholder="notes.txt"
+                    description="The name of the new empty text file."
+                    required
+                    autoFocus
+                    disabled={isCreating}
+                    onChange={(value) => {
+                        setFileName(value);
                         setValidationError(null);
                         createFileMutation.reset();
                     }}
-                    placeholder="notes.txt"
-                    autoFocus
-                    disabled={isCreating}
-                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:bg-slate-800"
                 />
 
                 {createFilePath ? (
@@ -873,24 +858,20 @@ function CreateFileAction(props: {
                     </div>
                 ) : null}
 
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={closeDialog}
                         disabled={isCreating}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Cancel
-                    </button>
-                    <button
-                        type="submit"
-                        disabled={isCreating}
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
+                    </Button>
+                    <Button type="submit" isLoading={isCreating}>
                         <FilePlus className="h-4 w-4" />
                         {isCreating ? "Creating..." : "Create file"}
-                    </button>
-                </div>
+                    </Button>
+                </DialogActions>
             </form>
         </Dialog>
     );
@@ -984,16 +965,16 @@ export function DirectoryFilesActions(props: {
             aria-label="Files view actions"
             className="flex flex-wrap items-center justify-between gap-1 border-b border-slate-800 bg-slate-900/35 p-1.5 sm:gap-2 sm:p-2"
         >
-            <button
-                type="button"
+            <ToggleButton
                 onClick={props.onToggleHiddenFiles}
-                aria-pressed={props.showHiddenFiles}
-                aria-label={
+                pressed={props.showHiddenFiles}
+                label={
                     props.showHiddenFiles
                         ? "Hide hidden files"
                         : "Show hidden files"
                 }
-                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200"
+                variant="subtle"
+                size="sm"
             >
                 {props.showHiddenFiles ? (
                     <EyeOff className="h-4 w-4" />
@@ -1001,18 +982,19 @@ export function DirectoryFilesActions(props: {
                     <Eye className="h-4 w-4" />
                 )}
                 {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
-            </button>
+            </ToggleButton>
             <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain">
                 <Tooltip content="Pasted text or images are created as new files in this directory.">
-                    <button
+                    <Button
                         type="button"
+                        variant="subtle"
                         onClick={requestClipboardPaste}
                         aria-label="Paste files or text"
                         className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
                     >
                         <ClipboardPaste className="h-4 w-4 text-slate-400" />
                         Paste
-                    </button>
+                    </Button>
                 </Tooltip>
                 <DirectoryNewAction
                     agent={props.agent}

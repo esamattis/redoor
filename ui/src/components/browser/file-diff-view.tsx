@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { FileSearch, GitCompareArrows } from "lucide-react";
 import type { ApiClient, Agent } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { AgentPathFields } from "#ui/components/browser/sync";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/components/browser/utils";
@@ -89,28 +90,32 @@ export function FileDiffView(props: {
                         onPathChange={setSelectedPath}
                     />
                     <div className="flex flex-wrap items-center gap-3">
-                        <button
+                        <Button
                             type="submit"
+                            size="lg"
                             disabled={
                                 diffMutation.isPending || !selectedAgentId
                             }
-                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                            isLoading={diffMutation.isPending}
+                            className="rounded-md text-sm font-semibold shadow-sm shadow-blue-950/30"
                         >
                             <GitCompareArrows className="h-4 w-4" />
                             {diffMutation.isPending
                                 ? "Generating diff..."
                                 : "Generate diff"}
-                        </button>
+                        </Button>
                         <Tooltip content="Open the selected comparison file">
-                            <button
+                            <Button
                                 type="button"
+                                variant="secondary"
+                                size="lg"
                                 disabled={!canOpenTarget}
                                 onClick={handleOpenTarget}
-                                className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                className="rounded-md bg-slate-950 text-sm font-semibold hover:border-slate-600 hover:bg-slate-900 hover:text-white"
                             >
                                 <FileSearch className="h-4 w-4" />
                                 Open target file
-                            </button>
+                            </Button>
                         </Tooltip>
                     </div>
                 </form>

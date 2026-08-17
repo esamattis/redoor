@@ -3,6 +3,7 @@ import { ScrollText } from "lucide-react";
 import { z } from "zod";
 
 import type { LogEvent } from "#ui/api-client";
+import { Checkbox } from "#ui/components/checkbox";
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 type LogEntry = { id: number; text: string };
@@ -185,16 +186,13 @@ export function LogViewer(props: {
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
                         {props.headerActions}
-                        <label className="flex items-center gap-2 text-sm text-slate-300">
-                            <input
-                                type="checkbox"
-                                checked={autoScroll}
-                                onChange={(event) =>
-                                    setAutoScroll(event.currentTarget.checked)
-                                }
-                            />
+                        <Checkbox
+                            checked={autoScroll}
+                            role="checkbox"
+                            onCheckedChange={setAutoScroll}
+                        >
                             Auto-scroll
-                        </label>
+                        </Checkbox>
                     </div>
                 </div>
                 <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">

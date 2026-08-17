@@ -27,7 +27,8 @@ import {
     clearSelectedFilesAtom,
     type SelectedPath,
 } from "#ui/selected-files";
-import { Tooltip } from "#ui/components/tooltip";
+import { IconButton } from "#ui/components/icon-button";
+import { Button } from "#ui/components/button";
 import {
     TransferList,
     useLastEstimatedTransferPercentage,
@@ -547,15 +548,16 @@ function SelectedFilesPanelActions(props: {
 }) {
     return (
         <div className="flex items-center gap-2">
-            <button
+            <Button
                 type="button"
+                variant="subtle"
                 aria-label="Clear all selected items"
                 onClick={props.onClearSelectedFiles}
                 className="inline-flex h-8 items-center justify-center rounded-md px-2 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 sm:px-2.5"
             >
                 <X className="h-4 w-4 sm:hidden" aria-hidden="true" />
                 <span className="hidden sm:inline">Clear all</span>
-            </button>
+            </Button>
         </div>
     );
 }
@@ -595,21 +597,20 @@ function SelectedFilesTable(props: {
                                 {file.path}
                             </p>
                         </div>
-                        <Tooltip content={`Unselect ${file.fileName}`}>
-                            <button
-                                type="button"
-                                aria-label={`Unselect ${file.fileName}`}
-                                onClick={() =>
-                                    props.onUnselectFile({
-                                        agentId: file.agentId,
-                                        path: file.path,
-                                    })
-                                }
-                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700 text-slate-300 transition-colors hover:bg-white/5"
-                            >
-                                <X className="h-4 w-4" aria-hidden="true" />
-                            </button>
-                        </Tooltip>
+                        <IconButton
+                            type="button"
+                            label={`Unselect ${file.fileName}`}
+                            tooltipClassName="shrink-0"
+                            onClick={() =>
+                                props.onUnselectFile({
+                                    agentId: file.agentId,
+                                    path: file.path,
+                                })
+                            }
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700 text-slate-300 transition-colors hover:bg-white/5"
+                        >
+                            <X className="h-4 w-4" aria-hidden="true" />
+                        </IconButton>
                     </li>
                 ))}
             </ul>
@@ -667,8 +668,9 @@ function SelectedFilesTable(props: {
                                 </div>
                             </td>
                             <td className="p-3">
-                                <button
+                                <Button
                                     type="button"
+                                    variant="secondary"
                                     aria-label={`Unselect ${file.fileName}`}
                                     onClick={() =>
                                         props.onUnselectFile({
@@ -676,11 +678,12 @@ function SelectedFilesTable(props: {
                                             path: file.path,
                                         })
                                     }
-                                    className="inline-flex items-center gap-2 rounded border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/5"
+                                    size="sm"
+                                    className="py-1.5 text-xs"
                                 >
                                     <X className="h-3.5 w-3.5" />
                                     Unselect
-                                </button>
+                                </Button>
                             </td>
                         </tr>
                     ))}

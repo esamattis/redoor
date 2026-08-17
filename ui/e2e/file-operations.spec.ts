@@ -807,7 +807,7 @@ test.describe.serial("File Operations", () => {
         await page.getByRole("link", { name: "subdir3", exact: true }).click();
 
         await page
-            .getByRole("button", {
+            .getByRole("checkbox", {
                 name: "Select file delete-selected.txt",
             })
             .click();
@@ -848,7 +848,7 @@ test.describe.serial("File Operations", () => {
             }),
         ).toHaveCount(0);
         await expect(
-            page.getByRole("button", {
+            page.getByRole("checkbox", {
                 name: "Select file delete-selected.txt",
             }),
         ).toHaveCount(0);
@@ -859,7 +859,7 @@ test.describe.serial("File Operations", () => {
         ).toHaveCount(0);
         // The file row disappearing confirms the directory view refreshed after the shared selected-items delete action.
         await expect(
-            page.getByRole("button", {
+            page.getByRole("checkbox", {
                 name: "Unselect file delete-selected.txt",
             }),
         ).toHaveCount(0);

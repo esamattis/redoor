@@ -154,7 +154,12 @@ test.describe.serial("File Detail View", () => {
             "old content",
         );
 
-        await page.getByRole("checkbox", { name: "Override existing" }).check();
+        const overrideExisting = page.getByRole("checkbox", {
+            name: "Override existing",
+        });
+        await overrideExisting.click();
+        // The button-based checkbox must expose that the retry may replace the destination.
+        await expect(overrideExisting).toHaveAttribute("aria-checked", "true");
         await page.getByRole("button", { name: "Sync", exact: true }).click();
 
         // Final transfer progress, rather than copy acceptance, drives the success report.

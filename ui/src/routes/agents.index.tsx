@@ -3,13 +3,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { MoreHorizontal, Play, Power, FolderOpen } from "lucide-react";
 import type { Agent, BinaryIdentity } from "#ui/api-client";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import {
     fieldMatchTone,
     RevValue,
     VersionValue,
 } from "#ui/components/binary-identity";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import { Dialog } from "#ui/components/dialog";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { agentsQueryOptions } from "#ui/queries";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
@@ -25,7 +25,6 @@ type MutationState = Record<string, "start" | "shutdown" | undefined>;
 function AgentManagement() {
     const router = useRouter();
     const queryClient = useQueryClient();
-    const actionsButtonRef = React.useRef<HTMLButtonElement>(null);
     const { api } = RootRoute.useRouteContext();
     const { agents, serverInfo } = RootRoute.useLoaderData();
     const serverBinary = React.useMemo(
@@ -49,7 +48,6 @@ function AgentManagement() {
     const [shutdownAgent, setShutdownAgent] = React.useState<Agent | null>(
         null,
     );
-    const [actionsAgent, setActionsAgent] = React.useState<Agent | null>(null);
     const [mutationErrors, setMutationErrors] = React.useState<
         Record<string, string | undefined>
     >({});
@@ -128,25 +126,13 @@ function AgentManagement() {
                     now={now}
                     mutations={mutations}
                     mutationErrors={mutationErrors}
-                    onSelectActions={(agent, actionButton) => {
-                        actionsButtonRef.current = actionButton;
-                        setActionsAgent(agent);
-                    }}
+                    api={api}
+                    router={router}
+                    queryClient={queryClient}
+                    onStart={start}
+                    onShutdown={setShutdownAgent}
                 />
             </div>
-            <AgentActionsDialog
-                agent={actionsAgent}
-                api={api}
-                router={router}
-                queryClient={queryClient}
-                anchorRef={actionsButtonRef}
-                onClose={() => setActionsAgent(null)}
-                onStart={start}
-                onShutdown={(agent) => {
-                    setShutdownAgent(agent);
-                    setActionsAgent(null);
-                }}
-            />
             <ConfirmationDialog
                 isOpen={shutdownAgent !== null}
                 title={
@@ -180,7 +166,11 @@ function AgentTable(props: {
     now: ReturnType<typeof useNow>;
     mutations: MutationState;
     mutationErrors: Record<string, string | undefined>;
-    onSelectActions: (agent: Agent, actionButton: HTMLButtonElement) => void;
+    api: ReturnType<typeof RootRoute.useRouteContext>["api"];
+    router: ReturnType<typeof useRouter>;
+    queryClient: ReturnType<typeof useQueryClient>;
+    onStart: (agent: Agent) => void;
+    onShutdown: (agent: Agent) => void;
 }) {
     return (
         <div className="mt-6 overflow-x-auto rounded-lg border border-slate-800">
@@ -252,23 +242,17 @@ function AgentTable(props: {
                                 ) : null}
                             </td>
                             <td className="px-4 py-3">
-                                <button
-                                    type="button"
-                                    aria-label={`Open actions for ${agent.name}`}
-                                    onClick={(event) =>
-                                        props.onSelectActions(
-                                            agent,
-                                            event.currentTarget,
-                                        )
-                                    }
+                                <AgentActionsMenu
+                                    agent={agent}
+                                    api={props.api}
+                                    router={props.router}
+                                    queryClient={props.queryClient}
                                     disabled={
                                         props.mutations[agent.id] !== undefined
                                     }
-                                    className="inline-flex items-center gap-1 rounded border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-white/5 disabled:opacity-50"
-                                >
-                                    <MoreHorizontal className="h-4 w-4" />
-                                    Actions
-                                </button>
+                                    onStart={props.onStart}
+                                    onShutdown={props.onShutdown}
+                                />
                             </td>
                         </tr>
                     ))}
@@ -278,94 +262,100 @@ function AgentTable(props: {
     );
 }
 
-/** Keeps action controls together while the route owns lifecycle mutation state. */
-function AgentActionsDialog(props: {
-    agent: Agent | null;
+/** Keeps each anchored row menu local while the route owns lifecycle mutation state. */
+function AgentActionsMenu(props: {
+    agent: Agent;
     api: ReturnType<typeof RootRoute.useRouteContext>["api"];
     router: ReturnType<typeof useRouter>;
     queryClient: ReturnType<typeof useQueryClient>;
-    anchorRef: React.RefObject<HTMLButtonElement | null>;
-    onClose: () => void;
+    disabled: boolean;
     onStart: (agent: Agent) => void;
     onShutdown: (agent: Agent) => void;
 }) {
-    const agent = props.agent;
     return (
-        <Dialog
-            isOpen={agent !== null}
-            title={agent ? `${agent.name} actions` : "Agent actions"}
+        <ActionMenu
+            label="Actions"
+            triggerAriaLabel={`Open actions for ${props.agent.name}`}
+            title={`${props.agent.name} actions`}
             closeAriaLabel="Close agent actions"
-            anchorRef={props.anchorRef}
-            onClose={props.onClose}
+            icon={<MoreHorizontal className="h-4 w-4" />}
+            disabled={props.disabled}
+            className="gap-1 rounded border border-slate-700 px-3 py-1.5"
         >
-            {agent ? (
-                <div className="mt-3 flex flex-col gap-2">
-                    {agent.managed &&
-                    (agent.status === "stopped" ||
-                        agent.status === "disconnected") ? (
-                        <button
-                            type="button"
+            {(close) => (
+                <>
+                    {props.agent.managed &&
+                    (props.agent.status === "stopped" ||
+                        props.agent.status === "disconnected") ? (
+                        <ActionMenuButton
                             onClick={() => {
-                                props.onStart(agent);
-                                props.onClose();
+                                props.onStart(props.agent);
+                                close();
                             }}
-                            className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                         >
                             <Play className="h-4 w-4" /> Start
-                        </button>
+                        </ActionMenuButton>
                     ) : null}
-                    {agent.status === "connected" ? (
-                        <RestartButton
-                            target={`agent ${agent.name}`}
-                            description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
-                            restart={() => agent.restart()}
-                            waitUntilReady={() =>
-                                waitForRestart(async () => {
-                                    const restartedAgent = (
-                                        await props.queryClient.fetchQuery({
-                                            ...agentsQueryOptions(props.api),
-                                            staleTime: 0,
-                                        })
-                                    ).find(
-                                        (entry: Agent) =>
-                                            entry.id === agent.id &&
-                                            entry.status === "connected" &&
-                                            entry.connectionId !==
-                                                agent.connectionId,
-                                    );
-                                    if (!restartedAgent) {
-                                        throw new Error(
-                                            "Agent is still restarting",
+                    {props.agent.status === "connected" ? (
+                        <ActionMenuButton asChild>
+                            <RestartButton
+                                target={`agent ${props.agent.name}`}
+                                description="The agent will restart with the same arguments. In-flight transfers and terminals are interrupted."
+                                restart={() => props.agent.restart()}
+                                waitUntilReady={() =>
+                                    waitForRestart(async () => {
+                                        const restartedAgent = (
+                                            await props.queryClient.fetchQuery({
+                                                ...agentsQueryOptions(
+                                                    props.api,
+                                                ),
+                                                staleTime: 0,
+                                            })
+                                        ).find(
+                                            (entry: Agent) =>
+                                                entry.id === props.agent.id &&
+                                                entry.status === "connected" &&
+                                                entry.connectionId !==
+                                                    props.agent.connectionId,
                                         );
-                                    }
-                                    await props.router.invalidate();
-                                }, "Agent did not come back after restart")
-                            }
-                        />
+                                        if (!restartedAgent) {
+                                            throw new Error(
+                                                "Agent is still restarting",
+                                            );
+                                        }
+                                        await props.router.invalidate();
+                                    }, "Agent did not come back after restart")
+                                }
+                            />
+                        </ActionMenuButton>
                     ) : null}
-                    {agent.managed &&
-                    (agent.status === "starting" ||
-                        agent.status === "connected") ? (
-                        <button
-                            type="button"
-                            onClick={() => props.onShutdown(agent)}
-                            className="inline-flex items-center gap-2 rounded border border-red-800 px-4 py-2 text-red-300 hover:bg-red-950/30"
+                    {props.agent.managed &&
+                    (props.agent.status === "starting" ||
+                        props.agent.status === "connected") ? (
+                        <ActionMenuButton
+                            tone="danger"
+                            onClick={() => {
+                                props.onShutdown(props.agent);
+                                close();
+                            }}
                         >
                             <Power className="h-4 w-4" /> Shutdown
-                        </button>
+                        </ActionMenuButton>
                     ) : null}
-                    {agent.status === "connected" && agent.cwd !== null ? (
-                        <Link
-                            to={agent.getBrowserUrl(agent.cwd)}
-                            onClick={props.onClose}
-                            className="inline-flex items-center gap-2 rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
-                        >
-                            <FolderOpen className="h-4 w-4" /> Browse files
-                        </Link>
+                    {props.agent.status === "connected" &&
+                    props.agent.cwd !== null ? (
+                        <ActionMenuButton asChild>
+                            <Link
+                                to={props.agent.getBrowserUrl(props.agent.cwd)}
+                                onClick={close}
+                            >
+                                <FolderOpen className="h-4 w-4" /> Browse files
+                            </Link>
+                        </ActionMenuButton>
                     ) : null}
-                </div>
-            ) : null}
-        </Dialog>
+                </>
+            )}
+        </ActionMenu>
     );
 }
 

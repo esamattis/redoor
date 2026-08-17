@@ -3,7 +3,9 @@ import { useMutation } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
+import { Button } from "#ui/components/button";
 import { Password } from "#ui/components/password";
+import { TextField } from "#ui/components/text-field";
 
 const loginSearchSchema = z.object({
     redirect: z.string().optional(),
@@ -114,19 +116,17 @@ function LoginPage() {
                         Sign in to Redoor
                     </h1>
                     <form onSubmit={submit} className="space-y-5">
-                        <label className="block text-sm font-medium text-slate-300">
-                            Username
-                            <input
-                                autoFocus
-                                autoComplete="username"
-                                value={username}
-                                disabled={isSubmitting}
-                                onChange={(event) =>
-                                    setUsername(event.target.value)
-                                }
-                                className="mt-2 w-full rounded-md border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
-                            />
-                        </label>
+                        <TextField
+                            label="Username"
+                            value={username}
+                            placeholder="Username"
+                            description="Your Redoor account username."
+                            required
+                            autoFocus
+                            autoComplete="username"
+                            disabled={isSubmitting}
+                            onChange={setUsername}
+                        />
                         <Password
                             label="Password"
                             autoComplete="current-password"
@@ -142,10 +142,12 @@ function LoginPage() {
                                 {error}
                             </p>
                         ) : null}
-                        <button
+                        <Button
                             type="submit"
+                            size="lg"
                             disabled={isSubmitting || !username || !password}
-                            className="flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                            isLoading={isSubmitting}
+                            className="w-full rounded-md disabled:opacity-60"
                         >
                             {isSubmitting ? (
                                 <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -153,7 +155,7 @@ function LoginPage() {
                                 <LogIn className="h-4 w-4" />
                             )}
                             {isSubmitting ? "Signing in…" : "Sign in"}
-                        </button>
+                        </Button>
                     </form>
                 </div>
             </div>

@@ -14,8 +14,11 @@ import type { Agent } from "#ui/api-client";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { refreshBrowserPath } from "#ui/components/browser/refresh";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
+import { DialogActions } from "#ui/components/dialog-actions";
+import { InputControl } from "#ui/components/input-control";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
@@ -149,7 +152,7 @@ function RenamePathDialog(props: {
                 >
                     New name
                 </label>
-                <input
+                <InputControl
                     ref={focusAndSelectFileNameStem}
                     id={`${props.entryType}-rename-input`}
                     type="text"
@@ -161,26 +164,27 @@ function RenamePathDialog(props: {
                     }}
                     aria-label={label}
                     disabled={isRenaming || parentPath === null}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="w-full rounded-lg bg-slate-950/70 text-sm transition focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
                 />
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={props.onClose}
                         disabled={isRenaming}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Cancel
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                         type="submit"
                         disabled={!canRename || isRenaming}
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        isLoading={isRenaming}
+                        className="font-semibold"
                     >
                         <Pencil className="h-4 w-4" />
                         {isRenaming ? "Renaming..." : "Rename"}
-                    </button>
-                </div>
+                    </Button>
+                </DialogActions>
             </form>
         </Dialog>
     );

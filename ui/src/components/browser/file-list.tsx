@@ -22,13 +22,17 @@ import {
 import type { LsEntry } from "#bindings/LsEntry";
 import type { MountPoint } from "#bindings/MountPoint";
 import type { Agent } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { RenamePathAction } from "#ui/components/browser/path-actions";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { InputControl } from "#ui/components/input-control";
 import { Dialog } from "#ui/components/dialog";
+import { DialogActions } from "#ui/components/dialog-actions";
 import { Tooltip } from "#ui/components/tooltip";
+import { ToggleButton } from "#ui/components/toggle-button";
 import type { FileSearchEntry, FileSearchResponse } from "#ui/api-client";
 import {
     selectedFileKeysAtom,
@@ -262,7 +266,7 @@ export function FileList(props: {
                 <label className="relative min-w-0 flex-1">
                     <span className="sr-only">Filter files</span>
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                    <input
+                    <InputControl
                         ref={filterInputRef}
                         type="search"
                         aria-label="Filter files"
@@ -270,7 +274,7 @@ export function FileList(props: {
                         onChange={(event) => setFilter(event.target.value)}
                         onKeyDown={handleFilterKeyDown}
                         placeholder="Filter files (f, s for recursive)"
-                        className="w-full rounded-md border border-slate-700 bg-slate-900 py-1.5 pl-9 pr-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 sm:py-2"
+                        className="w-full bg-slate-900 py-1.5 pl-9 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500 sm:py-2"
                     />
                 </label>
                 <RecursiveSearchControls
@@ -354,7 +358,7 @@ function RecursiveSearchControls(props: {
                             <span className="sr-only">
                                 Search timeout in seconds
                             </span>
-                            <input
+                            <InputControl
                                 type="number"
                                 aria-label="Search timeout in seconds"
                                 min={1}
@@ -368,87 +372,58 @@ function RecursiveSearchControls(props: {
                                         );
                                     }
                                 }}
-                                className="w-16 rounded-md border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                className="w-16 bg-slate-900 px-2 text-sm focus:ring-1 focus:ring-blue-500"
                             />
                         </label>
                     </Tooltip>
-                    <Tooltip
-                        content={
+                    <ToggleButton
+                        label="Search hidden directories"
+                        pressed={props.includeHiddenDirectories}
+                        tooltip={
                             props.includeHiddenDirectories
                                 ? "Click to exclude hidden directories from search"
                                 : "Click to search from hidden directories"
                         }
+                        onClick={() =>
+                            props.onIncludeHiddenChange((current) => !current)
+                        }
                     >
-                        <button
-                            type="button"
-                            aria-label="Search hidden directories"
-                            aria-pressed={props.includeHiddenDirectories}
-                            onClick={() =>
-                                props.onIncludeHiddenChange(
-                                    (current) => !current,
-                                )
-                            }
-                            className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                                props.includeHiddenDirectories
-                                    ? "border-blue-500 bg-blue-500/15 text-blue-300"
-                                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
-                            }`}
-                        >
-                            {props.includeHiddenDirectories ? (
-                                <Eye className="h-4 w-4" />
-                            ) : (
-                                <EyeOff className="h-4 w-4" />
-                            )}
-                        </button>
-                    </Tooltip>
-                    <Tooltip
-                        content={
+                        {props.includeHiddenDirectories ? (
+                            <Eye className="h-4 w-4" />
+                        ) : (
+                            <EyeOff className="h-4 w-4" />
+                        )}
+                    </ToggleButton>
+                    <ToggleButton
+                        label="Respect .gitignore files"
+                        pressed={props.respectGitignore}
+                        tooltip={
                             props.respectGitignore
                                 ? "Click to search files ignored by .gitignore"
                                 : "Click to exclude files ignored by .gitignore from search"
                         }
+                        onClick={() =>
+                            props.onRespectGitignoreChange(
+                                (current) => !current,
+                            )
+                        }
                     >
-                        <button
-                            type="button"
-                            aria-label="Respect .gitignore files"
-                            aria-pressed={props.respectGitignore}
-                            onClick={() =>
-                                props.onRespectGitignoreChange(
-                                    (current) => !current,
-                                )
-                            }
-                            className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                                props.respectGitignore
-                                    ? "border-blue-500 bg-blue-500/15 text-blue-300"
-                                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
-                            }`}
-                        >
-                            <GitBranch className="h-4 w-4" />
-                        </button>
-                    </Tooltip>
+                        <GitBranch className="h-4 w-4" />
+                    </ToggleButton>
                 </>
             )}
-            <Tooltip
-                content={
+            <ToggleButton
+                label="Search recursively"
+                pressed={props.active}
+                tooltip={
                     props.active
                         ? "Click to search only this directory"
                         : "Click to search recursively (s)"
                 }
+                onClick={() => props.onActiveChange((current) => !current)}
             >
-                <button
-                    type="button"
-                    aria-label="Search recursively"
-                    aria-pressed={props.active}
-                    onClick={() => props.onActiveChange((current) => !current)}
-                    className={`rounded-md border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                        props.active
-                            ? "border-blue-500 bg-blue-500/15 text-blue-300"
-                            : "border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-100"
-                    }`}
-                >
-                    <FolderSearch className="h-4 w-4" />
-                </button>
-            </Tooltip>
+                <FolderSearch className="h-4 w-4" />
+            </ToggleButton>
         </>
     );
 }
@@ -805,14 +780,14 @@ function FileEntryActions(props: {
                     The archive is created on the agent as data is sent, so the
                     complete directory is not buffered in memory first.
                 </p>
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={() => setIsDownloadDialogOpen(false)}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
                     >
                         Cancel
-                    </button>
+                    </Button>
                     <a
                         href={downloadUrl}
                         download={downloadName}
@@ -822,7 +797,7 @@ function FileEntryActions(props: {
                         <Download className="h-4 w-4" />
                         Download .tar.gz
                     </a>
-                </div>
+                </DialogActions>
             </Dialog>
             <ConfirmationDialog
                 isOpen={isDeleteDialogOpen}
@@ -871,6 +846,7 @@ function FileEntry(props: {
         >
             <td className="p-1.5 sm:p-2" aria-label="">
                 <Checkbox
+                    role="checkbox"
                     label={
                         isSelected
                             ? `Unselect ${isDirectory ? "directory" : "file"} ${entry.name}`

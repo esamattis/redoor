@@ -2,6 +2,7 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import type { Agent } from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
@@ -26,30 +27,32 @@ function FileEditActions(props: {
     return (
         <>
             <Tooltip content="Save file (Ctrl+S)">
-                <button
+                <Button
                     type="button"
                     aria-label="Save file"
                     onClick={props.onSave}
-                    disabled={
-                        !props.canEdit || !props.isDirty || props.isSaving
-                    }
-                    className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!props.canEdit || !props.isDirty}
+                    isLoading={props.isSaving}
+                    size="sm"
+                    className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
                 >
                     {props.isSaving ? "Saving..." : "Save"}
-                </button>
+                </Button>
             </Tooltip>
             <Tooltip content="Restore the last saved file contents">
-                <button
+                <Button
                     type="button"
+                    variant="secondary"
                     aria-label="Restore file contents"
                     onClick={props.onRestore}
                     disabled={
                         !props.canEdit || !props.isDirty || props.isSaving
                     }
-                    className="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    size="sm"
+                    className="rounded-md bg-slate-800/80 px-3.5 font-semibold hover:bg-slate-700"
                 >
                     Restore
-                </button>
+                </Button>
             </Tooltip>
             {props.statusMessage ? (
                 <span

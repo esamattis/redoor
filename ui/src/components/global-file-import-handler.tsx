@@ -7,7 +7,10 @@ import {
     enqueueUploadBatchAtom,
     type UploadSourceFile,
 } from "#ui/upload-queue";
+import { Button } from "./button";
 import { Dialog } from "./dialog";
+import { DialogActions } from "./dialog-actions";
+import { InputControl } from "./input-control";
 import { Toast } from "./toast";
 
 export const REQUEST_CLIPBOARD_PASTE_EVENT = "redoor:request-clipboard-paste";
@@ -599,7 +602,7 @@ function PastedTextFileDialog(props: {
                 >
                     Filename
                 </label>
-                <input
+                <InputControl
                     ref={focusAndSelectFileNameStem}
                     id="pasted-text-file-name"
                     type="text"
@@ -609,24 +612,21 @@ function PastedTextFileDialog(props: {
                         props.setTextFileNameError(null);
                     }}
                     autoFocus
-                    className="w-full rounded border border-slate-700 bg-[#0b0d12] px-3 py-2 text-slate-100 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+                    className="w-full rounded shadow-sm focus:ring-blue-500/30"
                 />
-                <div className="mt-6 flex justify-end gap-3">
-                    <button
+                <DialogActions>
+                    <Button
                         type="button"
+                        variant="secondary"
                         onClick={() => props.setPastedText(null)}
-                        className="rounded border border-slate-700 px-4 py-2 text-slate-200 hover:bg-white/5"
                     >
                         Cancel
-                    </button>
-                    <button
-                        type="submit"
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
-                    >
+                    </Button>
+                    <Button type="submit">
                         <ClipboardPaste className="h-4 w-4" />
                         Upload text
-                    </button>
-                </div>
+                    </Button>
+                </DialogActions>
             </form>
         </Dialog>
     );

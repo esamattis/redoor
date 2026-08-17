@@ -81,6 +81,7 @@
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
         "semver": "^7.8.5",
+        "tailwind-merge": "^3.6.0",
         "tailwindcss": "^4.3.3",
         "toxiproxy-node-client": "^4.1.0",
         "zod": "^4.4.3",

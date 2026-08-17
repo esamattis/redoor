@@ -1,7 +1,7 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Bookmark, HardDrive, Pencil, Plus, X } from "lucide-react";
+import { Bookmark, HardDrive, Pencil, X } from "lucide-react";
 import type * as React from "react";
 
 import type { Agent } from "#ui/api-client";
@@ -14,6 +14,8 @@ import {
     getStartErrorMessage,
 } from "#ui/agent-start-state";
 import { SideMenu } from "#ui/components/side-menu";
+import { AddButton } from "#ui/components/add-button";
+import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     getBookmarkKey,
@@ -93,16 +95,13 @@ function AgentMenu(props: {
                 <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
                     Agents
                 </h2>
-                <Tooltip content="Add managed agent">
+                <AddButton tooltip="Add managed agent">
                     <Link
                         to="/agents/new"
                         aria-label="Add managed agent"
                         onClick={props.onClose}
-                        className="rounded p-1.5 text-slate-400 hover:bg-white/5 hover:text-slate-100"
-                    >
-                        <Plus className="h-4 w-4" aria-hidden="true" />
-                    </Link>
-                </Tooltip>
+                    />
+                </AddButton>
             </div>
             <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
                 {props.agents.length === 0 ? (
@@ -261,16 +260,15 @@ function AgentBookmarks(props: {
                                 </span>
                             </Link>
                         </Tooltip>
-                        <Tooltip content={`Remove ${bookmark.name}`}>
-                            <button
-                                type="button"
-                                aria-label={`Remove bookmark ${bookmark.name}`}
-                                onClick={() => props.onRemove(bookmark)}
-                                className="rounded p-1 text-slate-600 opacity-0 hover:bg-white/10 hover:text-slate-200 group-hover:opacity-100 group-focus-within:opacity-100"
-                            >
-                                <X className="h-3 w-3" aria-hidden="true" />
-                            </button>
-                        </Tooltip>
+                        <IconButton
+                            type="button"
+                            label={`Remove bookmark ${bookmark.name}`}
+                            tooltip={`Remove ${bookmark.name}`}
+                            onClick={() => props.onRemove(bookmark)}
+                            className="rounded p-1 text-slate-600 opacity-0 hover:bg-white/10 hover:text-slate-200 group-hover:opacity-100 group-focus-within:opacity-100"
+                        >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                        </IconButton>
                     </li>
                 );
             })}
