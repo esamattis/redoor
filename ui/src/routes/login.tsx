@@ -120,7 +120,6 @@ function LoginPage() {
                             label="Username"
                             value={username}
                             placeholder="Username"
-                            description="Your Redoor account username."
                             required
                             autoFocus
                             autoComplete="username"
