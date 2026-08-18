@@ -191,6 +191,71 @@ test.describe.serial("File Edit View", () => {
         await expect(editor.getByText("LAST_BUFFER_LINE")).toBeVisible();
     });
 
+    test("should expand the complete editor to the full window", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "full-window.txt");
+        await fs.writeFile(filePath, "full window content");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editorPanel = page.getByRole("article", {
+            name: "Editing panel",
+        });
+        const expandButton = page.getByRole("button", {
+            name: "Expand editor to full window",
+        });
+        const optionsButton = page.getByRole("button", {
+            name: "Editor options",
+        });
+        const expandBox = await expandButton.boundingBox();
+        const optionsBox = await optionsButton.boundingBox();
+        expect(expandBox).not.toBeNull();
+        expect(optionsBox).not.toBeNull();
+        if (expandBox === null || optionsBox === null) {
+            throw new Error("expected editor toolbar measurements");
+        }
+        // The expansion control belongs immediately before the overflow menu.
+        expect(expandBox.x).toBeLessThan(optionsBox.x);
+
+        await expandButton.click();
+
+        await expect(editorPanel).toHaveCSS("position", "fixed");
+        const panelBox = await editorPanel.boundingBox();
+        const viewport = page.viewportSize();
+        expect(panelBox).not.toBeNull();
+        expect(viewport).not.toBeNull();
+        if (panelBox === null || viewport === null) {
+            throw new Error("expected expanded editor measurements");
+        }
+        // Fixed edges make the editor and all of its controls fill the browser window.
+        expect(panelBox.x).toBe(0);
+        expect(panelBox.y).toBe(0);
+        expect(panelBox.width).toBe(viewport.width);
+        expect(panelBox.height).toBe(viewport.height);
+        await expect(
+            editorPanel.getByRole("button", { name: "Save file" }),
+        ).toBeVisible();
+        await expect(
+            editorPanel.getByRole("button", { name: "Reload file contents" }),
+        ).toBeVisible();
+
+        await page.getByLabel("File editor").press("ControlOrMeta+f");
+        // Search remains inside the expanded panel rather than behind the overlay.
+        await expect(editorPanel.getByLabel("Find in file")).toBeVisible();
+
+        const restoreButton = editorPanel.getByRole("button", {
+            name: "Restore editor size",
+        });
+        await restoreButton.click();
+        // Restoring returns the card to the route layout without replacing the editor.
+        await expect(editorPanel).toHaveCSS("position", "static");
+        await expect(page.getByLabel("File editor")).toHaveText(
+            "full window content",
+        );
+    });
+
     test("should refresh a clean editor when the tab is focused", async ({
         page,
     }) => {

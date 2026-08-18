@@ -1,7 +1,14 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import { Download, MoreHorizontal, RefreshCw, Save } from "lucide-react";
+import {
+    Download,
+    Maximize2,
+    Minimize2,
+    MoreHorizontal,
+    RefreshCw,
+    Save,
+} from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
@@ -9,6 +16,7 @@ import { CodeEditor } from "#ui/components/browser/code-editor";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
@@ -144,6 +152,56 @@ function EditorOptionsMenu() {
     );
 }
 
+/** Keeps the full-window toggle accessible while its icon changes with the layout. */
+function EditorSizeToggle(props: {
+    isFullWindow: boolean;
+    onToggle: () => void;
+}) {
+    return (
+        <IconButton
+            type="button"
+            label={
+                props.isFullWindow
+                    ? "Restore editor size"
+                    : "Expand editor to full window"
+            }
+            aria-pressed={props.isFullWindow}
+            onClick={props.onToggle}
+            className="h-8 w-8 rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+        >
+            {props.isFullWindow ? (
+                <Minimize2 className="h-4 w-4" aria-hidden="true" />
+            ) : (
+                <Maximize2 className="h-4 w-4" aria-hidden="true" />
+            )}
+        </IconButton>
+    );
+}
+
+/** Makes browser save invoke the editor unless another interactive surface owns it. */
+function useFileSaveShortcut(onSave: () => void) {
+    React.useEffect(() => {
+        const handleSaveShortcut = (event: KeyboardEvent) => {
+            if (
+                !(
+                    (event.ctrlKey || event.metaKey) &&
+                    !event.altKey &&
+                    event.key === "s"
+                ) ||
+                event.defaultPrevented ||
+                isTerminalInputTarget(event.target)
+            ) {
+                return;
+            }
+            event.preventDefault();
+            onSave();
+        };
+
+        window.addEventListener("keydown", handleSaveShortcut);
+        return () => window.removeEventListener("keydown", handleSaveShortcut);
+    }, [onSave]);
+}
+
 /** Edits file contents in a viewport-bounded CodeMirror with explicit save/reload. */
 export function FileEditView(props: {
     agent: Agent;
@@ -160,6 +218,7 @@ export function FileEditView(props: {
     const [draft, setDraft] = React.useState<string | null>(null);
     const [reloadConfirmationOpen, setReloadConfirmationOpen] =
         React.useState(false);
+    const [isFullWindow, setIsFullWindow] = React.useState(false);
     const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
     const saveMutation = useMutation({
         mutationFn: (nextContent: string) =>
@@ -220,27 +279,7 @@ export function FileEditView(props: {
         saveMutation.mutate(content);
     }, [canEdit, content, isDirty, saveMutation]);
 
-    React.useEffect(() => {
-        /** Intercepts browser save so Mod-s works even when the editor is not focused. */
-        const handleSaveShortcut = (event: KeyboardEvent) => {
-            if (
-                !(
-                    (event.ctrlKey || event.metaKey) &&
-                    !event.altKey &&
-                    event.key === "s"
-                ) ||
-                event.defaultPrevented ||
-                isTerminalInputTarget(event.target)
-            ) {
-                return;
-            }
-            event.preventDefault();
-            handleSave();
-        };
-
-        window.addEventListener("keydown", handleSaveShortcut);
-        return () => window.removeEventListener("keydown", handleSaveShortcut);
-    }, [handleSave]);
+    useFileSaveShortcut(handleSave);
 
     const statusMessage = contentQuery.isPending
         ? "Loading file..."
@@ -258,7 +297,14 @@ export function FileEditView(props: {
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
-            <article className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <article
+                aria-label="Editing panel"
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20 ${
+                    isFullWindow
+                        ? "fixed inset-0 z-[60] rounded-none"
+                        : "rounded-lg"
+                }`}
+            >
                 <header className="shrink-0 border-b border-slate-800 p-4">
                     <h1 aria-label="File name" className="sr-only">
                         {props.fileName}
@@ -281,7 +327,15 @@ export function FileEditView(props: {
                                 onSave={handleSave}
                             />
                         </div>
-                        <EditorOptionsMenu />
+                        <div className="flex shrink-0 items-center gap-1">
+                            <EditorSizeToggle
+                                isFullWindow={isFullWindow}
+                                onToggle={() =>
+                                    setIsFullWindow((current) => !current)
+                                }
+                            />
+                            <EditorOptionsMenu />
+                        </div>
                     </div>
                 </header>
 
