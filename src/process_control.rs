@@ -1,4 +1,15 @@
-//! Coordinates one foreground or daemon process per role or named relay.
+//! Coordinates process ownership, daemonization, and single-instance runtime files.
+//!
+//! Foreground Redoor processes belong to the process that launched them. They must
+//! therefore exit if that parent is killed, otherwise a terminated terminal,
+//! supervisor, or server can leave an agent reconnecting indefinitely. Daemons are
+//! deliberately different: the short-lived CLI re-execs Redoor in a new session and
+//! marks that child as detached so the same parent-death machinery does not stop it.
+//!
+//! Parent-death notification is platform-specific. Linux-family kernels can ask the
+//! kernel to deliver a signal, while macOS requires a dedicated `kqueue` watcher.
+//! PID-file advisory locks provide the separate single-instance guarantee; the lock,
+//! rather than file existence or a recycled numeric PID, is the source of liveness.
 
 use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
 
@@ -56,9 +67,13 @@ pub(crate) fn bind_to_parent_lifetime() {
         return;
     }
 
+    // Linux and Android expose a kernel-maintained parent-death signal, so no
+    // userspace task or thread needs to remain scheduled after registration.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     bind_to_parent_lifetime_linux();
 
+    // macOS has no PR_SET_PDEATHSIG equivalent. A kqueue watcher provides the
+    // closest behavior and also observes parents terminated with SIGKILL.
     #[cfg(target_os = "macos")]
     bind_to_parent_lifetime_macos();
 }
@@ -86,7 +101,10 @@ fn exit_if_parent_gone(parent: nix::unistd::Pid) {
     }
 }
 
-/// Asks the Linux kernel to deliver SIGTERM when the parent disappears, including after SIGKILL.
+/// Registers Linux-kernel parent-death delivery, then closes the registration race.
+///
+/// Android uses the Linux kernel facility too. It is named separately by Rust's
+/// `target_os`, so both targets must be included even though the behavior is shared.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn bind_to_parent_lifetime_linux() {
     let parent = launch_parent();
@@ -96,15 +114,20 @@ fn bind_to_parent_lifetime_linux() {
     exit_if_parent_gone(parent);
 }
 
-/// Uses prctl on Linux and the same syscall on Android, which shares the kernel interface.
+/// Configures the Linux-kernel `PR_SET_PDEATHSIG` facility for Linux and Android.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn set_parent_death_sigterm() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
+        // nix exposes its checked prctl wrapper only for the Rust Linux target.
         nix::sys::prctl::set_pdeathsig(Some(Signal::SIGTERM)).map_err(|error| error.to_string())
     }
     #[cfg(target_os = "android")]
     {
+        // Android is a Linux kernel target, but nix does not expose the Linux-only
+        // safe wrapper there. libc still provides the same prctl syscall ABI.
+        // SAFETY: PR_SET_PDEATHSIG consumes SIGTERM as an integer value; the three
+        // remaining variadic arguments are unused and passed as zero, with no pointers.
         let result = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) };
         if result == 0 {
             Ok(())
@@ -114,7 +137,11 @@ fn set_parent_death_sigterm() -> Result<(), String> {
     }
 }
 
-/// Watches the parent with kqueue because macOS has no PR_SET_PDEATHSIG.
+/// Registers a macOS process-exit event and dedicates a thread to observing it.
+///
+/// Unlike the Linux kernel facility, `kqueue` reports the event to this process
+/// instead of delivering a termination signal, so a live watcher must explicitly
+/// exit Redoor when the parent disappears.
 #[cfg(target_os = "macos")]
 fn bind_to_parent_lifetime_macos() {
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
@@ -158,7 +185,10 @@ fn bind_to_parent_lifetime_macos() {
     }
 }
 
-/// Blocks until the registered parent exits, then terminates this process.
+/// Blocks on macOS until the registered parent exits, then terminates this process.
+///
+/// This runs on an OS thread because a Tokio task can be cancelled or starved during
+/// runtime teardown, exactly when the parent-death guarantee matters most.
 #[cfg(target_os = "macos")]
 fn watch_parent_exit(queue: nix::sys::event::Kqueue) -> ! {
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent};
@@ -417,6 +447,8 @@ pub(crate) async fn spawn_daemon(slot: ProcessSlot) -> Result<()> {
         use std::os::unix::process::CommandExt;
 
         // A new session prevents terminal hangups from terminating the background process.
+        // SAFETY: this closure runs after fork and before exec, so it calls only
+        // `setsid` and converts its errno without touching locks or shared runtime state.
         unsafe {
             command.as_std_mut().pre_exec(|| {
                 nix::unistd::setsid()
@@ -497,6 +529,9 @@ async fn spawn_daemon_process(description: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+
+        // SAFETY: this closure runs after fork and before exec, so it calls only
+        // `setsid` and converts its errno without touching locks or shared runtime state.
         unsafe {
             command.as_std_mut().pre_exec(|| {
                 nix::unistd::setsid()
