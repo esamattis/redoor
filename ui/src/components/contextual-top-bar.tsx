@@ -44,7 +44,7 @@ export function ContextualTopBar(props: {
                 ref={props.applicationTriggerRef}
                 type="button"
                 label="Open application menu"
-                tooltipClassName="xl:hidden"
+                tooltip={false}
                 aria-haspopup="dialog"
                 aria-controls="application-menu-drawer"
                 aria-expanded={props.isApplicationMenuOpen}
@@ -61,7 +61,7 @@ export function ContextualTopBar(props: {
                 ref={props.agentTriggerRef}
                 type="button"
                 label="Open agent menu"
-                tooltipClassName="xl:hidden"
+                tooltip={false}
                 aria-haspopup="dialog"
                 aria-controls="agent-menu-drawer"
                 aria-expanded={props.isAgentMenuOpen}
