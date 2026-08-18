@@ -54,9 +54,11 @@ export function BrowserPageHeader(props: {
                     />
                 </div>
             </div>
-            <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800">
-                {props.viewToggle}
-            </div>
+            {props.viewToggle ? (
+                <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800">
+                    {props.viewToggle}
+                </div>
+            ) : null}
         </header>
     );
 }
@@ -257,13 +259,15 @@ export function BrowserHeader(props: {
                 </>
             }
             viewToggle={
-                <ViewToggle
-                    agent={props.agent}
-                    path={props.path}
-                    entryType={props.entryType}
-                    activeView={props.activeView}
-                    editable={props.editable}
-                />
+                pathUnavailable ? null : (
+                    <ViewToggle
+                        agent={props.agent}
+                        path={props.path}
+                        entryType={props.entryType}
+                        activeView={props.activeView}
+                        editable={props.editable}
+                    />
+                )
             }
         />
     );

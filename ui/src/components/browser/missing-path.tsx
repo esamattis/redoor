@@ -75,10 +75,15 @@ export function MissingPathCreationForm(props: { agent: Agent; path: string }) {
             : null);
 
     return (
-        <section className="rounded-lg border border-slate-800 bg-[#11141b] p-6">
-            <h1 className="text-lg font-semibold text-slate-100">Create new</h1>
+        <section className="w-full rounded-lg border border-slate-800 bg-[#11141b] p-6 lg:p-8">
+            <h1 className="text-xl font-semibold text-slate-100">
+                File or directory does not exist
+            </h1>
+            <p className="mt-2 text-sm text-slate-400">
+                Create a new file or directory at this location.
+            </p>
             <form
-                className="mt-4 max-w-lg"
+                className="mt-6 max-w-2xl"
                 onSubmit={(event) => {
                     event.preventDefault();
                     createEntry("file");

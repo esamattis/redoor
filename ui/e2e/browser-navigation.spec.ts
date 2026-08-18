@@ -960,6 +960,14 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("navigation", { name: "Breadcrumbs" }),
         ).toBeVisible();
+        // View tabs only describe existing filesystem entries and must not appear here.
+        await expect(page.getByLabel("Directory view")).not.toBeVisible();
+        // The creation card clearly explains why creation is being offered.
+        await expect(
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
+        ).toBeVisible();
         // The missing final path segment is ready to use as the new entry name.
         const fileNameInput = page.getByRole("textbox", { name: "File name" });
         await expect(fileNameInput).toHaveValue(missingName);
@@ -1006,7 +1014,9 @@ test.describe.serial("File Browser Navigation", () => {
 
         // The missing nested path must show the create form before breadcrumb navigation.
         await expect(
-            page.getByRole("heading", { name: "Create new" }),
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
         ).toBeVisible();
         await expect(
             page.getByRole("textbox", { name: "File name" }),
@@ -1022,7 +1032,9 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page).toHaveURL(existingParentUrl);
         // An existing directory must not keep the create form from the previous missing path.
         await expect(
-            page.getByRole("heading", { name: "Create new" }),
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
         ).not.toBeVisible();
         await expect(
             page.getByRole("textbox", { name: "File name" }),
