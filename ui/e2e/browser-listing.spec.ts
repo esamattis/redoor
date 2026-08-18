@@ -330,8 +330,9 @@ test.describe.serial("File Browser Listing", () => {
         await expect(page.getByRole("tooltip")).toHaveText(
             "Pasted text or images are created as new files in this directory.",
         );
+        await pasteButton.dispatchEvent("mouseenter");
         await pasteButton.dispatchEvent("touchend");
-        // Lifting the finger must dismiss a touch-opened tooltip immediately.
+        // A tap's synthetic hover must not pin the tooltip after the finger lifts.
         await expect(page.getByRole("tooltip")).toHaveCount(0);
     });
 });

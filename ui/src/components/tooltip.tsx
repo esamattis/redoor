@@ -46,6 +46,8 @@ export function Tooltip(props: TooltipProps) {
     const triggerRef = React.useRef<HTMLSpanElement>(null);
     const tooltipRef = React.useRef<HTMLSpanElement>(null);
     const ignoreFocusFromPointerRef = React.useRef(false);
+    // Touch synthesizes mouseenter; ignore that hover until a real mouse leave.
+    const ignoreHoverFromTouchRef = React.useRef(false);
     const [isHovered, setIsHovered] = React.useState(false);
     const [isFocused, setIsFocused] = React.useState(false);
     const [isTouchOpen, setIsTouchOpen] = React.useState(false);
@@ -205,14 +207,26 @@ export function Tooltip(props: TooltipProps) {
         <span
             ref={triggerRef}
             className={`inline-flex ${props.className ?? ""}`}
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
+            onMouseEnter={() => {
+                if (ignoreHoverFromTouchRef.current) {
+                    return;
+                }
+                setIsHovered(true);
+            }}
+            onMouseLeave={() => {
+                ignoreHoverFromTouchRef.current = false;
+                setIsHovered(false);
+            }}
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
             onFocus={handleFocus}
             onBlur={() => setIsFocused(false)}
-            onTouchStart={() => setIsTouchOpen(true)}
+            onTouchStart={() => {
+                ignoreHoverFromTouchRef.current = true;
+                setIsHovered(false);
+                setIsTouchOpen(true);
+            }}
             onTouchEnd={() => setIsTouchOpen(false)}
             onTouchCancel={() => setIsTouchOpen(false)}
         >

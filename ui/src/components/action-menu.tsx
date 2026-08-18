@@ -61,7 +61,13 @@ export function ActionMenu(props: {
 
     return (
         <>
-            <Tooltip content={props.tooltip ?? props.label}>{trigger}</Tooltip>
+            {props.tooltip === false ? (
+                trigger
+            ) : (
+                <Tooltip content={props.tooltip ?? props.label}>
+                    {trigger}
+                </Tooltip>
+            )}
             <Dialog
                 isOpen={isOpen}
                 title={props.title ?? props.label}
