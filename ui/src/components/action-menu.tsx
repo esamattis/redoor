@@ -13,6 +13,8 @@ export function ActionMenu(props: {
     title?: string;
     icon?: React.ReactNode;
     hideLabel?: boolean;
+    /** Shrinks the trigger to an icon in narrow toolbars without hiding the menu title. */
+    hideLabelOnMobile?: boolean;
     hideTitle?: boolean;
     tooltip?: React.ReactNode;
     disabled?: boolean;
@@ -45,19 +47,21 @@ export function ActionMenu(props: {
             )}
         >
             {props.icon}
-            {props.hideLabel ? null : props.label}
+            {props.hideLabel ? null : (
+                <span
+                    className={
+                        props.hideLabelOnMobile ? "hidden sm:inline" : undefined
+                    }
+                >
+                    {props.label}
+                </span>
+            )}
         </button>
     );
 
     return (
         <>
-            {props.hideLabel ? (
-                <Tooltip content={props.tooltip ?? props.label}>
-                    {trigger}
-                </Tooltip>
-            ) : (
-                trigger
-            )}
+            <Tooltip content={props.tooltip ?? props.label}>{trigger}</Tooltip>
             <Dialog
                 isOpen={isOpen}
                 title={props.title ?? props.label}

@@ -590,7 +590,11 @@ function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
                 className="sr-only"
                 onChange={handleFileSelection}
             />
-            <ActionMenu label="Upload" icon={<Upload className="h-4 w-4" />}>
+            <ActionMenu
+                label="Upload"
+                icon={<Upload className="h-4 w-4" />}
+                hideLabelOnMobile
+            >
                 {(close) => (
                     <>
                         <ActionMenuButton
@@ -906,7 +910,11 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
 
     return (
         <>
-            <ActionMenu label="New" icon={<Plus className="h-4 w-4" />}>
+            <ActionMenu
+                label="New"
+                icon={<Plus className="h-4 w-4" />}
+                hideLabelOnMobile
+            >
                 {(close) => (
                     <>
                         <ActionMenuButton
@@ -965,7 +973,7 @@ export function DirectoryFilesActions(props: {
         props.directoryPath.split("/").filter(Boolean).pop() ?? "/";
     const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
 
-    /** Shares the same ls reload as tab focus and the More menu. */
+    /** Shares the same ls reload as returning to the tab. */
     const reloadListing = async () => {
         if (isReloading) {
             return;
@@ -994,6 +1002,11 @@ export function DirectoryFilesActions(props: {
                         ? "Hide hidden files"
                         : "Show hidden files"
                 }
+                tooltip={
+                    props.showHiddenFiles
+                        ? "Hide hidden files"
+                        : "Show hidden files"
+                }
                 variant="subtle"
                 size="sm"
             >
@@ -1002,7 +1015,9 @@ export function DirectoryFilesActions(props: {
                 ) : (
                     <Eye className="h-4 w-4" />
                 )}
-                {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
+                <span className="hidden sm:inline">
+                    {props.showHiddenFiles ? "Hide hidden" : "Show hidden"}
+                </span>
             </ToggleButton>
             <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain">
                 <Tooltip content="Pasted text or images are created as new files in this directory.">
@@ -1014,7 +1029,7 @@ export function DirectoryFilesActions(props: {
                         className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
                     >
                         <ClipboardPaste className="h-4 w-4 text-slate-400" />
-                        Paste
+                        <span className="hidden sm:inline">Paste</span>
                     </Button>
                 </Tooltip>
                 <DirectoryNewAction
@@ -1050,7 +1065,9 @@ export function DirectoryFilesActions(props: {
                                 className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
                             >
                                 <RefreshCw className="h-4 w-4 text-slate-400" />
-                                {isReloading ? "Reloading..." : "Reload"}
+                                <span className="hidden sm:inline">
+                                    {isReloading ? "Reloading..." : "Reload"}
+                                </span>
                             </Button>
                         </Tooltip>
                     }

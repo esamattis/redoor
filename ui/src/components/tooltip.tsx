@@ -12,16 +12,34 @@ type TooltipProps = {
     className?: string;
 };
 
+type TooltipHide = () => void;
+
+let activeTooltipHide: TooltipHide | null = null;
+
+/** Closes any other open tooltip so hover, focus, and touch cannot stack. */
+function claimActiveTooltip(hide: TooltipHide) {
+    if (activeTooltipHide !== null && activeTooltipHide !== hide) {
+        activeTooltipHide();
+    }
+    activeTooltipHide = hide;
+}
+
+/** Clears the registry only when this instance still owns the visible tooltip. */
+function releaseActiveTooltip(hide: TooltipHide) {
+    if (activeTooltipHide === hide) {
+        activeTooltipHide = null;
+    }
+}
+
 /**
  * Shows a small tooltip for its child content on hover, keyboard focus, and touch.
  *
  * Pointer activation focuses links and buttons, but that focus must not keep the
  * tooltip open after the cursor leaves. Keyboard and programmatic focus still
  * open it. On touch devices the tooltip opens on the trigger's touchstart and
- * stays open until the next touchstart anywhere on the page, so users can read
- * it without hover. This wrapper is also useful for disabled controls when the
- * tooltip needs to be attached to a non-disabled parent element instead of the
- * control.
+ * closes on that same gesture's touchend, so it cannot linger after the finger
+ * lifts. This wrapper is also useful for disabled controls when the tooltip
+ * needs to be attached to a non-disabled parent element instead of the control.
  */
 export function Tooltip(props: TooltipProps) {
     const tooltipId = React.useId();
@@ -32,6 +50,11 @@ export function Tooltip(props: TooltipProps) {
     const [isFocused, setIsFocused] = React.useState(false);
     const [isTouchOpen, setIsTouchOpen] = React.useState(false);
     const isOpen = isHovered || isFocused || isTouchOpen;
+    const hideAll = React.useCallback(() => {
+        setIsHovered(false);
+        setIsFocused(false);
+        setIsTouchOpen(false);
+    }, []);
     const [position, setPosition] = React.useState<{
         top: number;
         left: number;
@@ -112,25 +135,16 @@ export function Tooltip(props: TooltipProps) {
     }, [isOpen, props.content]);
 
     React.useEffect(() => {
-        if (!isTouchOpen) {
+        if (!isOpen) {
+            releaseActiveTooltip(hideAll);
             return;
         }
 
-        /** Dismisses a touch-opened tooltip on the next touch anywhere on the page. */
-        const hideOnTouchStart = () => {
-            setIsTouchOpen(false);
-        };
-
-        // Defer so the opening touchstart does not immediately dismiss the tooltip.
-        const timeoutId = window.setTimeout(() => {
-            document.addEventListener("touchstart", hideOnTouchStart);
-        }, 0);
-
+        claimActiveTooltip(hideAll);
         return () => {
-            window.clearTimeout(timeoutId);
-            document.removeEventListener("touchstart", hideOnTouchStart);
+            releaseActiveTooltip(hideAll);
         };
-    }, [isTouchOpen]);
+    }, [hideAll, isOpen]);
 
     const tooltip = isOpen ? (
         <span
@@ -199,6 +213,8 @@ export function Tooltip(props: TooltipProps) {
             onFocus={handleFocus}
             onBlur={() => setIsFocused(false)}
             onTouchStart={() => setIsTouchOpen(true)}
+            onTouchEnd={() => setIsTouchOpen(false)}
+            onTouchCancel={() => setIsTouchOpen(false)}
         >
             {child}
 

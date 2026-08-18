@@ -182,31 +182,156 @@ test.describe.serial("File Browser Listing", () => {
         ).toBeVisible();
     });
 
-    test("should refresh the file list from the more menu", async ({
+    test("renders directory toolbar actions as icons on mobile", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(directoryUrl);
+        const filesActions = page.getByLabel("Files view actions");
+
+        // Accessible names stay available so the icon-only toolbar remains operable.
+        await expect(
+            filesActions.getByRole("button", { name: "Hide hidden files" }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByRole("button", { name: "Paste files or text" }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByRole("button", { name: "New", exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByRole("button", { name: "Upload", exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByRole("link", { name: "Download", exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByRole("button", {
+                name: "Reload directory listing",
+            }),
+        ).toBeVisible();
+
+        // Visible labels must collapse on a phone-width toolbar.
+        await expect(filesActions.getByText("Hide hidden")).toBeHidden();
+        await expect(
+            filesActions.getByText("Paste", { exact: true }),
+        ).toBeHidden();
+        await expect(
+            filesActions.getByText("New", { exact: true }),
+        ).toBeHidden();
+        await expect(
+            filesActions.getByText("Upload", { exact: true }),
+        ).toBeHidden();
+        await expect(
+            filesActions.getByText("Download", { exact: true }),
+        ).toBeHidden();
+        await expect(
+            filesActions.getByText("Reload", { exact: true }),
+        ).toBeHidden();
+
+        await page.setViewportSize({ width: 1280, height: 800 });
+        // Desktop keeps the same actions labeled so the compact treatment is viewport-only.
+        await expect(filesActions.getByText("Hide hidden")).toBeVisible();
+        await expect(
+            filesActions.getByText("Paste", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByText("New", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByText("Upload", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByText("Download", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            filesActions.getByText("Reload", { exact: true }),
+        ).toBeVisible();
+    });
+
+    test("shows one directory toolbar tooltip at a time and hides it on touchend", async ({
         page,
     }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
-        await expect(
-            page.getByRole("link", { name: "file1.txt", exact: true }),
-        ).toBeVisible();
+        const filesActions = page.getByLabel("Files view actions");
+        const toolbarTooltips = [
+            {
+                control: filesActions.getByRole("button", {
+                    name: "Hide hidden files",
+                }),
+                text: "Hide hidden files",
+            },
+            {
+                control: filesActions.getByRole("button", {
+                    name: "Paste files or text",
+                }),
+                text: "Pasted text or images are created as new files in this directory.",
+            },
+            {
+                control: filesActions.getByRole("button", {
+                    name: "New",
+                    exact: true,
+                }),
+                text: "New",
+            },
+            {
+                control: filesActions.getByRole("button", {
+                    name: "Upload",
+                    exact: true,
+                }),
+                text: "Upload",
+            },
+            {
+                control: filesActions.getByRole("link", {
+                    name: "Download",
+                    exact: true,
+                }),
+                text: "Downloads this directory as a .tar.gz archive.",
+            },
+            {
+                control: filesActions.getByRole("button", {
+                    name: "Reload directory listing",
+                }),
+                text: "Reload directory listing from the agent",
+            },
+        ] as const;
 
-        const appearedPath = path.join(
-            ctx.testDirPath,
-            "appeared-from-menu.txt",
+        for (const toolbarTooltip of toolbarTooltips) {
+            await toolbarTooltip.control.hover();
+            // Every compact toolbar action must explain itself.
+            await expect(page.getByRole("tooltip")).toHaveText(
+                toolbarTooltip.text,
+            );
+        }
+
+        const pasteButton = toolbarTooltips[1].control;
+        const reloadButton = toolbarTooltips[5].control;
+
+        await page.mouse.move(0, 0);
+        await pasteButton.focus();
+        // Keyboard focus must expose the control's explanation.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Pasted text or images are created as new files in this directory.",
         );
-        await fs.writeFile(appearedPath, "new listing entry");
-        await page.getByRole("button", { name: "More", exact: true }).click();
-        await page
-            .getByRole("button", { name: "Refresh", exact: true })
-            .click();
+        await reloadButton.hover();
+        // A second trigger must replace the first tooltip instead of stacking.
+        await expect(page.getByRole("tooltip")).toHaveCount(1);
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Reload directory listing from the agent",
+        );
 
-        // The directory More action must reload ls without leaving the listing.
-        await expect(
-            page.getByRole("link", {
-                name: "appeared-from-menu.txt",
-                exact: true,
-            }),
-        ).toBeVisible();
+        await page.mouse.move(0, 0);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+        await pasteButton.dispatchEvent("touchstart");
+        // Touch users get the same explanation as hover without needing a cursor.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Pasted text or images are created as new files in this directory.",
+        );
+        await pasteButton.dispatchEvent("touchend");
+        // Lifting the finger must dismiss a touch-opened tooltip immediately.
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
     });
 });

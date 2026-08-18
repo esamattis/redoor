@@ -1,5 +1,5 @@
 import React from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
     Download,
@@ -7,12 +7,10 @@ import {
     LoaderCircle,
     MoreHorizontal,
     Pencil,
-    RefreshCw,
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
-import { refreshBrowserPath } from "#ui/components/browser/refresh";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -223,18 +221,15 @@ export function RenamePathAction(props: {
     });
 }
 
-/** Keeps refresh, rename, and destructive object actions out of the primary action row. */
+/** Keeps rename and destructive object actions out of the primary action row. */
 function PathMoreActions(props: {
     agent: Agent;
     path: string;
     currentName: string;
     entryType: "file" | "directory";
     view?: "details" | "sync";
-    isEditorDirty?: boolean;
     onDelete?: () => void;
 }) {
-    const router = useRouter();
-    const queryClient = useQueryClient();
     const canModify = getImmediateParentPath(props.path) !== null;
     const openMutation = useMutation({
         mutationFn: () => props.agent.openPath(props.path),
@@ -275,27 +270,6 @@ function PathMoreActions(props: {
                                             : "Open natively"}
                                     </ActionMenuButton>
                                 ) : null}
-                                <ActionMenuButton
-                                    onClick={() => {
-                                        close();
-                                        void refreshBrowserPath({
-                                            router,
-                                            queryClient,
-                                            fileContent:
-                                                props.entryType === "file"
-                                                    ? {
-                                                          agentId:
-                                                              props.agent.id,
-                                                          path: props.path,
-                                                      }
-                                                    : undefined,
-                                            isEditorDirty: props.isEditorDirty,
-                                        });
-                                    }}
-                                >
-                                    <RefreshCw className="h-4 w-4 text-slate-400" />
-                                    Refresh
-                                </ActionMenuButton>
                                 <ActionMenuButton
                                     disabled={renameAction.disabled}
                                     onClick={() => {
@@ -367,7 +341,6 @@ export function PersistentPathActions(props: {
     downloadName: string;
     /** Explains archive packaging when the download is a directory tarball. */
     downloadTooltip?: string;
-    isEditorDirty?: boolean;
     secondaryDownload?: boolean;
     /** Lets a view keep Reload next to Download without hiding it in More. */
     afterDownload?: React.ReactNode;
@@ -405,26 +378,23 @@ export function PersistentPathActions(props: {
         <a
             href={props.downloadUrl}
             download={props.downloadName}
+            aria-label="Download"
             className={
                 props.secondaryDownload
                     ? "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
                     : "inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
             }
         >
-            <Download className="h-4 w-4" />
-            Download
+            <Download className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Download</span>
         </a>
     );
 
     return (
         <>
-            {props.downloadTooltip ? (
-                <Tooltip content={props.downloadTooltip}>
-                    {downloadLink}
-                </Tooltip>
-            ) : (
-                downloadLink
-            )}
+            <Tooltip content={props.downloadTooltip ?? "Download"}>
+                {downloadLink}
+            </Tooltip>
             {props.afterDownload}
             <PathMoreActions
                 agent={props.agent}
@@ -432,7 +402,6 @@ export function PersistentPathActions(props: {
                 currentName={props.currentName}
                 entryType={props.entryType}
                 view={props.view}
-                isEditorDirty={props.isEditorDirty}
                 onDelete={() => {
                     deleteMutation.reset();
                     setIsConfirmDeleteOpen(true);
