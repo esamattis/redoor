@@ -14,6 +14,7 @@ import {
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { InputControl } from "#ui/components/input-control";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
 import { DestinationConflictDialog } from "#ui/components/browser/selected-files-transfer-dialog";
 import {
@@ -76,6 +77,12 @@ export function AgentPathFields(props: {
 }
 
 type TransferOperation = "copy" | "move";
+type SyncDirection = "current-to-selected" | "selected-to-current";
+
+type SyncEndpoint = {
+    agent: Agent;
+    path: string;
+};
 
 /** 404 means Copy/Move can start immediately; any other failure must stay visible. */
 async function destinationExists(agent: Agent, path: string): Promise<boolean> {
@@ -118,15 +125,12 @@ function FileDiffResult(props: { unifiedDiff: string }) {
     );
 }
 
-/** Keeps destination lookup, transfer polling, and diff out of the page render. */
-function useSyncWorkspace(props: {
-    api: ApiClient;
+/** Owns the stable current endpoint and editable peer endpoint before direction reorders them. */
+function useSyncEndpointSelection(props: {
     sourceAgent: Agent;
     agents: Array<Agent>;
     sourcePath: string;
-    entryType: "file" | "directory";
 }) {
-    const navigate = useNavigate();
     const availableAgents = props.agents.filter(
         (agent) => agent.status === "connected",
     );
@@ -137,25 +141,103 @@ function useSyncWorkspace(props: {
         defaultAgent?.id ?? "",
     );
     const [selectedPath, setSelectedPath] = React.useState(props.sourcePath);
-    const [pendingOperation, setPendingOperation] =
-        React.useState<TransferOperation | null>(null);
+    const [direction, setDirection] = React.useState<SyncDirection>(
+        "current-to-selected",
+    );
     const selectedAgent = availableAgents.find(
         (agent) => agent.id === selectedAgentId,
     );
+    const currentEndpoint: SyncEndpoint = {
+        agent: props.sourceAgent,
+        path: props.sourcePath,
+    };
+    const selectedEndpoint: SyncEndpoint | null = selectedAgent
+        ? { agent: selectedAgent, path: selectedPath }
+        : null;
+    const sourceEndpoint =
+        direction === "current-to-selected"
+            ? currentEndpoint
+            : selectedEndpoint;
+    const destinationEndpoint =
+        direction === "current-to-selected"
+            ? selectedEndpoint
+            : currentEndpoint;
+
+    return {
+        availableAgents,
+        selectedAgentId,
+        setSelectedAgentId,
+        selectedPath,
+        setSelectedPath,
+        direction,
+        setDirection,
+        selectedAgent,
+        sourceEndpoint,
+        destinationEndpoint,
+    };
+}
+
+/** Polls only the active transfer and stops once the server reports a terminal state. */
+function useSyncTransferProgress(api: ApiClient, requestId: number | null) {
+    return useQuery({
+        ...transfersQueryOptions(api),
+        enabled: requestId !== null,
+        retry: false,
+        select: (response) =>
+            response.transfers.find((entry) => entry.request_id === requestId),
+        refetchInterval: (query) => {
+            const transfer = query.state.data?.transfers.find(
+                (entry) => entry.request_id === requestId,
+            );
+            return transfer?.state === "completed" ||
+                transfer?.state === "errored"
+                ? false
+                : 500;
+        },
+    });
+}
+
+/** Keeps destination lookup, transfer polling, and diff out of the page render. */
+function useSyncWorkspace(props: {
+    api: ApiClient;
+    sourceAgent: Agent;
+    agents: Array<Agent>;
+    sourcePath: string;
+    entryType: "file" | "directory";
+}) {
+    const navigate = useNavigate();
+    const endpoints = useSyncEndpointSelection(props);
+    const {
+        availableAgents,
+        selectedAgentId,
+        setSelectedAgentId,
+        selectedPath,
+        setSelectedPath,
+        direction,
+        setDirection,
+        selectedAgent,
+        sourceEndpoint,
+        destinationEndpoint,
+    } = endpoints;
+    const [pendingOperation, setPendingOperation] =
+        React.useState<TransferOperation | null>(null);
 
     const transferMutation = useMutation({
         mutationFn: async (request: {
             operation: TransferOperation;
             mode: CopyExistingMode;
         }) => {
+            if (sourceEndpoint === null || destinationEndpoint === null) {
+                throw new Error("Selected agent is unavailable");
+            }
             const destination = {
-                agent: selectedAgentId,
-                path: selectedPath,
+                agent: destinationEndpoint.agent.id,
+                path: destinationEndpoint.path,
             };
             if (request.operation === "copy") {
-                const response = await props.sourceAgent.copyTo(
+                const response = await sourceEndpoint.agent.copyTo(
                     destination,
-                    props.sourcePath,
+                    sourceEndpoint.path,
                     { on_existing: request.mode },
                 );
                 return {
@@ -163,9 +245,9 @@ function useSyncWorkspace(props: {
                     operation: request.operation,
                 };
             }
-            const response = await props.sourceAgent.moveTo(
+            const response = await sourceEndpoint.agent.moveTo(
                 destination,
-                props.sourcePath,
+                sourceEndpoint.path,
                 { on_existing: request.mode },
             );
             return {
@@ -176,10 +258,13 @@ function useSyncWorkspace(props: {
     });
     const prepareTransferMutation = useMutation({
         mutationFn: async (operation: TransferOperation) => {
-            if (!selectedAgent) {
+            if (destinationEndpoint === null) {
                 throw new Error("Selected agent is unavailable");
             }
-            const exists = await destinationExists(selectedAgent, selectedPath);
+            const exists = await destinationExists(
+                destinationEndpoint.agent,
+                destinationEndpoint.path,
+            );
             return { operation, exists };
         },
         onSuccess: (result) => {
@@ -194,32 +279,22 @@ function useSyncWorkspace(props: {
         },
     });
     const diffMutation = useMutation({
-        mutationFn: () =>
-            props.api.diffFiles(
-                { agent: props.sourceAgent.id, path: props.sourcePath },
-                { agent: selectedAgentId, path: selectedPath },
-            ),
+        mutationFn: () => {
+            if (sourceEndpoint === null || destinationEndpoint === null) {
+                throw new Error("Selected agent is unavailable");
+            }
+            return props.api.diffFiles(
+                { agent: sourceEndpoint.agent.id, path: sourceEndpoint.path },
+                {
+                    agent: destinationEndpoint.agent.id,
+                    path: destinationEndpoint.path,
+                },
+            );
+        },
     });
 
     const activeRequestId = transferMutation.data?.requestId ?? null;
-    const transferQuery = useQuery({
-        ...transfersQueryOptions(props.api),
-        enabled: activeRequestId !== null,
-        retry: false,
-        select: (response) =>
-            response.transfers.find(
-                (entry) => entry.request_id === activeRequestId,
-            ),
-        refetchInterval: (query) => {
-            const transfer = query.state.data?.transfers.find(
-                (entry) => entry.request_id === activeRequestId,
-            );
-            return transfer?.state === "completed" ||
-                transfer?.state === "errored"
-                ? false
-                : 500;
-        },
-    });
+    const transferQuery = useSyncTransferProgress(props.api, activeRequestId);
     const transfer = transferQuery.data;
     const transferOperation =
         transferMutation.data?.operation ??
@@ -237,7 +312,7 @@ function useSyncWorkspace(props: {
 
     /** Probes the destination so conflict policy is asked only when a path already exists. */
     const startTransfer = (operation: TransferOperation) => {
-        if (!selectedAgentId) {
+        if (sourceEndpoint === null || destinationEndpoint === null) {
             return;
         }
         prepareTransferMutation.reset();
@@ -246,31 +321,60 @@ function useSyncWorkspace(props: {
     };
 
     /** Real href so middle-click / open-in-new-tab works; left-click stays in-app. */
-    const destinationHref =
+    const selectedHref =
         selectedAgent && selectedPath.startsWith("/")
             ? selectedAgent.getBrowserUrl(selectedPath)
             : null;
 
-    /** Opens the destination without carrying the source Sync query string along. */
-    const gotoDestination = () => {
-        if (destinationHref === null) {
+    /** Opens the selected endpoint regardless of which transfer direction is active. */
+    const gotoSelected = () => {
+        if (selectedHref === null) {
             return;
         }
         void navigate({
-            to: destinationHref,
+            to: selectedHref,
             search: {},
         });
+    };
+
+    /** Endpoint edits make previous comparisons and terminal transfer reports misleading. */
+    const resetFeedback = () => {
+        setPendingOperation(null);
+        prepareTransferMutation.reset();
+        transferMutation.reset();
+        diffMutation.reset();
+    };
+
+    /** Keeps agent selection and its dependent results in sync. */
+    const changeSelectedAgent = (agentId: string) => {
+        resetFeedback();
+        setSelectedAgentId(agentId);
+    };
+
+    /** Keeps path selection and its dependent results in sync. */
+    const changeSelectedPath = (path: string) => {
+        resetFeedback();
+        setSelectedPath(path);
+    };
+
+    /** Reorders both transfer and comparison endpoints from one explicit choice. */
+    const changeDirection = (nextDirection: SyncDirection) => {
+        resetFeedback();
+        setDirection(nextDirection);
     };
 
     return {
         availableAgents,
         selectedAgentId,
         selectedPath,
-        setSelectedAgentId,
-        setSelectedPath,
+        selectedAgent,
+        direction,
+        changeSelectedAgent,
+        changeSelectedPath,
+        changeDirection,
         pendingOperation,
         setPendingOperation,
-        destinationHref,
+        selectedHref,
         canDiff: props.entryType === "file",
         transferMutation,
         prepareTransferMutation,
@@ -279,6 +383,8 @@ function useSyncWorkspace(props: {
         transferQuery,
         transferOperation,
         transferLabel: transferOperation === "move" ? "Move" : "Copy",
+        sourceEndpoint,
+        destinationEndpoint,
         isActive,
         isBusy:
             prepareTransferMutation.isPending ||
@@ -296,11 +402,58 @@ function useSyncWorkspace(props: {
                 transferMutation.variables?.operation === "move") ||
             (isActive && transferOperation === "move"),
         startTransfer,
-        gotoDestination,
+        gotoSelected,
     };
 }
 
 type SyncWorkspace = ReturnType<typeof useSyncWorkspace>;
+
+/** Makes endpoint order explicit without turning the selected endpoint into the destination. */
+function SyncDirectionFields(props: {
+    workspace: SyncWorkspace;
+    currentAgent: Agent;
+    currentPath: string;
+}) {
+    const workspace = props.workspace;
+    const currentLabel = `${props.currentAgent.name}: ${props.currentPath}`;
+    const selectedLabel = `${workspace.selectedAgent?.name ?? "Unavailable agent"}: ${workspace.selectedPath}`;
+    return (
+        <RadioCardGroup
+            legend="Sync direction"
+            description={
+                <p className="text-xs text-slate-500">
+                    Copy, Move, and Diff follow the selected endpoint order.
+                </p>
+            }
+            disabled={workspace.isBusy}
+            legendClassName="text-sm font-medium text-slate-200"
+            optionsClassName="md:grid-cols-2"
+        >
+            <RadioCardOption
+                name="sync-direction"
+                value="current-to-selected"
+                label="Current path to selected path"
+                description={`${currentLabel} → ${selectedLabel}`}
+                checked={workspace.direction === "current-to-selected"}
+                layout="descriptive"
+                onChange={() =>
+                    workspace.changeDirection("current-to-selected")
+                }
+            />
+            <RadioCardOption
+                name="sync-direction"
+                value="selected-to-current"
+                label="Selected path to current path"
+                description={`${selectedLabel} → ${currentLabel}`}
+                checked={workspace.direction === "selected-to-current"}
+                layout="descriptive"
+                onChange={() =>
+                    workspace.changeDirection("selected-to-current")
+                }
+            />
+        </RadioCardGroup>
+    );
+}
 
 /** Labels stay operation-specific so Sync reuses the listing dialog names. */
 function conflictDialogLabels(operation: TransferOperation | null) {
@@ -321,9 +474,15 @@ function conflictDialogLabels(operation: TransferOperation | null) {
 /** Keeps the four primary actions in one toolbar without bloating the page. */
 function SyncActionBar(props: { workspace: SyncWorkspace }) {
     const workspace = props.workspace;
+    const sourceLabel = workspace.sourceEndpoint
+        ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
+        : "the unavailable selected endpoint";
+    const destinationLabel = workspace.destinationEndpoint
+        ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
+        : "the unavailable selected endpoint";
     return (
         <div className="flex flex-wrap items-center gap-3">
-            <Tooltip content="Copy this path to the destination">
+            <Tooltip content={`Copy ${sourceLabel} to ${destinationLabel}`}>
                 <Button
                     type="button"
                     size="lg"
@@ -348,7 +507,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                           : "Copy"}
                 </Button>
             </Tooltip>
-            <Tooltip content="Move this path to the destination">
+            <Tooltip content={`Move ${sourceLabel} to ${destinationLabel}`}>
                 <Button
                     type="button"
                     variant="secondary"
@@ -375,7 +534,9 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                 </Button>
             </Tooltip>
             {workspace.canDiff ? (
-                <Tooltip content="Compare this file with the destination">
+                <Tooltip
+                    content={`Compare ${sourceLabel} with ${destinationLabel}`}
+                >
                     <Button
                         type="button"
                         variant="secondary"
@@ -401,8 +562,8 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     </Button>
                 </Tooltip>
             ) : null}
-            <Tooltip content="Open the selected destination path">
-                {workspace.destinationHref === null ? (
+            <Tooltip content="Open the selected agent and path">
+                {workspace.selectedHref === null ? (
                     <Button
                         type="button"
                         variant="secondary"
@@ -416,7 +577,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                 ) : (
                     <Button
                         as="a"
-                        href={workspace.destinationHref}
+                        href={workspace.selectedHref}
                         variant="secondary"
                         size="lg"
                         className="rounded-md text-sm font-semibold"
@@ -433,7 +594,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                                 return;
                             }
                             event.preventDefault();
-                            workspace.gotoDestination();
+                            workspace.gotoSelected();
                         }}
                     >
                         <FileSearch className="h-4 w-4" />
@@ -447,7 +608,8 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     transferred
                     {(workspace.transfer?.total_bytes ?? 0) > 0
                         ? ` of ${formatSize(workspace.transfer?.total_bytes ?? 0)}`
-                        : ""}
+                        : ""}{" "}
+                    from {sourceLabel} to {destinationLabel}
                 </span>
             ) : null}
         </div>
@@ -458,6 +620,12 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
 function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
     const workspace = props.workspace;
     if (workspace.transfer?.state === "completed") {
+        const sourceLabel = workspace.sourceEndpoint
+            ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
+            : "unknown source";
+        const destinationLabel = workspace.destinationEndpoint
+            ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
+            : "unknown destination";
         return (
             <p
                 role="status"
@@ -465,7 +633,7 @@ function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
             >
                 {workspace.transferLabel} completed successfully.{" "}
                 {formatSize(workspace.transfer.transferred_bytes)} transferred
-                to {workspace.selectedPath}.
+                from {sourceLabel} to {destinationLabel}.
             </p>
         );
     }
@@ -554,19 +722,24 @@ export function SyncView(props: {
                 </h1>
                 <p className="mt-3 max-w-3xl text-sm text-slate-400">
                     {props.entryType === "file"
-                        ? "Copy, move, or compare this file against an absolute path on a connected agent."
-                        : "Copy or move this directory to an absolute path on a connected agent."}
+                        ? "Choose an absolute path on a connected agent, then copy, move, or compare in either direction."
+                        : "Choose an absolute path on a connected agent, then copy or move in either direction."}
                 </p>
             </header>
 
             <div className="grid gap-6 p-6 md:p-8">
+                <SyncDirectionFields
+                    workspace={workspace}
+                    currentAgent={props.sourceAgent}
+                    currentPath={props.sourcePath}
+                />
                 <AgentPathFields
                     agents={workspace.availableAgents}
                     agentId={workspace.selectedAgentId}
                     path={workspace.selectedPath}
                     disabled={workspace.isBusy}
-                    onAgentChange={workspace.setSelectedAgentId}
-                    onPathChange={workspace.setSelectedPath}
+                    onAgentChange={workspace.changeSelectedAgent}
+                    onPathChange={workspace.changeSelectedPath}
                 />
                 <SyncActionBar workspace={workspace} />
             </div>

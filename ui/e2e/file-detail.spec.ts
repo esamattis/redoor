@@ -172,6 +172,153 @@ test.describe.serial("File Detail View", () => {
         await expect(page.getByLabel("File editor")).toBeVisible();
     });
 
+    test("should reverse file sync operations and diff ordering", async ({
+        page,
+    }) => {
+        const currentPath = path.join(
+            ctx.testDirPath,
+            `sync-direction-current-${Date.now()}.txt`,
+        );
+        const selectedPath = path.join(
+            ctx.testDirPath,
+            `sync-direction-selected-${Date.now()}.txt`,
+        );
+        const changedSelectedPath = path.join(
+            ctx.testDirPath,
+            `sync-direction-changed-${Date.now()}.txt`,
+        );
+        await fs.writeFile(currentPath, "current endpoint\n");
+        await fs.writeFile(selectedPath, "selected endpoint\n");
+        await fs.writeFile(changedSelectedPath, "changed selected endpoint\n");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(currentPath)}?view=sync`,
+        );
+        await page.getByLabel("Sync path").fill(selectedPath);
+
+        const forwardDirection = page.getByRole("radio", {
+            name: "Current path to selected path",
+        });
+        const reverseDirection = page.getByRole("radio", {
+            name: "Selected path to current path",
+        });
+        // Existing Sync behavior remains selected by default for bookmarked workflows.
+        await expect(forwardDirection).toBeChecked();
+        const forwardDiffRequest = page.waitForRequest(
+            (request) =>
+                request.url().endsWith("/api/v1/diff") &&
+                request.method() === "POST",
+        );
+        await page.getByRole("button", { name: "Diff", exact: true }).click();
+        const forwardDiffBody = (await forwardDiffRequest).postDataJSON();
+        // The default direction sends the browser file as the ordered left input.
+        expect(forwardDiffBody).toMatchObject({
+            left: { agent: ctx.agentId, path: currentPath },
+            right: { agent: ctx.agent2Id, path: selectedPath },
+        });
+        const forwardDiff = page.getByRole("region", { name: "File diff" });
+        // Rendered signs must describe the current endpoint as the source side.
+        const forwardCurrentRow = forwardDiff
+            .getByRole("row")
+            .filter({ hasText: "current endpoint" });
+        const forwardSelectedRow = forwardDiff
+            .getByRole("row")
+            .filter({ hasText: "selected endpoint" });
+        await expect(
+            forwardCurrentRow.getByText("-", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            forwardSelectedRow.getByText("+", { exact: true }),
+        ).toBeVisible();
+
+        await reverseDirection.check();
+        // Changing direction removes a result whose signs describe the old endpoint order.
+        await expect(
+            page.getByRole("region", { name: "File diff" }),
+        ).toHaveCount(0);
+        const reverseDiffRequest = page.waitForRequest(
+            (request) =>
+                request.url().endsWith("/api/v1/diff") &&
+                request.method() === "POST",
+        );
+        await page.getByRole("button", { name: "Diff", exact: true }).click();
+        const reverseDiffBody = (await reverseDiffRequest).postDataJSON();
+        // Reverse mode swaps the API inputs so deletion and addition signs follow transfer direction.
+        expect(reverseDiffBody).toMatchObject({
+            left: { agent: ctx.agent2Id, path: selectedPath },
+            right: { agent: ctx.agentId, path: currentPath },
+        });
+        const reverseDiff = page.getByRole("region", { name: "File diff" });
+        // Reversing the endpoint order must reverse the visible removal and addition rows.
+        const reverseSelectedRow = reverseDiff
+            .getByRole("row")
+            .filter({ hasText: "selected endpoint" });
+        const reverseCurrentRow = reverseDiff
+            .getByRole("row")
+            .filter({ hasText: "current endpoint" });
+        await expect(
+            reverseSelectedRow.getByText("-", { exact: true }),
+        ).toBeVisible();
+        await expect(
+            reverseCurrentRow.getByText("+", { exact: true }),
+        ).toBeVisible();
+
+        await page.getByLabel("Sync path").fill(changedSelectedPath);
+        // Editing either endpoint also clears comparisons that no longer describe the form.
+        await expect(
+            page.getByRole("region", { name: "File diff" }),
+        ).toHaveCount(0);
+        // Goto always targets the selected endpoint even when that endpoint is the source.
+        await expect(
+            page.getByRole("link", { name: "Goto", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(changedSelectedPath)}`,
+        );
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+        const dialog = page.getByRole("dialog", {
+            name: "Destination items already exist",
+        });
+        // Reverse conflict detection probes the current browser path, not the selected source.
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("button", { name: "Continue copying" }).click();
+        await expect(page.getByRole("status")).toContainText(
+            "Copy completed successfully",
+        );
+        // Disk contents prove the selected endpoint was copied back to the current endpoint.
+        await expect(fs.readFile(currentPath, "utf8")).resolves.toBe(
+            "changed selected endpoint\n",
+        );
+
+        await fs.writeFile(changedSelectedPath, "moved selected endpoint\n");
+        let releaseMoveRequest: (() => void) | undefined;
+        const moveRequestBlocked = new Promise<void>((resolve) => {
+            releaseMoveRequest = resolve;
+        });
+        await page.route("**/api/v1/move", async (route) => {
+            await moveRequestBlocked;
+            await route.continue();
+        });
+        await page.getByRole("button", { name: "Move", exact: true }).click();
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("button", { name: "Continue moving" }).click();
+        // Endpoint order cannot change while the reverse move request is in flight.
+        await expect(forwardDirection).toBeDisabled();
+        await expect(reverseDirection).toBeDisabled();
+        await expect(page.getByLabel("Sync agent")).toBeDisabled();
+        await expect(page.getByLabel("Sync path")).toBeDisabled();
+        releaseMoveRequest?.();
+        await expect(page.getByRole("status")).toContainText(
+            "Move completed successfully",
+        );
+        // Reverse Move removes the selected source after replacing the current destination.
+        await expect(fs.readFile(currentPath, "utf8")).resolves.toBe(
+            "moved selected endpoint\n",
+        );
+        await expect(fs.access(changedSelectedPath)).rejects.toThrow();
+    });
+
     test("should copy to a missing path and move to a new path from Sync", async ({
         page,
     }) => {

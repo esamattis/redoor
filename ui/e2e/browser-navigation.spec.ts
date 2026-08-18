@@ -835,6 +835,61 @@ test.describe.serial("File Browser Navigation", () => {
         ).toHaveAttribute("aria-current", "page");
     });
 
+    test("should reverse directory sync and check conflicts at the current path", async ({
+        page,
+    }) => {
+        const currentPath = path.join(
+            ctx.testDirPath,
+            `reverse-directory-current-${Date.now()}`,
+        );
+        const selectedPath = path.join(
+            ctx.testDirPath,
+            `reverse-directory-selected-${Date.now()}`,
+        );
+        await fs.mkdir(currentPath);
+        await fs.mkdir(selectedPath);
+        await fs.writeFile(path.join(currentPath, "old.txt"), "old");
+        await fs.writeFile(path.join(selectedPath, "new.txt"), "new");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(currentPath)}?view=sync`,
+        );
+        await page.getByLabel("Sync path").fill(selectedPath);
+
+        // Directory Sync exposes the same explicit direction control while retaining no tree Diff action.
+        await page
+            .getByRole("radio", { name: "Selected path to current path" })
+            .check();
+        await expect(
+            page.getByRole("button", { name: "Diff", exact: true }),
+        ).toHaveCount(0);
+        // Goto remains tied to the selected source rather than changing to the current destination.
+        await expect(
+            page.getByRole("link", { name: "Goto", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(selectedPath)}`,
+        );
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+
+        const dialog = page.getByRole("dialog", {
+            name: "Destination items already exist",
+        });
+        // The current directory already exists, so reverse mode must request a destination policy.
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("button", { name: "Continue copying" }).click();
+        await expect(page.getByRole("status")).toContainText(
+            "Copy completed successfully",
+        );
+        // Replacement contents prove the selected directory flowed back into the current path.
+        await expect(
+            fs.readFile(path.join(currentPath, "new.txt"), "utf8"),
+        ).resolves.toBe("new");
+        await expect(
+            fs.access(path.join(currentPath, "old.txt")),
+        ).rejects.toThrow();
+    });
+
     test("should navigate to deep nested directory", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page
