@@ -1,5 +1,8 @@
 # Flaky tests
 
+- `ui/e2e/agent-management.spec.ts > Agent management > switches an existing agent from password auth to key auth` again reported `has_password: true` after Stop and Save during `pn test` (2026-08-18).
+- `pn playwright` failed because leftover `redoor` still held port 31533 after the previous suite, then Playwright started after that process was terminated (2026-08-18).
+- `ui/e2e/terminal.spec.ts > Terminal panel lifecycle > keeps independent terminal tabs in their captured directories` again timed out because overlay chrome intercepted the `.test-terminal` click during `pn test` (2026-08-18).
 - `ui/e2e/agent-management.spec.ts > Agent management > switches an existing agent from password auth to key auth` again reported `has_password: true` after Stop and Save during `pn test`, then the Sync Playwright cases in the same run had already passed (2026-08-18).
 - `ui/e2e/file-edit-vim.spec.ts > File editor options > should open the terminal with Alt+t from Vim normal mode` intermittently failed to restore editor focus after Alt+e during the full Playwright retry, then passed on an immediate targeted retry (2026-08-17).
 - `ui/e2e/file-operations.spec.ts > File Operations > should delete file from detail view after confirmation` timed out waiting for the File actions button during `pn test`, then passed on an immediate targeted retry (2026-08-17).
