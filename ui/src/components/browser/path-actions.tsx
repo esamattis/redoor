@@ -369,6 +369,8 @@ export function PersistentPathActions(props: {
     downloadTooltip?: string;
     isEditorDirty?: boolean;
     secondaryDownload?: boolean;
+    /** Lets a view keep Reload next to Download without hiding it in More. */
+    afterDownload?: React.ReactNode;
 }) {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
@@ -423,6 +425,7 @@ export function PersistentPathActions(props: {
             ) : (
                 downloadLink
             )}
+            {props.afterDownload}
             <PathMoreActions
                 agent={props.agent}
                 path={props.path}

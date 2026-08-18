@@ -16,6 +16,7 @@ import {
     Files,
     FolderInput,
     Plus,
+    RefreshCw,
     Trash2,
     Upload,
     X,
@@ -43,6 +44,7 @@ import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { transfersQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import { refreshBrowserPath } from "#ui/components/browser/refresh";
 import {
     SelectedFilesTransferTrigger,
     type SelectedFilesTransferOperation,
@@ -956,9 +958,28 @@ export function DirectoryFilesActions(props: {
     showHiddenFiles: boolean;
     onToggleHiddenFiles: () => void;
 }) {
+    const router = useRouter();
+    const queryClient = useQueryClient();
+    const [isReloading, setIsReloading] = React.useState(false);
     const directoryName =
         props.directoryPath.split("/").filter(Boolean).pop() ?? "/";
     const archiveName = `${directoryName === "/" ? "archive" : directoryName}.tar.gz`;
+
+    /** Shares the same ls reload as tab focus and the More menu. */
+    const reloadListing = async () => {
+        if (isReloading) {
+            return;
+        }
+        setIsReloading(true);
+        try {
+            await refreshBrowserPath({
+                router,
+                queryClient,
+            });
+        } finally {
+            setIsReloading(false);
+        }
+    };
 
     return (
         <div
@@ -1015,6 +1036,24 @@ export function DirectoryFilesActions(props: {
                     downloadName={archiveName}
                     downloadTooltip="Downloads this directory as a .tar.gz archive."
                     secondaryDownload
+                    afterDownload={
+                        <Tooltip content="Reload directory listing from the agent">
+                            <Button
+                                type="button"
+                                variant="subtle"
+                                aria-label="Reload directory listing"
+                                onClick={() => {
+                                    void reloadListing();
+                                }}
+                                disabled={isReloading}
+                                isLoading={isReloading}
+                                className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
+                            >
+                                <RefreshCw className="h-4 w-4 text-slate-400" />
+                                {isReloading ? "Reloading..." : "Reload"}
+                            </Button>
+                        </Tooltip>
+                    }
                 />
             </div>
         </div>

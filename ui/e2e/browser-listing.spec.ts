@@ -155,6 +155,33 @@ test.describe.serial("File Browser Listing", () => {
         ).toBeVisible();
     });
 
+    test("should reload the file list from the reload button", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeVisible();
+
+        const appearedPath = path.join(
+            ctx.testDirPath,
+            "appeared-from-reload.txt",
+        );
+        await fs.writeFile(appearedPath, "new listing entry");
+        await page
+            .getByRole("button", { name: "Reload directory listing" })
+            .click();
+
+        // The listing Reload action must pick up files created outside this page.
+        await expect(
+            page.getByRole("link", {
+                name: "appeared-from-reload.txt",
+                exact: true,
+            }),
+        ).toBeVisible();
+    });
+
     test("should refresh the file list from the more menu", async ({
         page,
     }) => {
