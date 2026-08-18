@@ -6,13 +6,13 @@ import { ColorSchemeType } from "diff2html/lib/types";
 import {
     ChevronDown,
     Copy,
-    FileSearch,
     FolderInput,
     GitCompareArrows,
     LoaderCircle,
 } from "lucide-react";
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
 import { Button } from "#ui/components/button";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { InputControl } from "#ui/components/input-control";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
@@ -31,11 +31,13 @@ export function AgentPathFields(props: {
     agentId: string;
     path: string;
     disabled: boolean;
+    viewHref: string | null;
     onAgentChange: (agentId: string) => void;
     onPathChange: (path: string) => void;
+    onView: () => void;
 }) {
     return (
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Agent
                 <span className="relative block">
@@ -72,6 +74,38 @@ export function AgentPathFields(props: {
                     className="h-11 rounded-lg bg-slate-950 font-mono text-sm focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
             </label>
+            <Tooltip content="Open the selected agent and path">
+                {props.viewHref === null ? (
+                    <span
+                        aria-disabled="true"
+                        className="self-end pb-3 text-sm font-medium text-slate-600"
+                    >
+                        view
+                    </span>
+                ) : (
+                    <a
+                        href={props.viewHref}
+                        className="self-end pb-3 text-sm font-medium text-blue-400 underline decoration-blue-400/50 underline-offset-4 transition-colors hover:text-blue-300 hover:decoration-blue-300 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        onClick={(event) => {
+                            // Keep unmodified left-click in-app; middle/modified clicks use the href.
+                            if (
+                                event.defaultPrevented ||
+                                event.button !== 0 ||
+                                event.metaKey ||
+                                event.altKey ||
+                                event.ctrlKey ||
+                                event.shiftKey
+                            ) {
+                                return;
+                            }
+                            event.preventDefault();
+                            props.onView();
+                        }}
+                    >
+                        view
+                    </a>
+                )}
+            </Tooltip>
         </div>
     );
 }
@@ -221,6 +255,8 @@ function useSyncWorkspace(props: {
     } = endpoints;
     const [pendingOperation, setPendingOperation] =
         React.useState<TransferOperation | null>(null);
+    const [confirmationOperation, setConfirmationOperation] =
+        React.useState<TransferOperation | null>(null);
 
     const transferMutation = useMutation({
         mutationFn: async (request: {
@@ -339,6 +375,7 @@ function useSyncWorkspace(props: {
 
     /** Endpoint edits make previous comparisons and terminal transfer reports misleading. */
     const resetFeedback = () => {
+        setConfirmationOperation(null);
         setPendingOperation(null);
         prepareTransferMutation.reset();
         transferMutation.reset();
@@ -374,6 +411,8 @@ function useSyncWorkspace(props: {
         changeDirection,
         pendingOperation,
         setPendingOperation,
+        confirmationOperation,
+        setConfirmationOperation,
         selectedHref,
         canDiff: props.entryType === "file",
         transferMutation,
@@ -471,7 +510,7 @@ function conflictDialogLabels(operation: TransferOperation | null) {
     };
 }
 
-/** Keeps the four primary actions in one toolbar without bloating the page. */
+/** Keeps transfer and comparison actions in one toolbar without bloating the page. */
 function SyncActionBar(props: { workspace: SyncWorkspace }) {
     const workspace = props.workspace;
     const sourceLabel = workspace.sourceEndpoint
@@ -488,7 +527,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     size="lg"
                     disabled={workspace.isBusy || !workspace.selectedAgentId}
                     isLoading={workspace.copyInFlight}
-                    onClick={() => workspace.startTransfer("copy")}
+                    onClick={() => workspace.setConfirmationOperation("copy")}
                     className="rounded-md text-sm font-semibold shadow-sm shadow-blue-950/30"
                 >
                     {workspace.copyInFlight ? (
@@ -514,7 +553,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     size="lg"
                     disabled={workspace.isBusy || !workspace.selectedAgentId}
                     isLoading={workspace.moveInFlight}
-                    onClick={() => workspace.startTransfer("move")}
+                    onClick={() => workspace.setConfirmationOperation("move")}
                     className="rounded-md text-sm font-semibold"
                 >
                     {workspace.moveInFlight ? (
@@ -562,46 +601,6 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     </Button>
                 </Tooltip>
             ) : null}
-            <Tooltip content="Open the selected agent and path">
-                {workspace.selectedHref === null ? (
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        size="lg"
-                        disabled
-                        className="rounded-md text-sm font-semibold"
-                    >
-                        <FileSearch className="h-4 w-4" />
-                        Goto
-                    </Button>
-                ) : (
-                    <Button
-                        as="a"
-                        href={workspace.selectedHref}
-                        variant="secondary"
-                        size="lg"
-                        className="rounded-md text-sm font-semibold"
-                        onClick={(event) => {
-                            // Keep unmodified left-click in-app; middle/modified clicks use the href.
-                            if (
-                                event.defaultPrevented ||
-                                event.button !== 0 ||
-                                event.metaKey ||
-                                event.altKey ||
-                                event.ctrlKey ||
-                                event.shiftKey
-                            ) {
-                                return;
-                            }
-                            event.preventDefault();
-                            workspace.gotoSelected();
-                        }}
-                    >
-                        <FileSearch className="h-4 w-4" />
-                        Goto
-                    </Button>
-                )}
-            </Tooltip>
             {workspace.isActive ? (
                 <span role="status" className="text-sm text-slate-400">
                     {formatSize(workspace.transfer?.transferred_bytes ?? 0)}{" "}
@@ -710,6 +709,14 @@ export function SyncView(props: {
     const workspace = useSyncWorkspace(props);
     const entryLabel = props.entryType === "file" ? "file" : "directory";
     const conflictLabels = conflictDialogLabels(workspace.pendingOperation);
+    const confirmationLabel =
+        workspace.confirmationOperation === "move" ? "Move" : "Copy";
+    const sourceLabel = workspace.sourceEndpoint
+        ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
+        : "the unavailable selected endpoint";
+    const destinationLabel = workspace.destinationEndpoint
+        ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
+        : "the unavailable selected endpoint";
 
     return (
         <article className="rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
@@ -738,14 +745,32 @@ export function SyncView(props: {
                     agentId={workspace.selectedAgentId}
                     path={workspace.selectedPath}
                     disabled={workspace.isBusy}
+                    viewHref={workspace.selectedHref}
                     onAgentChange={workspace.changeSelectedAgent}
                     onPathChange={workspace.changeSelectedPath}
+                    onView={workspace.gotoSelected}
                 />
                 <SyncActionBar workspace={workspace} />
             </div>
 
             <SyncTransferStatus workspace={workspace} />
             <SyncDiffSection workspace={workspace} />
+
+            <ConfirmationDialog
+                isOpen={workspace.confirmationOperation !== null}
+                title={`${confirmationLabel} ${entryLabel}?`}
+                description={`${confirmationLabel} from ${sourceLabel} to ${destinationLabel}?`}
+                confirmLabel={`Confirm ${confirmationLabel.toLowerCase()}`}
+                onClose={() => workspace.setConfirmationOperation(null)}
+                onConfirm={() => {
+                    if (workspace.confirmationOperation === null) {
+                        return;
+                    }
+                    const operation = workspace.confirmationOperation;
+                    workspace.setConfirmationOperation(null);
+                    workspace.startTransfer(operation);
+                }}
+            />
 
             <DestinationConflictDialog
                 isOpen={workspace.pendingOperation !== null}

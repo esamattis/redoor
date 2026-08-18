@@ -91,7 +91,7 @@ test.describe.serial("File Detail View", () => {
         expect(sizeText).not.toBe("-");
     });
 
-    test("should copy, diff, and goto from the unified Sync view", async ({
+    test("should copy, diff, and view from the unified Sync view", async ({
         page,
     }) => {
         const wideMarker = "W".repeat(240);
@@ -121,6 +121,22 @@ test.describe.serial("File Detail View", () => {
         await expect(page.getByLabel("Sync agent")).toHaveValue(ctx.agent2Id);
         await page.getByLabel("Sync path").fill(destinationPath);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
+
+        const confirmation = page.getByRole("dialog", {
+            name: "Copy file?",
+        });
+        // Copy must not probe conflicts or start a transfer until it is explicitly confirmed.
+        await expect(confirmation).toBeVisible();
+        await confirmation.getByRole("button", { name: "Cancel" }).click();
+        await expect(
+            page.getByRole("dialog", {
+                name: "Destination items already exist",
+            }),
+        ).toHaveCount(0);
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+        await confirmation
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
 
         const dialog = page.getByRole("dialog", {
             name: "Destination items already exist",
@@ -159,12 +175,12 @@ test.describe.serial("File Detail View", () => {
 
         // A real href lets middle-click open the destination in a new tab.
         await expect(
-            page.getByRole("link", { name: "Goto", exact: true }),
+            page.getByRole("link", { name: "view", exact: true }),
         ).toHaveAttribute(
             "href",
             `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
         );
-        await page.getByRole("link", { name: "Goto", exact: true }).click();
+        await page.getByRole("link", { name: "view", exact: true }).click();
         // Target navigation uses the selected destination agent and leaves the source Sync view behind.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
@@ -267,14 +283,18 @@ test.describe.serial("File Detail View", () => {
         await expect(
             page.getByRole("region", { name: "File diff" }),
         ).toHaveCount(0);
-        // Goto always targets the selected endpoint even when that endpoint is the source.
+        // View always targets the selected endpoint even when that endpoint is the source.
         await expect(
-            page.getByRole("link", { name: "Goto", exact: true }),
+            page.getByRole("link", { name: "view", exact: true }),
         ).toHaveAttribute(
             "href",
             `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(changedSelectedPath)}`,
         );
         await page.getByRole("button", { name: "Copy", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "Copy file?" })
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
         const dialog = page.getByRole("dialog", {
             name: "Destination items already exist",
         });
@@ -300,6 +320,14 @@ test.describe.serial("File Detail View", () => {
             await route.continue();
         });
         await page.getByRole("button", { name: "Move", exact: true }).click();
+        const moveConfirmation = page.getByRole("dialog", {
+            name: "Move file?",
+        });
+        // Move requires an explicit destructive confirmation before conflict handling.
+        await expect(moveConfirmation).toBeVisible();
+        await moveConfirmation
+            .getByRole("button", { name: "Confirm move" })
+            .click();
         await expect(dialog).toBeVisible();
         await dialog.getByRole("radio", { name: "Replace existing" }).check();
         await dialog.getByRole("button", { name: "Continue moving" }).click();
@@ -346,6 +374,10 @@ test.describe.serial("File Detail View", () => {
 
         await page.getByLabel("Sync path").fill(copyDestinationPath);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "Copy file?" })
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
         // A missing destination must start immediately instead of asking for a conflict policy.
         await expect(
             page.getByRole("dialog", {
@@ -364,6 +396,10 @@ test.describe.serial("File Detail View", () => {
         );
         await page.getByLabel("Sync path").fill(moveDestinationPath);
         await page.getByRole("button", { name: "Move", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "Move file?" })
+            .getByRole("button", { name: "Confirm move" })
+            .click();
         // Move to a new path is a primary Sync action and must not reuse the copy-only dialog path.
         await expect(
             page.getByRole("dialog", {

@@ -793,7 +793,7 @@ test.describe.serial("File Browser Navigation", () => {
             page.getByRole("button", { name: "Move", exact: true }),
         ).toBeVisible();
         await expect(
-            page.getByRole("link", { name: "Goto", exact: true }),
+            page.getByRole("link", { name: "view", exact: true }),
         ).toHaveAttribute(
             "href",
             `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
@@ -801,6 +801,14 @@ test.describe.serial("File Browser Navigation", () => {
         // Directory Sync must not expose on-page conflict radios before Copy is chosen.
         await expect(page.getByRole("radio", { name: "Merge" })).toHaveCount(0);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
+        const confirmation = page.getByRole("dialog", {
+            name: "Copy directory?",
+        });
+        // Directory copy must be confirmed before the existing-path policy is requested.
+        await expect(confirmation).toBeVisible();
+        await confirmation
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
 
         const dialog = page.getByRole("dialog", {
             name: "Destination items already exist",
@@ -862,14 +870,18 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("button", { name: "Diff", exact: true }),
         ).toHaveCount(0);
-        // Goto remains tied to the selected source rather than changing to the current destination.
+        // View remains tied to the selected source rather than changing to the current destination.
         await expect(
-            page.getByRole("link", { name: "Goto", exact: true }),
+            page.getByRole("link", { name: "view", exact: true }),
         ).toHaveAttribute(
             "href",
             `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(selectedPath)}`,
         );
         await page.getByRole("button", { name: "Copy", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "Copy directory?" })
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
 
         const dialog = page.getByRole("dialog", {
             name: "Destination items already exist",
