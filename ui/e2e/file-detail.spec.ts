@@ -91,90 +91,145 @@ test.describe.serial("File Detail View", () => {
         expect(sizeText).not.toBe("-");
     });
 
-    test("should diff a file against another agent", async ({ page }) => {
-        const filePath = path.join(ctx.testDirPath, "file1.txt");
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+    test("should copy, diff, and goto from the unified Sync view", async ({
+        page,
+    }) => {
+        const wideMarker = "W".repeat(240);
+        const sourcePath = path.join(
+            ctx.testDirPath,
+            `sync-source-${Date.now()}.txt`,
         );
-
-        await page.getByRole("link", { name: "Diff", exact: true }).click();
-
-        // The comparison starts with the first other agent and the currently selected file path.
-        await expect(page.getByLabel("Diff agent")).toHaveValue(ctx.agent2Id);
-        await expect(page.getByLabel("Diff path")).toHaveValue(filePath);
-        await page
-            .getByLabel("Diff path")
-            .fill(path.join(ctx.testDirPath, "file2.txt"));
-        await page.getByRole("button", { name: "Generate diff" }).click();
-
-        const diff = page.getByRole("region", { name: "File diff" });
-        // Signed lines prove the form submitted both selected endpoints to the unified diff API.
-        await expect(diff.getByText(/-content1/)).toBeVisible();
-        await expect(diff.getByText(/\+content2/)).toBeVisible();
-        // The active navigation state keeps the diff representation addressable by URL.
-        await expect(page).toHaveURL(/\?view=diff$/);
-        await expect(
-            page
-                .getByLabel("File view")
-                .getByRole("link", { name: "Diff", exact: true }),
-        ).toHaveAttribute("aria-current", "page");
-
-        await page
-            .getByRole("button", { name: "Open target file", exact: true })
-            .click();
-        // Target navigation uses the selected comparison agent and leaves the source diff view behind.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file2.txt"))}`,
-        );
-        await expect(page.getByLabel("File editor")).toBeVisible();
-    });
-
-    test("should sync a file with explicit override", async ({ page }) => {
-        const sourcePath = path.join(ctx.testDirPath, "file1.txt");
         const destinationPath = path.join(
             ctx.testDirPath,
-            `synced-file-${Date.now()}.txt`,
+            `sync-dest-${Date.now()}.txt`,
         );
-        await fs.writeFile(destinationPath, "old content");
+        await fs.writeFile(sourcePath, `left-${wideMarker}\n`);
+        await fs.writeFile(destinationPath, `right-${wideMarker}\n`);
         await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}`,
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}?view=diff`,
         );
 
-        await page.getByRole("link", { name: "Sync", exact: true }).click();
-
-        // The sync target defaults consistently with Diff while remaining editable.
+        // Legacy diff bookmarks must replace-redirect onto the unified Sync workspace.
+        await expect(page).toHaveURL(/\?view=sync$/);
+        await expect(
+            page.getByRole("link", { name: "Diff", exact: true }),
+        ).toHaveCount(0);
+        // Conflict policy stays off the page until a destination actually exists.
+        await expect(
+            page.getByRole("checkbox", { name: "Override existing" }),
+        ).toHaveCount(0);
         await expect(page.getByLabel("Sync agent")).toHaveValue(ctx.agent2Id);
         await page.getByLabel("Sync path").fill(destinationPath);
-        await page.getByRole("button", { name: "Sync", exact: true }).click();
-        // Existing files remain untouched unless replacement is explicitly enabled.
-        await expect(page.getByRole("alert")).toContainText(
-            "Destination already exists",
-        );
-        await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe(
-            "old content",
-        );
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
 
-        const overrideExisting = page.getByRole("checkbox", {
-            name: "Override existing",
+        const dialog = page.getByRole("dialog", {
+            name: "Destination items already exist",
         });
-        await overrideExisting.click();
-        // The button-based checkbox must expose that the retry may replace the destination.
-        await expect(overrideExisting).toHaveAttribute("aria-checked", "true");
-        await page.getByRole("button", { name: "Sync", exact: true }).click();
+        // An existing destination must ask for a policy instead of starting the copy.
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("button", { name: "Continue copying" }).click();
 
         // Final transfer progress, rather than copy acceptance, drives the success report.
         await expect(page.getByRole("status")).toContainText(
-            "Sync completed successfully",
+            "Copy completed successfully",
         );
         await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe(
-            "content1",
+            `left-${wideMarker}\n`,
         );
-        await expect(page).toHaveURL(/\?view=sync$/);
+
+        await fs.writeFile(destinationPath, `right-${wideMarker}\n`);
+        await page.getByRole("button", { name: "Diff", exact: true }).click();
+
+        const diff = page.getByRole("region", { name: "File diff" });
+        // Signed fragments prove both endpoints reached the unified-diff API through Sync.
+        await expect(diff.getByText(/left-/)).toBeVisible();
+        await expect(diff.getByText(/right-/)).toBeVisible();
+        const overflow = await diff.evaluate((element) => ({
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+        }));
+        // A wide hunk must scroll inside the labeled region instead of clipping the page.
+        expect(overflow.scrollWidth).toBeGreaterThan(overflow.clientWidth);
         await expect(
             page
                 .getByLabel("File view")
                 .getByRole("link", { name: "Sync", exact: true }),
         ).toHaveAttribute("aria-current", "page");
+
+        // A real href lets middle-click open the destination in a new tab.
+        await expect(
+            page.getByRole("link", { name: "Goto", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
+        );
+        await page.getByRole("link", { name: "Goto", exact: true }).click();
+        // Target navigation uses the selected destination agent and leaves the source Sync view behind.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
+        );
+        await expect(page.getByLabel("File editor")).toBeVisible();
+    });
+
+    test("should copy to a missing path and move to a new path from Sync", async ({
+        page,
+    }) => {
+        const sourcePath = path.join(
+            ctx.testDirPath,
+            `sync-missing-source-${Date.now()}.txt`,
+        );
+        const copyDestinationPath = path.join(
+            ctx.testDirPath,
+            `sync-missing-dest-${Date.now()}.txt`,
+        );
+        const moveSourcePath = path.join(
+            ctx.testDirPath,
+            `sync-move-source-${Date.now()}.txt`,
+        );
+        const moveDestinationPath = path.join(
+            ctx.testDirPath,
+            `sync-move-dest-${Date.now()}.txt`,
+        );
+        await fs.writeFile(sourcePath, "copy-missing\n");
+        await fs.writeFile(moveSourcePath, "move-new\n");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}?view=sync`,
+        );
+
+        await page.getByLabel("Sync path").fill(copyDestinationPath);
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+        // A missing destination must start immediately instead of asking for a conflict policy.
+        await expect(
+            page.getByRole("dialog", {
+                name: "Destination items already exist",
+            }),
+        ).toHaveCount(0);
+        await expect(page.getByRole("status")).toContainText(
+            "Copy completed successfully",
+        );
+        await expect(fs.readFile(copyDestinationPath, "utf8")).resolves.toBe(
+            "copy-missing\n",
+        );
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(moveSourcePath)}?view=sync`,
+        );
+        await page.getByLabel("Sync path").fill(moveDestinationPath);
+        await page.getByRole("button", { name: "Move", exact: true }).click();
+        // Move to a new path is a primary Sync action and must not reuse the copy-only dialog path.
+        await expect(
+            page.getByRole("dialog", {
+                name: "Destination items already exist",
+            }),
+        ).toHaveCount(0);
+        await expect(page.getByRole("status")).toContainText(
+            "Move completed successfully",
+        );
+        await expect(fs.readFile(moveDestinationPath, "utf8")).resolves.toBe(
+            "move-new\n",
+        );
+        await expect(fs.access(moveSourcePath)).rejects.toThrow();
     });
 
     test("should rename a file and update the detail URL", async ({ page }) => {

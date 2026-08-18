@@ -782,17 +782,41 @@ test.describe.serial("File Browser Navigation", () => {
 
         await page.getByRole("link", { name: "Sync", exact: true }).click();
         await page.getByLabel("Sync path").fill(destinationPath);
-        await page.getByRole("radio", { name: "Merge" }).check();
-        await page.getByLabel("Merge behavior").hover();
-        // The tooltip explains that merge preserves destination-only entries.
-        await expect(page.getByRole("tooltip")).toContainText(
-            "preserving entries that exist only at the destination",
+        // Directory Sync reuses the file workspace but hides Diff because the API cannot compare trees.
+        await expect(
+            page.getByRole("button", { name: "Diff", exact: true }),
+        ).toHaveCount(0);
+        await expect(
+            page.getByRole("button", { name: "Copy", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Move", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "Goto", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
         );
-        await page.getByRole("button", { name: "Sync", exact: true }).click();
+        // Directory Sync must not expose on-page conflict radios before Copy is chosen.
+        await expect(page.getByRole("radio", { name: "Merge" })).toHaveCount(0);
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+
+        const dialog = page.getByRole("dialog", {
+            name: "Destination items already exist",
+        });
+        // An existing directory must open the shared Keep / Replace / Merge prompt.
+        await expect(dialog).toBeVisible();
+        await dialog
+            .getByRole("radio", {
+                name: "Merge directories and replace files",
+            })
+            .check();
+        await dialog.getByRole("button", { name: "Continue copying" }).click();
 
         // A terminal success confirms the selected policy completed on the destination agent.
         await expect(page.getByRole("status")).toContainText(
-            "Sync completed successfully",
+            "Copy completed successfully",
         );
         await expect(
             fs.readFile(path.join(destinationPath, "nested1.txt"), "utf8"),

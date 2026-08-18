@@ -25,7 +25,6 @@ import {
     DirectoryDetailView,
     FileDetailView,
 } from "#ui/components/browser/metadata";
-import { FileDiffView } from "#ui/components/browser/file-diff-view";
 import { SyncView } from "#ui/components/browser/sync";
 import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
 import {
@@ -65,6 +64,16 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             throw redirect({
                 to: "/agents/$agentId",
                 params: { agentId: params.agentId },
+            });
+        }
+
+        // Legacy ?view=diff bookmarks land on the unified Sync workspace.
+        if (deps.view === "diff") {
+            throw redirect({
+                to: "/agents/$agentId/browser/$",
+                params,
+                search: { view: "sync" },
+                replace: true,
             });
         }
 
@@ -133,7 +142,7 @@ function BrowserRouteShell(props: {
     path: string;
     parentPath: string | null;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "diff" | "sync";
+    activeView: "files" | "details" | "view" | "sync";
     editable?: boolean;
     constrainContent?: boolean;
     /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
@@ -244,28 +253,16 @@ function FileBrowser() {
         const viewableImage = data.metadata?.viewable_image === true;
 
         const activeView =
-            search.view === "diff"
-                ? "diff"
-                : search.view === "sync"
-                  ? "sync"
-                  : search.view === "details"
-                    ? "details"
-                    : "view";
+            search.view === "sync"
+                ? "sync"
+                : search.view === "details"
+                  ? "details"
+                  : "view";
         const isEditView = activeView === "view" && editable;
         const content =
-            activeView === "diff" ? (
-                <FileDiffView
-                    key={`${agentId}:${lsResult.path}`}
-                    api={api}
-                    agent={agent}
-                    agents={data.agents}
-                    agentId={agentId}
-                    fileName={fileName}
-                    filePath={lsResult.path}
-                    downloadUrl={downloadUrl}
-                />
-            ) : activeView === "sync" ? (
+            activeView === "sync" ? (
                 <SyncView
+                    key={`${agentId}:${lsResult.path}`}
                     api={api}
                     sourceAgent={agent}
                     agents={data.agents}
@@ -309,7 +306,7 @@ function FileBrowser() {
                 entryType="file"
                 activeView={activeView}
                 editable={editable}
-                constrainContent={!isEditView}
+                constrainContent={!isEditView && activeView !== "sync"}
                 fillAvailableHeight={isEditView}
             >
                 {content}
@@ -359,7 +356,7 @@ function DirectoryBrowserPage(props: {
             parentPath={props.parentPath}
             entryType="directory"
             activeView={activeView}
-            constrainContent={activeView !== "files"}
+            constrainContent={activeView !== "files" && activeView !== "sync"}
         >
             {activeView === "details" ? (
                 <DirectoryDetailView
@@ -371,6 +368,7 @@ function DirectoryBrowserPage(props: {
                 />
             ) : activeView === "sync" ? (
                 <SyncView
+                    key={`${props.agentId}:${props.lsResult.path}`}
                     api={props.api}
                     sourceAgent={props.agent}
                     agents={props.agents}

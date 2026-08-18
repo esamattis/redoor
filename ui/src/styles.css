@@ -292,3 +292,25 @@ code {
 .copy-success-flash {
     animation: copy-success-flash 0.7s ease-out forwards;
 }
+
+/*
+ * diff2html tables grow with the longest line. The host is full width and
+ * scrolls sideways so wide hunks never clip the surrounding browser chrome.
+ */
+.file-diff-host .d2h-wrapper,
+.file-diff-host .d2h-file-wrapper,
+.file-diff-host .d2h-file-diff,
+.file-diff-host .d2h-diff-table {
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
+}
+
+.file-diff-host .d2h-file-diff,
+.file-diff-host .d2h-code-wrapper {
+    overflow: visible;
+}
+
+.file-diff-host .d2h-code-line-ctn {
+    white-space: pre;
+}

@@ -97,20 +97,21 @@ test.describe("Agent view navigation", () => {
             `${WEB_BASE_URL}/agents/${context.agentId}/browser/${encodeFilesystemPath(`${context.testDirPath}/file1.txt`)}`,
         );
         const fileView = page.getByLabel("File view");
-        const fileViewScroll = await fileView.evaluate((element) => {
-            element.scrollLeft = element.scrollWidth;
-            return {
-                clientWidth: element.clientWidth,
-                scrollLeft: element.scrollLeft,
-                scrollWidth: element.scrollWidth,
-            };
-        });
-        // File representation tabs must use the same touch-scrollable strip.
-        expect(fileViewScroll.scrollWidth).toBeGreaterThan(
-            fileViewScroll.clientWidth,
-        );
-        // The final file tab must be reachable by horizontal scrolling on mobile.
-        expect(fileViewScroll.scrollLeft).toBeGreaterThan(0);
+        // File representations collapse Diff into Sync, so the last tab is the transfer workspace.
+        await expect(fileView.getByRole("link").last()).toHaveText("Sync");
+        await expect(
+            fileView.getByRole("link", { name: "Diff", exact: true }),
+        ).toHaveCount(0);
+        // The remaining tabs must stay visible on a phone-width viewport without a fourth tab.
+        await expect(
+            fileView.getByRole("link", { name: "Edit", exact: true }),
+        ).toBeVisible();
+        await expect(
+            fileView.getByRole("link", { name: "Details", exact: true }),
+        ).toBeVisible();
+        await expect(
+            fileView.getByRole("link", { name: "Sync", exact: true }),
+        ).toBeVisible();
         await browserAgentView
             .getByRole("link", { name: context.agentName, exact: true })
             .click();

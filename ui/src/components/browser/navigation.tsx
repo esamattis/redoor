@@ -6,7 +6,6 @@ import {
     Check,
     File,
     Files,
-    GitCompareArrows,
     Home,
     Info,
     Pencil,
@@ -67,7 +66,7 @@ export function ViewToggle(props: {
     agent: Agent;
     path: string;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "diff" | "sync";
+    activeView: "files" | "details" | "view" | "sync";
     /** Names the content tab Edit only after the agent marks the file writable. */
     editable?: boolean;
 }) {
@@ -121,15 +120,6 @@ export function ViewToggle(props: {
                 label="Details"
                 icon={<Info className="h-4 w-4" aria-hidden="true" />}
                 active={props.activeView === "details"}
-            />
-            <ViewToggleLink
-                to={pathTarget}
-                search={{ view: "diff" }}
-                label="Diff"
-                icon={
-                    <GitCompareArrows className="h-4 w-4" aria-hidden="true" />
-                }
-                active={props.activeView === "diff"}
             />
             <ViewToggleLink
                 to={pathTarget}
@@ -194,7 +184,7 @@ export function BrowserHeader(props: {
     path: string;
     parentPath: string | null;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "diff" | "sync";
+    activeView: "files" | "details" | "view" | "sync";
     /** Forwards the content-tab label so file chrome matches the editable gate. */
     editable?: boolean;
     pathUnavailable?: boolean;

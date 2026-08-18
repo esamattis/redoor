@@ -10,7 +10,7 @@ import { joinBrowserPath } from "#ui/components/browser/utils";
 import type { SelectedPath } from "#ui/selected-files";
 
 /** Shared conflict policies so Copy and Move ask the same destination question. */
-const existingItemOptions: Array<{
+export const existingItemOptions: Array<{
     value: CopyExistingMode;
     label: string;
     description: string;
@@ -60,6 +60,77 @@ const transferTriggerMove = {
 
 export type SelectedFilesTransferOperation = "copy" | "move";
 
+/** Reuses one Keep / Replace / Merge prompt for listing transfers and the Sync workspace. */
+export function DestinationConflictDialog(props: {
+    isOpen: boolean;
+    title: string;
+    description: string;
+    closeAriaLabel: string;
+    confirmLabel: string;
+    radioGroupName: string;
+    onClose: () => void;
+    onConfirm: (mode: CopyExistingMode) => void;
+}) {
+    const [existingMode, setExistingMode] =
+        React.useState<CopyExistingMode>("error");
+
+    // Reset to the safe default whenever the dialog reopens for a new conflict.
+    React.useEffect(() => {
+        if (props.isOpen) {
+            setExistingMode("error");
+        }
+    }, [props.isOpen]);
+
+    return (
+        <Dialog
+            isOpen={props.isOpen}
+            title={props.title}
+            description={props.description}
+            closeAriaLabel={props.closeAriaLabel}
+            onClose={props.onClose}
+        >
+            <RadioCardGroup
+                legend="Existing item action"
+                className="mt-5"
+                legendClassName="sr-only"
+            >
+                {existingItemOptions.map((option) => (
+                    <RadioCardOption
+                        key={option.value}
+                        name={props.radioGroupName}
+                        value={option.value}
+                        label={option.label}
+                        description={option.description}
+                        checked={existingMode === option.value}
+                        layout="descriptive"
+                        onChange={() => setExistingMode(option.value)}
+                    />
+                ))}
+            </RadioCardGroup>
+            <DialogActions>
+                <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={props.onClose}
+                    className="rounded-md text-slate-300"
+                >
+                    Cancel
+                </Button>
+                <Button
+                    type="button"
+                    onClick={() => {
+                        props.onClose();
+                        props.onConfirm(existingMode);
+                    }}
+                    className="rounded-md font-semibold"
+                >
+                    {props.confirmLabel}
+                </Button>
+            </DialogActions>
+        </Dialog>
+    );
+}
+
 /** Prompts for the API conflict policy only when the loaded destination needs one. */
 export function SelectedFilesTransferTrigger(props: {
     operation: SelectedFilesTransferOperation;
@@ -71,8 +142,6 @@ export function SelectedFilesTransferTrigger(props: {
     onConfirm: (mode: CopyExistingMode) => void;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
-    const [existingMode, setExistingMode] =
-        React.useState<CopyExistingMode>("error");
     const copy = props.operation === "copy";
     const labels = copy ? transferTriggerCopy : transferTriggerMove;
     const destinationFileNames = new Set(props.destinationFileNames);
@@ -93,7 +162,6 @@ export function SelectedFilesTransferTrigger(props: {
             props.onConfirm("error");
             return;
         }
-        setExistingMode("error");
         setIsOpen(true);
     };
 
@@ -113,52 +181,16 @@ export function SelectedFilesTransferTrigger(props: {
                     </Button>
                 </Tooltip>
             ) : null}
-            <Dialog
+            <DestinationConflictDialog
                 isOpen={isOpen}
                 title="Destination items already exist"
                 description={`${conflictingFiles.length} selected ${conflictingFiles.length === 1 ? "item has" : "items have"} the same name as an item in this directory. Choose how to handle the existing destination.`}
                 closeAriaLabel={labels.closeAriaLabel}
+                confirmLabel={labels.confirmLabel}
+                radioGroupName={labels.radioGroupName}
                 onClose={() => setIsOpen(false)}
-            >
-                <RadioCardGroup
-                    legend="Existing item action"
-                    className="mt-5"
-                    legendClassName="sr-only"
-                >
-                    {existingItemOptions.map((option) => (
-                        <RadioCardOption
-                            key={option.value}
-                            name={labels.radioGroupName}
-                            value={option.value}
-                            label={option.label}
-                            description={option.description}
-                            checked={existingMode === option.value}
-                            layout="descriptive"
-                            onChange={() => setExistingMode(option.value)}
-                        />
-                    ))}
-                </RadioCardGroup>
-                <DialogActions>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => setIsOpen(false)}
-                        className="rounded-md text-slate-300"
-                    >
-                        Cancel
-                    </Button>
-                    <Button
-                        type="button"
-                        onClick={() => {
-                            setIsOpen(false);
-                            props.onConfirm(existingMode);
-                        }}
-                        className="rounded-md font-semibold"
-                    >
-                        {labels.confirmLabel}
-                    </Button>
-                </DialogActions>
-            </Dialog>
+                onConfirm={props.onConfirm}
+            />
         </>
     );
 }
