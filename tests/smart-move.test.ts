@@ -200,8 +200,8 @@ describe("Smart Move API", () => {
         );
         const move = await waitForMove(response.move_request_id);
 
-        // Existing destinations keep copy/delete conflict semantics instead of renameat2.
-        expect(move.atomic).toBe(false);
+        // Same-filesystem overrides exchange the destination atomically before cleanup.
+        expect(move.atomic).toBe(true);
         // Override must publish the source bytes instead of retaining old destination content.
         expect(await fs.readFile(destPath, "utf8")).toBe("replacement");
         // Preserving the source inode proves same-filesystem override used rename rather than copying.
