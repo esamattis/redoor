@@ -8,6 +8,7 @@ mod process_control;
 mod process_logs;
 mod server;
 mod server_address;
+mod service_management;
 mod ssh;
 mod systemd;
 mod systemd_notify;

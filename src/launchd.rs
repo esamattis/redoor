@@ -11,13 +11,14 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use anyhow::Context;
 use anyhow::{Result, bail};
-use clap::{Args, Subcommand};
-#[cfg(target_os = "macos")]
-use tokio::io::AsyncWriteExt;
+use clap::Args;
 #[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
+#[cfg(target_os = "macos")]
+use crate::service_management::InstallArgs;
+use crate::service_management::ServiceCommand;
 
 /// Arguments for role-scoped `redoor agent|server launchd` management.
 #[derive(Args)]
@@ -28,44 +29,7 @@ pub(crate) struct LaunchdArgs {
     verbose: bool,
     /// Selects the launchd operation while keeping service targeting consistent.
     #[command(subcommand)]
-    command: LaunchdCommand,
-}
-
-/// Operations supported for an installed Redoor LaunchAgent.
-#[derive(Subcommand)]
-enum LaunchdCommand {
-    /// Install and enable the LaunchAgent, remaining stopped unless requested.
-    Install(InstallArgs),
-    /// Stop, unload, and remove the LaunchAgent while preserving its config.
-    Uninstall,
-    /// Start the installed LaunchAgent without restarting a running process.
-    Start,
-    /// Stop and unload the LaunchAgent while leaving it enabled for future login.
-    Stop,
-    /// Reload and restart the installed LaunchAgent.
-    Restart,
-    /// Show installation, enablement, load, and process state.
-    Status,
-    /// Enable the installed LaunchAgent without starting it.
-    Enable,
-    /// Disable startup at login, optionally stopping and unloading it now.
-    Disable(DisableArgs),
-}
-
-/// Controls whether installation also starts the new LaunchAgent definition.
-#[derive(Args)]
-struct InstallArgs {
-    /// Start the LaunchAgent after installing and enabling it.
-    #[arg(long)]
-    start: bool,
-}
-
-/// Controls whether disabling also stops the current LaunchAgent process.
-#[derive(Args)]
-struct DisableArgs {
-    /// Stop and unload the LaunchAgent in addition to disabling future login startup.
-    #[arg(long)]
-    now: bool,
+    command: ServiceCommand,
 }
 
 /// Runs one macOS LaunchAgent operation for the invoking non-root user.
@@ -80,22 +44,22 @@ pub(crate) async fn run(args: LaunchdArgs, role: ServiceRole) -> Result<()> {
     {
         ensure_non_root()?;
         match args.command {
-            LaunchdCommand::Install(install_args) => {
+            ServiceCommand::Install(install_args) => {
                 install(install_args, role, args.verbose).await
             }
-            LaunchdCommand::Uninstall => uninstall(role, args.verbose).await,
-            LaunchdCommand::Start => manage_service(role, ServiceAction::Start, args.verbose).await,
-            LaunchdCommand::Stop => manage_service(role, ServiceAction::Stop, args.verbose).await,
-            LaunchdCommand::Restart => {
+            ServiceCommand::Uninstall => uninstall(role, args.verbose).await,
+            ServiceCommand::Start => manage_service(role, ServiceAction::Start, args.verbose).await,
+            ServiceCommand::Stop => manage_service(role, ServiceAction::Stop, args.verbose).await,
+            ServiceCommand::Restart => {
                 manage_service(role, ServiceAction::Restart, args.verbose).await
             }
-            LaunchdCommand::Status => {
+            ServiceCommand::Status => {
                 manage_service(role, ServiceAction::Status, args.verbose).await
             }
-            LaunchdCommand::Enable => {
+            ServiceCommand::Enable => {
                 manage_service(role, ServiceAction::Enable, args.verbose).await
             }
-            LaunchdCommand::Disable(disable) => {
+            ServiceCommand::Disable(disable) => {
                 manage_service(
                     role,
                     ServiceAction::Disable { now: disable.now },
@@ -133,7 +97,7 @@ fn service_name(role: ServiceRole) -> Result<String> {
 async fn install(args: InstallArgs, role: ServiceRole, verbose: bool) -> Result<()> {
     let service = service_name(role)?;
     let config_path = crate::config::default_config_path()?;
-    let config_created = prepare_config(role, &config_path).await?;
+    let config_created = crate::service_management::prepare_config(role, &config_path).await?;
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
         .await
         .context("Failed to resolve the current redoor executable")?;
@@ -155,7 +119,8 @@ async fn install(args: InstallArgs, role: ServiceRole, verbose: bool) -> Result<
             .await
             .context("Failed to unload the previous LaunchAgent definition")?;
     }
-    atomic_write(&plist_path, plist_content.as_bytes()).await?;
+    crate::service_management::atomic_write(&plist_path, plist_content.as_bytes(), "LaunchAgent")
+        .await?;
 
     // A disabled selection survives plist discovery, so explicitly mark this label
     // enabled while leaving it unloaded until the operator starts it or logs in.
@@ -483,54 +448,6 @@ fn home_directory() -> Result<PathBuf> {
         .context("HOME is not set; cannot locate the macOS LaunchAgents directory")
 }
 
-/// Ensures installation has a complete shared config and reports whether it was created.
-///
-/// Only `redoor server` generates starter config; server launchd installation requires
-/// that file already exist. Agent installation still imports server config from stdin.
-#[cfg(target_os = "macos")]
-async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
-    if tokio::fs::try_exists(config_path)
-        .await
-        .with_context(|| format!("Failed to inspect config '{}'", config_path.display()))?
-    {
-        validate_existing_config(mode, config_path).await?;
-        return Ok(false);
-    }
-
-    if mode == ServiceRole::Agent {
-        let imported_path = crate::config::import_agent_config_from_stdin(config_path).await?;
-        validate_existing_config(mode, &imported_path).await?;
-        return Ok(false);
-    }
-
-    bail!(
-        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run install",
-        config_path.display()
-    )
-}
-
-/// Rejects configs that cannot run the selected role without extra CLI flags.
-#[cfg(target_os = "macos")]
-async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Result<()> {
-    let config = crate::config::parse_config_file(&config_path.to_string_lossy())
-        .await
-        .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
-    match mode {
-        ServiceRole::Agent => {
-            if !crate::config::standalone_agent_is_fully_configured(&config) {
-                bail!(
-                    "config '{}' is missing required standalone agent settings; set top-level agent_token plus [agent] server so the service can start without CLI flags",
-                    config_path.display()
-                );
-            }
-        }
-        ServiceRole::Server => {
-            crate::config::require_server_section(&config)?;
-        }
-    }
-    Ok(())
-}
-
 /// Prints user-scoped launchctl commands after successful installation.
 #[cfg(target_os = "macos")]
 fn print_manage_help(
@@ -574,54 +491,6 @@ Manage the service:
         mode.cli_name(),
         mode.cli_name()
     );
-}
-
-/// Replaces a plist in one rename so launchd never observes a partial definition.
-#[cfg(target_os = "macos")]
-async fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    let file_name = path
-        .file_name()
-        .context("LaunchAgent path has no file name")?
-        .to_string_lossy();
-    let temporary_path = path.with_file_name(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        fastrand::u64(..)
-    ));
-    let write_result = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to create temporary LaunchAgent '{}'",
-                    temporary_path.display()
-                )
-            })?;
-        file.write_all(content).await.with_context(|| {
-            format!(
-                "Failed to write temporary LaunchAgent '{}'",
-                temporary_path.display()
-            )
-        })?;
-        file.sync_all().await.with_context(|| {
-            format!(
-                "Failed to sync temporary LaunchAgent '{}'",
-                temporary_path.display()
-            )
-        })?;
-        drop(file);
-        tokio::fs::rename(&temporary_path, path)
-            .await
-            .with_context(|| format!("Failed to install LaunchAgent '{}'", path.display()))
-    }
-    .await;
-    if write_result.is_err() {
-        let _ = tokio::fs::remove_file(&temporary_path).await;
-    }
-    write_result
 }
 
 /// Renders a LaunchAgent plist with separately escaped program arguments.
