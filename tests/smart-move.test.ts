@@ -191,6 +191,7 @@ describe("Smart Move API", () => {
     it("overrides an existing file and removes the source", async () => {
         const sourcePath = tempFiles.create("replacement", { suffix: ".txt" });
         const destPath = tempFiles.create("old value", { suffix: ".txt" });
+        const sourceInode = (await fs.lstat(sourcePath, { bigint: true })).ino;
 
         const response = await sourceAgent.moveTo(
             { agent: sourceAgent.id, path: destPath },
@@ -203,8 +204,109 @@ describe("Smart Move API", () => {
         expect(move.atomic).toBe(false);
         // Override must publish the source bytes instead of retaining old destination content.
         expect(await fs.readFile(destPath, "utf8")).toBe("replacement");
+        // Preserving the source inode proves same-filesystem override used rename rather than copying.
+        expect((await fs.lstat(destPath, { bigint: true })).ino).toBe(sourceInode);
         // Successful override is still a move and therefore removes the original.
         await expect(fs.stat(sourcePath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+    });
+
+    it("atomically overrides existing directories, files, and symlinks", async () => {
+        const directorySource = tempFiles.tempFile({
+            suffix: "-override-directory-source",
+        });
+        const fileDestination = tempFiles.create("old file", {
+            suffix: "-override-file-destination",
+        });
+        await fs.mkdir(directorySource);
+        await fs.writeFile(path.join(directorySource, "source.txt"), "directory");
+        const directoryInode = (
+            await fs.lstat(directorySource, { bigint: true })
+        ).ino;
+
+        const directoryResponse = await sourceAgent.moveTo(
+            { agent: sourceAgent.id, path: fileDestination },
+            directorySource,
+            { on_existing: "override" },
+        );
+        await waitForMove(directoryResponse.move_request_id);
+
+        // A directory must replace a file even though a plain POSIX replacement rename rejects that pair.
+        expect(await fs.readFile(path.join(fileDestination, "source.txt"), "utf8")).toBe(
+            "directory",
+        );
+        // The source directory inode at the destination demonstrates an atomic exchange, not reconstruction.
+        expect((await fs.lstat(fileDestination, { bigint: true })).ino).toBe(
+            directoryInode,
+        );
+        // Cleanup after exchange must remove the displaced file from the old source name.
+        await expect(fs.lstat(directorySource)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+
+        const fileSource = tempFiles.create("file over directory", {
+            suffix: "-override-file-source",
+        });
+        const directoryDestination = tempFiles.tempFile({
+            suffix: "-override-directory-destination",
+        });
+        await fs.mkdir(directoryDestination);
+        await fs.writeFile(
+            path.join(directoryDestination, "old.txt"),
+            "old directory child",
+        );
+        const fileInode = (await fs.lstat(fileSource, { bigint: true })).ino;
+
+        const fileResponse = await sourceAgent.moveTo(
+            { agent: sourceAgent.id, path: directoryDestination },
+            fileSource,
+            { on_existing: "override" },
+        );
+        await waitForMove(fileResponse.move_request_id);
+
+        // Override must remove the whole non-empty destination directory and publish the file.
+        expect(await fs.readFile(directoryDestination, "utf8")).toBe(
+            "file over directory",
+        );
+        // Keeping the file inode verifies the destination changed through atomic rename exchange.
+        expect((await fs.lstat(directoryDestination, { bigint: true })).ino).toBe(
+            fileInode,
+        );
+        // Recursive cleanup must remove the displaced non-empty directory at the source name.
+        await expect(fs.lstat(fileSource)).rejects.toMatchObject({ code: "ENOENT" });
+
+        const symlinkSource = tempFiles.create("file over symlink", {
+            suffix: "-override-symlink-source",
+        });
+        const symlinkDestination = tempFiles.tempFile({
+            suffix: "-override-symlink-destination",
+        });
+        const missingTarget = tempFiles.tempFile({
+            suffix: "-override-missing-link-target",
+        });
+        await fs.symlink(missingTarget, symlinkDestination);
+        const symlinkSourceInode = (
+            await fs.lstat(symlinkSource, { bigint: true })
+        ).ino;
+
+        const symlinkResponse = await sourceAgent.moveTo(
+            { agent: sourceAgent.id, path: symlinkDestination },
+            symlinkSource,
+            { on_existing: "override" },
+        );
+        await waitForMove(symlinkResponse.move_request_id);
+
+        // Dangling symlinks are existing directory entries and must be replaced rather than followed.
+        expect(await fs.readFile(symlinkDestination, "utf8")).toBe(
+            "file over symlink",
+        );
+        // The original source inode confirms the symlink replacement stayed on the atomic path.
+        expect((await fs.lstat(symlinkDestination, { bigint: true })).ino).toBe(
+            symlinkSourceInode,
+        );
+        // The exchanged symlink must be removed from the source path after publication.
+        await expect(fs.lstat(symlinkSource)).rejects.toMatchObject({
             code: "ENOENT",
         });
     });

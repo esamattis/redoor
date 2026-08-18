@@ -69,7 +69,7 @@ pub(crate) async fn check_existing_destination(
     on_existing: CopyExistingMode,
     source_is_directory: bool,
 ) -> Result<(), DestinationPlaceError> {
-    match tokio::fs::try_exists(path).await {
+    match destination_entry_exists(path).await {
         Ok(false) => Ok(()),
         Ok(true) => match on_existing {
             CopyExistingMode::Error => Err(DestinationPlaceError::AlreadyExists(
@@ -80,6 +80,15 @@ pub(crate) async fn check_existing_destination(
                 ensure_merge_types_compatible(path, source_is_directory).await
             }
         },
+        Err(error) => Err(error),
+    }
+}
+
+/// Detects directory entries without following symlinks so dangling links still conflict.
+pub(crate) async fn destination_entry_exists(path: &Path) -> Result<bool, DestinationPlaceError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(DestinationPlaceError::CheckDestinationPath(error)),
     }
 }
@@ -121,7 +130,7 @@ async fn ensure_merge_types_compatible(
 }
 
 /// Removes one existing file, symlink, or directory so placement can publish a replacement path.
-async fn remove_existing_path(path: &Path) -> Result<(), DestinationPlaceError> {
+pub(crate) async fn remove_existing_path(path: &Path) -> Result<(), DestinationPlaceError> {
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(DestinationPlaceError::InspectDestinationPath)?;
@@ -139,7 +148,7 @@ async fn remove_existing_path(path: &Path) -> Result<(), DestinationPlaceError> 
 }
 
 /// Builds a uniquely named sibling path used to hold the previous destination during override.
-fn backup_path_for_destination(path: &Path) -> PathBuf {
+pub(crate) fn backup_path_for_destination(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -201,10 +210,7 @@ pub(crate) async fn place_temp_at_destination(
     on_existing: CopyExistingMode,
     content_is_directory: bool,
 ) -> Result<(), DestinationPlaceError> {
-    let exists = match tokio::fs::try_exists(final_path).await {
-        Ok(exists) => exists,
-        Err(error) => return Err(DestinationPlaceError::CheckDestinationPath(error)),
-    };
+    let exists = destination_entry_exists(final_path).await?;
 
     if !exists {
         return tokio::fs::rename(temp_path, final_path).await.map_err(|_| {
