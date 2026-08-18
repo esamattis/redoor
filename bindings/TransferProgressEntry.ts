@@ -6,4 +6,8 @@ import type { TransferId } from "./TransferId";
 import type { TransferProgressState } from "./TransferProgressState";
 import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 
-export type TransferProgressEntry = { request_id: TransferId, agent_id: AgentId, path: string, source: CopyEndpoint | null, dest: CopyEndpoint | null, direction: TransferDirection, total_bytes: number, transferred_bytes: number, started_at: UnixTimestampSeconds, ended_at: UnixTimestampSeconds | null, state: TransferProgressState, error: string | null, };
+export type TransferProgressEntry = { request_id: TransferId, agent_id: AgentId, path: string, source: CopyEndpoint | null, dest: CopyEndpoint | null, direction: TransferDirection, total_bytes: number, transferred_bytes: number, started_at: UnixTimestampSeconds, ended_at: UnixTimestampSeconds | null, state: TransferProgressState, error: string | null, 
+/**
+ * Stamped only after a same-agent renameat2 so the UI can label it and skip copy speeds.
+ */
+atomic: boolean, };

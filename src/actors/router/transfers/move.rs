@@ -89,7 +89,11 @@ pub(crate) fn finish_transfer(
         CommandResult::RawDelete if deleting_source => {
             progress::mark_copy_transfer_completed(state, public_request_id, None);
         }
-        CommandResult::LocalMove => {
+        CommandResult::LocalMove { atomic } => {
+            if let Some(entry) = state.progress.entries.get_mut(&public_request_id) {
+                // Copy/delete and cross-agent completions never take this arm, so they stay false.
+                entry.atomic = atomic;
+            }
             let total_bytes =
                 final_total_bytes(state, public_request_id, move_request.content_kind);
             progress::mark_copy_transfer_completed(state, public_request_id, total_bytes);

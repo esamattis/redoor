@@ -86,6 +86,8 @@ describe("Smart Move API", () => {
 
         // A distinct direction lets transfer history identify move semantics rather than copy.
         expect(move.direction).toBe("move");
+        // Same-FS missing destinations must report the renameat2 path, not copy/delete.
+        expect(move.atomic).toBe(true);
         // Reading the destination verifies the move published the complete file.
         expect(Buffer.from(await sourceAgent.raw(destPath)).toString()).toBe(
             "same-agent move",
@@ -146,6 +148,8 @@ describe("Smart Move API", () => {
 
         // Destination endpoint identity confirms the cross-agent route was retained publicly.
         expect(move.dest?.agent).toBe(destinationAgent.id);
+        // Streaming plus source deletion is not a renameat2 publication.
+        expect(move.atomic).toBe(false);
         // Destination bytes must be complete before the move can report completion.
         expect(
             Buffer.from(await destinationAgent.raw(destPath)).toString(),
@@ -193,8 +197,10 @@ describe("Smart Move API", () => {
             sourcePath,
             { on_existing: "override" },
         );
-        await waitForMove(response.move_request_id);
+        const move = await waitForMove(response.move_request_id);
 
+        // Existing destinations keep copy/delete conflict semantics instead of renameat2.
+        expect(move.atomic).toBe(false);
         // Override must publish the source bytes instead of retaining old destination content.
         expect(await fs.readFile(destPath, "utf8")).toBe("replacement");
         // Successful override is still a move and therefore removes the original.

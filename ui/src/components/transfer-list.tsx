@@ -135,7 +135,7 @@ function TransferProgressCell(props: { transfer: TransferProgressEntry }) {
     const pieDegrees = sizeUnknown ? 0 : progress.percentage * 3.6;
     const remainingTime = formatRemainingTime(progress.remainingSeconds);
     const percentageLabel = `${Math.round(progress.percentage)}%`;
-    const speedLabel = formatSpeed(speed);
+    const speedLabel = props.transfer.atomic ? null : formatSpeed(speed);
     const remainingLabel =
         remainingTime === null ? null : `${remainingTime} remaining`;
     const progressLabel = [
@@ -287,9 +287,11 @@ export function TransferList(props: {
                                             ? "Upload"
                                             : transfer.direction === "download"
                                               ? "Download"
-                                              : transfer.direction === "move"
-                                                ? "Move"
-                                                : "Copy"}
+                                              : transfer.atomic
+                                                ? "atomic move"
+                                                : transfer.direction === "move"
+                                                  ? "Move"
+                                                  : "Copy"}
                                     </span>
                                 </td>
                                 <td className="max-w-xs p-3">

@@ -26,6 +26,7 @@ function transfer(
         ended_at: null,
         state: "active",
         error: null,
+        atomic: false,
         ...overrides,
     };
 }

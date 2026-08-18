@@ -119,6 +119,7 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
                 ended_at: None,
                 state: TransferProgressState::Active,
                 error: None,
+                atomic: false,
             },
         );
     }
@@ -154,6 +155,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             ended_at: None,
             state: TransferProgressState::Active,
             error: None,
+            atomic: false,
         },
     );
     state.streams.uploads.insert(
@@ -194,6 +196,7 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
             ended_at: None,
             state: TransferProgressState::Active,
             error: None,
+            atomic: false,
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
@@ -471,6 +474,7 @@ mod tests {
                 ended_at: None,
                 state: TransferProgressState::Active,
                 error: None,
+                atomic: false,
             },
         );
 
@@ -542,6 +546,7 @@ mod tests {
             ended_at: None,
             state,
             error: None,
+            atomic: false,
         }
     }
 

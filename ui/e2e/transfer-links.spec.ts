@@ -134,10 +134,12 @@ test.describe.serial("Transfer Path Links", () => {
             .filter({ hasText: sourceFileName })
             .filter({ hasText: destFileName });
 
-        // The move label confirms transfer history does not present smart moves as copies.
-        await expect(moveRow).toContainText("Move");
+        // Same-FS renameat2 must surface as an atomic move rather than a copy or byte-copy move.
+        await expect(moveRow).toContainText("atomic move");
         // Completion proves the history row remains active through source deletion.
         await expect(moveRow).toContainText("completed", { timeout: 15_000 });
+        // Instant metadata moves have no copy stream, so a speed would be meaningless.
+        await expect(moveRow.getByText(/\/s/)).toHaveCount(0);
         // Both links let users inspect the source and destination context of the logical move.
         await expect(
             moveRow.getByRole("link", { name: sourcePath }),

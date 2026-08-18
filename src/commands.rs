@@ -514,7 +514,10 @@ pub enum CommandResult {
     TarUpload,
     LocalCopyFile,
     LocalCopyDirectory,
-    LocalMove,
+    /// Carries whether renameat2 published the destination so the public row can hide copy speeds.
+    LocalMove {
+        atomic: bool,
+    },
     RawDelete,
     CreateDirectory,
     RenamePath,
@@ -951,6 +954,8 @@ pub struct TransferProgressEntry {
     pub ended_at: Option<UnixTimestampSeconds>,
     pub state: TransferProgressState,
     pub error: Option<String>,
+    /// Stamped only after a same-agent renameat2 so the UI can label it and skip copy speeds.
+    pub atomic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -992,7 +997,7 @@ impl CommandResult {
             Self::TarUpload => "ok TarUpload".to_string(),
             Self::LocalCopyFile => "ok LocalCopyFile".to_string(),
             Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),
-            Self::LocalMove => "ok LocalMove".to_string(),
+            Self::LocalMove { atomic } => format!("ok LocalMove atomic={atomic}"),
             Self::RawDelete => "ok RawDelete".to_string(),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),

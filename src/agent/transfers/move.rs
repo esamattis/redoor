@@ -59,7 +59,7 @@ impl AgentActor {
             )
             .await;
         let result = match result {
-            Ok(()) => CommandResult::LocalMove,
+            Ok(atomic) => CommandResult::LocalMove { atomic },
             Err(error) => AgentCommandError::from(error).into(),
         };
         self.send_command_response(
@@ -71,7 +71,7 @@ impl AgentActor {
         .await;
     }
 
-    /// Keeps source deletion after successful publication while selecting the cheap rename path.
+    /// Returns whether renameat2 published the destination so callers can stamp the public row.
     async fn run_local_move(
         &self,
         source_path: String,
@@ -80,7 +80,7 @@ impl AgentActor {
         expected_identity: MoveSourceIdentity,
         on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
-    ) -> Result<(), LocalMoveError> {
+    ) -> Result<bool, LocalMoveError> {
         let source = PathBuf::from(&source_path);
         let dest = PathBuf::from(&dest_path);
         validate_local_copy_destination(&source, &dest, source_is_directory).await?;
@@ -121,7 +121,7 @@ impl AgentActor {
         if can_use_atomic_rename(same_mount, destination_exists) {
             match rename_without_replacement(source.clone(), dest.clone()).await {
                 #[cfg(target_os = "linux")]
-                Ok(AtomicRenameResult::Renamed) => return Ok(()),
+                Ok(AtomicRenameResult::Renamed) => return Ok(true),
                 Ok(AtomicRenameResult::FallbackRequired) => {}
                 Err(error) => return Err(LocalMoveError::RenameSource(error)),
             }
@@ -142,7 +142,7 @@ impl AgentActor {
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
         }
-        Ok(())
+        Ok(false)
     }
 }
 
