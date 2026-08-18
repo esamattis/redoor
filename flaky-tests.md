@@ -1,5 +1,6 @@
 # Flaky tests
 
+- `ui/e2e/agent-management.spec.ts > Agent management > switches an existing agent from password auth to key auth` again reported `has_password: true` after Stop and Save during `pn test`, then the Sync Playwright cases in the same run had already passed (2026-08-18).
 - `ui/e2e/file-edit-vim.spec.ts > File editor options > should open the terminal with Alt+t from Vim normal mode` intermittently failed to restore editor focus after Alt+e during the full Playwright retry, then passed on an immediate targeted retry (2026-08-17).
 - `ui/e2e/file-operations.spec.ts > File Operations > should delete file from detail view after confirmation` timed out waiting for the File actions button during `pn test`, then passed on an immediate targeted retry (2026-08-17).
 - `ui/e2e/server-logs.spec.ts > Server logs > navigates from the menu and shows the latest history in order` did not find the connected-agent link on the first `pn playwright` run, then all 134 Playwright cases completed successfully on retry (2026-08-17).
