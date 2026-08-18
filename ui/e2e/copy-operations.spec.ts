@@ -38,6 +38,47 @@ async function openCopyConflict(props: {
         .click();
 }
 
+/** Measures listing geometry around a selection so desktop and mobile can share the same shift check. */
+async function expectSelectionDoesNotShiftLayout(props: {
+    page: import("@playwright/test").Page;
+    ctx: TestContext;
+}) {
+    await props.page.goto(
+        `${WEB_BASE_URL}/agents/${props.ctx.agentId}/browser/${props.ctx.testDirUrlPath}`,
+    );
+    await expect(
+        props.page.getByRole("checkbox", { name: "Select file file1.txt" }),
+    ).toBeVisible();
+    // The selected-items drawer action is irrelevant until a selection exists.
+    await expect(
+        props.page.getByRole("button", { name: "Show", exact: true }),
+    ).toHaveCount(0);
+    await props.page.evaluate(async () => document.fonts.ready);
+    const selectedActions = props.page.getByRole("region", {
+        name: "Selected files actions",
+    });
+    const fileListing = props.page.getByRole("table").first();
+    const selectedActionsBefore = await selectedActions.boundingBox();
+    const fileListingBefore = await fileListing.boundingBox();
+
+    await props.page
+        .getByRole("checkbox", { name: "Select file file1.txt" })
+        .click();
+    // The button-backed checkbox must expose its selected state.
+    await expect(
+        props.page.getByRole("checkbox", { name: "Unselect file file1.txt" }),
+    ).toHaveAttribute("aria-checked", "true");
+    const selectedActionsAfter = await selectedActions.boundingBox();
+    const fileListingAfter = await fileListing.boundingBox();
+
+    // Selection controls must not make their containing row taller.
+    expect(selectedActionsAfter?.height).toBe(selectedActionsBefore?.height);
+    // The file list must remain at the same vertical position after selection.
+    expect(fileListingAfter?.y).toBe(fileListingBefore?.y);
+
+    await props.page.getByRole("button", { name: "Clear selection" }).click();
+}
+
 test.describe.serial("Copy Operations", () => {
     let ctx: TestContext;
 
@@ -116,42 +157,10 @@ test.describe.serial("Copy Operations", () => {
     test("should select a file without shifting the file list layout", async ({
         page,
     }) => {
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
-        );
-        await expect(
-            page.getByRole("checkbox", { name: "Select file file1.txt" }),
-        ).toBeVisible();
-        // The selected-items drawer action is irrelevant until a selection exists.
-        await expect(
-            page.getByRole("button", { name: "Show", exact: true }),
-        ).toHaveCount(0);
-        await page.evaluate(async () => document.fonts.ready);
-        const selectedActions = page.getByRole("region", {
-            name: "Selected files actions",
-        });
-        const fileListing = page.getByRole("table").first();
-        const selectedActionsBefore = await selectedActions.boundingBox();
-        const fileListingBefore = await fileListing.boundingBox();
-
-        await page
-            .getByRole("checkbox", { name: "Select file file1.txt" })
-            .click();
-        // The button-backed checkbox must expose its selected state.
-        await expect(
-            page.getByRole("checkbox", { name: "Unselect file file1.txt" }),
-        ).toHaveAttribute("aria-checked", "true");
-        const selectedActionsAfter = await selectedActions.boundingBox();
-        const fileListingAfter = await fileListing.boundingBox();
-
-        // Selection controls must not make their containing row taller.
-        expect(selectedActionsAfter?.height).toBe(
-            selectedActionsBefore?.height,
-        );
-        // The file list must remain at the same vertical position after selection.
-        expect(fileListingAfter?.y).toBe(fileListingBefore?.y);
-
-        await page.getByRole("button", { name: "Clear selection" }).click();
+        await page.setViewportSize({ width: 1280, height: 800 });
+        await expectSelectionDoesNotShiftLayout({ page, ctx });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expectSelectionDoesNotShiftLayout({ page, ctx });
     });
 
     test("should copy two selected files into a new subdirectory", async ({
