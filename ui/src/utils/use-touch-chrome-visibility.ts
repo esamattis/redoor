@@ -78,7 +78,7 @@ export function useTouchChromeVisibility() {
             document.documentElement.removeAttribute("data-touch-scrolling");
             touchStartScrollTopRef.current = null;
             restoreTimerRef.current = null;
-        }, 100);
+        }, 250);
     };
 
     /** Starts restoration only after scroll events have stopped arriving. */
