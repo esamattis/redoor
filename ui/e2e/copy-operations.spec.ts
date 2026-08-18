@@ -51,7 +51,7 @@ async function expectSelectionDoesNotShiftLayout(props: {
     ).toBeVisible();
     // The selected-items drawer action is irrelevant until a selection exists.
     await expect(
-        props.page.getByRole("button", { name: "Show", exact: true }),
+        props.page.getByRole("button", { name: "Show selected items" }),
     ).toHaveCount(0);
     await props.page.evaluate(async () => document.fonts.ready);
     const selectedActions = props.page.getByRole("region", {
@@ -123,7 +123,7 @@ test.describe.serial("Copy Operations", () => {
         await expect(copyButton).toBeVisible();
         await expect(copyButton).toBeEnabled();
 
-        await page.getByRole("button", { name: "Show", exact: true }).click();
+        await page.getByRole("button", { name: "Show selected items" }).click();
         const selectedItemsPanel = page.getByRole("tabpanel", {
             name: /Selected/,
         });
@@ -161,6 +161,82 @@ test.describe.serial("Copy Operations", () => {
         await expectSelectionDoesNotShiftLayout({ page, ctx });
         await page.setViewportSize({ width: 390, height: 844 });
         await expectSelectionDoesNotShiftLayout({ page, ctx });
+    });
+
+    test("should keep copy, move, and delete behind an Actions dialog on mobile", async ({
+        page,
+    }) => {
+        const sourceName = `mobile-actions-${Date.now()}.txt`;
+        await fs.writeFile(path.join(ctx.testDirPath, sourceName), "mobile");
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page
+            .getByRole("checkbox", { name: `Select file ${sourceName}` })
+            .click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+
+        const selectedActions = page.getByRole("region", {
+            name: "Selected files actions",
+        });
+        // Phone-width chrome must not spend a second row on Copy, Move, and Delete.
+        await expect(
+            selectedActions.getByRole("button", {
+                name: "Copy selected items to this directory",
+            }),
+        ).toHaveCount(0);
+        await expect(
+            selectedActions.getByRole("button", {
+                name: "Move selected items to this directory",
+            }),
+        ).toHaveCount(0);
+        await expect(
+            selectedActions.getByRole("button", {
+                name: "Delete selected items",
+            }),
+        ).toHaveCount(0);
+
+        const actionsButton = selectedActions.getByRole("button", {
+            name: "Actions",
+        });
+        const cardBox = await selectedActions.boundingBox();
+        const actionsBox = await actionsButton.boundingBox();
+        // The compact Actions control must stay inside the single-row card.
+        expect(cardBox).not.toBeNull();
+        expect(actionsBox).not.toBeNull();
+        expect(actionsBox?.x ?? 0).toBeGreaterThanOrEqual(cardBox?.x ?? 0);
+        expect(
+            (actionsBox?.x ?? 0) + (actionsBox?.width ?? 0),
+        ).toBeLessThanOrEqual((cardBox?.x ?? 0) + (cardBox?.width ?? 0) + 1);
+
+        await actionsButton.click();
+        // The visible Actions label must not leave a leftover tooltip after tap.
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        const actionsDialog = page.getByRole("dialog", { name: "Actions" });
+        // The dialog is the only place those verbs exist on a narrow viewport.
+        await expect(
+            actionsDialog.getByRole("button", { name: "Copy" }),
+        ).toBeVisible();
+        await expect(
+            actionsDialog.getByRole("button", { name: "Move" }),
+        ).toBeVisible();
+        await expect(
+            actionsDialog.getByRole("button", { name: "Delete" }),
+        ).toBeVisible();
+
+        const copyResponsePromise = page.waitForResponse(
+            (response) =>
+                response.url() === `${WEB_BASE_URL}/api/v1/copy` &&
+                response.request().method() === "POST",
+        );
+        await actionsDialog.getByRole("button", { name: "Copy" }).click();
+        const copyResponse = await copyResponsePromise;
+        // Choosing Copy from the compact menu must start the same transfer as the desktop button.
+        expect(copyResponse.ok()).toBe(true);
+        await expect(
+            page.getByRole("button", { name: "Clear selection" }),
+        ).toHaveCount(0, { timeout: 30_000 });
     });
 
     test("should copy two selected files into a new subdirectory", async ({
@@ -738,7 +814,7 @@ test.describe.serial("Copy Operations", () => {
             .getByRole("checkbox", { name: "Select file file1.txt" })
             .click();
 
-        await page.getByRole("button", { name: "Show", exact: true }).click();
+        await page.getByRole("button", { name: "Show selected items" }).click();
         const selectedItemsPanel = page.getByRole("tabpanel", {
             name: /Selected/,
         });

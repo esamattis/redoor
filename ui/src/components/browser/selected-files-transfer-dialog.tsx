@@ -5,7 +5,6 @@ import { Button } from "#ui/components/button";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
-import { Tooltip } from "#ui/components/tooltip";
 import { joinBrowserPath } from "#ui/components/browser/utils";
 import type { SelectedPath } from "#ui/selected-files";
 
@@ -59,6 +58,13 @@ const transferTriggerMove = {
 };
 
 export type SelectedFilesTransferOperation = "copy" | "move";
+
+/** Shared by listing buttons and the compact mobile menu so both start the same run. */
+export type SelectedFilesTransferTriggerApi = {
+    canTransfer: boolean;
+    start: () => void;
+    labels: typeof transferTriggerCopy;
+};
 
 /** Reuses one Keep / Replace / Merge prompt for listing transfers and the Sync workspace. */
 export function DestinationConflictDialog(props: {
@@ -140,6 +146,7 @@ export function SelectedFilesTransferTrigger(props: {
     destinationFileNames: string[];
     canTransfer: boolean;
     onConfirm: (mode: CopyExistingMode) => void;
+    children: (trigger: SelectedFilesTransferTriggerApi) => React.ReactNode;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
     const copy = props.operation === "copy";
@@ -167,20 +174,11 @@ export function SelectedFilesTransferTrigger(props: {
 
     return (
         <>
-            {props.canTransfer ? (
-                <Tooltip content={labels.buttonTooltip}>
-                    <Button
-                        type="button"
-                        onClick={handleStart}
-                        aria-label={labels.buttonAriaLabel}
-                        size="sm"
-                        className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
-                    >
-                        <labels.Icon className="h-3.5 w-3.5" />
-                        {labels.buttonLabel}
-                    </Button>
-                </Tooltip>
-            ) : null}
+            {props.children({
+                canTransfer: props.canTransfer,
+                start: handleStart,
+                labels,
+            })}
             <DestinationConflictDialog
                 isOpen={isOpen}
                 title="Destination items already exist"

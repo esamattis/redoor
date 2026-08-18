@@ -15,10 +15,8 @@ import {
     UnavailablePathState,
 } from "#ui/components/browser/navigation";
 import { MissingPathCreationForm } from "#ui/components/browser/missing-path";
-import {
-    DirectoryFilesActions,
-    SelectedFilesCard,
-} from "#ui/components/browser/directory-actions";
+import { DirectoryFilesActions } from "#ui/components/browser/directory-actions";
+import { SelectedFilesCard } from "#ui/components/browser/selected-files-card";
 import { FileList } from "#ui/components/browser/file-list";
 import { UploadQueue } from "#ui/components/browser/upload-queue";
 import {
