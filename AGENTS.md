@@ -77,4 +77,6 @@ Reuse the overlay components in `ui/src/components`: `Toast` for transient live-
 
 Use `Tooltip` to clarify the purpose of most buttons and other form controls, especially icon-only or potentially ambiguous actions.
 
+Do not use use plain <button> or <input> elements. Always use reusable component or create one.
+
 Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AddButton, Button, Checkbox, ConfirmationDialog, CopyableCodeRow, CopyablePath, Dialog, DialogActions, FoldingSection, IconButton, InputControl, LogViewer, OverlayChromeLayout, Password, RadioCardGroup, RadioCardOption, SideMenu, TabbedBottomDrawer, TextField, ThemeToggle, Toast, ToggleButton, Tooltip
