@@ -180,10 +180,9 @@ describe("Watchdog supervisor", () => {
     }, 30000);
 
     it("restarts the subprocess when the WebSocket goes stale", async () => {
-        // Stale detection is timed in seconds (ping interval 10s,
-        // stale timeout 30s, stale check every 5s) so this test
-        // can take up to ~40s end to end. The larger deadline leaves
-        // enough room for detection and restart on a loaded host.
+        // Stale detection uses the suite's shortened REDOOR_WEBSOCKET_*
+        // timers, so the supervisor should replace the frozen child in
+        // about a second instead of the production 30s silence budget.
         const firstAgent = await getWatchdogAgent();
         const firstConnectionId = firstAgent.connectionId;
         if (!firstConnectionId) {
@@ -243,7 +242,7 @@ describe("Watchdog supervisor", () => {
         }, 20_000);
 
         const replacement = await waitForValue({
-            timeoutMs: 90000,
+            timeoutMs: 15000,
             description:
                 "watchdog agent to be restarted after WebSocket went stale",
             predicate: async () => {
@@ -273,7 +272,7 @@ describe("Watchdog supervisor", () => {
         const replacementAgent = await getWatchdogAgent();
         const echo = await replacementAgent.echo("alive");
         expect(echo.message).toBe("alive");
-    }, 120000);
+    }, 30000);
 
     it("intentionally shuts down and can restart a managed agent", async () => {
         const agent = await getWatchdogAgent();

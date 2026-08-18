@@ -165,7 +165,8 @@ async function waitForPing(socket: WebSocket): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(
             () => reject(new Error("idle terminal websocket did not receive a ping")),
-            15_000,
+            // The suite sets REDOOR_WEBSOCKET_KEEPALIVE=200ms, so a live ping arrives far sooner than production's 10s.
+            2_000,
         );
         socket.once("ping", () => {
             clearTimeout(timeout);
@@ -185,7 +186,7 @@ describe("dedicated terminal tunnel", () => {
 
         // Successful output after the keepalive proves no reconnect or terminal reset occurred.
         expect(output).toContain(marker);
-    }, 20_000);
+    }, 5_000);
 
     it("starts concurrent shells in their requested working directories", async () => {
         const firstSocket = await openTerminal(agentCwd);

@@ -31,6 +31,33 @@ struct Cli {
         global = true
     )]
     app_name: String,
+    /// How often idle sockets write a ping so proxies stay alive and half-open links fail fast.
+    #[arg(
+        long,
+        env = "REDOOR_WEBSOCKET_KEEPALIVE",
+        default_value = "10s",
+        value_parser = redoor::websocket::parse_duration_millis,
+        global = true
+    )]
+    websocket_keepalive: std::time::Duration,
+    /// Silence before a supervised agent WebSocket is treated as stale and restarted.
+    #[arg(
+        long,
+        env = "REDOOR_WEBSOCKET_STALE_TIMEOUT",
+        default_value = "30s",
+        value_parser = redoor::websocket::parse_duration_millis,
+        global = true
+    )]
+    websocket_stale_timeout: std::time::Duration,
+    /// How often to compare last inbound traffic against the stale timeout.
+    #[arg(
+        long,
+        env = "REDOOR_WEBSOCKET_STALE_CHECK_INTERVAL",
+        default_value = "5s",
+        value_parser = redoor::websocket::parse_duration_millis,
+        global = true
+    )]
+    websocket_stale_check_interval: std::time::Duration,
     #[command(subcommand)]
     command: Commands,
 }
@@ -220,6 +247,12 @@ async fn main() {
     process_control::record_launch_parent();
     let cli = Cli::parse();
     app_name::initialize(cli.app_name);
+    // Apply before any listener starts so tests can shrink idle waits via env.
+    redoor::websocket::configure(redoor::websocket::WebSocketTimeouts {
+        keepalive: cli.websocket_keepalive,
+        stale_timeout: cli.websocket_stale_timeout,
+        stale_check_interval: cli.websocket_stale_check_interval,
+    });
     match cli.command {
         Commands::Server(args) => match args.command {
             Some(ServerCommand::Logs(logs)) => {
@@ -658,6 +691,31 @@ mod tests {
     /// Keeps service-manager commands nested under their selected process role.
     #[test]
     fn parses_role_scoped_service_commands() {
+        let timeouts = Cli::try_parse_from([
+            "redoor",
+            "--websocket-keepalive",
+            "200ms",
+            "--websocket-stale-timeout",
+            "1s",
+            "--websocket-stale-check-interval",
+            "100ms",
+            "server",
+            "status",
+        ])
+        .expect("global websocket timeout flags should parse on any subcommand");
+        // Flags exist so integration tests can shrink idle waits without rebuilding.
+        assert_eq!(
+            timeouts.websocket_keepalive,
+            std::time::Duration::from_millis(200)
+        );
+        assert_eq!(
+            timeouts.websocket_stale_timeout,
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            timeouts.websocket_stale_check_interval,
+            std::time::Duration::from_millis(100)
+        );
         assert!(
             Cli::try_parse_from(["redoor", "agent", "systemd", "status"]).is_ok(),
             "agent systemd status should parse without a redundant mode flag"

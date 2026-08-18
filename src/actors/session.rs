@@ -20,17 +20,6 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     bool::from(left_digest.ct_eq(&right_digest))
 }
 
-/// How often the session checks whether the WebSocket has gone silent.
-/// Independent of the ping interval so the stale check can use a multiple
-/// of the ping interval as its threshold.
-const WEBSOCKET_STALE_CHECK_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-
-/// No inbound frame for at least this long means the WebSocket is
-/// treated as stale and the supervisor is asked to restart the
-/// subprocess. Sized as 3x the ping interval so two missed pongs
-/// (= 30s of silence) trigger a restart.
-const WEBSOCKET_STALE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(30);
-
 /// Converts a lane receive result into the next outbound websocket frame while
 /// tracking when that lane has closed.
 fn take_outbound_message(message: Option<WsMessage>, lane_closed: &mut bool) -> Option<WsMessage> {
@@ -347,11 +336,12 @@ pub async fn handle_websocket(
 
     // Track the last time we received any frame on the WebSocket. Any
     // inbound frame (Text, Binary, Ping, Pong, Close) resets the timer.
-    // If no frame arrives for WEBSOCKET_STALE_TIMEOUT we assume the
+    // If no frame arrives for the configured stale timeout we assume the
     // connection is half-open (e.g. SSH tunnel died without a TCP
     // close) and ask the watchdog supervisor to restart the subprocess.
+    let timeouts = crate::websocket::timeouts();
     let mut last_seen = Instant::now();
-    let mut stale_check = tokio::time::interval(WEBSOCKET_STALE_CHECK_INTERVAL);
+    let mut stale_check = tokio::time::interval(timeouts.stale_check_interval);
     stale_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Burn the first immediate tick so the first stale check fires one
     // interval from now rather than immediately at session start.
@@ -362,7 +352,7 @@ pub async fn handle_websocket(
             biased;
             _ = &mut writer_done_rx => break,
             _ = stale_check.tick() => {
-                if last_seen.elapsed() > WEBSOCKET_STALE_TIMEOUT
+                if last_seen.elapsed() > timeouts.stale_timeout
                     && let Some(watchdog) = runtime.watchdog.as_ref()
                 {
                     log!(

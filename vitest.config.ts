@@ -6,6 +6,10 @@ export default defineConfig({
         environment: "node",
         env: {
             REDOOR_PORT: testPorts.vitest.toString(),
+            // Shrink production idle timers so keepalive and stale-restart tests do not wait tens of seconds.
+            REDOOR_WEBSOCKET_KEEPALIVE: "200ms",
+            REDOOR_WEBSOCKET_STALE_TIMEOUT: "1s",
+            REDOOR_WEBSOCKET_STALE_CHECK_INTERVAL: "100ms",
         },
         hookTimeout: 10000,
         testTimeout: 10000,

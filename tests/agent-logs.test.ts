@@ -94,7 +94,8 @@ async function waitForPing(socket: WebSocket): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(
             () => reject(new Error("idle log websocket did not receive a ping")),
-            15_000,
+            // The suite sets REDOOR_WEBSOCKET_KEEPALIVE=200ms, so a live ping arrives far sooner than production's 10s.
+            2_000,
         );
         socket.once("ping", () => {
             clearTimeout(timeout);
@@ -179,7 +180,7 @@ describe.sequential("dedicated agent log tunnel", () => {
 
         // Receiving a later keepalive without a close proves the idle browser leg stayed active.
         expect(opened.socket.readyState).toBe(WebSocket.OPEN);
-    }, 20_000);
+    }, 5_000);
 
     it("keeps idle UI refresh and server log sockets active", async () => {
         const uiSocket = new WebSocket(apiClient.getUiWebSocketUrl(), {
@@ -208,7 +209,7 @@ describe.sequential("dedicated agent log tunnel", () => {
         expect(uiSocket.readyState).toBe(WebSocket.OPEN);
         // The log socket must keep writing even when no new log entry is available.
         expect(serverLogsSocket.readyState).toBe(WebSocket.OPEN);
-    }, 20_000);
+    }, 5_000);
 
     it("releases agent and server resources when the browser disconnects", async () => {
         const opened = await openLogSocket();
