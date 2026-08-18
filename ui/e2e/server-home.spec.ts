@@ -221,13 +221,19 @@ test.describe("Server home", () => {
         await expect
             .poll(async () => {
                 const inset = await readBottomChromeHeight(scrollArea);
+                const scrollPadding = await readBottomScrollPadding(scrollArea);
                 const panelHeight = (await panel.boundingBox())?.height ?? 0;
                 return {
                     matchesPanel: Math.abs(inset - panelHeight) < 1,
+                    matchesScrollPadding: Math.abs(scrollPadding - inset) < 1,
                     isExpanded: inset > 100,
                 };
             })
-            .toEqual({ matchesPanel: true, isExpanded: true });
+            .toEqual({
+                matchesPanel: true,
+                matchesScrollPadding: true,
+                isExpanded: true,
+            });
     });
 
     test("renders a working hostname-defaulted agent config", async ({
@@ -336,6 +342,13 @@ async function readBottomChromeHeight(scrollArea: Locator) {
                 "--bottom-chrome-height",
             ),
         ),
+    );
+}
+
+/** Reads the scroll-into-view inset so clicks and focus stay clear of the drawer. */
+async function readBottomScrollPadding(scrollArea: Locator) {
+    return scrollArea.evaluate((element) =>
+        Number.parseFloat(getComputedStyle(element).scrollPaddingBottom),
     );
 }
 

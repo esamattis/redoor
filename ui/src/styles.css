@@ -234,6 +234,9 @@ code {
 .overlay-chrome-scroll-area {
     padding-block: var(--top-chrome-height, 0px)
         var(--bottom-chrome-height, 0px);
+    /* scrollIntoView must honor the same insets, or focus and Playwright land under the overlays. */
+    scroll-padding-block: var(--top-chrome-height, 0px)
+        var(--bottom-chrome-height, 0px);
 }
 
 /* Touch scrolling moves overlay chrome without changing the scroll area's layout. */

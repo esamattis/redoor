@@ -5,6 +5,7 @@ import {
 } from "@playwright/test";
 import { z } from "zod";
 import {
+    minimizeBottomDrawer,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
@@ -132,9 +133,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Minimize and re-expand retain the existing terminal session.
         expect(terminalSockets).toHaveLength(1);
 
-        await page
-            .getByRole("button", { name: "Minimize bottom drawer" })
-            .press("Enter");
+        await minimizeBottomDrawer(page);
         await page
             .getByRole("link", { name: ctx.testDirName, exact: true })
             .click();
@@ -179,9 +178,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Mouse and keyboard tab switching preserve both live sockets.
         expect(terminalSockets).toHaveLength(2);
 
-        await page
-            .getByRole("button", { name: "Minimize bottom drawer" })
-            .press("Enter");
+        await minimizeBottomDrawer(page);
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
@@ -290,9 +287,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
             .getByRole("button", { name: "Choose agent for new terminal" })
             .hover();
         // Application routes advertise that the shortcut opens the required agent choice.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Choose agent for new terminal (t)",
-        );
+        await expect(
+            page.getByRole("tooltip", {
+                name: "Choose agent for new terminal (t)",
+            }),
+        ).toBeVisible();
         await page.mouse.move(0, 0);
         await page.keyboard.press("t");
         // The global shortcut must remain usable when no routed agent can be inferred.
@@ -366,9 +365,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
             .getByRole("button", { name: "New terminal", exact: true })
             .hover();
         // The plus action advertises the equivalent keyboard shortcut.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            `New terminal in ${ctx.agentName} (t, Alt+t)`,
-        );
+        await expect(
+            page.getByRole("tooltip", {
+                name: `New terminal in ${ctx.agentName} (t, Alt+t)`,
+            }),
+        ).toBeVisible();
         await page.mouse.move(0, 0);
 
         await page.keyboard.press("t");
@@ -427,9 +428,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCount(1);
         await expect(firstTerminal).toBeFocused();
 
-        await page
-            .getByRole("button", { name: "Minimize bottom drawer" })
-            .press("Enter");
+        await minimizeBottomDrawer(page);
         await page
             .getByRole("link", { name: ctx.testDirName, exact: true })
             .click();

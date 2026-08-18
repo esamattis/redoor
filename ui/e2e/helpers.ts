@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { ApiClient, encodeFilesystemPath } from "#ui/api-client";
 import { testPorts } from "#test-ports";
 
@@ -85,6 +85,18 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
 
 export async function teardownTestDir(testDirPath: string): Promise<void> {
     await fs.rm(testDirPath, { force: true, recursive: true });
+}
+
+/** Collapses the drawer and waits so overlay chrome no longer covers file-list clicks. */
+export async function minimizeBottomDrawer(page: Page): Promise<void> {
+    const toggle = page.getByRole("button", {
+        name: "Minimize bottom drawer",
+    });
+    // Enter avoids a hover tooltip that would later collide with other tooltip assertions.
+    await toggle.press("Enter");
+    const expand = page.getByRole("button", { name: "Expand bottom drawer" });
+    await expect(expand).toBeVisible();
+    await expand.blur();
 }
 
 /** Fires the same visibility/focus events the listing and editor listen for. */
