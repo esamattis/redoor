@@ -75,7 +75,7 @@ export function ViewToggle(props: {
     const pathTarget = getBrowserPathHref(props.agent, props.path);
     if (props.entryType === "directory") {
         return (
-            <ViewSwitch label="Directory view">
+            <ViewSwitch label="Directory view" variant="page">
                 <ViewToggleLink
                     to={pathTarget}
                     label="Files"
@@ -109,7 +109,7 @@ export function ViewToggle(props: {
         );
 
     return (
-        <ViewSwitch label="File view">
+        <ViewSwitch label="File view" variant="page">
             <ViewToggleLink
                 to={pathTarget}
                 label={contentLabel}
@@ -147,7 +147,7 @@ function ViewToggleLink(props: {
             to={props.to}
             search={props.search ?? {}}
             aria-current={props.active ? "page" : undefined}
-            className={getViewSwitchItemClass(props.active)}
+            className={getPageViewTabClass(props.active)}
         >
             {props.icon}
             {props.label}
@@ -158,13 +158,16 @@ function ViewToggleLink(props: {
 /** Presents route-backed representations as a compact tab strip without changing link semantics. */
 export function ViewSwitch(props: {
     label: string;
+    /** Page tabs stay visually secondary so they do not compete with the top-bar chrome tabs. */
+    variant?: "chrome" | "page";
     children: React.ReactNode;
 }) {
+    const stripClass =
+        props.variant === "page"
+            ? "top-tab-strip flex w-full min-w-0 items-stretch gap-0 overflow-x-auto overscroll-x-contain"
+            : "top-tab-strip flex w-full min-w-0 items-end gap-1 overflow-x-auto overscroll-x-contain";
     return (
-        <div
-            aria-label={props.label}
-            className="top-tab-strip flex w-full min-w-0 items-end gap-1 overflow-x-auto overscroll-x-contain"
-        >
+        <div aria-label={props.label} className={stripClass}>
             {props.children}
         </div>
     );
@@ -177,6 +180,15 @@ export function getViewSwitchItemClass(isActive: boolean) {
     return isActive
         ? `${baseClass} border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset] [&_svg]:text-blue-400`
         : `${baseClass} border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-100`;
+}
+
+/** Uses an underline so file and directory views read as in-page switches, not a second top bar. */
+function getPageViewTabClass(isActive: boolean) {
+    const baseClass =
+        "inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 py-1.5 text-sm font-medium transition-colors";
+    return isActive
+        ? `${baseClass} border-blue-500 text-slate-100 [&_svg]:text-blue-400`
+        : `${baseClass} border-transparent text-slate-400 hover:border-slate-600 hover:text-slate-100`;
 }
 
 /** Separates location context, navigation, and directory actions by purpose. */
