@@ -699,9 +699,6 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         updateTerminalState({ type: "initializing" });
         try {
             const ghostty = await initializeGhostty();
-            await new Promise<void>((resolve) =>
-                requestAnimationFrame(() => resolve()),
-            );
             if (generationRef.current !== generation) {
                 return;
             }
@@ -774,19 +771,10 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 return;
             }
             if (stateRef.current.type === "connected") {
-                const generation = generationRef.current;
-                requestAnimationFrame(() => {
-                    if (
-                        generationRef.current === generation &&
-                        isActiveRef.current &&
-                        !isPanelCollapsedRef.current
-                    ) {
-                        resources.fitAddonRef.current?.fit();
-                        if (!isTerminalTabFocused()) {
-                            resources.terminalRef.current?.focus();
-                        }
-                    }
-                });
+                resources.fitAddonRef.current?.fit();
+                if (!isTerminalTabFocused()) {
+                    resources.terminalRef.current?.focus();
+                }
             }
         }
     }, [

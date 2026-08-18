@@ -77,14 +77,15 @@ test.describe.serial("File Edit View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        const fileView = page.getByLabel("File view");
+        await fileView
+            .getByRole("link", { name: "Details", exact: true })
+            .click();
 
         // Details is addressable only through the query so the default file URL stays on Edit.
         await expect(page).toHaveURL(/\?view=details$/);
         await expect(
-            page
-                .getByLabel("File view")
-                .getByRole("link", { name: "Details", exact: true }),
+            fileView.getByRole("link", { name: "Details", exact: true }),
         ).toHaveAttribute("aria-current", "page");
         await expect(
             page.getByRole("heading", { name: "File name" }),

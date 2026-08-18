@@ -694,17 +694,9 @@ test.describe.serial("File Operations", () => {
         );
         await fs.writeFile(deletableFilePath, "temporary content");
 
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-        await page.getByRole("link", { name: "subdir3", exact: true }).click();
-        await page
-            .getByRole("link", { name: "delete-me.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(deletableFilePath)}?view=details`,
+        );
 
         await page
             .getByRole("button", { name: "File actions", exact: true })

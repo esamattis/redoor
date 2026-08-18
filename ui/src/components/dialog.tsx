@@ -265,13 +265,10 @@ function useDialogBehavior(props: {
         };
 
         updatePosition();
-        // Second pass after paint so measured panel size is accurate.
-        const frameId = window.requestAnimationFrame(updatePosition);
         window.addEventListener("resize", updatePosition);
         window.addEventListener("scroll", updatePosition, true);
 
         return () => {
-            window.cancelAnimationFrame(frameId);
             window.removeEventListener("resize", updatePosition);
             window.removeEventListener("scroll", updatePosition, true);
         };
