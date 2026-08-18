@@ -25,7 +25,7 @@ import { transfersQueryOptions } from "#ui/queries";
 import { formatSize } from "#ui/utils/path";
 import "diff2html/bundles/css/diff2html.min.css";
 
-/** Reuses the agent and absolute-path controls for cross-agent file operations. */
+/** Reuses the agent and path controls for cross-agent file operations. */
 export function AgentPathFields(props: {
     agents: Array<Agent>;
     agentId: string;
@@ -118,6 +118,19 @@ type SyncEndpoint = {
     path: string;
 };
 
+/** Expands the selected agent's home shorthand before paths reach APIs or routes. */
+function resolveSyncPath(agent: Agent, path: string): string {
+    if (agent.cwd === null || (path !== "~" && !path.startsWith("~/"))) {
+        return path;
+    }
+    if (path === "~") {
+        return agent.cwd;
+    }
+    return agent.cwd === "/"
+        ? `/${path.slice(2)}`
+        : `${agent.cwd.replace(/\/+$/, "")}/${path.slice(2)}`;
+}
+
 /** 404 means Copy/Move can start immediately; any other failure must stay visible. */
 async function destinationExists(agent: Agent, path: string): Promise<boolean> {
     try {
@@ -186,7 +199,10 @@ function useSyncEndpointSelection(props: {
         path: props.sourcePath,
     };
     const selectedEndpoint: SyncEndpoint | null = selectedAgent
-        ? { agent: selectedAgent, path: selectedPath }
+        ? {
+              agent: selectedAgent,
+              path: resolveSyncPath(selectedAgent, selectedPath),
+          }
         : null;
     const sourceEndpoint =
         direction === "current-to-selected"
@@ -206,6 +222,7 @@ function useSyncEndpointSelection(props: {
         direction,
         setDirection,
         selectedAgent,
+        selectedEndpoint,
         sourceEndpoint,
         destinationEndpoint,
     };
@@ -250,6 +267,7 @@ function useSyncWorkspace(props: {
         direction,
         setDirection,
         selectedAgent,
+        selectedEndpoint,
         sourceEndpoint,
         destinationEndpoint,
     } = endpoints;
@@ -357,10 +375,9 @@ function useSyncWorkspace(props: {
     };
 
     /** Real href so middle-click / open-in-new-tab works; left-click stays in-app. */
-    const selectedHref =
-        selectedAgent && selectedPath.startsWith("/")
-            ? selectedAgent.getBrowserUrl(selectedPath)
-            : null;
+    const selectedHref = selectedEndpoint?.path.startsWith("/")
+        ? selectedEndpoint.agent.getBrowserUrl(selectedEndpoint.path)
+        : null;
 
     /** Opens the selected endpoint regardless of which transfer direction is active. */
     const gotoSelected = () => {
@@ -729,8 +746,8 @@ export function SyncView(props: {
                 </h1>
                 <p className="mt-3 max-w-3xl text-sm text-slate-400">
                     {props.entryType === "file"
-                        ? "Choose an absolute path on a connected agent, then copy, move, or compare in either direction."
-                        : "Choose an absolute path on a connected agent, then copy or move in either direction."}
+                        ? "Choose an absolute path or use ~ for the home directory on a connected agent, then copy, move, or compare in either direction."
+                        : "Choose an absolute path or use ~ for the home directory on a connected agent, then copy or move in either direction."}
                 </p>
             </header>
 

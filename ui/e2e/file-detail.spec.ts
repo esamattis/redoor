@@ -211,6 +211,16 @@ test.describe.serial("File Detail View", () => {
         );
         await page.getByLabel("Sync path").fill(selectedPath);
 
+        await page.getByLabel("Sync path").fill("~/file1.txt");
+        // Tilde paths must navigate relative to the selected agent's home, not the current agent's home.
+        await expect(
+            page.getByRole("link", { name: "view", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(path.join(ctx.agent2Home, "file1.txt"))}`,
+        );
+        await page.getByLabel("Sync path").fill(selectedPath);
+
         const forwardDirection = page.getByRole("radio", {
             name: "Current path to selected path",
         });
