@@ -14,6 +14,9 @@ export type BottomDrawerTab = {
     content: React.ReactNode;
 };
 
+/** Matches the compact slot so an explicit closed height does not jump on first paint. */
+const COLLAPSED_DRAWER_HEIGHT = 49;
+
 /** Keeps persistent tools in one resizable drawer without unmounting inactive panes. */
 export function TabbedBottomDrawer(props: {
     tabs: BottomDrawerTab[];
@@ -26,9 +29,16 @@ export function TabbedBottomDrawer(props: {
         isCollapsed: props.isCollapsed,
         defaultExpandedHeight: 400,
     });
+    const isContentVisible = useDrawerSlideContentVisibility({
+        isCollapsed: props.isCollapsed,
+        panelRef: resize.panelRef,
+    });
     const toggleLabel = props.isCollapsed
         ? "Expand bottom drawer"
         : "Minimize bottom drawer";
+    const panelHeight = props.isCollapsed
+        ? COLLAPSED_DRAWER_HEIGHT
+        : (resize.expandedHeight ?? 400);
 
     /** Activates a primary pane and reveals the drawer after a direct tab click. */
     const activateTab = (tab: BottomDrawerTabId) => {
@@ -63,16 +73,16 @@ export function TabbedBottomDrawer(props: {
         >
             <section
                 ref={resize.panelRef}
-                style={
-                    !props.isCollapsed && resize.expandedHeight !== null
-                        ? { height: resize.expandedHeight }
-                        : undefined
-                }
+                style={{ height: panelHeight }}
                 aria-label="Application tools"
                 data-overlay-bottom-panel=""
-                className="absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80"
+                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80 motion-reduce:transition-none ${
+                    resize.isResizing
+                        ? ""
+                        : "transition-[height] duration-150 ease-out"
+                }`}
             >
-                {props.isCollapsed ? null : (
+                {isContentVisible ? (
                     <div
                         role="separator"
                         aria-label="Resize bottom drawer"
@@ -90,9 +100,9 @@ export function TabbedBottomDrawer(props: {
                                 : "hover:bg-blue-400/25"
                         }`}
                     />
-                )}
+                ) : null}
                 <div
-                    className={`flex min-h-0 max-w-full flex-col px-2 sm:px-4 ${props.isCollapsed ? "py-1.5" : "flex-1 py-2"}`}
+                    className={`flex min-h-0 max-w-full flex-col px-2 sm:px-4 ${isContentVisible ? "flex-1 py-2" : "py-1.5"}`}
                 >
                     <div
                         ref={resize.headerRef}
@@ -136,8 +146,8 @@ export function TabbedBottomDrawer(props: {
                     </div>
 
                     <div
-                        hidden={props.isCollapsed}
-                        aria-hidden={props.isCollapsed}
+                        hidden={!isContentVisible}
+                        aria-hidden={!isContentVisible}
                         className="mt-2 min-h-0 flex-1 overflow-hidden border-t border-slate-800 pt-2"
                     >
                         {props.tabs.map((tab) => {
@@ -161,6 +171,58 @@ export function TabbedBottomDrawer(props: {
             </section>
         </div>
     );
+}
+
+/** Leaves panes painted until the close slide finishes so content rides with the drawer. */
+function useDrawerSlideContentVisibility(props: {
+    isCollapsed: boolean;
+    panelRef: React.RefObject<HTMLElement | null>;
+}) {
+    const [isContentVisible, setIsContentVisible] = React.useState(
+        !props.isCollapsed,
+    );
+    const wasCollapsedRef = React.useRef(props.isCollapsed);
+
+    React.useEffect(() => {
+        const wasCollapsed = wasCollapsedRef.current;
+        wasCollapsedRef.current = props.isCollapsed;
+        if (!props.isCollapsed) {
+            setIsContentVisible(true);
+            return;
+        }
+        if (wasCollapsed) {
+            setIsContentVisible(false);
+            return;
+        }
+
+        const panel = props.panelRef.current;
+        if (
+            !panel ||
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+            setIsContentVisible(false);
+            return;
+        }
+
+        /** Drops the panes only after height interpolation ends, or if the event never arrives. */
+        const hideContent = () => {
+            setIsContentVisible(false);
+        };
+        const handleTransitionEnd = (event: TransitionEvent) => {
+            if (event.target !== panel || event.propertyName !== "height") {
+                return;
+            }
+            hideContent();
+        };
+        panel.addEventListener("transitionend", handleTransitionEnd);
+        const fallback = window.setTimeout(hideContent, 200);
+        return () => {
+            panel.removeEventListener("transitionend", handleTransitionEnd);
+            window.clearTimeout(fallback);
+        };
+    }, [props.isCollapsed, props.panelRef]);
+
+    return isContentVisible;
 }
 
 /** Builds the compact tooltip from the same label and badge the wide tabs already show. */

@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    minimizeBottomDrawer,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -825,9 +826,7 @@ test.describe.serial("Copy Operations", () => {
                 exact: true,
             }),
         ).toBeVisible();
-        await page
-            .getByRole("button", { name: "Minimize bottom drawer" })
-            .click();
+        await minimizeBottomDrawer(page);
 
         // Navigate into the newly created directory to set it as the copy destination.
         await page

@@ -100,6 +100,11 @@ export async function minimizeBottomDrawer(page: Page): Promise<void> {
     await toggle.press("Enter");
     const expand = page.getByRole("button", { name: "Expand bottom drawer" });
     await expect(expand).toBeVisible();
+    const panel = page.getByRole("region", { name: "Application tools" });
+    // The close slide still covers the listing until height returns to the compact bar.
+    await expect
+        .poll(async () => (await panel.boundingBox())?.height ?? 0)
+        .toBeLessThan(60);
     await expand.blur();
 }
 
