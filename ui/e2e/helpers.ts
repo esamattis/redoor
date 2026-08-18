@@ -19,6 +19,7 @@ export const API_BASE_URL = WEB_BASE_URL;
 export interface TestContext {
     agentId: string;
     agentName: string;
+    agentHome: string;
     agent2Id: string;
     agent2Home: string;
     agentBrowserUrl: string;
@@ -75,6 +76,7 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
     return {
         agentId: agent.id,
         agentName: agent.name,
+        agentHome: agent.cwd,
         agent2Id: agent2.id,
         agent2Home: agent2.cwd,
         agentBrowserUrl: `${WEB_BASE_URL}${agent.getBrowserUrl(agent.cwd)}`,

@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
     encodeFilesystemPath,
@@ -11,6 +12,7 @@ import {
 
 test.describe.serial("File Detail View", () => {
     let ctx: TestContext;
+    let homeSyncFilename: string | null = null;
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("detail");
@@ -18,6 +20,46 @@ test.describe.serial("File Detail View", () => {
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+    });
+
+    test.afterEach(async () => {
+        if (homeSyncFilename === null) {
+            return;
+        }
+        const filename = homeSyncFilename;
+        if (!/^tilde-sync-\d+\.txt$/.test(filename)) {
+            throw new Error(
+                `Refusing to clean unsafe path: ${homeSyncFilename}`,
+            );
+        }
+        const workspaceRoot = path.resolve(path.dirname(ctx.testDirPath));
+        const actualHome = path.resolve(os.homedir());
+        const safeAgentHomes = [ctx.agentHome, ctx.agent2Home].map(
+            (agentHome) => {
+                const resolvedAgentHome = path.resolve(agentHome);
+                const relativeHome = path.relative(
+                    workspaceRoot,
+                    resolvedAgentHome,
+                );
+                if (
+                    resolvedAgentHome === actualHome ||
+                    relativeHome === ".." ||
+                    relativeHome.startsWith(`..${path.sep}`) ||
+                    path.isAbsolute(relativeHome)
+                ) {
+                    throw new Error(
+                        `Refusing to clean files under unsafe agent home: ${resolvedAgentHome}`,
+                    );
+                }
+                return resolvedAgentHome;
+            },
+        );
+        await Promise.all(
+            safeAgentHomes.map((agentHome) =>
+                fs.rm(path.join(agentHome, filename), { force: true }),
+            ),
+        );
+        homeSyncFilename = null;
     });
 
     test("should navigate to file detail view", async ({ page }) => {
@@ -186,6 +228,36 @@ test.describe.serial("File Detail View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agent2Id}/browser/${encodeFilesystemPath(destinationPath)}`,
         );
         await expect(page.getByLabel("File editor")).toBeVisible();
+    });
+
+    test("should copy the same home-relative path between differing agent homes", async ({
+        page,
+    }) => {
+        const filename = `tilde-sync-${Date.now()}.txt`;
+        const sourcePath = path.join(ctx.agentHome, filename);
+        const destinationPath = path.join(ctx.agent2Home, filename);
+        homeSyncFilename = filename;
+        await fs.writeFile(sourcePath, "copied between agent homes\n");
+
+        // Distinct absolute homes ensure this exercises endpoint-specific tilde expansion.
+        expect(ctx.agentHome).not.toBe(ctx.agent2Home);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}?view=sync`,
+        );
+        await page.getByLabel("Sync path").fill(`~/${filename}`);
+        await page.getByRole("button", { name: "Copy", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "Copy file?" })
+            .getByRole("button", { name: "Confirm copy" })
+            .click();
+
+        // The copied content proves the selected agent expanded the same shorthand under its own home.
+        await expect(page.getByRole("status")).toContainText(
+            "Copy completed successfully",
+        );
+        await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe(
+            "copied between agent homes\n",
+        );
     });
 
     test("should reverse file sync operations and diff ordering", async ({
