@@ -115,6 +115,18 @@ export function joinBrowserPath(directoryPath: string, fileName: string) {
     return `${directoryPath}/${fileName}`;
 }
 
+/**
+ * Detects self-nested destinations so Copy/Move can refuse a directory
+ * landing inside itself instead of starting a doomed transfer.
+ */
+export function isBrowserPathInside(parentPath: string, candidatePath: string) {
+    if (parentPath === candidatePath) {
+        return true;
+    }
+    const prefix = parentPath.endsWith("/") ? parentPath : `${parentPath}/`;
+    return candidatePath.startsWith(prefix);
+}
+
 export function getErrorMessage(cause: unknown, fallbackMessage: string) {
     if (cause instanceof Error) {
         return cause.message;

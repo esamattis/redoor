@@ -164,6 +164,92 @@ test.describe.serial("Move Operations", () => {
         await expect(fs.stat(secondSourcePath)).rejects.toThrow();
     });
 
+    test("should move a selected directory into another subdirectory", async ({
+        page,
+    }) => {
+        test.setTimeout(60_000);
+        const suffix = Date.now();
+        const sourceName = `move-dir-${suffix}`;
+        const nestedName = `nested-${suffix}.txt`;
+        const sourcePath = path.join(ctx.testDirPath, sourceName);
+        const nestedSourcePath = path.join(sourcePath, nestedName);
+        const destinationPath = path.join(
+            ctx.testDirPath,
+            "subdir1",
+            sourceName,
+        );
+        await fs.mkdir(sourcePath);
+        await fs.writeFile(nestedSourcePath, "moved directory child");
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page
+            .getByRole("checkbox", { name: `Select directory ${sourceName}` })
+            .click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+        const moveResponses: boolean[] = [];
+        page.on("response", (response) => {
+            if (
+                response.url() === `${WEB_BASE_URL}/api/v1/move` &&
+                response.request().method() === "POST"
+            ) {
+                moveResponses.push(response.ok());
+            }
+        });
+
+        await page
+            .getByRole("button", {
+                name: "Move selected items to this directory",
+            })
+            .click();
+        await expect.poll(() => moveResponses.length).toBe(1);
+        // One accepted start proves the directory move left the listing action.
+        expect(moveResponses).toEqual([true]);
+        // Progress invalidation must finish as success, not a cancelled-query toast.
+        await expect(page.getByRole("status")).toContainText(
+            `Moved ${sourceName}`,
+            { timeout: 30_000 },
+        );
+        await expect(page.getByRole("alert")).toHaveCount(0);
+        await expect(
+            page.getByRole("button", { name: "Clear selection" }),
+        ).toHaveCount(0);
+
+        await page.reload();
+        await expect(
+            page.getByRole("link", { name: sourceName, exact: true }),
+        ).toBeVisible();
+        // Nested contents prove the directory moved as a tree, not as an empty name.
+        await expect(
+            fs.readFile(path.join(destinationPath, nestedName), "utf8"),
+        ).resolves.toBe("moved directory child");
+        await expect(fs.stat(sourcePath)).rejects.toThrow();
+    });
+
+    test("should hide move after navigating into the selected directory", async ({
+        page,
+    }) => {
+        const sourceName = `nested-move-source-${Date.now()}`;
+        const sourcePath = path.join(ctx.testDirPath, sourceName);
+        await fs.mkdir(sourcePath);
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page
+            .getByRole("checkbox", { name: `Select directory ${sourceName}` })
+            .click();
+        await page.getByRole("link", { name: sourceName, exact: true }).click();
+        // Moving a directory into itself is invalid, so the action must stay hidden.
+        await expect(
+            page.getByRole("button", {
+                name: "Move selected items to this directory",
+            }),
+        ).toHaveCount(0);
+        await page.getByRole("button", { name: "Clear selection" }).click();
+    });
+
     test("should keep an existing file when resolving a move conflict", async ({
         page,
     }) => {

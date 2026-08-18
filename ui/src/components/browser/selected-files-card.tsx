@@ -1,10 +1,6 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import {
-    useMutation,
-    useQueryClient,
-    type QueryClient,
-} from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import {
     Copy,
@@ -28,8 +24,11 @@ import {
     unselectFileAtom,
     type SelectedPath,
 } from "#ui/selected-files";
-import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
-import { transfersQueryOptions } from "#ui/queries";
+import {
+    getErrorMessage,
+    isBrowserPathInside,
+    joinBrowserPath,
+} from "#ui/components/browser/utils";
 import {
     SelectedFilesTransferTrigger,
     type SelectedFilesTransferOperation,
@@ -66,7 +65,6 @@ const transferActionMove = {
  */
 async function waitForPendingTransfers(props: {
     api: ApiClient;
-    queryClient: QueryClient;
     pendingTransfers: Map<number, SelectedPath>;
     completedFiles: SelectedPath[];
     failures: unknown[];
@@ -75,11 +73,9 @@ async function waitForPendingTransfers(props: {
 }): Promise<boolean> {
     try {
         while (props.pendingTransfers.size > 0 && !props.signal.aborted) {
-            const progress = await props.queryClient.fetchQuery({
-                ...transfersQueryOptions(props.api),
-                retry: false,
-                staleTime: 0,
-            });
+            // Read the public list directly so a transfers_changed invalidation
+            // cannot abort this wait as a TanStack Query CancelledError.
+            const progress = await props.api.getTransferProgress();
             if (props.signal.aborted) {
                 return false;
             }
@@ -108,6 +104,44 @@ async function waitForPendingTransfers(props: {
 }
 
 /**
+ * Hides Copy/Move when every item would land on itself or a selected
+ * directory would be nested inside its own tree.
+ */
+function canTransferSelectedFiles(props: {
+    selectedFiles: SelectedPath[];
+    destinationAgentId: string;
+    directoryPath: string;
+    isTransferring: boolean;
+    isSiblingTransferring: boolean;
+    isRoutePending: boolean;
+}) {
+    if (
+        props.selectedFiles.length === 0 ||
+        props.isTransferring ||
+        props.isSiblingTransferring ||
+        props.isRoutePending
+    ) {
+        return false;
+    }
+
+    const allLandOnThemselves = props.selectedFiles.every(
+        (file) =>
+            file.agentId === props.destinationAgentId &&
+            file.path === joinBrowserPath(props.directoryPath, file.fileName),
+    );
+    if (allLandOnThemselves) {
+        return false;
+    }
+
+    return !props.selectedFiles.some(
+        (file) =>
+            file.entryType === "directory" &&
+            file.agentId === props.destinationAgentId &&
+            isBrowserPathInside(file.path, props.directoryPath),
+    );
+}
+
+/**
  * Starts every selected item into this directory so the destination is clear
  * at the point where Copy or Move is performed. Sibling in-flight state is
  * owned by the card so the other action cannot race the same sources.
@@ -133,7 +167,6 @@ function TransferSelectedFilesAction(props: {
             type: "idle",
         });
     const activeTransferRef = React.useRef<AbortController | null>(null);
-    const queryClient = useQueryClient();
     const isCopy = props.operation === "copy";
     const labels = isCopy ? transferActionCopy : transferActionMove;
     const transferStartsMutation = useMutation({
@@ -194,17 +227,14 @@ function TransferSelectedFilesAction(props: {
               ? null
               : transferState.message;
     const isTransferring = transferState.type === "transferring";
-    const isCurrentDirectorySelected = selectedFiles.every(
-        (file) =>
-            file.agentId === props.destinationAgent.id &&
-            file.path === joinBrowserPath(props.directoryPath, file.fileName),
-    );
-    const canTransfer =
-        selectedFiles.length > 0 &&
-        !isCurrentDirectorySelected &&
-        !isTransferring &&
-        !props.isSiblingTransferring &&
-        !isRoutePending;
+    const canTransfer = canTransferSelectedFiles({
+        selectedFiles,
+        destinationAgentId: props.destinationAgent.id,
+        directoryPath: props.directoryPath,
+        isTransferring,
+        isSiblingTransferring: props.isSiblingTransferring,
+        isRoutePending,
+    });
 
     /** Starts every selected transfer with one consistent destination conflict policy. */
     const transferSelectedFiles = async (mode: CopyExistingMode) => {
@@ -245,7 +275,6 @@ function TransferSelectedFilesAction(props: {
 
             const stillActive = await waitForPendingTransfers({
                 api: props.api,
-                queryClient,
                 pendingTransfers,
                 completedFiles,
                 failures,
@@ -284,6 +313,12 @@ function TransferSelectedFilesAction(props: {
                     filesToTransfer.length === 1
                         ? `${isCopy ? "Copied" : "Moved"} ${filesToTransfer[0]?.fileName ?? "item"}`
                         : `${isCopy ? "Copied" : "Moved"} ${filesToTransfer.length} items`,
+            });
+        } catch (error) {
+            if (controller.signal.aborted) return;
+            setTransferState({
+                type: "error",
+                message: getErrorMessage(error, labels.failed),
             });
         } finally {
             // Sibling Copy/Move must become usable again even if this run aborted.
