@@ -28,7 +28,7 @@ pub(crate) fn parse_app_name(name: &str) -> Result<String, String> {
 /// Returns the validated namespace selected for this process.
 ///
 /// A conservative character set keeps the value safe as one path component and
-/// as part of a systemd unit name, including when setup runs with root privileges.
+/// as part of a service name, including when installation runs with root privileges.
 pub(crate) fn app_name() -> Result<String> {
     if let Some(name) = APP_NAME.get() {
         return Ok(name.clone());

@@ -32,6 +32,7 @@ pub(crate) async fn run(
     config: Option<String>,
     explicit_log: Option<String>,
     lines: usize,
+    follow: bool,
 ) -> Result<()> {
     let log_path = match explicit_log.filter(|path| !path.trim().is_empty()) {
         Some(path) => path,
@@ -39,9 +40,10 @@ pub(crate) async fn run(
     };
 
     let status = Command::new("tail")
-        .arg("-n")
-        .arg(lines.to_string())
-        .arg(&log_path)
+        .args(tail_arguments(lines, follow, &log_path))
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .await
         .with_context(|| format!("Failed to print log file '{log_path}' with tail"))?;
@@ -50,6 +52,16 @@ pub(crate) async fn run(
     } else {
         bail!("tail failed for log file '{log_path}' with {status}")
     }
+}
+
+/// Builds the stable tail argument order used by finite and following log reads.
+fn tail_arguments(lines: usize, follow: bool, log_path: &str) -> Vec<String> {
+    let mut arguments = vec!["-n".to_string(), lines.to_string()];
+    if follow {
+        arguments.push("-f".to_string());
+    }
+    arguments.push(log_path.to_string());
+    arguments
 }
 
 /// Loads the conventional or explicit TOML and returns the selected role's log path.
@@ -68,6 +80,26 @@ async fn configured_log_path(role: LogRole, config: Option<String>) -> Result<St
     match configured {
         Some(path) if !path.trim().is_empty() => Ok(path),
         _ => crate::config::default_process_log_path(role.process_slot()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tail_arguments;
+
+    /// Verifies follow augments rather than replacing line-count and path arguments.
+    #[test]
+    fn builds_tail_follow_arguments() {
+        assert_eq!(
+            tail_arguments(25, true, "/tmp/redoor.log"),
+            ["-n", "25", "-f", "/tmp/redoor.log"],
+            "following should retain the requested initial tail length and log path"
+        );
+        assert_eq!(
+            tail_arguments(10, false, "/tmp/redoor.log"),
+            ["-n", "10", "/tmp/redoor.log"],
+            "finite reads should not pass the follow flag"
+        );
     }
 }
 

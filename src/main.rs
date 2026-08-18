@@ -96,6 +96,9 @@ struct ServerLogsArgs {
     /// Number of trailing lines to print.
     #[arg(short = 'n', default_value_t = 500)]
     lines: usize,
+    /// Continue printing new log entries until interrupted.
+    #[arg(short = 'f', long)]
+    follow: bool,
     /// Override the shared TOML config path.
     #[arg(long)]
     config: Option<String>,
@@ -194,6 +197,9 @@ struct AgentLogsArgs {
     /// Number of trailing lines to print.
     #[arg(short = 'n', default_value_t = 500)]
     lines: usize,
+    /// Continue printing new log entries until interrupted.
+    #[arg(short = 'f', long)]
+    follow: bool,
     /// Override the shared TOML config path.
     #[arg(long)]
     config: Option<String>,
@@ -221,6 +227,7 @@ async fn main() {
                     logs.config,
                     logs.log,
                     logs.lines,
+                    logs.follow,
                 ))
                 .await;
             }
@@ -255,6 +262,7 @@ async fn main() {
                     logs.config,
                     logs.log,
                     logs.lines,
+                    logs.follow,
                 ))
                 .await;
             }
@@ -654,8 +662,8 @@ mod tests {
             "agent systemd status should parse without a redundant mode flag"
         );
         assert!(
-            Cli::try_parse_from(["redoor", "server", "launchd", "setup"]).is_ok(),
-            "server launchd setup should parse under the server role"
+            Cli::try_parse_from(["redoor", "server", "launchd", "install", "--start"]).is_ok(),
+            "server launchd install should accept explicit startup"
         );
         assert!(
             Cli::try_parse_from(["redoor", "server", "launchd", "--verbose", "start"]).is_ok()
@@ -671,6 +679,71 @@ mod tests {
             Cli::try_parse_from(["redoor", "agent", "launchd", "status", "--mode", "agent",])
                 .is_err(),
             "role-scoped service commands must reject the removed mode flag"
+        );
+        for manager in ["systemd", "launchd"] {
+            assert!(
+                Cli::try_parse_from(["redoor", "agent", manager, "disable", "--now"]).is_ok(),
+                "disable --now should parse for {manager}"
+            );
+            assert!(
+                Cli::try_parse_from(["redoor", "agent", manager, "uninstall"]).is_ok(),
+                "uninstall should parse for {manager}"
+            );
+            assert!(
+                Cli::try_parse_from(["redoor", "agent", manager, "setup"]).is_err(),
+                "the removed setup command should not parse for {manager}"
+            );
+            assert!(
+                Cli::try_parse_from(["redoor", "agent", manager, "logs"]).is_err(),
+                "service-manager logs should not parse for {manager}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "--app-name",
+                "preview",
+                "agent",
+                "systemd",
+                "status",
+            ])
+            .is_ok(),
+            "the global app name should be the service installation identity"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "systemd",
+                "status",
+                "--unit-name",
+                "custom",
+            ])
+            .is_err()
+                && Cli::try_parse_from([
+                    "redoor",
+                    "agent",
+                    "launchd",
+                    "status",
+                    "--service-name",
+                    "custom",
+                ])
+                .is_err(),
+            "manager-specific identity flags should be rejected"
+        );
+    }
+
+    /// Keeps following on the role log commands rather than service-manager commands.
+    #[test]
+    fn parses_role_log_follow_options() {
+        assert!(
+            Cli::try_parse_from(["redoor", "server", "logs", "-f", "-n", "25"]).is_ok(),
+            "server logs should support short follow and line-count options"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "logs", "--follow", "--log", "agent.log"])
+                .is_ok(),
+            "agent logs should preserve explicit log overrides while following"
         );
     }
 

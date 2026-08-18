@@ -75,8 +75,8 @@ Run it
 # Start immediately
 redoor server
 
-# or setup to run at startup if on linux
-redoor server systemd setup
+# or install and enable it at startup on Linux
+redoor server systemd install --start
 ```
 
 ### Agent
@@ -96,8 +96,8 @@ Run it
 # Start immediately
 redoor agent
 
-# or setup to run at startup if on linux
-redoor agent systemd setup
+# or install and enable it at startup on Linux
+redoor agent systemd install --start
 ```
 
 ## SSH relay

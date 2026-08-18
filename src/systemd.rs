@@ -15,6 +15,8 @@ use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 #[cfg(target_os = "linux")]
+use tokio::io::AsyncWriteExt;
+#[cfg(target_os = "linux")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
@@ -31,68 +33,48 @@ pub(crate) struct SystemdArgs {
 /// Operations supported for an installed Redoor systemd service.
 #[derive(Subcommand)]
 enum SystemdCommand {
-    /// Install the unit and its starter configuration without starting it.
-    Setup(ServiceArgs),
+    /// Install and enable the unit, remaining stopped unless requested.
+    Install(InstallArgs),
+    /// Stop, disable, and remove the unit while preserving its config.
+    Uninstall,
     /// Start the installed unit.
-    Start(ServiceArgs),
-    /// Stop the installed unit.
-    Stop(ServiceArgs),
+    Start,
+    /// Stop the installed unit while leaving it enabled for future boot.
+    Stop,
     /// Reload unit definitions and restart the installed unit.
-    Restart(ServiceArgs),
-    /// Print the unit journal without invoking a pager.
-    Logs(LogsArgs),
-    /// Show the current unit status without invoking a pager.
-    Status(ServiceArgs),
+    Restart,
+    /// Show installation, enablement, and process state.
+    Status,
     /// Enable the installed unit without starting it.
-    Enable(ServiceArgs),
+    Enable,
+    /// Disable startup at boot, optionally stopping the unit now.
+    Disable(DisableArgs),
 }
 
-/// Identifies which Redoor unit an operation should manage.
+/// Controls whether installation also starts the unit.
 #[derive(Args)]
-struct ServiceArgs {
-    /// Override the systemd unit file name (default: <app-name>-agent/server.service).
-    ///
-    /// Lets multiple agent or server installs coexist on one host. A missing
-    /// `.service` suffix is appended automatically.
+struct InstallArgs {
+    /// Start the unit after installing and enabling it.
     #[arg(long)]
-    unit_name: Option<String>,
+    start: bool,
 }
 
-/// Options for printing or following a systemd unit journal.
+/// Controls whether disabling also stops the current process.
 #[derive(Args)]
-struct LogsArgs {
-    /// Common service selection options.
-    #[command(flatten)]
-    service: ServiceArgs,
-    /// Continue printing new journal entries until interrupted.
-    #[arg(short = 'f', long)]
-    follow: bool,
+struct DisableArgs {
+    /// Stop the unit in addition to disabling future boot startup.
+    #[arg(long)]
+    now: bool,
 }
 
-/// Resolves the unit file name, appending `.service` when the operator omitted it.
+/// Derives the unit file name from the already validated installation identity.
 #[cfg(any(target_os = "linux", test))]
-fn resolve_unit_name(role: ServiceRole, unit_name: Option<String>) -> Result<String> {
-    let name = match unit_name {
-        Some(name) => name,
-        None => format!(
-            "{}-{}.service",
-            crate::app_name::app_name()?,
-            role.cli_name()
-        ),
-    };
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("--unit-name must not be empty");
-    }
-    // Reject path separators so the name cannot escape the unit directory.
-    if name.contains('/') || name.contains('\\') {
-        bail!("--unit-name must be a bare unit name, not a path");
-    }
-    if name.ends_with(".service") {
-        Ok(name.to_owned())
-    } else {
-        Ok(format!("{name}.service"))
-    }
+fn unit_name(role: ServiceRole) -> Result<String> {
+    Ok(format!(
+        "{}-{}.service",
+        crate::app_name::app_name()?,
+        role.cli_name()
+    ))
 }
 
 /// Runs one systemd operation against the unit scope implied by current privileges.
@@ -106,36 +88,28 @@ pub(crate) async fn run(args: SystemdArgs, role: ServiceRole) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         match args.command {
-            SystemdCommand::Setup(service) => setup(service, role).await,
-            SystemdCommand::Start(service) => manage_unit(service, role, UnitAction::Start).await,
-            SystemdCommand::Stop(service) => manage_unit(service, role, UnitAction::Stop).await,
-            SystemdCommand::Restart(service) => {
-                manage_unit(service, role, UnitAction::Restart).await
+            SystemdCommand::Install(install_args) => install(install_args, role).await,
+            SystemdCommand::Uninstall => uninstall(role).await,
+            SystemdCommand::Start => manage_unit(role, UnitAction::Start).await,
+            SystemdCommand::Stop => manage_unit(role, UnitAction::Stop).await,
+            SystemdCommand::Restart => manage_unit(role, UnitAction::Restart).await,
+            SystemdCommand::Status => manage_unit(role, UnitAction::Status).await,
+            SystemdCommand::Enable => manage_unit(role, UnitAction::Enable).await,
+            SystemdCommand::Disable(disable) => {
+                manage_unit(role, UnitAction::Disable { now: disable.now }).await
             }
-            SystemdCommand::Logs(logs) => {
-                manage_unit(
-                    logs.service,
-                    role,
-                    UnitAction::Logs {
-                        follow: logs.follow,
-                    },
-                )
-                .await
-            }
-            SystemdCommand::Status(service) => manage_unit(service, role, UnitAction::Status).await,
-            SystemdCommand::Enable(service) => manage_unit(service, role, UnitAction::Enable).await,
         }
     }
 }
 
-/// Installs and enables the requested service using the original setup behavior.
+/// Installs and enables the requested service in the privilege-selected scope.
 #[cfg(target_os = "linux")]
-async fn setup(args: ServiceArgs, role: ServiceRole) -> Result<()> {
-    let unit_name = resolve_unit_name(role, args.unit_name)?;
+async fn install(args: InstallArgs, role: ServiceRole) -> Result<()> {
+    let unit_name = unit_name(role)?;
     if nix::unistd::Uid::effective().is_root() {
-        run_system(role, &unit_name).await
+        run_system(role, &unit_name, args.start).await
     } else {
-        run_user(role, &unit_name).await
+        run_user(role, &unit_name, args.start).await
     }
 }
 
@@ -146,17 +120,20 @@ enum UnitAction {
     Start,
     Stop,
     Restart,
-    Logs { follow: bool },
     Status,
     Enable,
+    Disable { now: bool },
 }
 
 /// Executes a shortcut with `--user` for non-root callers and system scope for root.
 #[cfg(target_os = "linux")]
-async fn manage_unit(args: ServiceArgs, role: ServiceRole, action: UnitAction) -> Result<()> {
-    let service = resolve_unit_name(role, args.unit_name)?;
+async fn manage_unit(role: ServiceRole, action: UnitAction) -> Result<()> {
+    let service = unit_name(role)?;
     let user = !nix::unistd::Uid::effective().is_root();
     let flag: &[&str] = if user { &["--user"] } else { &[] };
+    if matches!(action, UnitAction::Status) {
+        return show_status(&service, user, flag).await;
+    }
     ensure_unit_exists(&service, role, user, flag).await?;
 
     if matches!(action, UnitAction::Restart) {
@@ -172,19 +149,9 @@ async fn manage_unit(args: ServiceArgs, role: ServiceRole, action: UnitAction) -
         UnitAction::Stop => ("systemctl", flag.to_vec()),
         UnitAction::Restart => ("systemctl", flag.to_vec()),
         UnitAction::Enable => ("systemctl", flag.to_vec()),
-        UnitAction::Logs { follow } => {
-            let mut arguments = flag.to_vec();
-            arguments.extend(["--no-pager", "-n", "500"]);
-            if follow {
-                arguments.push("-f");
-            }
-            arguments.extend(["-u", service.as_str()]);
-            return run_command_inherited("journalctl", &arguments).await;
-        }
+        UnitAction::Disable { .. } => ("systemctl", flag.to_vec()),
         UnitAction::Status => {
-            let mut arguments = flag.to_vec();
-            arguments.extend(["status", "--no-pager", service.as_str()]);
-            return run_command_inherited("systemctl", &arguments).await;
+            unreachable!("status returns before installed-unit dispatch")
         }
     };
     let verb = match action {
@@ -192,10 +159,12 @@ async fn manage_unit(args: ServiceArgs, role: ServiceRole, action: UnitAction) -
         UnitAction::Stop => "stop",
         UnitAction::Restart => "restart",
         UnitAction::Enable => "enable",
-        UnitAction::Logs { .. } | UnitAction::Status => {
-            unreachable!("logs and status return before systemctl dispatch")
-        }
+        UnitAction::Disable { .. } => "disable",
+        UnitAction::Status => unreachable!("status returns before systemctl dispatch"),
     };
+    if matches!(action, UnitAction::Disable { now: true }) {
+        arguments.push("--now");
+    }
     arguments.extend([verb, service.as_str()]);
     run_command(program, &arguments).await
 }
@@ -241,14 +210,198 @@ fn validate_unit_load_state(
 
     let scope = if user { "user" } else { "system" };
     bail!(
-        "Systemd {scope} unit '{service}' does not exist. Install it first with: redoor {} systemd setup --unit-name {service}",
+        "Systemd {scope} unit '{service}' is not installed. Install it with: redoor {} systemd install",
         mode.cli_name()
     )
 }
 
+/// Captures the concise state fields reported by `systemctl show`.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Eq, PartialEq)]
+struct SystemdState {
+    /// Reports whether systemd found a unit definition.
+    loaded: bool,
+    /// Reports the broad active state such as active, inactive, or failed.
+    active: String,
+    /// Adds the process-specific state such as running or exited.
+    sub: String,
+    /// Includes the main process ID only while systemd reports one.
+    pid: Option<String>,
+}
+
+/// Parses key-value systemctl output independently of property order.
+#[cfg(any(target_os = "linux", test))]
+fn parse_systemd_state(output: &str) -> SystemdState {
+    let property = |name: &str| {
+        output
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_default()
+    };
+    let pid = property("MainPID");
+    SystemdState {
+        loaded: !matches!(property("LoadState"), "" | "not-found"),
+        active: property("ActiveState").to_string(),
+        sub: property("SubState").to_string(),
+        pid: (pid != "0" && !pid.is_empty()).then(|| pid.to_string()),
+    }
+}
+
+/// Formats installation, enablement, and runtime state without systemctl verbosity.
+#[cfg(any(target_os = "linux", test))]
+fn format_status(
+    service: &str,
+    installed: bool,
+    enabled: Option<bool>,
+    state: &SystemdState,
+) -> String {
+    let runtime = match (state.pid.as_deref(), state.loaded) {
+        (Some(pid), true) => format!("loaded, running, PID {pid}"),
+        (_, true) => format!("loaded, stopped ({}/{})", state.active, state.sub),
+        _ => "unloaded, stopped".to_string(),
+    };
+    if !installed {
+        return if state.loaded {
+            format!("Systemd unit '{service}': not installed, {runtime}")
+        } else {
+            format!("Systemd unit '{service}': not installed")
+        };
+    }
+    let enabled = match enabled {
+        Some(true) => "enabled",
+        Some(false) => "disabled",
+        None => "enablement unknown",
+    };
+    format!("Systemd unit '{service}': installed, {enabled}, {runtime}")
+}
+
+/// Reports service state successfully even when the unit has not been installed.
+#[cfg(target_os = "linux")]
+async fn show_status(service: &str, user: bool, flag: &[&str]) -> Result<()> {
+    let path = unit_path(service, user)?;
+    let installed = tokio::fs::try_exists(&path)
+        .await
+        .with_context(|| format!("Failed to inspect systemd unit '{}'", path.display()))?;
+    let mut show_arguments = flag.to_vec();
+    show_arguments.extend([
+        "show",
+        "--property=LoadState,ActiveState,SubState,MainPID",
+        service,
+    ]);
+    let output = Command::new("systemctl")
+        .args(&show_arguments)
+        .output()
+        .await
+        .context("Failed to ask systemd for service state")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Failed to ask systemd for '{service}' status: {}",
+            stderr.trim()
+        );
+    }
+    let state = parse_systemd_state(&String::from_utf8_lossy(&output.stdout));
+
+    let enabled = if installed {
+        let mut enabled_arguments = flag.to_vec();
+        enabled_arguments.extend(["is-enabled", service]);
+        let enabled_output = Command::new("systemctl")
+            .args(&enabled_arguments)
+            .output()
+            .await
+            .context("Failed to ask systemd whether the service is enabled")?;
+        parse_enabled_state(&String::from_utf8_lossy(&enabled_output.stdout))
+    } else {
+        None
+    };
+    println!("{}", format_status(service, installed, enabled, &state));
+    Ok(())
+}
+
+/// Interprets systemd enablement states without treating masking as unknown.
+#[cfg(any(target_os = "linux", test))]
+fn parse_enabled_state(output: &str) -> Option<bool> {
+    match output.trim() {
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias" => Some(true),
+        "disabled" | "masked" | "masked-runtime" | "static" | "indirect" | "generated"
+        | "transient" | "not-found" => Some(false),
+        _ => None,
+    }
+}
+
+/// Returns the expected unit path for the selected user or system scope.
+#[cfg(target_os = "linux")]
+fn unit_path(service: &str, user: bool) -> Result<PathBuf> {
+    if user {
+        Ok(home_directory()?.join(".config/systemd/user").join(service))
+    } else {
+        Ok(PathBuf::from("/etc/systemd/system").join(service))
+    }
+}
+
+/// Stops, disables, and removes a unit while making repeated calls harmless.
+#[cfg(target_os = "linux")]
+async fn uninstall(role: ServiceRole) -> Result<()> {
+    let service = unit_name(role)?;
+    let user = !nix::unistd::Uid::effective().is_root();
+    let flag: &[&str] = if user { &["--user"] } else { &[] };
+    let path = unit_path(&service, user)?;
+    let installed = tokio::fs::try_exists(&path)
+        .await
+        .with_context(|| format!("Failed to inspect systemd unit '{}'", path.display()))?;
+    let mut show = flag.to_vec();
+    show.extend(["show", "--property=LoadState", "--value", service.as_str()]);
+    let load_output = Command::new("systemctl")
+        .args(&show)
+        .output()
+        .await
+        .context("Failed to ask systemd whether the unit is loaded before uninstalling")?;
+    if !load_output.status.success() {
+        let stderr = String::from_utf8_lossy(&load_output.stderr);
+        bail!(
+            "Failed to inspect systemd unit '{service}' before uninstalling: {}",
+            stderr.trim()
+        );
+    }
+    let manager_knows_unit = !matches!(
+        String::from_utf8_lossy(&load_output.stdout).trim(),
+        "" | "not-found"
+    );
+    if manager_knows_unit {
+        let mut stop = flag.to_vec();
+        stop.extend(["stop", service.as_str()]);
+        run_command("systemctl", &stop)
+            .await
+            .with_context(|| format!("Failed to stop {service} before uninstalling"))?;
+    }
+    if installed || manager_knows_unit {
+        let mut disable = flag.to_vec();
+        disable.extend(["disable", service.as_str()]);
+        run_command("systemctl", &disable)
+            .await
+            .with_context(|| format!("Failed to disable {service} before uninstalling"))?;
+    }
+    if installed {
+        tokio::fs::remove_file(&path)
+            .await
+            .with_context(|| format!("Failed to remove systemd unit '{}'", path.display()))?;
+    }
+    let mut reload = flag.to_vec();
+    reload.push("daemon-reload");
+    run_command("systemctl", &reload)
+        .await
+        .context("Failed to reload systemd after uninstalling the service")?;
+    if installed {
+        println!("Uninstalled systemd unit '{service}'; configuration was preserved.");
+    } else {
+        println!("Systemd unit '{service}' is already uninstalled; configuration was preserved.");
+    }
+    Ok(())
+}
+
 /// Installs a lingering systemd user unit owned by the invoking account.
 #[cfg(target_os = "linux")]
-async fn run_user(mode: ServiceRole, unit_name: &str) -> Result<()> {
+async fn run_user(mode: ServiceRole, unit_name: &str, start: bool) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
     let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
@@ -268,24 +421,29 @@ async fn run_user(mode: ServiceRole, unit_name: &str) -> Result<()> {
             )
         })?;
     let unit_path = unit_directory.join(unit_name);
-    tokio::fs::write(&unit_path, unit_content)
-        .await
-        .with_context(|| format!("Failed to write unit '{}'", unit_path.display()))?;
+    atomic_write(&unit_path, unit_content.as_bytes()).await?;
 
     let username = current_username().await?;
     run_command("loginctl", &["enable-linger", &username])
         .await
         .context("Failed to enable user lingering; the service would stop when you log out")?;
-    // Enable on boot only — never start here so the operator can review config first.
-    activate_unit(unit_name, true).await?;
+    // Enable on boot and honor the explicit install-time startup choice.
+    activate_unit(unit_name, true, start).await?;
 
-    print_manage_help(unit_name, &unit_path, &config_path, config_created, mode);
+    print_manage_help(
+        unit_name,
+        &unit_path,
+        &config_path,
+        config_created,
+        mode,
+        start,
+    );
     Ok(())
 }
 
 /// Installs a system unit: server as the `redoor` user, agent as root.
 #[cfg(target_os = "linux")]
-async fn run_system(mode: ServiceRole, unit_name: &str) -> Result<()> {
+async fn run_system(mode: ServiceRole, unit_name: &str, start: bool) -> Result<()> {
     let app_name = crate::app_name::app_name()?;
     let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(mode, &config_path).await?;
@@ -308,24 +466,29 @@ async fn run_system(mode: ServiceRole, unit_name: &str) -> Result<()> {
     let unit_content = render_unit(mode, &binary, &config_path, true, &app_name);
     let unit_directory = PathBuf::from("/etc/systemd/system");
     let unit_path = unit_directory.join(unit_name);
-    tokio::fs::write(&unit_path, unit_content)
-        .await
-        .with_context(|| format!("Failed to write unit '{}'", unit_path.display()))?;
+    atomic_write(&unit_path, unit_content.as_bytes()).await?;
 
-    // Enable on boot only — never start here so the operator can review config first.
-    activate_unit(unit_name, false).await?;
+    // Enable on boot and honor the explicit install-time startup choice.
+    activate_unit(unit_name, false, start).await?;
 
-    print_manage_help(unit_name, &unit_path, &config_path, config_created, mode);
+    print_manage_help(
+        unit_name,
+        &unit_path,
+        &config_path,
+        config_created,
+        mode,
+        start,
+    );
     Ok(())
 }
 
-/// Reloads systemd, drops any previously running instance, then enables on boot without starting.
+/// Reloads systemd, drops a stale process, enables on boot, and optionally starts it.
 ///
 /// `daemon-reload` is required after every unit rewrite so systemd does not keep
 /// the old in-memory definition. Stopping first ensures a prior process cannot
-/// stay active with a stale binary or unit after setup rewrites the file.
+/// stay active with a stale binary or unit after installation rewrites the file.
 #[cfg(target_os = "linux")]
-async fn activate_unit(service: &str, user: bool) -> Result<()> {
+async fn activate_unit(service: &str, user: bool, start: bool) -> Result<()> {
     let flag: &[&str] = if user { &["--user"] } else { &[] };
 
     let mut reload = flag.to_vec();
@@ -351,6 +514,13 @@ async fn activate_unit(service: &str, user: bool) -> Result<()> {
     run_command("systemctl", &enable)
         .await
         .with_context(|| format!("Failed to enable {service} on boot"))?;
+    if start {
+        let mut start_arguments = flag.to_vec();
+        start_arguments.extend(["start", service]);
+        run_command("systemctl", &start_arguments)
+            .await
+            .with_context(|| format!("Failed to start {service} after installing it"))?;
+    }
     Ok(())
 }
 
@@ -379,7 +549,7 @@ async fn ensure_system_log_directory() -> Result<()> {
     Ok(())
 }
 
-/// Prints how to control the installed unit after a successful setup.
+/// Prints how to control the unit after successful installation.
 #[cfg(target_os = "linux")]
 fn print_manage_help(
     service: &str,
@@ -387,10 +557,12 @@ fn print_manage_help(
     config_path: &Path,
     config_created: bool,
     mode: ServiceRole,
+    started: bool,
 ) {
     println!(
-        "Wrote unit {service} at {} and enabled it on boot (not started).",
-        unit_path.display()
+        "Installed unit {service} at {} and enabled it on boot ({}).",
+        unit_path.display(),
+        if started { "started" } else { "not started" }
     );
     if config_created {
         println!(
@@ -405,15 +577,13 @@ fn print_manage_help(
     }
     println!(
         "
-Start when ready:
-  redoor {} systemd start --unit-name {service}
-
 Manage the service:
-  redoor {} systemd start --unit-name {service}
-  redoor {} systemd stop --unit-name {service}
-  redoor {} systemd restart --unit-name {service}
-  redoor {} systemd status --unit-name {service}
-  redoor {} systemd logs --unit-name {service}   # file logs are configured in config.toml",
+  redoor {} systemd start
+  redoor {} systemd stop       # remains enabled for future boot
+  redoor {} systemd restart
+  redoor {} systemd status
+  redoor {} systemd disable --now
+  redoor {} logs --follow",
         mode.cli_name(),
         mode.cli_name(),
         mode.cli_name(),
@@ -431,10 +601,10 @@ fn home_directory() -> Result<PathBuf> {
         .context("HOME is not set; cannot locate the systemd user or Redoor config directories")
 }
 
-/// Ensures setup has the shared config. Returns whether a new starter file was written.
+/// Ensures installation has the shared config and reports whether it was created.
 ///
-/// Only `redoor server` generates starter config; server systemd setup requires that
-/// file already exist. Agent setup still imports the server's config from stdin.
+/// Only `redoor server` generates starter config; server systemd installation requires
+/// that file already exist. Agent installation still imports server config from stdin.
 #[cfg(target_os = "linux")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
@@ -452,7 +622,7 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     }
 
     bail!(
-        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run setup",
+        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run install",
         config_path.display()
     )
 }
@@ -543,6 +713,54 @@ async fn chown_path_to_redoor(path: &Path) -> Result<()> {
     .context("Failed to join chown task")?
 }
 
+/// Replaces a unit in one rename so systemd never reads a partial definition.
+#[cfg(target_os = "linux")]
+async fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .context("systemd unit path has no file name")?
+        .to_string_lossy();
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        fastrand::u64(..)
+    ));
+    let write_result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to create temporary systemd unit '{}'",
+                    temporary_path.display()
+                )
+            })?;
+        file.write_all(content).await.with_context(|| {
+            format!(
+                "Failed to write temporary systemd unit '{}'",
+                temporary_path.display()
+            )
+        })?;
+        file.sync_all().await.with_context(|| {
+            format!(
+                "Failed to sync temporary systemd unit '{}'",
+                temporary_path.display()
+            )
+        })?;
+        drop(file);
+        tokio::fs::rename(&temporary_path, path)
+            .await
+            .with_context(|| format!("Failed to install systemd unit '{}'", path.display()))
+    }
+    .await;
+    if write_result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+    }
+    write_result
+}
+
 /// Runs one systemd administration command and preserves its diagnostic output on failure.
 #[cfg(target_os = "linux")]
 async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
@@ -565,21 +783,6 @@ async fn run_command(program: &str, arguments: &[&str]) -> Result<()> {
     )
 }
 
-/// Runs an interactive command with inherited streams for continuous journal output.
-#[cfg(target_os = "linux")]
-async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> {
-    let status = Command::new(program)
-        .args(arguments)
-        .status()
-        .await
-        .with_context(|| format!("Failed to run {program}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("{} {} failed with {}", program, arguments.join(" "), status)
-    }
-}
-
 /// Renders a user or system unit. The agent has no CLI flags — the TOML is authoritative.
 #[cfg(any(target_os = "linux", test))]
 fn render_unit(
@@ -593,7 +796,7 @@ fn render_unit(
     let config_path = quote_unit_argument(config_path.to_string_lossy().as_ref());
     let app_environment = quote_unit_argument(&format!("REDOOR_APP_NAME={app_name}"));
     let (description, command) = match mode {
-        // Pin --config so the unit always loads the file prepared during setup.
+        // Pin --config so the unit always loads the file prepared during installation.
         ServiceRole::Agent => (
             "Redoor agent",
             format!("{binary} agent --config {config_path}"),
@@ -648,45 +851,28 @@ fn quote_unit_argument(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceRole, quote_unit_argument, render_unit, resolve_unit_name, validate_unit_load_state,
+        ServiceRole, format_status, parse_enabled_state, parse_systemd_state, quote_unit_argument,
+        render_unit, unit_name, validate_unit_load_state,
     };
     use std::path::Path;
 
-    /// Verifies default and overridden unit names, including automatic .service suffix.
+    /// Verifies unit names derive solely from the validated application identity.
     #[test]
-    fn resolve_unit_name_defaults_and_normalizes() {
+    fn unit_names_use_application_identity() {
         let app_name = crate::app_name::app_name().unwrap();
         assert_eq!(
-            resolve_unit_name(ServiceRole::Agent, None).unwrap(),
+            unit_name(ServiceRole::Agent).unwrap(),
             format!("{app_name}-agent.service"),
-            "the default agent unit should use the effective application namespace"
+            "the agent unit should use the effective application namespace"
         );
         assert_eq!(
-            resolve_unit_name(ServiceRole::Server, None).unwrap(),
+            unit_name(ServiceRole::Server).unwrap(),
             format!("{app_name}-server.service"),
-            "the default server unit should use the effective application namespace"
-        );
-        assert_eq!(
-            resolve_unit_name(ServiceRole::Agent, Some("edge-agent".into())).unwrap(),
-            "edge-agent.service",
-            "missing .service should be appended"
-        );
-        assert_eq!(
-            resolve_unit_name(ServiceRole::Server, Some("redoor-api.service".into())).unwrap(),
-            "redoor-api.service",
-            "explicit .service should be kept"
-        );
-        assert!(
-            resolve_unit_name(ServiceRole::Agent, Some("../escape".into())).is_err(),
-            "path components must be rejected"
-        );
-        assert!(
-            resolve_unit_name(ServiceRole::Agent, Some("  ".into())).is_err(),
-            "blank names must be rejected"
+            "the server unit should use the effective application namespace"
         );
     }
 
-    /// Verifies absent units produce a clear error with the correct scope and setup command.
+    /// Verifies absent units produce a clear error with the correct scope and install command.
     #[test]
     fn missing_unit_load_state_has_actionable_error() {
         let error = validate_unit_load_state(
@@ -699,11 +885,11 @@ mod tests {
         .to_string();
 
         assert!(
-            error.contains("Systemd user unit 'custom-agent.service' does not exist"),
+            error.contains("Systemd user unit 'custom-agent.service' is not installed"),
             "the error must identify the missing unit and user scope: {error}"
         );
         assert!(
-            error.contains("redoor agent systemd setup"),
+            error.contains("redoor agent systemd install"),
             "the error must explain how to install the expected unit: {error}"
         );
         assert!(
@@ -715,6 +901,56 @@ mod tests {
             )
             .is_ok(),
             "a loaded unit must allow the requested management action"
+        );
+    }
+
+    /// Verifies systemctl properties become concise installed and runtime state.
+    #[test]
+    fn formats_systemd_process_status() {
+        let running = parse_systemd_state(
+            "LoadState=loaded
+ActiveState=active
+SubState=running
+MainPID=4321",
+        );
+        assert_eq!(
+            format_status("redoor-server.service", true, Some(true), &running),
+            "Systemd unit 'redoor-server.service': installed, enabled, loaded, running, PID 4321",
+            "an active service should report its main process ID"
+        );
+        let absent = parse_systemd_state(
+            "LoadState=not-found
+ActiveState=inactive
+SubState=dead
+MainPID=0",
+        );
+        assert_eq!(
+            format_status("redoor-server.service", false, Some(false), &absent),
+            "Systemd unit 'redoor-server.service': not installed",
+            "an absent unit should omit meaningless enablement and runtime state"
+        );
+        assert_eq!(
+            format_status("redoor-server.service", false, Some(false), &running),
+            "Systemd unit 'redoor-server.service': not installed, loaded, running, PID 4321",
+            "a manager-cached orphan should remain visible after its unit file disappears"
+        );
+    }
+
+    /// Verifies masked units are reported as disabled rather than unknown.
+    #[test]
+    fn interprets_systemd_enablement_states() {
+        assert_eq!(
+            parse_enabled_state(
+                "enabled-runtime
+"
+            ),
+            Some(true),
+            "runtime-enabled units should be reported as enabled"
+        );
+        assert_eq!(
+            parse_enabled_state("masked"),
+            Some(false),
+            "masking prevents startup and should be reported as disabled"
         );
     }
 
@@ -741,7 +977,7 @@ mod tests {
         );
         assert!(
             unit.contains("Environment=\"REDOOR_APP_NAME=redoor\""),
-            "the unit must preserve the application namespace selected during setup: {unit}"
+            "the unit must preserve the application namespace selected during installation: {unit}"
         );
         assert!(
             unit.contains("WantedBy=default.target"),
@@ -757,7 +993,7 @@ mod tests {
         );
     }
 
-    /// Verifies server units explicitly pin the config used during setup.
+    /// Verifies server units explicitly pin the config used during installation.
     #[test]
     fn server_unit_uses_default_config_path() {
         let unit = render_unit(

@@ -13,6 +13,8 @@ use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 #[cfg(target_os = "macos")]
+use tokio::io::AsyncWriteExt;
+#[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
@@ -32,41 +34,38 @@ pub(crate) struct LaunchdArgs {
 /// Operations supported for an installed Redoor LaunchAgent.
 #[derive(Subcommand)]
 enum LaunchdCommand {
-    /// Install and enable the LaunchAgent without starting it.
-    Setup(ServiceArgs),
-    /// Load and start the installed LaunchAgent.
-    Start(ServiceArgs),
-    /// Stop and unload the installed LaunchAgent.
-    Stop(ServiceArgs),
+    /// Install and enable the LaunchAgent, remaining stopped unless requested.
+    Install(InstallArgs),
+    /// Stop, unload, and remove the LaunchAgent while preserving its config.
+    Uninstall,
+    /// Start the installed LaunchAgent without restarting a running process.
+    Start,
+    /// Stop and unload the LaunchAgent while leaving it enabled for future login.
+    Stop,
     /// Reload and restart the installed LaunchAgent.
-    Restart(ServiceArgs),
-    /// Print the configured process log.
-    Logs(LogsArgs),
-    /// Show whether the LaunchAgent is loaded and print its launchd state.
-    Status(ServiceArgs),
+    Restart,
+    /// Show installation, enablement, load, and process state.
+    Status,
     /// Enable the installed LaunchAgent without starting it.
-    Enable(ServiceArgs),
+    Enable,
+    /// Disable startup at login, optionally stopping and unloading it now.
+    Disable(DisableArgs),
 }
 
-/// Identifies which Redoor LaunchAgent an operation should manage.
+/// Controls whether installation also starts the new LaunchAgent definition.
 #[derive(Args)]
-struct ServiceArgs {
-    /// Override the launchd service label (default: <app-name>-agent/server).
-    ///
-    /// Lets multiple agent or server installs coexist for the current user.
+struct InstallArgs {
+    /// Start the LaunchAgent after installing and enabling it.
     #[arg(long)]
-    service_name: Option<String>,
+    start: bool,
 }
 
-/// Options for printing or following a LaunchAgent process log.
+/// Controls whether disabling also stops the current LaunchAgent process.
 #[derive(Args)]
-struct LogsArgs {
-    /// Common service selection options.
-    #[command(flatten)]
-    service: ServiceArgs,
-    /// Continue printing new log entries until interrupted.
-    #[arg(short = 'f', long)]
-    follow: bool,
+struct DisableArgs {
+    /// Stop and unload the LaunchAgent in addition to disabling future login startup.
+    #[arg(long)]
+    now: bool,
 }
 
 /// Runs one macOS LaunchAgent operation for the invoking non-root user.
@@ -81,32 +80,28 @@ pub(crate) async fn run(args: LaunchdArgs, role: ServiceRole) -> Result<()> {
     {
         ensure_non_root()?;
         match args.command {
-            LaunchdCommand::Setup(service) => setup(service, role, args.verbose).await,
-            LaunchdCommand::Start(service) => {
-                manage_service(service, role, ServiceAction::Start, args.verbose).await
+            LaunchdCommand::Install(install_args) => {
+                install(install_args, role, args.verbose).await
             }
-            LaunchdCommand::Stop(service) => {
-                manage_service(service, role, ServiceAction::Stop, args.verbose).await
+            LaunchdCommand::Uninstall => uninstall(role, args.verbose).await,
+            LaunchdCommand::Start => manage_service(role, ServiceAction::Start, args.verbose).await,
+            LaunchdCommand::Stop => manage_service(role, ServiceAction::Stop, args.verbose).await,
+            LaunchdCommand::Restart => {
+                manage_service(role, ServiceAction::Restart, args.verbose).await
             }
-            LaunchdCommand::Restart(service) => {
-                manage_service(service, role, ServiceAction::Restart, args.verbose).await
+            LaunchdCommand::Status => {
+                manage_service(role, ServiceAction::Status, args.verbose).await
             }
-            LaunchdCommand::Logs(logs) => {
+            LaunchdCommand::Enable => {
+                manage_service(role, ServiceAction::Enable, args.verbose).await
+            }
+            LaunchdCommand::Disable(disable) => {
                 manage_service(
-                    logs.service,
                     role,
-                    ServiceAction::Logs {
-                        follow: logs.follow,
-                    },
+                    ServiceAction::Disable { now: disable.now },
                     args.verbose,
                 )
                 .await
-            }
-            LaunchdCommand::Status(service) => {
-                manage_service(service, role, ServiceAction::Status, args.verbose).await
-            }
-            LaunchdCommand::Enable(service) => {
-                manage_service(service, role, ServiceAction::Enable, args.verbose).await
             }
         }
     }
@@ -123,27 +118,20 @@ fn ensure_non_root() -> Result<()> {
     Ok(())
 }
 
-/// Resolves a safe launchd service label without permitting path traversal.
+/// Derives a safe launchd label from the already validated installation identity.
 #[cfg(any(target_os = "macos", test))]
-fn resolve_service_name(mode: ServiceRole, service_name: Option<String>) -> Result<String> {
-    let name = match service_name {
-        Some(name) => name,
-        None => format!("{}-{}", crate::app_name::app_name()?, mode.cli_name()),
-    };
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("--service-name must not be empty");
-    }
-    if name.contains('/') || name.contains('\\') {
-        bail!("--service-name must be a bare launchd label, not a path");
-    }
-    Ok(name.to_owned())
+fn service_name(role: ServiceRole) -> Result<String> {
+    Ok(format!(
+        "{}-{}",
+        crate::app_name::app_name()?,
+        role.cli_name()
+    ))
 }
 
-/// Installs a user LaunchAgent and enables it for future logins without starting it now.
+/// Atomically installs a current LaunchAgent definition and optionally starts it.
 #[cfg(target_os = "macos")]
-async fn setup(args: ServiceArgs, role: ServiceRole, verbose: bool) -> Result<()> {
-    let service = resolve_service_name(role, args.service_name)?;
+async fn install(args: InstallArgs, role: ServiceRole, verbose: bool) -> Result<()> {
+    let service = service_name(role)?;
     let config_path = crate::config::default_config_path()?;
     let config_created = prepare_config(role, &config_path).await?;
     let binary = tokio::fs::canonicalize(std::env::current_exe()?)
@@ -161,56 +149,103 @@ async fn setup(args: ServiceArgs, role: ServiceRole, verbose: bool) -> Result<()
             )
         })?;
     let plist_path = launch_agents.join(format!("{service}.plist"));
-    tokio::fs::write(&plist_path, plist_content)
-        .await
-        .with_context(|| format!("Failed to write LaunchAgent '{}'", plist_path.display()))?;
-
-    // A disabled override survives plist discovery, so explicitly clear it while
-    // leaving the agent unloaded until the operator starts it or logs in again.
     let target = service_target(&service);
+    if service_is_loaded(&target, verbose).await? {
+        run_command("launchctl", &["bootout", &target], verbose)
+            .await
+            .context("Failed to unload the previous LaunchAgent definition")?;
+    }
+    atomic_write(&plist_path, plist_content.as_bytes()).await?;
+
+    // A disabled selection survives plist discovery, so explicitly mark this label
+    // enabled while leaving it unloaded until the operator starts it or logs in.
     run_command("launchctl", &["enable", &target], verbose)
         .await
         .context("Failed to enable the LaunchAgent for user login")?;
 
-    print_manage_help(&service, &plist_path, &config_path, config_created, role);
+    if args.start {
+        run_command(
+            "launchctl",
+            &["bootstrap", &user_domain(), &plist_path.to_string_lossy()],
+            verbose,
+        )
+        .await
+        .context("Failed to start the newly installed LaunchAgent")?;
+    }
+
+    print_manage_help(
+        &service,
+        &plist_path,
+        &config_path,
+        config_created,
+        role,
+        args.start,
+    );
     Ok(())
 }
 
-/// Supported launchctl and log-tail shortcuts.
+/// Stops and removes a LaunchAgent while retaining config and enabling future installs.
+#[cfg(target_os = "macos")]
+async fn uninstall(role: ServiceRole, verbose: bool) -> Result<()> {
+    let service = service_name(role)?;
+    let plist_path = launch_agent_path(&service)?;
+    let target = service_target(&service);
+    let loaded = service_is_loaded(&target, verbose).await?;
+    if loaded {
+        run_command("launchctl", &["bootout", &target], verbose)
+            .await
+            .context("Failed to stop and unload the LaunchAgent")?;
+    }
+    let installed = tokio::fs::try_exists(&plist_path)
+        .await
+        .with_context(|| format!("Failed to inspect LaunchAgent '{}'", plist_path.display()))?;
+    if installed {
+        tokio::fs::remove_file(&plist_path)
+            .await
+            .with_context(|| format!("Failed to remove LaunchAgent '{}'", plist_path.display()))?;
+    }
+    // launchctl has no override-deletion command. Marking the absent label enabled
+    // ensures a later reinstall cannot inherit a previous disabled selection.
+    run_command("launchctl", &["enable", &target], verbose)
+        .await
+        .context("Failed to enable the LaunchAgent label for a future installation")?;
+    if installed || loaded {
+        println!("Uninstalled LaunchAgent '{service}'; configuration was preserved.");
+    } else {
+        println!("LaunchAgent '{service}' is already uninstalled; configuration was preserved.");
+    }
+    Ok(())
+}
+
+/// Supported launchctl lifecycle operations.
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum ServiceAction {
     Start,
     Stop,
     Restart,
-    Logs { follow: bool },
     Status,
     Enable,
+    Disable { now: bool },
 }
 
 /// Executes one action against an installed LaunchAgent in the current GUI domain.
 #[cfg(target_os = "macos")]
-async fn manage_service(
-    args: ServiceArgs,
-    role: ServiceRole,
-    action: ServiceAction,
-    verbose: bool,
-) -> Result<()> {
-    let service = resolve_service_name(role, args.service_name)?;
+async fn manage_service(role: ServiceRole, action: ServiceAction, verbose: bool) -> Result<()> {
+    let service = service_name(role)?;
     let plist_path = launch_agent_path(&service)?;
-    ensure_plist_exists(&plist_path, &service, role).await?;
-
-    if let ServiceAction::Logs { follow } = action {
-        return show_log(role, follow).await;
+    if matches!(action, ServiceAction::Status) {
+        return show_status(&service, &plist_path).await;
     }
+    ensure_plist_exists(&plist_path, &service, role).await?;
 
     let domain = user_domain();
     let target = service_target(&service);
     match action {
-        ServiceAction::Start => {
-            if service_is_loaded(&target, verbose).await? {
-                run_command("launchctl", &["kickstart", "-k", &target], verbose).await
-            } else {
+        ServiceAction::Start => match loaded_service_state(&target).await? {
+            Some(state) if state.running => Ok(()),
+            Some(_) => run_command("launchctl", &["kickstart", &target], verbose).await,
+            None => {
                 run_command(
                     "launchctl",
                     &["bootstrap", &domain, &plist_path.to_string_lossy()],
@@ -218,7 +253,7 @@ async fn manage_service(
                 )
                 .await
             }
-        }
+        },
         ServiceAction::Stop => {
             if service_is_loaded(&target, verbose).await? {
                 run_command("launchctl", &["bootout", &target], verbose).await
@@ -240,14 +275,18 @@ async fn manage_service(
             .await
         }
         ServiceAction::Status => {
-            if verbose {
-                run_command_inherited("launchctl", &["print", &target]).await
-            } else {
-                show_status(&service, &target).await
-            }
+            unreachable!("status returns before installed-service dispatch")
         }
         ServiceAction::Enable => run_command("launchctl", &["enable", &target], verbose).await,
-        ServiceAction::Logs { .. } => unreachable!("logs return before launchctl dispatch"),
+        ServiceAction::Disable { now } => {
+            run_command("launchctl", &["disable", &target], verbose)
+                .await
+                .context("Failed to disable the LaunchAgent at login")?;
+            if now && service_is_loaded(&target, verbose).await? {
+                run_command("launchctl", &["bootout", &target], verbose).await?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -272,49 +311,145 @@ async fn service_is_loaded(target: &str, verbose: bool) -> Result<bool> {
     Ok(status.success())
 }
 
-/// Summarizes both launchd registration and process state without exposing raw internals.
+/// Captures the process details launchd reports for a loaded service.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Eq, PartialEq)]
+struct LaunchdProcessState {
+    /// Distinguishes an active process from a loaded job waiting to run.
+    running: bool,
+    /// Reports the active process ID when launchd includes one.
+    pid: Option<String>,
+    /// Retains launchd's state word for concise stopped-state diagnostics.
+    state: Option<String>,
+}
+
+/// Queries a service and returns no state when it is not loaded.
 #[cfg(target_os = "macos")]
-async fn show_status(service: &str, target: &str) -> Result<()> {
+async fn loaded_service_state(target: &str) -> Result<Option<LaunchdProcessState>> {
     let output = Command::new("launchctl")
         .args(["print", target])
         .output()
         .await
-        .context("Failed to ask launchd for the service status")?;
+        .context("Failed to ask launchd for the service state")?;
     if !output.status.success() {
-        bail!("LaunchAgent '{service}' is not loaded, so it is not running");
+        return Ok(None);
     }
-
-    let print_output = String::from_utf8_lossy(&output.stdout);
-    println!("{}", format_status(service, &print_output));
-    Ok(())
+    Ok(Some(parse_process_state(&String::from_utf8_lossy(
+        &output.stdout,
+    ))))
 }
 
-/// Converts launchctl's verbose property listing into an operator-facing status line.
+/// Parses stable launchctl state properties without depending on output layout.
 #[cfg(any(target_os = "macos", test))]
-fn format_status(service: &str, print_output: &str) -> String {
+fn parse_process_state(print_output: &str) -> LaunchdProcessState {
     let property = |name: &str| {
         print_output
             .lines()
             .map(str::trim)
             .find_map(|line| line.strip_prefix(&format!("{name} = ")))
     };
-    let state = property("state");
-    let pid = property("pid");
-
-    match (state, pid) {
-        (Some("running"), Some(pid)) => {
-            format!("LaunchAgent '{service}' is loaded and running with PID {pid}")
-        }
-        (Some("running"), None) => {
-            format!("LaunchAgent '{service}' is loaded and running")
-        }
-        (Some(state), _) => {
-            format!("LaunchAgent '{service}' is loaded but not running (state: {state})")
-        }
-        (None, _) => format!(
-            "LaunchAgent '{service}' is loaded, but launchd did not report its process state"
-        ),
+    let state = property("state").map(str::to_owned);
+    LaunchdProcessState {
+        running: state.as_deref() == Some("running"),
+        pid: property("pid").map(str::to_owned),
+        state,
     }
+}
+
+/// Queries launchd's persistent disabled override when the domain supports it.
+#[cfg(target_os = "macos")]
+async fn service_is_enabled(service: &str) -> Result<Option<bool>> {
+    let output = Command::new("launchctl")
+        .args(["print-disabled", &user_domain()])
+        .output()
+        .await
+        .context("Failed to ask launchd for disabled overrides")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(parse_enabled_override(
+        service,
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+/// Interprets current and older launchd enablement values for one exact label.
+#[cfg(any(target_os = "macos", test))]
+fn parse_enabled_override(service: &str, output: &str) -> Option<bool> {
+    for line in output.lines() {
+        let Some((label, value)) = line.split_once("=>") else {
+            continue;
+        };
+        let label = label.trim();
+        let Some(label) = label
+            .strip_prefix('"')
+            .and_then(|label| label.strip_suffix('"'))
+        else {
+            continue;
+        };
+        if label != service {
+            continue;
+        }
+        return match value.trim() {
+            "enabled" | "false" => Some(true),
+            "disabled" | "true" => Some(false),
+            _ => None,
+        };
+    }
+    // Labels without a disabled selection are enabled by launchd's default policy.
+    Some(true)
+}
+
+/// Reports installation and runtime state without failing merely because it is stopped.
+#[cfg(target_os = "macos")]
+async fn show_status(service: &str, plist_path: &Path) -> Result<()> {
+    let installed = tokio::fs::try_exists(plist_path)
+        .await
+        .with_context(|| format!("Failed to inspect LaunchAgent '{}'", plist_path.display()))?;
+    let state = loaded_service_state(&service_target(service)).await?;
+    let enabled = if installed {
+        service_is_enabled(service).await?
+    } else {
+        None
+    };
+    println!(
+        "{}",
+        format_status(service, installed, enabled, state.as_ref())
+    );
+    Ok(())
+}
+
+/// Formats all independently useful launchd state dimensions in one concise line.
+#[cfg(any(target_os = "macos", test))]
+fn format_status(
+    service: &str,
+    installed: bool,
+    enabled: Option<bool>,
+    process: Option<&LaunchdProcessState>,
+) -> String {
+    let runtime = match process {
+        Some(process) if process.running => match &process.pid {
+            Some(pid) => format!("loaded, running, PID {pid}"),
+            None => "loaded, running".to_string(),
+        },
+        Some(process) => match &process.state {
+            Some(state) => format!("loaded, stopped ({state})"),
+            None => "loaded, stopped".to_string(),
+        },
+        None => "unloaded, stopped".to_string(),
+    };
+    if !installed {
+        return match process {
+            Some(_) => format!("LaunchAgent '{service}': not installed, {runtime}"),
+            None => format!("LaunchAgent '{service}': not installed"),
+        };
+    }
+    let enabled = match enabled {
+        Some(true) => "enabled",
+        Some(false) => "disabled",
+        None => "enablement unknown",
+    };
+    format!("LaunchAgent '{service}': installed, {enabled}, {runtime}")
 }
 
 /// Returns the conventional plist path for a user LaunchAgent label.
@@ -335,34 +470,9 @@ async fn ensure_plist_exists(path: &Path, service: &str, mode: ServiceRole) -> R
         return Ok(());
     }
     bail!(
-        "macOS LaunchAgent '{service}' does not exist. Install it first with: redoor {} launchd setup --service-name {service}",
+        "macOS LaunchAgent '{service}' is not installed. Install it with: redoor {} launchd install",
         mode.cli_name()
     )
-}
-
-/// Follows the role's configured or conventional file log without buffering it.
-#[cfg(target_os = "macos")]
-async fn show_log(mode: ServiceRole, follow: bool) -> Result<()> {
-    let config_path = crate::config::default_config_path()?;
-    let config = crate::config::parse_config_file(&config_path.to_string_lossy())
-        .await
-        .with_context(|| format!("Failed to parse config '{}'", config_path.display()))?;
-    let configured = match mode {
-        ServiceRole::Agent => config.agent.and_then(|section| section.log),
-        ServiceRole::Server => config.server.and_then(|section| section.log),
-    };
-    let log_path = match configured.filter(|path| !path.trim().is_empty()) {
-        Some(path) => path,
-        None => match mode {
-            ServiceRole::Agent => crate::config::default_agent_log_path()?,
-            ServiceRole::Server => crate::config::default_server_log_path()?,
-        },
-    };
-    if follow {
-        run_command_inherited("tail", &["-n", "500", "-f", &log_path]).await
-    } else {
-        run_command_inherited("tail", &["-n", "500", &log_path]).await
-    }
 }
 
 /// Returns the home directory required for user config and LaunchAgents.
@@ -373,10 +483,10 @@ fn home_directory() -> Result<PathBuf> {
         .context("HOME is not set; cannot locate the macOS LaunchAgents directory")
 }
 
-/// Ensures setup has a complete shared config and reports whether it was created.
+/// Ensures installation has a complete shared config and reports whether it was created.
 ///
-/// Only `redoor server` generates starter config; server launchd setup requires that
-/// file already exist. Agent setup still imports the server's config from stdin.
+/// Only `redoor server` generates starter config; server launchd installation requires
+/// that file already exist. Agent installation still imports server config from stdin.
 #[cfg(target_os = "macos")]
 async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     if tokio::fs::try_exists(config_path)
@@ -394,7 +504,7 @@ async fn prepare_config(mode: ServiceRole, config_path: &Path) -> Result<bool> {
     }
 
     bail!(
-        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run setup",
+        "config '{}' is missing; run `redoor server` once to create a starter config, then re-run install",
         config_path.display()
     )
 }
@@ -421,7 +531,7 @@ async fn validate_existing_config(mode: ServiceRole, config_path: &Path) -> Resu
     Ok(())
 }
 
-/// Prints user-scoped launchctl commands after successful setup.
+/// Prints user-scoped launchctl commands after successful installation.
 #[cfg(target_os = "macos")]
 fn print_manage_help(
     service: &str,
@@ -429,10 +539,12 @@ fn print_manage_help(
     config_path: &Path,
     config_created: bool,
     mode: ServiceRole,
+    started: bool,
 ) {
     println!(
-        "Wrote LaunchAgent {service} at {} and enabled it at login (not started).",
-        plist_path.display()
+        "Installed LaunchAgent {service} at {} and enabled it at login ({}).",
+        plist_path.display(),
+        if started { "started" } else { "not started" }
     );
     if config_created {
         println!(
@@ -448,15 +560,13 @@ Edit it before starting the service.",
     }
     println!(
         "
-Start when ready:
-  redoor {} launchd start --service-name {service}
-
 Manage the service:
-  redoor {} launchd start --service-name {service}
-  redoor {} launchd stop --service-name {service}
-  redoor {} launchd restart --service-name {service}
-  redoor {} launchd status --service-name {service}
-  redoor {} launchd logs --service-name {service}",
+  redoor {} launchd start
+  redoor {} launchd stop       # remains enabled for future login
+  redoor {} launchd restart
+  redoor {} launchd status
+  redoor {} launchd disable --now
+  redoor {} logs --follow",
         mode.cli_name(),
         mode.cli_name(),
         mode.cli_name(),
@@ -464,6 +574,54 @@ Manage the service:
         mode.cli_name(),
         mode.cli_name()
     );
+}
+
+/// Replaces a plist in one rename so launchd never observes a partial definition.
+#[cfg(target_os = "macos")]
+async fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .context("LaunchAgent path has no file name")?
+        .to_string_lossy();
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        fastrand::u64(..)
+    ));
+    let write_result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to create temporary LaunchAgent '{}'",
+                    temporary_path.display()
+                )
+            })?;
+        file.write_all(content).await.with_context(|| {
+            format!(
+                "Failed to write temporary LaunchAgent '{}'",
+                temporary_path.display()
+            )
+        })?;
+        file.sync_all().await.with_context(|| {
+            format!(
+                "Failed to sync temporary LaunchAgent '{}'",
+                temporary_path.display()
+            )
+        })?;
+        drop(file);
+        tokio::fs::rename(&temporary_path, path)
+            .await
+            .with_context(|| format!("Failed to install LaunchAgent '{}'", path.display()))
+    }
+    .await;
+    if write_result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+    }
+    write_result
 }
 
 /// Renders a LaunchAgent plist with separately escaped program arguments.
@@ -573,47 +731,22 @@ async fn run_status_command(
         .with_context(|| format!("Failed to run {program}"))
 }
 
-/// Runs a continuous command with inherited streams for interactive log following.
-#[cfg(target_os = "macos")]
-async fn run_command_inherited(program: &str, arguments: &[&str]) -> Result<()> {
-    let status = Command::new(program)
-        .args(arguments)
-        .status()
-        .await
-        .with_context(|| format!("Failed to run {program}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("{} {} failed with {}", program, arguments.join(" "), status)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ServiceRole, escape_xml, format_status, render_plist, resolve_service_name};
+    use super::{
+        LaunchdProcessState, ServiceRole, escape_xml, format_status, parse_enabled_override,
+        parse_process_state, render_plist, service_name,
+    };
     use std::path::Path;
 
-    /// Verifies default labels and safe custom labels remain stable.
+    /// Verifies labels derive solely from the validated application identity.
     #[test]
-    fn service_names_default_and_reject_paths() {
+    fn service_names_use_application_identity() {
         let app_name = crate::app_name::app_name().unwrap();
         assert_eq!(
-            resolve_service_name(ServiceRole::Agent, None).unwrap(),
+            service_name(ServiceRole::Agent).unwrap(),
             format!("{app_name}-agent"),
-            "the default agent label should use the application namespace"
-        );
-        assert_eq!(
-            resolve_service_name(ServiceRole::Server, Some("redoor.preview".into())).unwrap(),
-            "redoor.preview",
-            "an explicit bare launchd label should remain unchanged"
-        );
-        assert!(
-            resolve_service_name(ServiceRole::Agent, Some("../escape".into())).is_err(),
-            "service labels must not escape the LaunchAgents directory"
-        );
-        assert!(
-            resolve_service_name(ServiceRole::Agent, Some("  ".into())).is_err(),
-            "blank service labels must be rejected"
+            "the agent label should use the validated application namespace"
         );
     }
 
@@ -667,19 +800,74 @@ mod tests {
     /// Keeps concise status explicit about the difference between loaded and running.
     #[test]
     fn formats_launchd_process_status() {
-        assert_eq!(
-            format_status(
-                "redoor-server",
-                "state = running
+        let running = parse_process_state(
+            "state = running
 pid = 1234",
-            ),
-            "LaunchAgent 'redoor-server' is loaded and running with PID 1234",
-            "a running service should include its process ID"
         );
         assert_eq!(
-            format_status("redoor-server", "state = waiting"),
-            "LaunchAgent 'redoor-server' is loaded but not running (state: waiting)",
+            format_status("redoor-server", true, Some(true), Some(&running)),
+            "LaunchAgent 'redoor-server': installed, enabled, loaded, running, PID 1234",
+            "a running service should include its process ID"
+        );
+        let waiting = LaunchdProcessState {
+            running: false,
+            pid: None,
+            state: Some("waiting".to_string()),
+        };
+        assert_eq!(
+            format_status("redoor-server", true, Some(false), Some(&waiting)),
+            "LaunchAgent 'redoor-server': installed, disabled, loaded, stopped (waiting)",
             "a registered service without a process must not be described as running"
+        );
+        assert_eq!(
+            format_status("redoor-server", false, Some(true), None),
+            "LaunchAgent 'redoor-server': not installed",
+            "an absent definition should not show meaningless enablement or runtime state"
+        );
+        assert_eq!(
+            format_status("redoor-server", false, Some(false), Some(&running)),
+            "LaunchAgent 'redoor-server': not installed, loaded, running, PID 1234",
+            "a loaded orphan should remain visible without implying an installed configuration"
+        );
+    }
+
+    /// Verifies real and older launchd values are matched by exact label.
+    #[test]
+    fn interprets_launchd_enablement_override() {
+        let output = r#"disabled services = {
+        "com.apple.example" => disabled
+        "redoor-server-preview" => disabled
+        "redoor-server"    =>    enabled
+        "redoor-agent" => disabled
+}"#;
+        assert_eq!(
+            parse_enabled_override("redoor-server", output),
+            Some(true),
+            "the enabled value emitted by current launchctl should be recognized"
+        );
+        assert_eq!(
+            parse_enabled_override("redoor-agent", output),
+            Some(false),
+            "the disabled value emitted by current launchctl should be recognized"
+        );
+        assert_eq!(
+            parse_enabled_override("redoor", output),
+            Some(true),
+            "a partial label match must not inherit another service's state"
+        );
+        let older_output = r#"disabled services = {
+    "redoor-server" => true
+    "redoor-agent" => false
+}"#;
+        assert_eq!(
+            parse_enabled_override("redoor-server", older_output),
+            Some(false),
+            "the older true representation means the disabled selection is set"
+        );
+        assert_eq!(
+            parse_enabled_override("redoor-agent", older_output),
+            Some(true),
+            "the older false representation means the disabled selection is clear"
         );
     }
 }
