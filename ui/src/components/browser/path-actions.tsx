@@ -3,19 +3,18 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
-    CheckSquare,
     Download,
     ExternalLink,
     LoaderCircle,
     MoreHorizontal,
     Pencil,
-    Square,
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
+import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
@@ -28,10 +27,10 @@ import {
     getImmediateParentPath,
     joinBrowserPath,
 } from "#ui/components/browser/utils";
+import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 import {
-    selectFileAtom,
     selectedFileKeysAtom,
-    unselectFileAtom,
+    toggleSelectedFileAtom,
 } from "#ui/selected-files";
 
 /** Renames the current entry in a focused workflow and follows its new URL. */
@@ -229,6 +228,48 @@ export function RenamePathAction(props: {
     });
 }
 
+/** Lets any path menu add or remove the current entry without duplicating selection wiring. */
+export function SelectPathMenuButton(props: {
+    agent: Agent;
+    path: string;
+    fileName: string;
+    entryType: "file" | "directory";
+    close: () => void;
+}) {
+    const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
+    const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
+    const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
+    const isSelected = selectedFileKeys.has(`${props.agent.id}:${props.path}`);
+    const label = isSelected
+        ? `Unselect this ${props.entryType}`
+        : `Select this ${props.entryType}`;
+
+    return (
+        <Checkbox
+            checked={isSelected}
+            label={label}
+            title={false}
+            className="w-full px-3 py-2"
+            onCheckedChange={() => {
+                props.close();
+                toggleSelectedFile({
+                    agentId: props.agent.id,
+                    agentName: props.agent.name,
+                    path: props.path,
+                    fileName: props.fileName,
+                    entryType: props.entryType,
+                });
+                if (!isSelected) {
+                    // Menu selection has no listing checkbox, so show the chosen path immediately.
+                    activateBottomDrawerTab("selected");
+                }
+            }}
+        >
+            {label}
+        </Checkbox>
+    );
+}
+
 /** Keeps rename and destructive object actions out of the primary action row. */
 function PathMoreActions(props: {
     agent: Agent;
@@ -239,10 +280,6 @@ function PathMoreActions(props: {
     onDelete?: () => void;
 }) {
     const canModify = getImmediateParentPath(props.path) !== null;
-    const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
-    const selectFile = useSetAtom(selectFileAtom);
-    const unselectFile = useSetAtom(unselectFileAtom);
-    const isSelected = selectedFileKeys.has(`${props.agent.id}:${props.path}`);
     const openMutation = useMutation({
         mutationFn: () => props.agent.openPath(props.path),
     });
@@ -292,34 +329,13 @@ function PathMoreActions(props: {
                                     <Pencil className="h-4 w-4 text-slate-400" />
                                     Rename
                                 </ActionMenuButton>
-                                <ActionMenuButton
-                                    onClick={() => {
-                                        close();
-                                        if (isSelected) {
-                                            unselectFile({
-                                                agentId: props.agent.id,
-                                                path: props.path,
-                                            });
-                                            return;
-                                        }
-                                        selectFile({
-                                            agentId: props.agent.id,
-                                            agentName: props.agent.name,
-                                            path: props.path,
-                                            fileName: props.currentName,
-                                            entryType: props.entryType,
-                                        });
-                                    }}
-                                >
-                                    {isSelected ? (
-                                        <Square className="h-4 w-4 text-slate-400" />
-                                    ) : (
-                                        <CheckSquare className="h-4 w-4 text-slate-400" />
-                                    )}
-                                    {isSelected
-                                        ? `Unselect this ${props.entryType}`
-                                        : `Select this ${props.entryType}`}
-                                </ActionMenuButton>
+                                <SelectPathMenuButton
+                                    agent={props.agent}
+                                    path={props.path}
+                                    fileName={props.currentName}
+                                    entryType={props.entryType}
+                                    close={close}
+                                />
                                 <BookmarkMenuButton
                                     close={close}
                                     bookmark={{

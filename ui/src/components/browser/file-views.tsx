@@ -13,6 +13,7 @@ import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { CodeEditor } from "#ui/components/browser/code-editor";
+import { SelectPathMenuButton } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -103,7 +104,11 @@ function FileEditActions(props: {
 }
 
 /** Keeps editor-specific preferences close to the surface they immediately affect. */
-function EditorOptionsMenu() {
+function EditorOptionsMenu(props: {
+    agent: Agent;
+    path: string;
+    fileName: string;
+}) {
     const [userState, setUserState] = useUserState();
 
     return (
@@ -116,8 +121,16 @@ function EditorOptionsMenu() {
             icon={<MoreHorizontal className="h-4 w-4" />}
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md p-0 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
         >
-            {() => (
+            {(close) => (
                 <>
+                    <SelectPathMenuButton
+                        agent={props.agent}
+                        path={props.path}
+                        fileName={props.fileName}
+                        entryType="file"
+                        close={close}
+                    />
+                    <div className="my-1 border-t border-slate-800" />
                     <Checkbox
                         checked={userState.wrapEditorLines}
                         label="Wrap lines"
@@ -334,7 +347,11 @@ export function FileEditView(props: {
                                     setIsFullWindow((current) => !current)
                                 }
                             />
-                            <EditorOptionsMenu />
+                            <EditorOptionsMenu
+                                agent={props.agent}
+                                path={props.filePath}
+                                fileName={props.fileName}
+                            />
                         </div>
                     </div>
                 </header>

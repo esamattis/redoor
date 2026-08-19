@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    minimizeBottomDrawer,
     simulateTabRefocus,
     WEB_BASE_URL,
     type TestContext,
@@ -255,6 +256,57 @@ test.describe.serial("File Edit View", () => {
         await expect(page.getByLabel("File editor")).toHaveText(
             "full window content",
         );
+    });
+
+    test("should select the open file from the editor options menu", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
+        );
+        await expectEditorText(page.getByLabel("File editor"), "content1");
+
+        await page.getByRole("button", { name: "Editor options" }).click();
+        const editorOptions = page.getByRole("dialog", {
+            name: "Editor options",
+        });
+        const selectFile = editorOptions.getByRole("button", {
+            name: "Select this file",
+            exact: true,
+        });
+        // An unselected path must render the empty checkbox, not a checked icon.
+        await expect(selectFile).toHaveAttribute("aria-pressed", "false");
+        await selectFile.click();
+
+        // The editor has no listing checkbox, so its overflow menu must add the open file.
+        await expect(
+            page.getByRole("tab", { name: "Selected 1" }),
+        ).toBeVisible();
+        // Selecting from the menu should reveal the shared selected-items drawer.
+        await expect(
+            page.getByRole("button", { name: "Minimize bottom drawer" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("tabpanel", { name: /Selected/ }).getByRole("link", {
+                name: "file1.txt",
+                exact: true,
+            }),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "Editor options" }).click();
+        const unselectFile = editorOptions.getByRole("button", {
+            name: "Unselect this file",
+            exact: true,
+        });
+        // Reopening the menu must show the path as already selected.
+        await expect(unselectFile).toHaveAttribute("aria-pressed", "true");
+        await unselectFile.click();
+
+        // The same menu must also be able to remove the current file from the selection.
+        await expect(
+            page.getByRole("tab", { name: "Selected 0" }),
+        ).toBeVisible();
+        await minimizeBottomDrawer(page);
     });
 
     test("should refresh a clean editor when the tab is focused", async ({

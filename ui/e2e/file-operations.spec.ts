@@ -6,6 +6,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    minimizeBottomDrawer,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -789,32 +790,44 @@ test.describe.serial("File Operations", () => {
         ).toContainText("subdir3");
 
         await page.getByRole("button", { name: "More", exact: true }).click();
-        await page
-            .getByRole("dialog", { name: "More" })
-            .getByRole("button", {
-                name: "Select this directory",
-                exact: true,
-            })
-            .click();
+        const moreMenu = page.getByRole("dialog", { name: "More" });
+        const selectDirectory = moreMenu.getByRole("button", {
+            name: "Select this directory",
+            exact: true,
+        });
+        // An unselected path must render the empty checkbox, not a checked icon.
+        await expect(selectDirectory).toHaveAttribute("aria-pressed", "false");
+        await selectDirectory.click();
 
         // The open directory has no listing checkbox, so the more menu must add it to the selection.
         await expect(
             page.getByText("0 files, 1 directory selected"),
         ).toBeVisible();
+        // Selecting from the menu should reveal the shared selected-items drawer.
+        await expect(
+            page.getByRole("button", { name: "Minimize bottom drawer" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("tabpanel", { name: /Selected/ }).getByRole("link", {
+                name: "subdir3",
+                exact: true,
+            }),
+        ).toBeVisible();
 
         await page.getByRole("button", { name: "More", exact: true }).click();
-        await page
-            .getByRole("dialog", { name: "More" })
-            .getByRole("button", {
-                name: "Unselect this directory",
-                exact: true,
-            })
-            .click();
+        const unselectDirectory = moreMenu.getByRole("button", {
+            name: "Unselect this directory",
+            exact: true,
+        });
+        // Reopening the menu must show the path as already selected.
+        await expect(unselectDirectory).toHaveAttribute("aria-pressed", "true");
+        await unselectDirectory.click();
 
         // The same menu must also be able to remove the current directory from the selection.
         await expect(
             page.getByText("0 files, 0 directories selected"),
         ).toBeVisible();
+        await minimizeBottomDrawer(page);
     });
 
     test("should delete selected file from directory view after confirmation", async ({

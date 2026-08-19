@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
     encodeFilesystemPath,
+    minimizeBottomDrawer,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
@@ -532,6 +533,59 @@ test.describe.serial("File Detail View", () => {
         await expect(fs.readFile(renamedPath, "utf8")).resolves.toBe(
             "rename content",
         );
+    });
+
+    test("should select the open file from the more menu", async ({ page }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}?view=details`,
+        );
+        await expect(
+            page.getByRole("heading", { name: "File name" }),
+        ).toContainText("file1.txt");
+
+        await page
+            .getByRole("button", { name: "File actions", exact: true })
+            .click();
+        const fileActions = page.getByRole("dialog", { name: "File actions" });
+        const selectFile = fileActions.getByRole("button", {
+            name: "Select this file",
+            exact: true,
+        });
+        // An unselected path must render the empty checkbox, not a checked icon.
+        await expect(selectFile).toHaveAttribute("aria-pressed", "false");
+        await selectFile.click();
+
+        // File details has no listing checkbox, so the more menu must add the open file.
+        await expect(
+            page.getByRole("tab", { name: "Selected 1" }),
+        ).toBeVisible();
+        // Selecting from the menu should reveal the shared selected-items drawer.
+        await expect(
+            page.getByRole("button", { name: "Minimize bottom drawer" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("tabpanel", { name: /Selected/ }).getByRole("link", {
+                name: "file1.txt",
+                exact: true,
+            }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("button", { name: "File actions", exact: true })
+            .click();
+        const unselectFile = fileActions.getByRole("button", {
+            name: "Unselect this file",
+            exact: true,
+        });
+        // Reopening the menu must show the path as already selected.
+        await expect(unselectFile).toHaveAttribute("aria-pressed", "true");
+        await unselectFile.click();
+
+        // The same menu must also be able to remove the current file from the selection.
+        await expect(
+            page.getByRole("tab", { name: "Selected 0" }),
+        ).toBeVisible();
+        await minimizeBottomDrawer(page);
     });
 
     test("should navigate back from file detail view", async ({ page }) => {
