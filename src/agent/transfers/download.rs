@@ -625,8 +625,8 @@ mod tests {
             "empty directories still have a root header plus two end blocks"
         );
 
-        let _ = tokio::fs::remove_dir_all(&source_root).await;
-        let _ = tokio::fs::remove_dir_all(&empty_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&source_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&empty_root).await;
     }
 
     #[tokio::test]
@@ -645,6 +645,6 @@ mod tests {
             "cancel must stop the walk before it publishes a stale total"
         );
 
-        let _ = tokio::fs::remove_dir_all(&source_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&source_root).await;
     }
 }

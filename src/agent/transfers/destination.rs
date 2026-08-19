@@ -137,7 +137,7 @@ pub(crate) async fn remove_existing_path(path: &Path) -> Result<(), DestinationP
     // Symlinks report as non-directories even when they point at directories, so remove_file
     // drops the link itself instead of deleting the link target tree.
     if metadata.is_dir() {
-        tokio::fs::remove_dir_all(path)
+        redoor::safe_fs::safe_rm_all(path)
             .await
             .map_err(DestinationPlaceError::RemoveExistingDestination)
     } else {
@@ -232,7 +232,7 @@ pub(crate) async fn place_temp_at_destination(
             ensure_merge_types_compatible(final_path, content_is_directory).await?;
             if content_is_directory {
                 merge_directory_tree(temp_path, final_path).await?;
-                let _ = tokio::fs::remove_dir_all(temp_path).await;
+                let _ = redoor::safe_fs::safe_rm_all(temp_path).await;
                 Ok(())
             } else {
                 // File merge replaces the destination file contents atomically via rename.
@@ -421,8 +421,8 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&dest_link).await;
-        let _ = tokio::fs::remove_dir_all(&external).await;
-        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&external).await;
+        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
@@ -494,9 +494,9 @@ mod tests {
             "source files must not escape into the old symlink target"
         );
 
-        let _ = tokio::fs::remove_dir_all(&dest_root).await;
-        let _ = tokio::fs::remove_dir_all(&external).await;
-        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&dest_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&external).await;
+        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
@@ -547,9 +547,9 @@ mod tests {
             "merge must not truncate or overwrite the old symlink target"
         );
 
-        let _ = tokio::fs::remove_dir_all(&dest_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&dest_root).await;
         let _ = tokio::fs::remove_file(&external_file).await;
-        let _ = tokio::fs::remove_dir_all(&temp_root).await;
+        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
@@ -673,6 +673,6 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&dest_link).await;
-        let _ = tokio::fs::remove_dir_all(&external).await;
+        let _ = redoor::safe_fs::safe_rm_all(&external).await;
     }
 }

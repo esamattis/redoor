@@ -74,7 +74,7 @@ impl TarUploadError {
 
 /// Removes an abandoned upload temp directory so failed tar uploads do not leave partial trees behind.
 async fn remove_upload_temp_directory(temp_path: &Path) {
-    if let Err(error) = tokio::fs::remove_dir_all(temp_path).await {
+    if let Err(error) = redoor::safe_fs::safe_rm_all(temp_path).await {
         log!(
             Level::Warning,
             "Failed to remove upload temp directory: path={}, error={}",
@@ -610,7 +610,7 @@ async fn finalize_tar_upload(
                 place_temp_at_destination(&temp_path, Path::new(&final_path), on_existing, true)
                     .await
             {
-                let _ = tokio::fs::remove_dir_all(&temp_path).await;
+                let _ = redoor::safe_fs::safe_rm_all(&temp_path).await;
 
                 AgentActor
                     .send_command_response(
@@ -636,7 +636,7 @@ async fn finalize_tar_upload(
                 .await;
         }
         Err(error) => {
-            let _ = tokio::fs::remove_dir_all(&temp_path).await;
+            let _ = redoor::safe_fs::safe_rm_all(&temp_path).await;
             AgentActor
                 .send_command_response(
                     tx,

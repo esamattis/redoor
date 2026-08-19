@@ -620,7 +620,7 @@ mod tests {
         let digest = file_sha1sum(&path).await.unwrap();
         assert_eq!(digest, "5cd57297d6ccaa26976cb250ba018adbc98d5907");
 
-        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = redoor::safe_fs::safe_rm_all(&dir).await;
     }
 
     /// Streams the generated probe to a POSIX shell just as SSH does, proving

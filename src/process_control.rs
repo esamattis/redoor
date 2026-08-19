@@ -823,7 +823,7 @@ mod tests {
         ParentDeathChild {
             parent,
             child_pid,
-            dir,
+            dir: Some(dir),
             survived,
         }
     }
@@ -833,8 +833,20 @@ mod tests {
     struct ParentDeathChild {
         parent: std::process::Child,
         child_pid: i32,
-        dir: PathBuf,
+        dir: Option<PathBuf>,
         survived: PathBuf,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+    impl ParentDeathChild {
+        /// Awaits recursive cleanup so successful tests cannot leave process-lifetime fixtures behind.
+        async fn cleanup(mut self) {
+            if let Some(dir) = self.dir.take() {
+                redoor::safe_fs::safe_rm_all(dir)
+                    .await
+                    .expect("parent-death temp directory should be removable");
+            }
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
@@ -844,7 +856,13 @@ mod tests {
             let _ = self.parent.kill();
             let _ = self.parent.wait();
             let _ = kill(Pid::from_raw(self.child_pid), Signal::SIGKILL);
-            let _ = std::fs::remove_dir_all(&self.dir);
+            if let Some(dir) = self.dir.take()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                runtime.spawn(async move {
+                    let _ = redoor::safe_fs::safe_rm_all(dir).await;
+                });
+            }
         }
     }
 
@@ -857,8 +875,8 @@ mod tests {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
-    #[test]
-    fn foreground_child_exits_after_parent_is_killed() {
+    #[tokio::test]
+    async fn foreground_child_exits_after_parent_is_killed() {
         let mut child = spawn_parent_death_child("foreground", false);
         kill_parent(&mut child);
         wait_until_dead(child.child_pid);
@@ -868,11 +886,12 @@ mod tests {
             "foreground child {} should exit after parent SIGKILL",
             child.child_pid
         );
+        child.cleanup().await;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
-    #[test]
-    fn detached_child_survives_after_spawning_cli_exits() {
+    #[tokio::test]
+    async fn detached_child_survives_after_spawning_cli_exits() {
         let mut child = spawn_parent_death_child("detached", true);
         kill_parent(&mut child);
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
@@ -885,11 +904,12 @@ mod tests {
             );
             std::thread::yield_now();
         }
+        child.cleanup().await;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
-    #[test]
-    fn child_exits_when_parent_is_already_dead_before_the_hook() {
+    #[tokio::test]
+    async fn child_exits_when_parent_is_already_dead_before_the_hook() {
         let mut child = spawn_parent_death_child("already-dead", false);
         kill_parent(&mut child);
         wait_until_dead(child.child_pid);
@@ -898,5 +918,6 @@ mod tests {
             !child.survived.exists(),
             "already-orphaned child should exit inside bind_to_parent_lifetime"
         );
+        child.cleanup().await;
     }
 }

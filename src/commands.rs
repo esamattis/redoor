@@ -1313,7 +1313,7 @@ mod tests {
             _ => panic!("Expected CreateDirectory"),
         }
 
-        tokio::fs::remove_dir_all(&temp_dir)
+        crate::safe_fs::safe_rm_all(&temp_dir)
             .await
             .expect("temporary directory should be removable");
     }
@@ -1364,7 +1364,7 @@ mod tests {
             _ => panic!("Expected RenamePath"),
         }
 
-        tokio::fs::remove_dir_all(&temp_dir)
+        crate::safe_fs::safe_rm_all(&temp_dir)
             .await
             .expect("temporary directory should be removable");
     }

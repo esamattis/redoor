@@ -424,7 +424,7 @@ mod tests {
             tokio::fs::try_exists(&path).await.expect("exists check"),
             "opening the logger must create the log file after creating parents"
         );
-        tokio::fs::remove_dir_all(directory)
+        crate::safe_fs::safe_rm_all(directory)
             .await
             .expect("test directory should be removable");
     }

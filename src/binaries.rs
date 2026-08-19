@@ -24,7 +24,7 @@ impl ProvisionWorkDir {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        match tokio::fs::remove_dir_all(path).await {
+        match redoor::safe_fs::safe_rm_all(path).await {
             Ok(()) => {
                 self.path = None;
                 Ok(())
@@ -45,7 +45,7 @@ impl Drop for ProvisionWorkDir {
             return;
         };
         tokio::spawn(async move {
-            if let Err(error) = tokio::fs::remove_dir_all(&path).await
+            if let Err(error) = redoor::safe_fs::safe_rm_all(&path).await
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 log!(
@@ -486,7 +486,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(selected, expected);
-        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Concurrent misses share one provision and only observe the atomically published file.
@@ -520,7 +520,7 @@ mod tests {
         );
 
         server.abort();
-        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Failed extraction leaves neither a final executable nor temporary provisioning state.
@@ -551,7 +551,7 @@ mod tests {
         assert!(entries.next_entry().await.unwrap().is_none());
 
         server.abort();
-        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Canceling a streaming download must not strand its unique provisioning directory.
@@ -591,6 +591,6 @@ mod tests {
         );
 
         server.abort();
-        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 }

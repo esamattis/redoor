@@ -150,7 +150,7 @@ server = "https://example.test"
             "the imported config contains secrets and must be owner-readable only"
         );
 
-        tokio::fs::remove_dir_all(directory).await.ok();
+        redoor::safe_fs::safe_rm_all(directory).await.ok();
     }
 
     /// Verifies imports never overwrite a config that appears before the final create.

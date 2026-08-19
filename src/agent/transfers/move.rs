@@ -149,7 +149,7 @@ impl AgentActor {
             self.run_local_copy_directory(source_path.clone(), dest_path, on_existing, response)
                 .await?;
             verify_move_source_identity(&source, &expected_identity).await?;
-            tokio::fs::remove_dir_all(source)
+            redoor::safe_fs::safe_rm_all(source)
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
         } else {
@@ -475,7 +475,7 @@ mod tests {
             "destination must contain the renamed source tree"
         );
 
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("rename test root should be cleaned up");
     }
@@ -513,7 +513,7 @@ mod tests {
             "destination must contain the renamed source contents"
         );
 
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("rename test root should be cleaned up");
     }
@@ -557,7 +557,7 @@ mod tests {
             "existing destination contents must be preserved"
         );
 
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("rename test root should be cleaned up");
     }
@@ -605,7 +605,7 @@ mod tests {
             "the old destination must be available for cleanup at the source name"
         );
 
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("rename test root should be cleaned up");
     }
@@ -658,7 +658,7 @@ mod tests {
             "the old destination must be available for cleanup at the source name"
         );
 
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("rename test root should be cleaned up");
     }

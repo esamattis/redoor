@@ -254,7 +254,7 @@ mod tests {
         tokio::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700))
             .await
             .expect("test directory permissions should be restored");
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("test tree should be removed");
         let CommandResult::FileSearch(response) = result else {
@@ -292,7 +292,7 @@ mod tests {
         )
         .await;
 
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("test tree should be removed");
         let CommandResult::FileSearch(response) = result else {
@@ -343,10 +343,10 @@ mod tests {
         )
         .await;
 
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("search root should be removed");
-        tokio::fs::remove_dir_all(&external)
+        crate::safe_fs::safe_rm_all(&external)
             .await
             .expect("external target should be removed");
         let CommandResult::FileSearch(response) = result else {
@@ -414,7 +414,7 @@ mod tests {
         )
         .await;
 
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("test tree should be removed");
         let CommandResult::FileSearch(excluded_response) = excluded_result else {
@@ -468,7 +468,7 @@ mod tests {
         )
         .await;
 
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("test tree should be removed");
         let CommandResult::FileSearch(default_response) = default_result else {
@@ -533,7 +533,7 @@ mod tests {
         )
         .await;
 
-        tokio::fs::remove_dir_all(&root)
+        crate::safe_fs::safe_rm_all(&root)
             .await
             .expect("test tree should be removed");
         let CommandResult::FileSearch(respected_response) = respected else {

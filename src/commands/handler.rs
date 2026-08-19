@@ -307,7 +307,7 @@ impl CommandHandler {
         match tokio::fs::metadata(&path).await {
             Ok(metadata) => {
                 let delete_result = if metadata.is_dir() {
-                    tokio::fs::remove_dir_all(&path).await
+                    crate::safe_fs::safe_rm_all(&path).await
                 } else {
                     tokio::fs::remove_file(&path).await
                 };

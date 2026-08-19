@@ -1557,7 +1557,7 @@ target = "host"
             "checking an existing config must leave every byte unchanged"
         );
 
-        tokio::fs::remove_dir_all(directory).await.ok();
+        redoor::safe_fs::safe_rm_all(directory).await.ok();
     }
 
     /// Verifies nested agent_token under [server] fails with a migration hint.

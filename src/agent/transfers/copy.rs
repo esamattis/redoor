@@ -145,7 +145,7 @@ fn temp_local_copy_path(path: &str) -> PathBuf {
 async fn cleanup_local_copy_temp_path(path: &Path) {
     match tokio::fs::metadata(path).await {
         Ok(metadata) if metadata.is_dir() => {
-            let _ = tokio::fs::remove_dir_all(path).await;
+            let _ = redoor::safe_fs::safe_rm_all(path).await;
         }
         Ok(_) => {
             let _ = tokio::fs::remove_file(path).await;
@@ -898,7 +898,7 @@ mod tests {
                 .await
                 .expect("destination lookup")
         );
-        tokio::fs::remove_dir_all(&root)
+        redoor::safe_fs::safe_rm_all(&root)
             .await
             .expect("copy cancellation test root should be cleaned up");
     }

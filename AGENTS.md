@@ -16,6 +16,7 @@
 # Guidelines
 
 - Always use async apis from tokio instead of sync apis instead
+- Recursive directory deletion must always use `safe_rm_all`, never `remove_dir_all`
 - Always comments to functions, structs, enums and methods
     - The comments should try to answer the "why" question
 - When creating a function always consider first if it should be a method on a struct instead
