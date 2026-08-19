@@ -76,7 +76,11 @@ The method was to inventory task/process/channel/temp-resource creation, then tr
 
 #### H3. Tar upload cancellation can block Tokio and races the blocking extractor
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Tar uploads now use a bounded Tokio channel whose async send is selected against cancellation, while the blocking tar reader consumes it with `blocking_recv`. The upload session owns the extractor `JoinHandle`; success, cancellation, shutdown, and failure all close the input and join the extractor before publishing or removing its temp tree. Chunk payload ownership moves into the queue without cloning. A current-thread Tokio regression test fills the extractor queue, verifies cancellation remains runnable, and verifies extraction has stopped before temp cleanup.
 
 **References:**
 

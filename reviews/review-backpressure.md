@@ -154,7 +154,11 @@ stdout writes on a Tokio worker if stdout can be redirected to a slow pipe.
 
 ### High 4: Tar upload backpressure blocks a Tokio runtime worker and delays cancellation
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** The extractor bridge is now a bounded Tokio channel. The async upload worker awaits channel capacity while selecting against cancellation, and the blocking tar reader uses `blocking_recv`, so a slow extractor no longer occupies a Tokio worker. The payload is moved instead of cloned. The upload session also owns and joins the blocking extractor before every terminal temp-tree cleanup or successful placement. A current-thread Tokio regression test covers full-queue cancellation and join-before-removal ordering.
 
 **References:**
 

@@ -10,12 +10,10 @@ use redoor::{
     streaming::{self, StreamPayloadKind},
     types::{AgentId, RequestId},
 };
-use std::{
-    path::{Component, Path, PathBuf},
-    sync::mpsc as std_mpsc,
-};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// Keeps tar upload failures typed so the API layer never depends on parsing text.
@@ -151,32 +149,30 @@ async fn create_tar_upload_session(
         .await
         .map_err(TarUploadError::CreateTempDirectory)?;
 
-    let (chunk_sender, chunk_receiver) = std_mpsc::sync_channel::<Vec<u8>>(8);
-    let (completion_sender, completion_receiver) = oneshot::channel::<Result<(), TarUploadError>>();
+    let (chunk_sender, chunk_receiver) = mpsc::channel::<Vec<u8>>(8);
     let temp_path_for_worker = temp_path.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let unpack_result = unpack_tar_stream_into_directory(chunk_receiver, &temp_path_for_worker);
-        let _ = completion_sender.send(unpack_result);
+    let unpacker_handle = tokio::task::spawn_blocking(move || {
+        unpack_tar_stream_into_directory(chunk_receiver, &temp_path_for_worker)
     });
 
     Ok(TarUploadSession {
         path,
         temp_path,
         on_existing,
-        chunk_sender,
-        completion_receiver,
+        chunk_sender: Some(chunk_sender),
+        unpacker_handle: Some(unpacker_handle),
         bytes_written: 0,
     })
 }
 
-/// Extracts tar bytes from the sync chunk channel into the temp destination directory.
+/// Extracts tar bytes from the async-safe chunk channel into the temp destination directory.
 fn unpack_tar_stream_into_directory(
-    chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+    chunk_receiver: mpsc::Receiver<Vec<u8>>,
     destination_root: &Path,
 ) -> Result<(), TarUploadError> {
     struct ChannelTarReader {
-        chunk_receiver: std_mpsc::Receiver<Vec<u8>>,
+        chunk_receiver: mpsc::Receiver<Vec<u8>>,
         current_chunk: Vec<u8>,
         offset: usize,
         finished: bool,
@@ -203,12 +199,12 @@ fn unpack_tar_stream_into_directory(
                     return Ok(0);
                 }
 
-                match self.chunk_receiver.recv() {
-                    Ok(chunk) => {
+                match self.chunk_receiver.blocking_recv() {
+                    Some(chunk) => {
                         self.current_chunk = chunk;
                         self.offset = 0;
                     }
-                    Err(_) => {
+                    None => {
                         self.finished = true;
                         return Ok(0);
                     }
@@ -266,15 +262,39 @@ struct TarUploadSession {
     path: String,
     temp_path: PathBuf,
     on_existing: CopyExistingMode,
-    chunk_sender: std_mpsc::SyncSender<Vec<u8>>,
-    completion_receiver: oneshot::Receiver<Result<(), TarUploadError>>,
+    chunk_sender: Option<mpsc::Sender<Vec<u8>>>,
+    unpacker_handle: Option<JoinHandle<Result<(), TarUploadError>>>,
     bytes_written: u64,
+}
+
+impl TarUploadSession {
+    /// Closes the tar input and joins the blocking extractor before its temp tree can be touched.
+    async fn join_unpacker(&mut self) -> Result<(), TarUploadError> {
+        self.chunk_sender.take();
+
+        let Some(unpacker_handle) = self.unpacker_handle.take() else {
+            return Err(TarUploadError::ExtractionWorkerFailed(
+                "extractor was already joined".to_string(),
+            ));
+        };
+
+        match unpacker_handle.await {
+            Ok(result) => result,
+            Err(error) => Err(TarUploadError::ExtractionWorkerFailed(error.to_string())),
+        }
+    }
 }
 
 /// Outcome of waiting for either the next tar upload chunk or a cancel signal.
 enum TarUploadEvent {
     Chunk(Option<streaming::StreamChunk>),
-    Continue,
+    Cancel,
+    Exit,
+}
+
+/// Outcome of waiting for extractor capacity while cancellation remains responsive.
+enum TarChunkForwardEvent {
+    Sent(Result<(), mpsc::error::SendError<Vec<u8>>>),
     Cancel,
     Exit,
 }
@@ -293,10 +313,26 @@ struct TarUploadWorker {
 impl TarUploadWorker {
     /// Waits for the cooperative cancel signal used by tar upload workers.
     async fn wait_for_cancel(cancel_receiver: &mut watch::Receiver<bool>) -> TarUploadEvent {
-        match cancel_receiver.changed().await {
-            Ok(()) if *cancel_receiver.borrow() => TarUploadEvent::Cancel,
-            Ok(()) => TarUploadEvent::Continue,
+        match cancel_receiver.wait_for(|cancel| *cancel).await {
+            Ok(_) => TarUploadEvent::Cancel,
             Err(_) => TarUploadEvent::Exit,
+        }
+    }
+
+    /// Waits asynchronously for unpacker capacity without delaying cancellation on a full queue.
+    async fn forward_chunk(&mut self, data: Vec<u8>) -> TarChunkForwardEvent {
+        let Some(chunk_sender) = self.session.chunk_sender.as_ref() else {
+            return TarChunkForwardEvent::Sent(Err(mpsc::error::SendError(data)));
+        };
+        let cancel_receiver = &mut self.cancel_receiver;
+
+        tokio::select! {
+            event = Self::wait_for_cancel(cancel_receiver) => match event {
+                TarUploadEvent::Cancel => TarChunkForwardEvent::Cancel,
+                TarUploadEvent::Exit => TarChunkForwardEvent::Exit,
+                TarUploadEvent::Chunk(_) => unreachable!("cancel wait cannot produce a chunk"),
+            },
+            result = chunk_sender.send(data) => TarChunkForwardEvent::Sent(result),
         }
     }
 
@@ -318,10 +354,17 @@ impl TarUploadWorker {
         self.active_uploads.remove(self.request_id);
     }
 
-    /// Drops the active tar byte channel so the unpack worker can stop.
+    /// Stops and joins the tar extractor while retaining request context for lifecycle failures.
     async fn stop_unpacker(&mut self) {
-        let replacement = std_mpsc::sync_channel::<Vec<u8>>(1).0;
-        let _ = std::mem::replace(&mut self.session.chunk_sender, replacement);
+        if let Err(error) = self.session.join_unpacker().await {
+            log!(
+                Level::Warning,
+                "Tar upload extractor failed while stopping: request_id={}, path={}, error={}",
+                self.request_id,
+                self.session.path,
+                error
+            );
+        }
     }
 
     /// Handles an explicit server-side cancellation request.
@@ -332,13 +375,13 @@ impl TarUploadWorker {
             self.request_id,
             self.session.path
         );
+        self.stop_unpacker().await;
+        self.cleanup().await;
         self.send_error_response(
             CommandErrorKind::InvalidInput,
             "Upload canceled by server".to_string(),
         )
         .await;
-        self.stop_unpacker().await;
-        self.cleanup().await;
     }
 
     /// Handles worker shutdown after the upload registry has been torn down.
@@ -352,9 +395,9 @@ impl TarUploadWorker {
 
     /// Reports a terminal upload error and cleans up temporary state.
     async fn fail(mut self, kind: CommandErrorKind, message: String) {
-        self.send_error_response(kind, message).await;
         self.stop_unpacker().await;
         self.cleanup().await;
+        self.send_error_response(kind, message).await;
     }
 
     /// Finalizes a successfully received tar stream and reports completion.
@@ -384,7 +427,6 @@ impl TarUploadWorker {
 
             let next_chunk = match next_chunk {
                 TarUploadEvent::Chunk(chunk) => chunk,
-                TarUploadEvent::Continue => continue,
                 TarUploadEvent::Cancel => {
                     self.cancel().await;
                     return;
@@ -433,13 +475,26 @@ impl TarUploadWorker {
             }
 
             if !chunk.data.is_empty() {
-                if let Err(error) = self.session.chunk_sender.send(chunk.data.clone()) {
-                    let error_message =
-                        format!("Failed to forward tar upload chunk to unpacker: {}", error);
-                    self.fail(CommandErrorKind::Internal, error_message).await;
-                    return;
+                let chunk_len = chunk.data.len() as u64;
+                match self.forward_chunk(chunk.data).await {
+                    TarChunkForwardEvent::Sent(Ok(())) => {
+                        self.session.bytes_written += chunk_len;
+                    }
+                    TarChunkForwardEvent::Sent(Err(error)) => {
+                        let error_message =
+                            format!("Failed to forward tar upload chunk to unpacker: {}", error);
+                        self.fail(CommandErrorKind::Internal, error_message).await;
+                        return;
+                    }
+                    TarChunkForwardEvent::Cancel => {
+                        self.cancel().await;
+                        return;
+                    }
+                    TarChunkForwardEvent::Exit => {
+                        self.shutdown().await;
+                        return;
+                    }
                 }
-                self.session.bytes_written += chunk.data.len() as u64;
             }
 
             if !chunk.is_last {
@@ -540,19 +595,14 @@ async fn finalize_tar_upload(
     tx: &mpsc::Sender<WsMessage>,
     agent_id: &AgentId,
     request_id: RequestId,
-    session: TarUploadSession,
+    mut session: TarUploadSession,
 ) {
     let final_path = session.path.clone();
     let temp_path = session.temp_path.clone();
     let on_existing = session.on_existing;
     let bytes_written = session.bytes_written;
 
-    drop(session.chunk_sender);
-
-    let unpack_result = match session.completion_receiver.await {
-        Ok(result) => result,
-        Err(error) => Err(TarUploadError::ExtractionWorkerFailed(error.to_string())),
-    };
+    let unpack_result = session.join_unpacker().await;
 
     match unpack_result {
         Ok(()) => {
@@ -596,5 +646,94 @@ async fn finalize_tar_upload(
                 )
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[tokio::test]
+    async fn full_unpacker_queue_keeps_cancellation_async_and_joins_before_cleanup() {
+        let temp_path = std::env::temp_dir().join(format!(
+            "redoor-tar-upload-cancel-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        tokio::fs::create_dir(&temp_path)
+            .await
+            .expect("tar upload temp directory should be created");
+
+        let (chunk_sender, mut chunk_receiver) = mpsc::channel::<Vec<u8>>(1);
+        chunk_sender
+            .try_send(vec![1])
+            .expect("the first chunk should fill the bounded queue");
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel::<()>();
+        let extractor_stopped = Arc::new(AtomicBool::new(false));
+        let extractor_stopped_in_worker = Arc::clone(&extractor_stopped);
+        let unpacker_handle = tokio::task::spawn_blocking(move || {
+            release_receiver
+                .blocking_recv()
+                .expect("the test should release the extractor");
+            while chunk_receiver.blocking_recv().is_some() {}
+            extractor_stopped_in_worker.store(true, Ordering::Release);
+            Ok(())
+        });
+
+        let (_stream_sender, stream_receiver) = mpsc::channel(1);
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        let (tx, _rx) = mpsc::channel(1);
+        let mut worker = TarUploadWorker {
+            active_uploads: ActiveUploads::new(),
+            chunk_receiver: stream_receiver,
+            cancel_receiver,
+            session: TarUploadSession {
+                path: temp_path.display().to_string(),
+                temp_path: temp_path.clone(),
+                on_existing: CopyExistingMode::Error,
+                chunk_sender: Some(chunk_sender),
+                unpacker_handle: Some(unpacker_handle),
+                bytes_written: 0,
+            },
+            tx,
+            agent_id: AgentId::new("test-agent"),
+            request_id: RequestId::new(1),
+        };
+
+        let mut forward = Box::pin(worker.forward_chunk(vec![2]));
+        assert!(
+            matches!(futures_util::poll!(&mut forward), std::task::Poll::Pending),
+            "a full extractor queue must yield instead of blocking the Tokio worker"
+        );
+        cancel_sender
+            .send(true)
+            .expect("the active worker should receive cancellation");
+        assert!(
+            matches!(forward.await, TarChunkForwardEvent::Cancel),
+            "cancellation must win without waiting for extractor queue capacity"
+        );
+
+        release_sender
+            .send(())
+            .expect("the extractor should still be owned by the upload session");
+        worker.stop_unpacker().await;
+        assert!(
+            extractor_stopped.load(Ordering::Acquire),
+            "the blocking extractor must be joined before terminal cleanup continues"
+        );
+        assert!(
+            temp_path.exists(),
+            "joining the extractor must happen before its temp tree is removed"
+        );
+
+        worker.cleanup().await;
+        assert!(
+            !temp_path.exists(),
+            "terminal cleanup must remove the temp tree after the extractor exits"
+        );
     }
 }
