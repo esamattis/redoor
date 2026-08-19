@@ -789,21 +789,23 @@ function TransferProgressPane(props: {
     transfers: TransferProgressEntry[];
 }) {
     return (
-        <div className="flex h-full min-h-0 flex-col">
-            <div className="flex shrink-0 justify-end pb-2">
-                <Link
-                    to="/transfers"
-                    className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-                >
-                    View all
-                </Link>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-800">
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-800">
+            {props.transfers.length === 0 ? (
+                <div className="p-6 text-center text-sm text-slate-500">
+                    No active transfers.{" "}
+                    <Link
+                        to="/transfers"
+                        className="text-blue-400 hover:underline"
+                    >
+                        View all
+                    </Link>
+                </div>
+            ) : (
                 <TransferList
                     agents={props.agents}
                     transfers={props.transfers}
                 />
-            </div>
+            )}
         </div>
     );
 }

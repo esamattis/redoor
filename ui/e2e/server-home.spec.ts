@@ -48,8 +48,35 @@ test.describe("Server home", () => {
 
         await transfersTab.press("Enter");
 
-        // Expanding mounts only active transfer rows; history remains behind View all.
+        // Expanding mounts only active transfer rows; history stays on the transfers route.
         await expect(panel.getByRole("row")).toHaveCount(6);
+        await expect(panel.getByRole("link", { name: "View all" })).toHaveCount(
+            0,
+        );
+    });
+
+    test("links empty active transfers to history", async ({ page }) => {
+        await page.route("**/api/v1/transfers/progress", async (route) => {
+            await route.fulfill({
+                json: {
+                    transfers: createTransfers(2, {
+                        state: "completed",
+                        direction: "download",
+                    }),
+                },
+            });
+        });
+
+        await page.goto(`${WEB_BASE_URL}/`);
+        const panel = page.getByRole("region", {
+            name: "Application tools",
+        });
+        await panel.getByRole("tab", { name: /Transfers/ }).press("Enter");
+
+        // Completed history stays off the drawer; the empty copy points to the full list.
+        await expect(panel.getByText("No active transfers.")).toBeVisible();
+        await panel.getByRole("link", { name: "View all" }).click();
+        await expect(page).toHaveURL(/\/transfers$/);
     });
 
     test("shows percent, speed, and remaining time on active transfers", async ({
