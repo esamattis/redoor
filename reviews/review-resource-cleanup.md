@@ -33,7 +33,11 @@ The method was to inventory task/process/channel/temp-resource creation, then tr
 
 #### H1. Router cleanup messages are lossy under mailbox pressure
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Agent unregister and UI subscriber lifecycle messages now await bounded mailbox capacity, and failures caused by router shutdown are logged with lifecycle identifiers. Agent session shutdown is asynchronous so disconnect cleanup cannot be discarded. The synchronous HTTP upload drop guard now spawns an independent task that awaits mailbox capacity, allowing cancellation to survive handler-future cancellation without adding a second router lane that could reorder cleanup ahead of transfer setup. A regression test fills the mailbox and verifies session shutdown remains pending until its unregister message can be delivered.
 
 **References:**
 

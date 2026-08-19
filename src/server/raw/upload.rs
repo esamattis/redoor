@@ -8,8 +8,9 @@ use axum::{
 use futures_util::StreamExt;
 use headers::HeaderMap;
 use redoor::{
-    actors,
+    Level, actors,
     commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
+    log,
     streaming::StreamChunkFrameRequest,
     types::{AgentId, ChunkIndex, RequestId},
 };
@@ -249,12 +250,26 @@ impl Drop for UploadCancelGuard {
             return;
         }
 
-        let _ = self
-            .router_ref
-            .send(actors::router::RouterMsg::CancelTransfer {
-                agent_id: self.agent_id.clone(),
-                request_id: self.request_id,
-            });
+        let router_ref = self.router_ref.clone();
+        let agent_id = self.agent_id.clone();
+        let request_id = self.request_id;
+        tokio::spawn(async move {
+            if let Err(error) = router_ref
+                .send_async(actors::router::RouterMsg::CancelTransfer {
+                    agent_id: agent_id.clone(),
+                    request_id,
+                })
+                .await
+            {
+                log!(
+                    Level::Error,
+                    "Failed to queue dropped upload cleanup: agent_id={}, request_id={}, error={}",
+                    agent_id,
+                    request_id,
+                    error
+                );
+            }
+        });
     }
 }
 

@@ -40,7 +40,7 @@ pub struct RouterHandle {
 
 impl RouterHandle {
     /// Creates a new handle from the router mailbox sender.
-    fn new(sender: mpsc::Sender<RouterMsg>) -> Self {
+    pub(super) fn new(sender: mpsc::Sender<RouterMsg>) -> Self {
         Self { sender }
     }
 

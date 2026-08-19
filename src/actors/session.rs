@@ -156,10 +156,22 @@ impl SessionRuntime {
                 if let Some(watchdog) = self.watchdog.as_ref() {
                     watchdog.mark_disconnected(self.socket_id.clone());
                 }
-                let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
-                    agent_id,
-                    socket_id: self.socket_id.clone(),
-                });
+                if let Err(error) = self
+                    .router_ref
+                    .send_async(RouterMsg::UnregisterAgent {
+                        agent_id: agent_id.clone(),
+                        socket_id: self.socket_id.clone(),
+                    })
+                    .await
+                {
+                    log!(
+                        Level::Error,
+                        "Failed to queue explicit agent cleanup: agent_id={}, socket_id={}, error={}",
+                        agent_id,
+                        self.socket_id,
+                        error
+                    );
+                }
             }
             Message::TransferReady {
                 agent_id,
@@ -218,15 +230,26 @@ impl SessionRuntime {
     }
 
     /// Unregisters the session's agent after the websocket goes away.
-    fn shutdown(self) {
+    async fn shutdown(self) {
         if let Some(watchdog) = self.watchdog.as_ref() {
             watchdog.mark_disconnected(self.socket_id.clone());
         }
-        if let Some(agent_id) = self.agent_id {
-            let _ = self.router_ref.send(RouterMsg::UnregisterAgent {
+        if let Some(agent_id) = self.agent_id
+            && let Err(error) = self
+                .router_ref
+                .send_async(RouterMsg::UnregisterAgent {
+                    agent_id: agent_id.clone(),
+                    socket_id: self.socket_id.clone(),
+                })
+                .await
+        {
+            log!(
+                Level::Error,
+                "Failed to queue disconnected agent cleanup: agent_id={}, socket_id={}, error={}",
                 agent_id,
-                socket_id: self.socket_id.clone(),
-            });
+                self.socket_id,
+                error
+            );
         }
 
         log!(Level::Info, "Session stopped: socket_id={}", self.socket_id);
@@ -384,6 +407,50 @@ pub async fn handle_websocket(
         }
     }
 
-    runtime.shutdown();
+    runtime.shutdown().await;
     writer_task.abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_router_capacity_before_unregistering_agent() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let router_ref = RouterHandle::new(sender);
+        router_ref
+            .send(RouterMsg::CheckPendingUiRefresh)
+            .expect("router mailbox filled");
+        let socket_id = SocketId::new();
+        let (outgoing_text, _outgoing_text_receiver) = mpsc::unbounded_channel();
+        let runtime = SessionRuntime {
+            socket_id: socket_id.clone(),
+            router_ref,
+            agent_id: Some(AgentId::from("agent")),
+            outgoing_text,
+            watchdog: None,
+            agent_token: "token".to_string(),
+        };
+
+        let shutdown_task = tokio::spawn(runtime.shutdown());
+        tokio::task::yield_now().await;
+
+        // A full mailbox must backpressure teardown instead of completing after dropping cleanup.
+        assert!(!shutdown_task.is_finished());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RouterMsg::CheckPendingUiRefresh)
+        ));
+        let cleanup = receiver.recv().await;
+        // Releasing one slot must deliver the exact session cleanup that was waiting for capacity.
+        assert!(matches!(
+            cleanup,
+            Some(RouterMsg::UnregisterAgent {
+                agent_id,
+                socket_id: received_socket_id,
+            }) if agent_id == AgentId::from("agent") && received_socket_id == socket_id
+        ));
+        shutdown_task.await.expect("session shutdown task joined");
+    }
 }

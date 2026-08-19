@@ -101,17 +101,40 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: actors::router::RouterH
     let (mut sender, mut receiver) = socket.split();
     let (tx_out, mut rx_out) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
 
-    let _ = router_ref.send(actors::router::RouterMsg::RegisterUiSubscriber(
-        actors::router::RegisterUiSubscriberRequest {
-            subscriber_id: subscriber_id.clone(),
-            sender: tx_out,
-        },
-    ));
+    if let Err(error) = router_ref
+        .send_async(actors::router::RouterMsg::RegisterUiSubscriber(
+            actors::router::RegisterUiSubscriberRequest {
+                subscriber_id: subscriber_id.clone(),
+                sender: tx_out,
+            },
+        ))
+        .await
+    {
+        log!(
+            Level::Error,
+            "Failed to queue UI subscriber registration: subscriber_id={}, error={}",
+            subscriber_id,
+            error
+        );
+        return;
+    }
 
     tokio::select! {
         _ = forward_ui_events(&mut sender, &mut rx_out) => {}
         _ = wait_for_ui_disconnect(&mut receiver) => {}
     }
 
-    let _ = router_ref.send(actors::router::RouterMsg::UnregisterUiSubscriber { subscriber_id });
+    if let Err(error) = router_ref
+        .send_async(actors::router::RouterMsg::UnregisterUiSubscriber {
+            subscriber_id: subscriber_id.clone(),
+        })
+        .await
+    {
+        log!(
+            Level::Error,
+            "Failed to queue UI subscriber cleanup: subscriber_id={}, error={}",
+            subscriber_id,
+            error
+        );
+    }
 }
