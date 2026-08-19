@@ -66,7 +66,7 @@ import {
     bottomDrawerActivationAtom,
     type BottomDrawerTabId,
 } from "#ui/bottom-drawer-state";
-import { openSideMenuAtom } from "#ui/side-menu-state";
+import { openSideMenuAtom, usePersistentSideMenus } from "#ui/side-menu-state";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -255,6 +255,7 @@ function RootLayout() {
     const router = useRouter();
     const { api, queryClient } = Route.useRouteContext();
     const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
+    const isPersistentSideMenus = usePersistentSideMenus();
     const applicationMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const agentMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const { data: transferProgress } = useQuery({
@@ -342,6 +343,12 @@ function RootLayout() {
     }, [activeAgent, location.pathname, rememberAgentTabLocation]);
 
     useManagedAgentRefresh(agents, router);
+
+    React.useEffect(() => {
+        if (isPersistentSideMenus) {
+            setOpenMenu(null);
+        }
+    }, [isPersistentSideMenus, setOpenMenu]);
 
     React.useEffect(() => {
         /** Lets Escape leave ordinary text controls without stealing keys from the shell. */

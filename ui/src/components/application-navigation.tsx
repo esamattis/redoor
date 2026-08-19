@@ -13,6 +13,7 @@ import type * as React from "react";
 import type { ApiClient } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { SidebarModeToggle } from "#ui/components/sidebar-mode-toggle";
 import { SideMenu } from "#ui/components/side-menu";
 import { serverInfoQueryOptions } from "#ui/queries";
 
@@ -104,6 +105,7 @@ function ApplicationMenu(props: {
                 );
             })}
             <div className="mt-auto flex flex-col gap-1">
+                <SidebarModeToggle />
                 <RestartButton
                     target="server"
                     ariaLabel="Restart server"

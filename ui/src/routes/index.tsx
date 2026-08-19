@@ -19,8 +19,7 @@ import {
     CopyablePath,
 } from "#ui/components/copyable-code-row";
 import { Tooltip } from "#ui/components/tooltip";
-import { openSideMenuAtom } from "#ui/side-menu-state";
-import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
+import { openSideMenuAtom, usePersistentSideMenus } from "#ui/side-menu-state";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/")({
@@ -133,7 +132,7 @@ function AgentNameGrid(props: { agents: Agent[] }) {
 
 /** Offers the agent drawer only when the persistent right sidebar is not already on screen. */
 function OpenAgentSidebarButton() {
-    const canToggleSidebar = useIsBelowBreakpoint("xl");
+    const canToggleSidebar = !usePersistentSideMenus();
     const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
     if (!canToggleSidebar) {
         return null;

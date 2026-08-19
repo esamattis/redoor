@@ -1,6 +1,7 @@
 import * as React from "react";
 import { X } from "lucide-react";
 import { IconButton } from "#ui/components/icon-button";
+import { usePersistentSideMenus } from "#ui/side-menu-state";
 
 const focusableSelector =
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -64,6 +65,7 @@ export function SideMenu(props: {
         };
     }, [props.isOpen, props.onClose, props.triggerRef]);
 
+    const isPersistent = usePersistentSideMenus();
     const borderClass = props.placement === "left" ? "border-r" : "border-l";
     const edgeClass = props.placement === "left" ? "left-0" : "right-0";
 
@@ -71,13 +73,13 @@ export function SideMenu(props: {
         <>
             <aside
                 aria-label={props.label}
-                className={`hidden w-56 shrink-0 flex-col ${borderClass} border-slate-800 bg-[#0f1218] p-3 xl:flex`}
+                className={`${isPersistent ? "flex" : "hidden"} w-56 shrink-0 flex-col ${borderClass} border-slate-800 bg-[#0f1218] p-3`}
             >
                 {props.children}
             </aside>
-            {props.isOpen ? (
+            {!isPersistent && props.isOpen ? (
                 <div
-                    className="fixed inset-0 z-50 bg-black/60 xl:hidden"
+                    className="fixed inset-0 z-50 bg-black/60"
                     role="dialog"
                     aria-modal="true"
                     aria-label={props.label}

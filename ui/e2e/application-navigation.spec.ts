@@ -20,12 +20,17 @@ test.describe("Application navigation", () => {
         const agentBox = await agentNavigation.boundingBox();
         // Physical placement matches each menu's application and agent responsibilities.
         expect(applicationBox?.x ?? 1).toBeLessThan(agentBox?.x ?? 0);
+        const sidebarModeBox = await applicationNavigation
+            .getByRole("button", { name: "Sidebar mode: Auto" })
+            .boundingBox();
         const restartBox = await applicationNavigation
             .getByRole("button", { name: "Restart server" })
             .boundingBox();
         const logoutBox = await applicationNavigation
             .getByRole("button", { name: "Log out" })
             .boundingBox();
+        // Layout preference sits with the other chrome actions, above process restart.
+        expect(sidebarModeBox?.y ?? 1).toBeLessThan(restartBox?.y ?? 0);
         // Process restart sits just above logout so account actions remain last.
         expect(restartBox?.y ?? 1).toBeLessThan(logoutBox?.y ?? 0);
         // Account actions stay anchored near the bottom edge of the full-height sidebar.
@@ -125,6 +130,78 @@ test.describe("Application navigation", () => {
         ).toBeVisible();
         await expect(
             page.getByRole("button", { name: "Open agent menu" }),
+        ).toBeVisible();
+    });
+
+    test("cycles sidebar visibility modes and keeps the choice in this tab", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const autoButton = page.getByRole("button", {
+            name: "Sidebar mode: Auto",
+        });
+        await autoButton.hover();
+        // The tooltip names the next layout, not the mode already applied.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to always show the sidebars",
+        );
+        await autoButton.click();
+        await expect(
+            page.getByRole("button", { name: "Sidebar mode: Show" }),
+        ).toBeVisible();
+
+        await page.setViewportSize({ width: 390, height: 844 });
+        // Show keeps both edge menus in the layout on a phone-sized viewport.
+        await expect(
+            page.getByRole("navigation", { name: "Application" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("navigation", { name: "Agents" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Open application menu" }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Open agent menu" }),
+        ).toBeHidden();
+
+        await page.getByRole("button", { name: "Sidebar mode: Show" }).hover();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to always hide the sidebars",
+        );
+        await page.getByRole("button", { name: "Sidebar mode: Show" }).click();
+
+        await page.setViewportSize({ width: 1280, height: 800 });
+        // Hide keeps menus behind drawers even after returning to a wide viewport.
+        await expect(
+            page.getByRole("navigation", { name: "Application" }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Open application menu" }),
+        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Open application menu" })
+            .click();
+        const hideButton = page.getByRole("button", {
+            name: "Sidebar mode: Hide",
+        });
+        await expect(hideButton).toBeVisible();
+        await hideButton.hover();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to automatically show the sidebars",
+        );
+
+        await page.reload();
+        // Session storage must restore Hide after a reload in the same tab.
+        await expect(
+            page.getByRole("navigation", { name: "Application" }),
+        ).toBeHidden();
+        await page
+            .getByRole("button", { name: "Open application menu" })
+            .click();
+        await expect(
+            page.getByRole("button", { name: "Sidebar mode: Hide" }),
         ).toBeVisible();
     });
 
