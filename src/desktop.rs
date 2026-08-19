@@ -96,6 +96,24 @@ fn desktop_open_program(desktop_environment: DesktopEnvironment) -> &'static str
     }
 }
 
+/// Environment switch that keeps automated runs from launching a real browser.
+pub(crate) const OPEN_BROWSER_ENV: &str = "REDOOR_OPEN_BROWSER";
+
+/// Whether first-run may spawn `xdg-open`/`open` after creating the starter config.
+///
+/// Playwright and other harnesses inherit the developer's graphical session, so
+/// desktop detection alone would steal the focused window. `REDOOR_OPEN_BROWSER=off`
+/// disables only this convenience launch, not in-app "Open natively".
+pub(crate) fn first_run_should_open_browser() -> bool {
+    open_browser_env_allows(std::env::var(OPEN_BROWSER_ENV).ok().as_deref())
+        && detect_desktop_environment().is_some()
+}
+
+/// Treats only an explicit `off` as a veto so unset keeps the interactive first-run launch.
+fn open_browser_env_allows(value: Option<&str>) -> bool {
+    !value.is_some_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
 /// Opens a URL or filesystem path with the platform launcher for the detected desktop.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn open_with_desktop(target: &str) -> Result<(), String> {
@@ -167,6 +185,22 @@ fn percent_encode_component(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod open_browser_tests {
+    use super::*;
+
+    /// Automated suites must be able to veto `xdg-open` without hiding the desktop.
+    #[test]
+    fn first_run_browser_open_can_be_disabled() {
+        // Unset keeps the interactive `redoor server` convenience launch.
+        assert!(open_browser_env_allows(None));
+        assert!(open_browser_env_allows(Some("")));
+        // Playwright sets this so first-run bootstrap cannot steal the focused window.
+        assert!(!open_browser_env_allows(Some("off")));
+        assert!(!open_browser_env_allows(Some("OFF")));
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

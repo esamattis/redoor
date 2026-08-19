@@ -68,9 +68,8 @@ function spawnBootstrapServer(options: {
                 ...process.env,
                 HOME: options.home,
                 REDOOR_APP_NAME: options.appName,
-                // Keep the developer's desktop free of accidental browser opens during CI.
-                DISPLAY: "",
-                WAYLAND_DISPLAY: "",
+                // First-run must not spawn `xdg-open`/`open` during Playwright.
+                REDOOR_OPEN_BROWSER: "off",
                 REDOOR_AGENT_NOTIFICATION: "off",
             },
             stdio: ["ignore", "pipe", "pipe"],

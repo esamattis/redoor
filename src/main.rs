@@ -649,7 +649,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
 
     // First-run demo: open the login page with a platform-specific credential hint
     // when a graphical desktop is available so `redoor server` is enough to try the UI.
-    if created_default_config && desktop::detect_desktop_environment().is_some() {
+    if created_default_config && desktop::first_run_should_open_browser() {
         let login_url = desktop::first_run_login_url(&bind, port);
         println!("Opening {login_url}");
         tokio::spawn(async move {
