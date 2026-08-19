@@ -90,9 +90,11 @@ impl AgentActor {
         let source = PathBuf::from(&source_path);
         let dest = PathBuf::from(&dest_path);
         validate_local_copy_destination(&source, &dest, source_is_directory).await?;
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         validate_local_copy_parent(&dest).await?;
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         check_existing_destination(&dest, on_existing, source_is_directory).await?;
-
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         let source_metadata = tokio::fs::metadata(&source).await.map_err(|error| {
             if source_is_directory {
                 LocalMoveError::from(LocalCopyError::AccessSourceDirectory(error))
@@ -100,6 +102,7 @@ impl AgentActor {
                 LocalMoveError::from(LocalCopyError::AccessSourceFile(error))
             }
         })?;
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         if source_is_directory != source_metadata.is_dir()
             || (!source_is_directory && !source_metadata.is_file())
         {
@@ -112,14 +115,15 @@ impl AgentActor {
         if move_source_identity(&source_metadata) != expected_identity {
             return Err(LocalMoveError::SourceChanged);
         }
-
         let destination_exists = destination_entry_exists(&dest).await?;
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         let dest_parent = dest
             .parent()
             .ok_or_else(|| LocalCopyError::DestinationParentNotFound(dest.display().to_string()))?;
         let dest_parent_metadata = tokio::fs::metadata(dest_parent).await.map_err(|_| {
             LocalCopyError::AccessDestinationParent(dest_parent.display().to_string())
         })?;
+        super::copy::ensure_local_copy_active(&response.cancel)?;
         let same_mount = metadata_on_same_mount(&source_metadata, &dest_parent_metadata);
 
         if can_use_atomic_rename(same_mount, destination_exists, on_existing) {

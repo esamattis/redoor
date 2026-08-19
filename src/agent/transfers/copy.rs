@@ -16,7 +16,7 @@ use thiserror::Error;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, watch},
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
@@ -82,6 +82,8 @@ pub(crate) enum LocalCopyError {
     CreateTempDirectory(#[source] std::io::Error),
     #[error("Lost router connection while reporting local copy progress")]
     ProgressChannelClosed,
+    #[error("Local copy canceled because its control connection ended")]
+    Canceled,
 }
 
 impl LocalCopyError {
@@ -118,7 +120,8 @@ impl LocalCopyError {
             | Self::ReadDirectoryEntry(_)
             | Self::ReadEntryMetadata(_)
             | Self::CreateDestinationDirectory(_)
-            | Self::ProgressChannelClosed => redoor::commands::CommandErrorKind::Internal,
+            | Self::ProgressChannelClosed
+            | Self::Canceled => redoor::commands::CommandErrorKind::Internal,
         }
     }
 }
@@ -238,6 +241,7 @@ struct LocalCopyProgressReporter {
     transferred_bytes: u64,
     last_reported_bytes: u64,
     last_reported_at: Instant,
+    cancel: watch::Receiver<bool>,
 }
 
 impl LocalCopyProgressReporter {
@@ -250,6 +254,7 @@ impl LocalCopyProgressReporter {
         agent_id: AgentId,
         request_id: RequestId,
         total_bytes: u64,
+        cancel: watch::Receiver<bool>,
     ) -> Self {
         Self {
             write,
@@ -259,11 +264,18 @@ impl LocalCopyProgressReporter {
             transferred_bytes: 0,
             last_reported_bytes: 0,
             last_reported_at: Instant::now() - Self::REPORT_EVERY_DURATION,
+            cancel,
         }
+    }
+
+    /// Stops at filesystem-safe boundaries after the owning control generation ends.
+    fn ensure_active(&self) -> Result<(), LocalCopyError> {
+        ensure_local_copy_active(&self.cancel)
     }
 
     /// Emits a progress update once enough bytes or time have passed.
     async fn report(&mut self, force: bool) -> Result<(), LocalCopyError> {
+        self.ensure_active()?;
         if self.write.is_closed() {
             return Err(LocalCopyError::ProgressChannelClosed);
         }
@@ -289,10 +301,14 @@ impl LocalCopyProgressReporter {
 
         let json =
             serde_json::to_string(&message).map_err(|_| LocalCopyError::ProgressChannelClosed)?;
-        self.write
-            .send(WsMessage::text(json))
-            .await
-            .map_err(|_| LocalCopyError::ProgressChannelClosed)?;
+        tokio::select! {
+            result = self.write.send(WsMessage::text(json)) => {
+                result.map_err(|_| LocalCopyError::ProgressChannelClosed)?;
+            }
+            _ = wait_for_local_copy_cancel(&mut self.cancel) => {
+                return Err(LocalCopyError::Canceled);
+            }
+        }
 
         self.last_reported_bytes = self.transferred_bytes;
         self.last_reported_at = now;
@@ -322,6 +338,27 @@ pub(crate) struct LocalCopyResponseContext<'a> {
     pub(crate) write: &'a mpsc::Sender<WsMessage>,
     pub(crate) agent_id: &'a AgentId,
     pub(crate) request_id: RequestId,
+    /// Stops temp-owning work when its authoritative control connection ends.
+    pub(crate) cancel: watch::Receiver<bool>,
+}
+
+/// Waits for control-generation cancellation, including an already-published signal.
+pub(super) async fn wait_for_local_copy_cancel(cancel: &mut watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    let _ = cancel.changed().await;
+}
+
+/// Rejects more work after cancellation without dropping an in-flight filesystem future.
+pub(super) fn ensure_local_copy_active(
+    cancel: &watch::Receiver<bool>,
+) -> Result<(), LocalCopyError> {
+    if *cancel.borrow() {
+        Err(LocalCopyError::Canceled)
+    } else {
+        Ok(())
+    }
 }
 
 /// Copies one file through a temp file so partially copied output is never exposed as final data.
@@ -332,6 +369,7 @@ async fn copy_file_streaming(
     reporter: &mut LocalCopyProgressReporter,
 ) -> Result<(), LocalCopyError> {
     stream_file_to_temp(source_path, temp_path, reporter).await?;
+    reporter.ensure_active()?;
 
     tokio::fs::rename(temp_path, dest_path).await.map_err(|_| {
         LocalCopyError::FinalizeCopiedFile {
@@ -339,6 +377,7 @@ async fn copy_file_streaming(
             to: dest_path.display().to_string(),
         }
     })?;
+    reporter.ensure_active()?;
 
     Ok(())
 }
@@ -352,10 +391,12 @@ async fn stream_file_to_temp(
     let mut source = File::open(source_path)
         .await
         .map_err(|_| LocalCopyError::OpenSourceFile(source_path.display().to_string()))?;
+    reporter.ensure_active()?;
 
     let mut destination = File::create(temp_path)
         .await
         .map_err(|_| LocalCopyError::CreateDestinationFile(temp_path.display().to_string()))?;
+    reporter.ensure_active()?;
 
     let mut buffer = vec![0u8; 1024 * 1024];
 
@@ -364,6 +405,7 @@ async fn stream_file_to_temp(
             .read(&mut buffer)
             .await
             .map_err(|_| LocalCopyError::ReadSourceFile(source_path.display().to_string()))?;
+        reporter.ensure_active()?;
 
         if bytes_read == 0 {
             break;
@@ -381,6 +423,7 @@ async fn stream_file_to_temp(
         .flush()
         .await
         .map_err(|_| LocalCopyError::FlushDestinationFile(temp_path.display().to_string()))?;
+    reporter.ensure_active()?;
     drop(destination);
 
     Ok(())
@@ -402,6 +445,7 @@ async fn copy_directory_streaming(
     )];
 
     while !stack.is_empty() {
+        reporter.ensure_active()?;
         let entry = {
             let (source_dir, _, entries) = stack.last_mut().expect("stack is known non-empty");
             entries
@@ -417,6 +461,7 @@ async fn copy_directory_streaming(
         let metadata = tokio::fs::symlink_metadata(&entry_path)
             .await
             .map_err(|_| LocalCopyError::ReadEntryMetadata(entry_path.display().to_string()))?;
+        reporter.ensure_active()?;
         let destination_path = stack
             .last()
             .expect("the current directory remains on the stack")
@@ -522,48 +567,41 @@ impl AgentActor {
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
-
-        let source_metadata = tokio::fs::metadata(&source_path_buf)
-            .await
-            .map_err(LocalCopyError::AccessSourceFile)?;
-
-        if !source_metadata.is_file() {
-            return Err(LocalCopyError::SourceNotFile(source_path));
-        }
-
-        validate_local_copy_destination(&source_path_buf, &dest_path_buf, false).await?;
-        validate_local_copy_parent(&dest_path_buf).await?;
-        check_existing_destination(&dest_path_buf, on_existing, false).await?;
-
-        let mut reporter = LocalCopyProgressReporter::new(
-            response.write.clone(),
-            response.agent_id.clone(),
-            response.request_id,
-            source_metadata.len(),
-        );
         let temp_path = temp_local_copy_path_for_destination(&dest_path_buf)?;
-
-        reporter.report(true).await?;
-
-        match stream_file_to_temp(&source_path_buf, &temp_path, &mut reporter).await {
-            Ok(()) => {
-                if let Err(error) =
-                    place_temp_at_destination(&temp_path, &dest_path_buf, on_existing, false).await
-                {
-                    cleanup_local_copy_temp_path(&temp_path).await;
-                    return Err(LocalCopyError::from(error));
-                }
-                if let Err(error) = reporter.finish().await {
-                    cleanup_local_copy_temp_path(&temp_path).await;
-                    return Err(error);
-                }
-                Ok(CommandResult::LocalCopyFile)
+        let result = async {
+            let source_metadata = tokio::fs::metadata(&source_path_buf)
+                .await
+                .map_err(LocalCopyError::AccessSourceFile)?;
+            ensure_local_copy_active(&response.cancel)?;
+            if !source_metadata.is_file() {
+                return Err(LocalCopyError::SourceNotFile(source_path));
             }
-            Err(error) => {
-                cleanup_local_copy_temp_path(&temp_path).await;
-                Err(error)
-            }
+            validate_local_copy_destination(&source_path_buf, &dest_path_buf, false).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            validate_local_copy_parent(&dest_path_buf).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            check_existing_destination(&dest_path_buf, on_existing, false).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            let mut reporter = LocalCopyProgressReporter::new(
+                response.write.clone(),
+                response.agent_id.clone(),
+                response.request_id,
+                source_metadata.len(),
+                response.cancel.clone(),
+            );
+            reporter.report(true).await?;
+            stream_file_to_temp(&source_path_buf, &temp_path, &mut reporter).await?;
+            place_temp_at_destination(&temp_path, &dest_path_buf, on_existing, false)
+                .await
+                .map_err(LocalCopyError::from)?;
+            reporter.finish().await?;
+            Ok(CommandResult::LocalCopyFile)
         }
+        .await;
+        if result.is_err() {
+            cleanup_local_copy_temp_path(&temp_path).await;
+        }
+        result
     }
 
     /// Performs a same-agent directory copy by planning first and then streaming file contents.
@@ -623,58 +661,45 @@ impl AgentActor {
     ) -> Result<CommandResult, LocalCopyError> {
         let source_path_buf = PathBuf::from(&source_path);
         let dest_path_buf = PathBuf::from(&dest_path);
-
-        let source_metadata = tokio::fs::metadata(&source_path_buf)
-            .await
-            .map_err(LocalCopyError::AccessSourceDirectory)?;
-
-        if !source_metadata.is_dir() {
-            return Err(LocalCopyError::SourceNotDirectory(source_path));
-        }
-
-        validate_local_copy_destination(&source_path_buf, &dest_path_buf, true).await?;
-        validate_local_copy_parent(&dest_path_buf).await?;
-        check_existing_destination(&dest_path_buf, on_existing, true).await?;
-
         let temp_dest_root = temp_local_copy_dir_path(&dest_path);
-
-        tokio::fs::create_dir(&temp_dest_root)
-            .await
-            .map_err(LocalCopyError::CreateTempDirectory)?;
-
-        let mut reporter = LocalCopyProgressReporter::new(
-            response.write.clone(),
-            response.agent_id.clone(),
-            response.request_id,
-            0,
-        );
-
-        if let Err(error) = reporter.report(true).await {
-            let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-            return Err(error);
-        }
-
-        match copy_directory_streaming(&source_path_buf, &temp_dest_root, &mut reporter).await {
-            Ok(()) => {
-                if let Err(error) =
-                    place_temp_at_destination(&temp_dest_root, &dest_path_buf, on_existing, true)
-                        .await
-                {
-                    let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                    return Err(LocalCopyError::from(error));
-                }
-
-                if let Err(error) = reporter.finish().await {
-                    let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                    return Err(error);
-                }
-                Ok(CommandResult::LocalCopyDirectory)
+        let result = async {
+            let source_metadata = tokio::fs::metadata(&source_path_buf)
+                .await
+                .map_err(LocalCopyError::AccessSourceDirectory)?;
+            ensure_local_copy_active(&response.cancel)?;
+            if !source_metadata.is_dir() {
+                return Err(LocalCopyError::SourceNotDirectory(source_path));
             }
-            Err(error) => {
-                let _ = tokio::fs::remove_dir_all(&temp_dest_root).await;
-                Err(error)
-            }
+            validate_local_copy_destination(&source_path_buf, &dest_path_buf, true).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            validate_local_copy_parent(&dest_path_buf).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            check_existing_destination(&dest_path_buf, on_existing, true).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            tokio::fs::create_dir(&temp_dest_root)
+                .await
+                .map_err(LocalCopyError::CreateTempDirectory)?;
+            ensure_local_copy_active(&response.cancel)?;
+            let mut reporter = LocalCopyProgressReporter::new(
+                response.write.clone(),
+                response.agent_id.clone(),
+                response.request_id,
+                0,
+                response.cancel.clone(),
+            );
+            reporter.report(true).await?;
+            copy_directory_streaming(&source_path_buf, &temp_dest_root, &mut reporter).await?;
+            place_temp_at_destination(&temp_dest_root, &dest_path_buf, on_existing, true)
+                .await
+                .map_err(LocalCopyError::from)?;
+            reporter.finish().await?;
+            Ok(CommandResult::LocalCopyDirectory)
         }
+        .await;
+        if result.is_err() {
+            cleanup_local_copy_temp_path(&temp_dest_root).await;
+        }
+        result
     }
 }
 
@@ -713,6 +738,7 @@ mod tests {
 
         let (write_tx, write_rx) = mpsc::channel(1);
         drop(write_rx);
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
 
         AgentActor
             .local_copy_file(
@@ -723,6 +749,7 @@ mod tests {
                     write: &write_tx,
                     agent_id: &AgentId::from("agent-1"),
                     request_id: RequestId::new(42),
+                    cancel: cancel_receiver,
                 },
             )
             .await;
@@ -768,6 +795,7 @@ mod tests {
             AgentId::from("agent-1"),
             RequestId::new(7),
             10,
+            watch::channel(false).1,
         );
 
         let error = reporter
@@ -795,5 +823,83 @@ mod tests {
             ),
             "connection-loss during local copy reporting should become a final command error if it can still be sent"
         );
+    }
+
+    /// Verifies generation cancellation removes an in-progress hidden copy before returning.
+    #[tokio::test]
+    async fn local_copy_cancellation_awaits_temp_file_cleanup() {
+        let root = unique_test_path("local-copy-cancel-root");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("copy cancellation test root should be created");
+        let source_path = root.join("source.bin");
+        let dest_path = root.join("dest.bin");
+        tokio::fs::write(&source_path, vec![7; 2 * 1024 * 1024])
+            .await
+            .expect("copy cancellation source should be created");
+        let (write_tx, _write_rx) = mpsc::channel(1);
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        let agent_id = AgentId::from("agent-1");
+        let response = LocalCopyResponseContext {
+            write: &write_tx,
+            agent_id: &agent_id,
+            request_id: RequestId::new(43),
+            cancel: cancel_receiver,
+        };
+        let copy = AgentActor.run_local_copy_file(
+            source_path.display().to_string(),
+            dest_path.display().to_string(),
+            CopyExistingMode::Error,
+            &response,
+        );
+        tokio::pin!(copy);
+
+        let temp_path = loop {
+            tokio::select! {
+                result = &mut copy => panic!("copy completed before cancellation gate: {result:?}"),
+                () = tokio::task::yield_now() => {
+                    let mut entries = tokio::fs::read_dir(&root)
+                        .await
+                        .expect("copy test root should remain readable");
+                    let mut found = None;
+                    while let Some(entry) = entries
+                        .next_entry()
+                        .await
+                        .expect("copy test root iteration should succeed")
+                    {
+                        if entry.file_name().to_string_lossy().contains(".dest.bin.redoor-local-copy-") {
+                            found = Some(entry.path());
+                            break;
+                        }
+                    }
+                    if let Some(path) = found {
+                        break path;
+                    }
+                }
+            }
+        };
+
+        cancel_sender
+            .send(true)
+            .expect("live copy should receive generation cancellation");
+        let result = copy.await;
+
+        // The canceled result proves the control-generation signal won over blocked progress output.
+        assert!(matches!(result, Err(LocalCopyError::Canceled)));
+        // Completion must be delayed until the hidden partial output has been removed.
+        assert!(
+            !tokio::fs::try_exists(&temp_path)
+                .await
+                .expect("temp lookup")
+        );
+        // Cancellation must not publish the incomplete destination.
+        assert!(
+            !tokio::fs::try_exists(&dest_path)
+                .await
+                .expect("destination lookup")
+        );
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("copy cancellation test root should be cleaned up");
     }
 }

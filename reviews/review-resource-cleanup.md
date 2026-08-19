@@ -98,16 +98,19 @@ The method was to inventory task/process/channel/temp-resource creation, then tr
 
 #### H4. Detached agent command tasks survive disconnect and are aborted without cleanup on graceful agent exit
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Each control generation now owns its non-upload command workers in an `AgentRuntime` `JoinSet` and has a shared cancellation signal. Control loss and graceful shutdown publish cancellation, await every worker, and replace the signal only for the next connection generation, so old command tasks and control-writer clones cannot survive reconnect. Local copy and move operations observe cancellation only at filesystem-safe boundaries, select cancellation while blocked on progress delivery, await hidden temp-file or temp-tree removal before returning, and are then joined by the runtime. Upload workers remain on their existing transfer registry path, preserving tar upload's extractor join-before-delete ownership. Deterministic unit tests verify generation cancellation is joined and a backpressured local copy removes its hidden temp file before completion.
 
 **References:**
 
-- `src/agent/protocol.rs:263-327` spawns every non-upload command with `tokio::spawn` and does not retain a handle or cancellation token.
-- `src/agent/actor.rs:203-231` clears registered transfer/log/terminal/search resources on connection loss but has no registry for generic command tasks.
-- `src/agent/actor.rs:75-94` returns from the actor after clearing registries without joining any worker.
-- `src/agent/actor.rs:383-422` leaves each control writer alive until all cloned senders disappear; detached command tasks hold such clones.
-- `src/agent/transfers/copy.rs:538-566` and `src/agent/transfers/copy.rs:639-675` create hidden temp copy paths whose cleanup runs only if the future reaches its explicit error branches.
-- `src/agent/ws.rs:76-97` can request a graceful actor shutdown on SSH stdin EOF.
+- `src/agent/mod.rs:106-113` stores command task and cancellation ownership in `AgentRuntime`.
+- `src/agent/protocol.rs:280-403` registers non-upload commands in the runtime-owned `JoinSet` and gives temp-owning local operations cooperative cancellation.
+- `src/agent/actor.rs:75-94`, `src/agent/actor.rs:203-244`, and `src/agent/actor.rs:269-287` cancel and join command workers on graceful shutdown and control loss.
+- `src/agent/transfers/copy.rs:235-344`, `src/agent/transfers/copy.rs:359-468`, and `src/agent/transfers/copy.rs:528-686` keep cancellation responsive without dropping in-flight filesystem futures and await temp cleanup before returning.
+- `src/agent/transfers/move.rs:81-169` checks cancellation before mutation and delegates cross-filesystem fallback to the cancellation-safe copy paths.
 
 **Failure scenario and impact:** During a long local copy, metadata operation on a slow filesystem, or other command, the control socket disconnects. The command continues against the filesystem and retains the old control sender/writer until it next reports progress or completes. If the agent then exits gracefully via stdin EOF, the Tokio runtime drops these detached tasks without executing async cleanup, leaving hidden `.redoor-local-copy-*` or `.redoor-local-copy-dir-*` output. Similar detached operations can continue consuming file descriptors and I/O after their peer is gone.
 

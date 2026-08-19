@@ -16,7 +16,10 @@ use std::path::PathBuf;
 use redoor::{Level, log, types::AgentId};
 use sysinfo::System;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 
 pub(crate) use messages::AgentMsg;
 pub(crate) use state::{
@@ -103,6 +106,10 @@ pub(crate) struct AgentActor;
 /// Long-lived agent runtime that owns connection lifecycle and transfer registries.
 pub(crate) struct AgentRuntime {
     pub(crate) state: AgentState,
+    /// Owns command workers so a control generation cannot outlive its server connection.
+    command_tasks: JoinSet<()>,
+    /// Broadcasts control-generation cancellation before command workers are joined.
+    command_cancel: watch::Sender<bool>,
     /// Desktop detected at process startup, if this agent can plausibly reach a GUI session.
     desktop_environment: Option<crate::desktop::DesktopEnvironment>,
     /// User-selected wait after a successful connection, or `None` when notifications are disabled.

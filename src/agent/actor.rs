@@ -45,8 +45,11 @@ impl AgentRuntime {
         token: String,
         startup_notification_delay: Option<tokio::time::Duration>,
     ) -> Self {
+        let (command_cancel, _) = tokio::sync::watch::channel(false);
         Self {
             state: AgentState::new(agent_id, agent_name, connection, default_directory, token),
+            command_tasks: tokio::task::JoinSet::new(),
+            command_cancel,
             desktop_environment: crate::desktop::detect_desktop_environment(),
             startup_notification_delay,
             startup_notification_generation: None,
@@ -85,6 +88,7 @@ impl AgentRuntime {
         self.state.active_terminals.clear();
         self.state.active_log_streams.clear();
         self.state.cancel_file_search();
+        self.stop_command_tasks().await;
 
         log!(
             Level::Info,
@@ -114,8 +118,16 @@ impl AgentRuntime {
                     return true;
                 }
                 if let Some(tx_control) = self.state.ws_control_tx.as_ref().cloned() {
+                    let command_cancel = self.command_cancel.subscribe();
                     agent
-                        .handle_incoming_message(text, &mut self.state, &tx_control, handle)
+                        .handle_incoming_message(
+                            text,
+                            &mut self.state,
+                            &tx_control,
+                            handle,
+                            &mut self.command_tasks,
+                            command_cancel,
+                        )
                         .await;
                 }
             }
@@ -228,6 +240,7 @@ impl AgentRuntime {
                 self.state.active_terminals.clear();
                 self.state.active_log_streams.clear();
                 self.state.cancel_file_search();
+                self.stop_command_tasks().await;
                 self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
             }
             AgentMsg::SendWebSocketMessage { msg } => {
@@ -254,6 +267,21 @@ impl AgentRuntime {
         }
 
         true
+    }
+
+    /// Cancels and joins every command from the discarded control generation.
+    async fn stop_command_tasks(&mut self) {
+        let _ = self.command_cancel.send(true);
+        while let Some(result) = self.command_tasks.join_next().await {
+            if let Err(error) = result {
+                log!(
+                    Level::Warning,
+                    "Agent command task failed while stopping: {error}"
+                );
+            }
+        }
+        let (command_cancel, _) = tokio::sync::watch::channel(false);
+        self.command_cancel = command_cancel;
     }
 
     /// Schedules the next connection attempt with jitter and escalates after repeated failures.
@@ -581,5 +609,40 @@ mod tests {
         assert_eq!(runtime.state.transfer_generation, current_generation);
         // The replacement payload sender must remain installed and usable.
         assert!(runtime.state.ws_transfer_tx.is_some());
+    }
+
+    /// Verifies graceful teardown publishes cancellation and waits for command workers to exit.
+    #[tokio::test]
+    async fn stopping_command_tasks_cancels_and_joins_the_generation() {
+        let mut runtime = AgentRuntime::new(
+            AgentId::from("agent"),
+            "agent".to_string(),
+            AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
+            "/tmp".to_string(),
+            "test-token".to_string(),
+            None,
+        );
+        let mut cancel = runtime.command_cancel.subscribe();
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (finished_sender, finished_receiver) = tokio::sync::oneshot::channel();
+        runtime.command_tasks.spawn(async move {
+            let _ = started_sender.send(());
+            let _ = cancel.changed().await;
+            let _ = finished_sender.send(());
+        });
+        started_receiver
+            .await
+            .expect("command task should report that it is waiting for cancellation");
+
+        runtime.stop_command_tasks().await;
+
+        // Receiving completion proves shutdown joined the worker after it observed cancellation.
+        finished_receiver
+            .await
+            .expect("joined command task should report completion");
+        // A new control generation must not inherit the previous generation's canceled state.
+        assert!(!*runtime.command_cancel.borrow());
+        // No detached command handle may remain after graceful teardown returns.
+        assert!(runtime.command_tasks.is_empty());
     }
 }

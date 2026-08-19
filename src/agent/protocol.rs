@@ -10,19 +10,39 @@ use redoor::{
     types::{AgentId, Message, RequestId},
 };
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
-/// Executes one non-upload command and routes any streamed payload over the
-/// binary websocket sender while keeping command responses on text.
-async fn handle_command_message(
+/// Bundles one command's owned connection resources so task spawning stays explicit.
+struct CommandMessageContext {
+    /// Prioritized control lane used for command responses and progress updates.
     write_text: mpsc::Sender<WsMessage>,
+    /// Transfer lane used for potentially large streamed payload frames.
     write_binary: mpsc::Sender<WsMessage>,
+    /// Stable identity included in every response routed back to the server.
     agent_id: AgentId,
+    /// Shared download registry used by streaming command variants.
+    active_downloads: ActiveDownloads,
+    /// Dedicated traversal cancellation retained for the file-search command.
+    file_search_cancel: Option<watch::Receiver<bool>>,
+    /// Control-generation cancellation used by temp-owning local operations.
+    command_cancel: Option<watch::Receiver<bool>>,
+}
+
+/// Executes one owned command task with the connection resources it may use.
+async fn handle_command_message(
     request_id: RequestId,
     command: Command,
-    active_downloads: ActiveDownloads,
-    file_search_cancel: Option<watch::Receiver<bool>>,
+    context: CommandMessageContext,
 ) {
+    let CommandMessageContext {
+        write_text,
+        write_binary,
+        agent_id,
+        active_downloads,
+        file_search_cancel,
+        command_cancel,
+    } = context;
     match command {
         Command::RawDownload {
             path,
@@ -68,6 +88,8 @@ async fn handle_command_message(
             dest_path,
             on_existing,
         } => {
+            let command_cancel =
+                command_cancel.expect("local copy commands always receive generation cancellation");
             AgentActor
                 .local_copy_file(
                     source_path,
@@ -77,6 +99,7 @@ async fn handle_command_message(
                         write: &write_text,
                         agent_id: &agent_id,
                         request_id,
+                        cancel: command_cancel,
                     },
                 )
                 .await;
@@ -86,6 +109,8 @@ async fn handle_command_message(
             dest_path,
             on_existing,
         } => {
+            let command_cancel =
+                command_cancel.expect("local copy commands always receive generation cancellation");
             AgentActor
                 .local_copy_directory(
                     source_path,
@@ -95,6 +120,7 @@ async fn handle_command_message(
                         write: &write_text,
                         agent_id: &agent_id,
                         request_id,
+                        cancel: command_cancel,
                     },
                 )
                 .await;
@@ -106,6 +132,8 @@ async fn handle_command_message(
             expected_identity,
             on_existing,
         } => {
+            let command_cancel =
+                command_cancel.expect("local move commands always receive generation cancellation");
             AgentActor
                 .local_move(
                     source_path,
@@ -117,6 +145,7 @@ async fn handle_command_message(
                         write: &write_text,
                         agent_id: &agent_id,
                         request_id,
+                        cancel: command_cancel,
                     },
                 )
                 .await;
@@ -254,6 +283,8 @@ impl AgentActor {
         state: &mut AgentState,
         write_text: &mpsc::Sender<WsMessage>,
         agent_ref: AgentHandle,
+        command_tasks: &mut JoinSet<()>,
+        command_cancel: watch::Receiver<bool>,
     ) {
         if let Ok(redoor_msg) = serde_json::from_str::<Message>(&text) {
             match redoor_msg {
@@ -316,15 +347,54 @@ impl AgentActor {
                             Some(sender) => sender,
                             None => write_text.clone(),
                         };
-                        tokio::spawn(handle_command_message(
-                            write_text.clone(),
-                            transfer_sender,
-                            state.agent_id.clone(),
-                            request_id,
-                            command,
-                            state.active_downloads.clone(),
-                            file_search_cancel,
-                        ));
+                        while let Some(result) = command_tasks.try_join_next() {
+                            if let Err(error) = result {
+                                log!(Level::Warning, "Agent command task failed: {error}");
+                            }
+                        }
+                        let write_text = write_text.clone();
+                        let agent_id = state.agent_id.clone();
+                        let active_downloads = state.active_downloads.clone();
+                        command_tasks.spawn(async move {
+                            let handles_cancellation = matches!(
+                                command,
+                                Command::LocalCopyFile { .. }
+                                    | Command::LocalCopyDirectory { .. }
+                                    | Command::LocalMove { .. }
+                            );
+                            if handles_cancellation {
+                                handle_command_message(
+                                    request_id,
+                                    command,
+                                    CommandMessageContext {
+                                        write_text,
+                                        write_binary: transfer_sender,
+                                        agent_id,
+                                        active_downloads,
+                                        file_search_cancel,
+                                        command_cancel: Some(command_cancel),
+                                    },
+                                )
+                                .await;
+                            } else {
+                                let mut command_cancel = command_cancel;
+                                tokio::select! {
+                                    _ = handle_command_message(
+                                        request_id,
+                                        command,
+                                        CommandMessageContext {
+                                            write_text,
+                                            write_binary: transfer_sender,
+                                            agent_id,
+                                            active_downloads,
+                                            file_search_cancel,
+                                            command_cancel: None,
+                                        },
+                                    ) => {}
+                                    _ = command_cancel.changed() => {}
+                                }
+                            }
+                        });
                     }
                 }
                 Message::CancelTransfer { request_id } => {
