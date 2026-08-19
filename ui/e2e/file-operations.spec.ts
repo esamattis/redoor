@@ -779,6 +779,44 @@ test.describe.serial("File Operations", () => {
         });
     });
 
+    test("should select the open directory from the more menu", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("navigation", { name: "Breadcrumbs" }),
+        ).toContainText("subdir3");
+
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "More" })
+            .getByRole("button", {
+                name: "Select this directory",
+                exact: true,
+            })
+            .click();
+
+        // The open directory has no listing checkbox, so the more menu must add it to the selection.
+        await expect(
+            page.getByText("0 files, 1 directory selected"),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "More" })
+            .getByRole("button", {
+                name: "Unselect this directory",
+                exact: true,
+            })
+            .click();
+
+        // The same menu must also be able to remove the current directory from the selection.
+        await expect(
+            page.getByText("0 files, 0 directories selected"),
+        ).toBeVisible();
+    });
+
     test("should delete selected file from directory view after confirmation", async ({
         page,
     }) => {

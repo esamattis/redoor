@@ -1,12 +1,15 @@
 import React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
+    CheckSquare,
     Download,
     ExternalLink,
     LoaderCircle,
     MoreHorizontal,
     Pencil,
+    Square,
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
@@ -25,6 +28,11 @@ import {
     getImmediateParentPath,
     joinBrowserPath,
 } from "#ui/components/browser/utils";
+import {
+    selectFileAtom,
+    selectedFileKeysAtom,
+    unselectFileAtom,
+} from "#ui/selected-files";
 
 /** Renames the current entry in a focused workflow and follows its new URL. */
 function RenamePathDialog(props: {
@@ -231,6 +239,10 @@ function PathMoreActions(props: {
     onDelete?: () => void;
 }) {
     const canModify = getImmediateParentPath(props.path) !== null;
+    const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
+    const selectFile = useSetAtom(selectFileAtom);
+    const unselectFile = useSetAtom(unselectFileAtom);
+    const isSelected = selectedFileKeys.has(`${props.agent.id}:${props.path}`);
     const openMutation = useMutation({
         mutationFn: () => props.agent.openPath(props.path),
     });
@@ -279,6 +291,34 @@ function PathMoreActions(props: {
                                 >
                                     <Pencil className="h-4 w-4 text-slate-400" />
                                     Rename
+                                </ActionMenuButton>
+                                <ActionMenuButton
+                                    onClick={() => {
+                                        close();
+                                        if (isSelected) {
+                                            unselectFile({
+                                                agentId: props.agent.id,
+                                                path: props.path,
+                                            });
+                                            return;
+                                        }
+                                        selectFile({
+                                            agentId: props.agent.id,
+                                            agentName: props.agent.name,
+                                            path: props.path,
+                                            fileName: props.currentName,
+                                            entryType: props.entryType,
+                                        });
+                                    }}
+                                >
+                                    {isSelected ? (
+                                        <Square className="h-4 w-4 text-slate-400" />
+                                    ) : (
+                                        <CheckSquare className="h-4 w-4 text-slate-400" />
+                                    )}
+                                    {isSelected
+                                        ? `Unselect this ${props.entryType}`
+                                        : `Select this ${props.entryType}`}
                                 </ActionMenuButton>
                                 <BookmarkMenuButton
                                     close={close}
