@@ -13,6 +13,22 @@ const uiEventSchema: z.ZodType<UiEvent> = z.object({
     ]),
 });
 
+let routeInvalidationHoldCount = 0;
+
+/**
+ * Blocks UI-event route reloads while a save is replacing the current agent
+ * identity, so the stale edit URL cannot redirect to /agents mid-request.
+ */
+export function holdRouteInvalidation(): () => void {
+    routeInvalidationHoldCount += 1;
+    return () => {
+        routeInvalidationHoldCount = Math.max(
+            0,
+            routeInvalidationHoldCount - 1,
+        );
+    };
+}
+
 /** Keeps query and route data synchronized with domain-specific server events. */
 export class RefreshListener {
     private reconnectTimer: number | null = null;
@@ -53,6 +69,10 @@ export class RefreshListener {
     /** Serializes route reloads so server events do not interrupt navigation. */
     private runInvalidate() {
         if (!this.started) return;
+        if (routeInvalidationHoldCount > 0) {
+            this.invalidateQueued = true;
+            return;
+        }
         if (this.invalidateInFlight) {
             this.invalidateQueued = true;
             return;

@@ -12,16 +12,18 @@ import {
 } from "#ui/components/managed-agent-form";
 import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions } from "#ui/queries";
+import { holdRouteInvalidation } from "#ui/refresh-listener";
 import { Route as RootRoute } from "./__root";
 
 export const Route = createFileRoute("/agents/$agentId/edit")({
     loader: async ({ context, params, parentMatchPromise }) => {
         const parentMatch = await parentMatchPromise;
-        if (!parentMatch.loaderData) {
-            throw redirect({ to: "/agents" });
+        const agent = parentMatch.loaderData?.agent;
+        // Missing parent data is a transient rename gap, not a reason to leave /edit.
+        if (!agent) {
+            throw new Error(`Agent not found: ${params.agentId}`);
         }
-        const agent = parentMatch.loaderData.agent;
-        if (!agent?.configurationEditable) {
+        if (!agent.configurationEditable) {
             throw redirect({ to: "/agents" });
         }
         const configuration: ManagedAgentFormConfiguration =
@@ -54,19 +56,29 @@ function EditManagedAgentPage() {
     const [isDeleteOpen, setIsDeleteOpen] = React.useState(false);
     const isRunning = agent?.status !== "stopped";
     const updateMutation = useMutation({
-        mutationFn: (submission: ManagedAgentSubmitRequest) => {
-            if (submission.kind === "local") {
-                return api.updateLocalAgent(agentId, submission.request);
+        mutationFn: async (submission: ManagedAgentSubmitRequest) => {
+            const release = holdRouteInvalidation();
+            try {
+                const response =
+                    submission.kind === "local"
+                        ? await api.updateLocalAgent(
+                              agentId,
+                              submission.request,
+                          )
+                        : await api.updateSshAgent(agentId, submission.request);
+                await queryClient.invalidateQueries(agentsQueryOptions(api));
+                // Move off the old identity before any route reload can 404 it.
+                await router.navigate({
+                    to: "/agents/$agentId/edit",
+                    params: { agentId: response.agent.id },
+                });
+                return response;
+            } finally {
+                release();
             }
-            return api.updateSshAgent(agentId, submission.request);
         },
-        onSuccess: async (response) => {
-            await queryClient.invalidateQueries(agentsQueryOptions(api));
+        onSuccess: async () => {
             await router.invalidate();
-            await router.navigate({
-                to: "/agents/$agentId/edit",
-                params: { agentId: response.agent.id },
-            });
         },
     });
     const deleteMutation = useMutation({
