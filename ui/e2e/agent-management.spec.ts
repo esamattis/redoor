@@ -287,6 +287,28 @@ test.describe.serial("Agent management", () => {
             }),
         ).toBeVisible({ timeout: 15_000 });
 
+        // The starting screen must show sticky SSH steps instead of a generic loading sentence.
+        await expect(
+            page.getByRole("heading", {
+                name: `Starting ${CREATED_SSH_AGENT}`,
+            }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(
+            page.getByRole("list", { name: "Provisioning status" }),
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByText("Sniffing the SSH target")).toBeVisible();
+        await expect(page.getByText(/Sniff results:/)).toBeVisible({
+            timeout: 30_000,
+        });
+        // Two rows prove later steps stay sticky instead of replacing the first.
+        await expect(
+            page
+                .getByRole("list", { name: "Provisioning status" })
+                .getByRole("listitem")
+                .nth(1),
+        ).toBeVisible();
+        await expect(page.getByLabel(/from start/).nth(1)).toBeVisible();
+
         // A connected tab proves the form-created config can prepare and run as redoor.
         await expect(
             page.getByRole("link", {
@@ -296,6 +318,17 @@ test.describe.serial("Agent management", () => {
         const connected = await getAgent(page.request, CREATED_SSH_AGENT);
         expect(connected.managed).toBe(true);
         expect(connected.connection_id).not.toBeNull();
+
+        // The home card must keep the last start steps after the lifecycle page unmounts.
+        await page.goto(`${WEB_BASE_URL}/agents/${CREATED_SSH_AGENT}`);
+        await expect(
+            page.getByRole("heading", { name: "provisioning history" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("list", { name: "Provisioning status" }),
+        ).toBeVisible();
+        await expect(page.getByText("Sniffing the SSH target")).toBeVisible();
+        await expect(page.getByText(/Sniff results:/)).toBeVisible();
     });
 
     test("stops a running agent before renaming and accessing it again", async ({

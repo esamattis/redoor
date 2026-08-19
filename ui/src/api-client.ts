@@ -327,6 +327,11 @@ export class Agent {
         return this.info.connection_issue;
     }
 
+    /** Returns sticky SSH start steps for the current attempt. */
+    get provisioningStatus(): AgentInfoResponse["provisioning_status"] {
+        return this.info.provisioning_status;
+    }
+
     /** Returns binary identity from the latest registration, if any. */
     get binary(): BinaryIdentity | null {
         return this.info.binary;

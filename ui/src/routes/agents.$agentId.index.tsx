@@ -15,6 +15,7 @@ import {
     User,
     Activity,
     FolderOpen,
+    ListOrdered,
     LoaderCircle,
     ScrollText,
     Package,
@@ -39,9 +40,21 @@ import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyablePath } from "#ui/components/copyable-code-row";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
+import { Tooltip } from "#ui/components/tooltip";
 import { UpgradeButton } from "#ui/components/upgrade-button";
+import {
+    rememberProvisioningStatusAtom,
+    provisioningStatusStoreAtom,
+} from "#ui/provisioning-status";
 import { agentsQueryOptions } from "#ui/queries";
-import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
+import {
+    formatAgentRecency,
+    formatElapsedSecsMs,
+    provisioningElapsedFromStartMs,
+    provisioningElapsedTooltip,
+    provisioningStepElapsedMs,
+    useNow,
+} from "#ui/utils/agent-time";
 import { formatSize } from "#ui/utils/path";
 import { Route as RootRoute } from "./__root";
 import { Route as AgentRoute } from "./agents.$agentId";
@@ -84,6 +97,22 @@ function matchesServerIdentity(
 /** Renders retained lifecycle state without issuing connected-only commands prematurely. */
 function AgentBoundary() {
     const data = AgentRoute.useLoaderData();
+    const rememberProvisioningStatus = useSetAtom(
+        rememberProvisioningStatusAtom,
+    );
+    React.useEffect(() => {
+        if (data.agent.provisioningStatus.length === 0) {
+            return;
+        }
+        rememberProvisioningStatus({
+            agentName: data.agent.name,
+            messages: data.agent.provisioningStatus,
+        });
+    }, [
+        data.agent.name,
+        data.agent.provisioningStatus,
+        rememberProvisioningStatus,
+    ]);
     if (data.kind === "connected") {
         return <AgentDetails agent={data.agent} details={data.details} />;
     }
@@ -96,7 +125,7 @@ function AgentLifecycle(props: { agent: Agent }) {
     const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const state = startStates[props.agent.id];
-    const now = useNow();
+    const now = useNow(100);
     const [isShutdownOpen, setIsShutdownOpen] = React.useState(false);
     const shouldAppearStarting =
         props.agent.status === "starting" || state?.starting === true;
@@ -182,13 +211,22 @@ function AgentLifecycle(props: { agent: Agent }) {
                         ? `Starting ${props.agent.name}`
                         : props.agent.name}
                 </h1>
-                <p className="mt-2 text-slate-400">
-                    {shouldAppearStarting
-                        ? "The server is waiting for the agent connection."
-                        : props.agent.managed
-                          ? "This managed agent is stopped."
-                          : "This external agent is currently disconnected."}
-                </p>
+                {shouldAppearStarting &&
+                props.agent.provisioningStatus.length > 0 ? (
+                    <ProvisioningStatusList
+                        className="mt-4"
+                        messages={props.agent.provisioningStatus}
+                        nowMs={now}
+                    />
+                ) : (
+                    <p className="mt-2 text-slate-400">
+                        {shouldAppearStarting
+                            ? "The server is waiting for the agent connection."
+                            : props.agent.managed
+                              ? "This managed agent is stopped."
+                              : "This external agent is currently disconnected."}
+                    </p>
+                )}
                 <p className="mt-2 text-sm text-slate-500">
                     {formatAgentRecency(props.agent, now)}
                 </p>
@@ -244,18 +282,100 @@ function AgentLifecycle(props: { agent: Agent }) {
     );
 }
 
+/** Renders accumulated SSH start steps with elapsed time since each row became current. */
+function ProvisioningStatusList(props: {
+    messages: Agent["provisioningStatus"];
+    nowMs: number;
+    className?: string;
+}) {
+    return (
+        <ol
+            aria-label="Provisioning status"
+            className={`space-y-2 text-left ${props.className ?? ""}`}
+        >
+            {props.messages.map((step, index) => {
+                const elapsed = formatElapsedSecsMs(
+                    provisioningElapsedFromStartMs({
+                        messages: props.messages,
+                        index,
+                        nowMs: props.nowMs,
+                    }),
+                );
+                const sincePrevious = formatElapsedSecsMs(
+                    provisioningStepElapsedMs({
+                        messages: props.messages,
+                        index,
+                        nowMs: props.nowMs,
+                    }),
+                );
+                return (
+                    <li
+                        key={`${step.at}-${index}`}
+                        className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-sm"
+                    >
+                        <div className="flex items-start gap-3">
+                            <span className="min-w-0 flex-1 break-words text-slate-200">
+                                {step.message}
+                            </span>
+                            <Tooltip
+                                className="shrink-0"
+                                content={provisioningElapsedTooltip(
+                                    sincePrevious,
+                                    index,
+                                    props.messages.length,
+                                )}
+                            >
+                                <span
+                                    aria-label={`${elapsed} from start`}
+                                    className="tabular-nums text-slate-500"
+                                >
+                                    {elapsed}
+                                </span>
+                            </Tooltip>
+                        </div>
+                    </li>
+                );
+            })}
+        </ol>
+    );
+}
+
+/** Shows the last remembered start attempt after the lifecycle page unmounts. */
+function LastProvisioningCard(props: {
+    messages: Agent["provisioningStatus"];
+    nowMs: number;
+}) {
+    if (props.messages.length === 0) {
+        return null;
+    }
+    return (
+        <div className="md:col-span-2">
+            <DetailCard
+                title="provisioning history"
+                icon={<ListOrdered className="h-5 w-5" />}
+            >
+                <ProvisioningStatusList
+                    messages={props.messages}
+                    nowMs={props.nowMs}
+                />
+            </DetailCard>
+        </div>
+    );
+}
+
 /** Preserves the existing connected detail cards while displaying live connection duration. */
 function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
     const router = useRouter();
-    const queryClient = useQueryClient();
-    const { api } = Route.useRouteContext();
-    const { serverInfo } = RootRoute.useLoaderData();
     const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const locations = useAtomValue(agentTabLocationsAtom);
+    const storedProvisioningByName = useAtomValue(provisioningStatusStoreAtom);
     const now = useNow();
     const startState = startStates[props.agent.id];
     const configPath = props.details.config_path || "No config file loaded";
+    const storedProvisioning = storedProvisioningByName[props.agent.name] ?? [];
+    const provisioningNowMs =
+        props.agent.connectedAt !== null ? props.agent.connectedAt * 1000 : now;
 
     React.useEffect(() => {
         if (!startState?.autoRedirect || props.agent.cwd === null) return;
@@ -387,63 +507,76 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                         agent={props.agent}
                         mountPoints={props.details.mount_points}
                     />
-                    <div className="md:col-span-2">
-                        <UpgradeButton
-                            target={`agent ${props.details.name}`}
-                            agentOs={props.details.os}
-                            agentArch={props.details.arch}
-                            agentExePath={props.details.exe_path}
-                            supportsSelfExec={props.agent.supportsSelfExec}
-                            serverInfo={serverInfo}
-                            upgrade={(targetVersion) =>
-                                props.agent.upgrade(targetVersion)
-                            }
-                            forceInstallRunningBinary={() =>
-                                props.agent.forceInstallRunningBinary()
-                            }
-                            waitUntilReady={(
-                                targetVersion,
-                                requireServerIdentity,
-                            ) =>
-                                waitForRestart(async () => {
-                                    const upgradedAgent = (
-                                        await queryClient.fetchQuery({
-                                            ...agentsQueryOptions(api),
-                                            staleTime: 0,
-                                        })
-                                    ).find(
-                                        (agent) =>
-                                            agent.id === props.agent.id &&
-                                            agent.status === "connected" &&
-                                            agent.connectionId !==
-                                                props.agent.connectionId &&
-                                            agent.binary?.version ===
-                                                targetVersion,
-                                    );
-                                    if (!upgradedAgent?.binary) {
-                                        throw new Error(
-                                            "Agent is still upgrading",
-                                        );
-                                    }
-                                    if (
-                                        requireServerIdentity &&
-                                        !matchesServerIdentity(
-                                            upgradedAgent.binary,
-                                            serverInfo,
-                                        )
-                                    ) {
-                                        throw new Error(
-                                            "Agent has not loaded the running server binary",
-                                        );
-                                    }
-                                    await router.invalidate();
-                                }, "Agent did not come back after upgrade")
-                            }
-                        />
-                    </div>
+                    <LastProvisioningCard
+                        messages={storedProvisioning}
+                        nowMs={provisioningNowMs}
+                    />
+                    <AgentUpgradeControls
+                        agent={props.agent}
+                        details={props.details}
+                    />
                 </div>
             </div>
             <Outlet />
+        </div>
+    );
+}
+
+/** Keeps upgrade waiting out of the details grid so the home page stays under the line limit. */
+function AgentUpgradeControls(props: {
+    agent: Agent;
+    details: AgentDetailsResponse;
+}) {
+    const router = useRouter();
+    const queryClient = useQueryClient();
+    const { api } = Route.useRouteContext();
+    const { serverInfo } = RootRoute.useLoaderData();
+    return (
+        <div className="md:col-span-2">
+            <UpgradeButton
+                target={`agent ${props.details.name}`}
+                agentOs={props.details.os}
+                agentArch={props.details.arch}
+                agentExePath={props.details.exe_path}
+                supportsSelfExec={props.agent.supportsSelfExec}
+                serverInfo={serverInfo}
+                upgrade={(targetVersion) => props.agent.upgrade(targetVersion)}
+                forceInstallRunningBinary={() =>
+                    props.agent.forceInstallRunningBinary()
+                }
+                waitUntilReady={(targetVersion, requireServerIdentity) =>
+                    waitForRestart(async () => {
+                        const upgradedAgent = (
+                            await queryClient.fetchQuery({
+                                ...agentsQueryOptions(api),
+                                staleTime: 0,
+                            })
+                        ).find(
+                            (agent) =>
+                                agent.id === props.agent.id &&
+                                agent.status === "connected" &&
+                                agent.connectionId !==
+                                    props.agent.connectionId &&
+                                agent.binary?.version === targetVersion,
+                        );
+                        if (!upgradedAgent?.binary) {
+                            throw new Error("Agent is still upgrading");
+                        }
+                        if (
+                            requireServerIdentity &&
+                            !matchesServerIdentity(
+                                upgradedAgent.binary,
+                                serverInfo,
+                            )
+                        ) {
+                            throw new Error(
+                                "Agent has not loaded the running server binary",
+                            );
+                        }
+                        await router.invalidate();
+                    }, "Agent did not come back after upgrade")
+                }
+            />
         </div>
     );
 }
