@@ -882,9 +882,7 @@ test.describe.serial("File Browser Navigation", () => {
         await page.getByLabel("Sync path").fill(selectedPath);
 
         // Directory Sync exposes the same explicit direction control while retaining no tree Diff action.
-        await page
-            .getByRole("radio", { name: "Selected path to current path" })
-            .check();
+        await page.getByRole("radio", { name: "Receive" }).check();
         await expect(
             page.getByRole("button", { name: "Diff", exact: true }),
         ).toHaveCount(0);

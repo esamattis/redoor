@@ -31,7 +31,6 @@ export function AgentPathFields(props: {
     agents: Array<Agent>;
     agentId: string;
     path: string;
-    resolvedPath: string;
     disabled: boolean;
     viewHref: string | null;
     onAgentChange: (agentId: string) => void;
@@ -39,7 +38,7 @@ export function AgentPathFields(props: {
     onView: () => void;
 }) {
     return (
-        <div className="grid items-end gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+        <div className="grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Agent
                 <span className="relative block">
@@ -108,14 +107,6 @@ export function AgentPathFields(props: {
                     </a>
                 )}
             </Tooltip>
-            {props.resolvedPath !== props.path ? (
-                <span
-                    aria-label="Absolute path"
-                    className="break-all font-mono text-xs text-slate-400 md:col-start-2"
-                >
-                    {props.resolvedPath}
-                </span>
-            ) : null}
         </div>
     );
 }
@@ -146,12 +137,13 @@ function shortenSyncPath(agent: Agent, path: string): string {
     if (agent.cwd === null || path === "~" || path.startsWith("~/")) {
         return path;
     }
-    const home = agent.cwd === "/" ? "/" : agent.cwd.replace(/\/+$/, "");
+    const home = agent.cwd.replace(/\/+$/, "");
+    // A root home would make every absolute path look portable and copy under a peer's real home.
+    if (home === "" || home === "/") {
+        return path;
+    }
     if (path === home || path === `${home}/`) {
         return "~";
-    }
-    if (home === "/") {
-        return path.startsWith("/") ? `~${path}` : path;
     }
     if (path.startsWith(`${home}/`)) {
         return `~${path.slice(home.length)}`;
@@ -495,6 +487,54 @@ function useSyncWorkspace(props: {
 
 type SyncWorkspace = ReturnType<typeof useSyncWorkspace>;
 
+/** Keeps the agent name visually distinct from the filesystem path it owns. */
+function AgentPath(props: { agentName: string; path: string }) {
+    return (
+        <span className="break-all">
+            <b>{props.agentName}:</b>
+            {props.path}
+        </span>
+    );
+}
+
+/** Renders a resolved endpoint, or fallback copy when the peer agent is gone. */
+function EndpointPath(props: {
+    endpoint: SyncEndpoint | null;
+    fallback: string;
+}) {
+    if (props.endpoint === null) {
+        return props.fallback;
+    }
+    return (
+        <AgentPath
+            agentName={props.endpoint.agent.name}
+            path={props.endpoint.path}
+        />
+    );
+}
+
+/** Stacks long absolute endpoints so the arrow does not hide the target path. */
+function SyncDirectionPath(props: {
+    from: { agentName: string; path: string };
+    to: { agentName: string; path: string };
+}) {
+    return (
+        <span className="grid gap-0.5">
+            <AgentPath
+                agentName={props.from.agentName}
+                path={props.from.path}
+            />
+            <span className="break-all">
+                →{" "}
+                <AgentPath
+                    agentName={props.to.agentName}
+                    path={props.to.path}
+                />
+            </span>
+        </span>
+    );
+}
+
 /** Makes endpoint order explicit without turning the selected endpoint into the destination. */
 function SyncDirectionFields(props: {
     workspace: SyncWorkspace;
@@ -502,8 +542,14 @@ function SyncDirectionFields(props: {
     currentPath: string;
 }) {
     const workspace = props.workspace;
-    const currentLabel = `${props.currentAgent.name}: ${props.currentPath}`;
-    const selectedLabel = `${workspace.selectedAgent?.name ?? "Unavailable agent"}: ${workspace.selectedEndpoint?.path ?? workspace.selectedPath}`;
+    const currentPath = {
+        agentName: props.currentAgent.name,
+        path: props.currentPath,
+    };
+    const selectedPath = {
+        agentName: workspace.selectedAgent?.name ?? "Unavailable agent",
+        path: workspace.selectedEndpoint?.path ?? workspace.selectedPath,
+    };
     return (
         <RadioCardGroup
             legend="Sync direction"
@@ -519,8 +565,10 @@ function SyncDirectionFields(props: {
             <RadioCardOption
                 name="sync-direction"
                 value="current-to-selected"
-                label="Current path to selected path"
-                description={`${currentLabel} → ${selectedLabel}`}
+                label="Send"
+                description={
+                    <SyncDirectionPath from={currentPath} to={selectedPath} />
+                }
                 checked={workspace.direction === "current-to-selected"}
                 layout="descriptive"
                 onChange={() =>
@@ -530,8 +578,10 @@ function SyncDirectionFields(props: {
             <RadioCardOption
                 name="sync-direction"
                 value="selected-to-current"
-                label="Selected path to current path"
-                description={`${selectedLabel} → ${currentLabel}`}
+                label="Receive"
+                description={
+                    <SyncDirectionPath from={selectedPath} to={currentPath} />
+                }
                 checked={workspace.direction === "selected-to-current"}
                 layout="descriptive"
                 onChange={() =>
@@ -561,15 +611,27 @@ function conflictDialogLabels(operation: TransferOperation | null) {
 /** Keeps transfer and comparison actions in one toolbar without bloating the page. */
 function SyncActionBar(props: { workspace: SyncWorkspace }) {
     const workspace = props.workspace;
-    const sourceLabel = workspace.sourceEndpoint
-        ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
-        : "the unavailable selected endpoint";
-    const destinationLabel = workspace.destinationEndpoint
-        ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
-        : "the unavailable selected endpoint";
+    const sourcePath = (
+        <EndpointPath
+            endpoint={workspace.sourceEndpoint}
+            fallback="the unavailable selected endpoint"
+        />
+    );
+    const destinationPath = (
+        <EndpointPath
+            endpoint={workspace.destinationEndpoint}
+            fallback="the unavailable selected endpoint"
+        />
+    );
     return (
         <div className="flex flex-wrap items-center gap-3">
-            <Tooltip content={`Copy ${sourceLabel} to ${destinationLabel}`}>
+            <Tooltip
+                content={
+                    <>
+                        Copy {sourcePath} to {destinationPath}
+                    </>
+                }
+            >
                 <Button
                     type="button"
                     size="lg"
@@ -594,7 +656,13 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                           : "Copy"}
                 </Button>
             </Tooltip>
-            <Tooltip content={`Move ${sourceLabel} to ${destinationLabel}`}>
+            <Tooltip
+                content={
+                    <>
+                        Move {sourcePath} to {destinationPath}
+                    </>
+                }
+            >
                 <Button
                     type="button"
                     variant="secondary"
@@ -622,7 +690,11 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
             </Tooltip>
             {workspace.canDiff ? (
                 <Tooltip
-                    content={`Compare ${sourceLabel} with ${destinationLabel}`}
+                    content={
+                        <>
+                            Compare {sourcePath} with {destinationPath}
+                        </>
+                    }
                 >
                     <Button
                         type="button"
@@ -656,7 +728,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     {(workspace.transfer?.total_bytes ?? 0) > 0
                         ? ` of ${formatSize(workspace.transfer?.total_bytes ?? 0)}`
                         : ""}{" "}
-                    from {sourceLabel} to {destinationLabel}
+                    from {sourcePath} to {destinationPath}
                 </span>
             ) : null}
         </div>
@@ -667,12 +739,18 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
 function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
     const workspace = props.workspace;
     if (workspace.transfer?.state === "completed") {
-        const sourceLabel = workspace.sourceEndpoint
-            ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
-            : "unknown source";
-        const destinationLabel = workspace.destinationEndpoint
-            ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
-            : "unknown destination";
+        const sourcePath = (
+            <EndpointPath
+                endpoint={workspace.sourceEndpoint}
+                fallback="unknown source"
+            />
+        );
+        const destinationPath = (
+            <EndpointPath
+                endpoint={workspace.destinationEndpoint}
+                fallback="unknown destination"
+            />
+        );
         return (
             <p
                 role="status"
@@ -680,7 +758,7 @@ function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
             >
                 {workspace.transferLabel} completed successfully.{" "}
                 {formatSize(workspace.transfer.transferred_bytes)} transferred
-                from {sourceLabel} to {destinationLabel}.
+                from {sourcePath} to {destinationPath}.
             </p>
         );
     }
@@ -759,12 +837,18 @@ export function SyncView(props: {
     const conflictLabels = conflictDialogLabels(workspace.pendingOperation);
     const confirmationLabel =
         workspace.confirmationOperation === "move" ? "Move" : "Copy";
-    const sourceLabel = workspace.sourceEndpoint
-        ? `${workspace.sourceEndpoint.agent.name}: ${workspace.sourceEndpoint.path}`
-        : "the unavailable selected endpoint";
-    const destinationLabel = workspace.destinationEndpoint
-        ? `${workspace.destinationEndpoint.agent.name}: ${workspace.destinationEndpoint.path}`
-        : "the unavailable selected endpoint";
+    const sourcePath = (
+        <EndpointPath
+            endpoint={workspace.sourceEndpoint}
+            fallback="the unavailable selected endpoint"
+        />
+    );
+    const destinationPath = (
+        <EndpointPath
+            endpoint={workspace.destinationEndpoint}
+            fallback="the unavailable selected endpoint"
+        />
+    );
 
     return (
         <DetailCard>
@@ -792,10 +876,6 @@ export function SyncView(props: {
                     agents={workspace.availableAgents}
                     agentId={workspace.selectedAgentId}
                     path={workspace.selectedPath}
-                    resolvedPath={
-                        workspace.selectedEndpoint?.path ??
-                        workspace.selectedPath
-                    }
                     disabled={workspace.isBusy}
                     viewHref={workspace.selectedHref}
                     onAgentChange={workspace.changeSelectedAgent}
@@ -811,7 +891,12 @@ export function SyncView(props: {
             <ConfirmationDialog
                 isOpen={workspace.confirmationOperation !== null}
                 title={`${confirmationLabel} ${entryLabel}?`}
-                description={`${confirmationLabel} from ${sourceLabel} to ${destinationLabel}?`}
+                description={
+                    <>
+                        {confirmationLabel} from {sourcePath} to{" "}
+                        {destinationPath}?
+                    </>
+                }
                 confirmLabel={`Confirm ${confirmationLabel.toLowerCase()}`}
                 onClose={() => workspace.setConfirmationOperation(null)}
                 onConfirm={() => {

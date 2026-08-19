@@ -32,7 +32,7 @@ export function RadioCardOption(props: {
     name: string;
     value: string;
     label: string;
-    description: string;
+    description: React.ReactNode;
     checked: boolean;
     disabled?: boolean;
     layout: "compact" | "descriptive";
@@ -117,11 +117,11 @@ export function RadioCardOption(props: {
     return (
         <label className={twMerge("flex gap-3", cardClassName)}>
             {input}
-            <span>
+            <span className="min-w-0">
                 <span className="block text-sm font-medium text-slate-100">
                     {props.label}
                 </span>
-                <span className="mt-1 block text-xs leading-5 text-slate-400">
+                <span className="mt-1 block min-w-0 text-xs leading-5 text-slate-400">
                     {props.description}
                 </span>
             </span>

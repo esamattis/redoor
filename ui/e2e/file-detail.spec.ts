@@ -247,12 +247,15 @@ test.describe.serial("File Detail View", () => {
         );
         // Home-directory files must start as ~ so the peer agent expands them under its own home.
         await expect(page.getByLabel("Sync path")).toHaveValue(`~/${filename}`);
-        await expect(page.getByLabel("Absolute path")).toHaveText(
-            destinationPath,
-        );
+        await expect(
+            page.locator("label").filter({
+                has: page.getByRole("radio", { name: "Send" }),
+            }),
+        ).toContainText(destinationPath);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
-        await page
-            .getByRole("dialog", { name: "Copy file?" })
+        const confirmation = page.getByRole("dialog", { name: "Copy file?" });
+        await expect(confirmation).toContainText(destinationPath);
+        await confirmation
             .getByRole("button", { name: "Confirm copy" })
             .click();
 
@@ -299,10 +302,10 @@ test.describe.serial("File Detail View", () => {
         await page.getByLabel("Sync path").fill(selectedPath);
 
         const forwardDirection = page.getByRole("radio", {
-            name: "Current path to selected path",
+            name: "Send",
         });
         const reverseDirection = page.getByRole("radio", {
-            name: "Selected path to current path",
+            name: "Receive",
         });
         // Existing Sync behavior remains selected by default for bookmarked workflows.
         await expect(forwardDirection).toBeChecked();
