@@ -3,7 +3,7 @@ use tokio::time::{Duration, Interval, MissedTickBehavior};
 
 /// Production ping period; tests shrink this so idle sockets prove liveness quickly.
 pub const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-/// Production silence budget; sized as a few missed pings before restarting a supervised agent.
+/// Production silence budget; sized as a few missed pings before closing an agent session.
 pub const WEBSOCKET_STALE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Production stale-poll period; independent of the ping so the threshold can be a multiple of it.
 pub const WEBSOCKET_STALE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -13,7 +13,7 @@ pub const WEBSOCKET_STALE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 pub struct WebSocketTimeouts {
     /// How often idle sockets write a ping so proxies stay alive and half-open links fail.
     pub keepalive: Duration,
-    /// How long a supervised agent may stay silent before the session asks for a restart.
+    /// How long an agent may stay silent before its session is closed.
     pub stale_timeout: Duration,
     /// How often the session compares last inbound traffic against `stale_timeout`.
     pub stale_check_interval: Duration,

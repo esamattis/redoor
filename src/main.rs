@@ -40,7 +40,7 @@ struct Cli {
         global = true
     )]
     websocket_keepalive: std::time::Duration,
-    /// Silence before a supervised agent WebSocket is treated as stale and restarted.
+    /// Silence before an agent WebSocket is treated as stale and closed.
     #[arg(
         long,
         env = "REDOOR_WEBSOCKET_STALE_TIMEOUT",

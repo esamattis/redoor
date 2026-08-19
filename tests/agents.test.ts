@@ -19,8 +19,10 @@ import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import fs from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
+import WebSocket from "ws";
 import {
     ProcessManager,
+    TEST_AGENT_TOKEN,
     TempFileManager,
     startServerAndAgent,
     waitForLogMessage,
@@ -262,8 +264,7 @@ describe("Agents API", () => {
         expect(result.hostname.length).toBeGreaterThan(0);
         // When routing discovers an external address, it must not return an empty value.
         expect(
-            result.external_ip === null ||
-                result.external_ip.length > 0,
+            result.external_ip === null || result.external_ip.length > 0,
         ).toBe(true);
         // Load averages must be finite so clients can safely format and chart them.
         expect(Number.isFinite(result.load_average_one)).toBe(true);
@@ -388,13 +389,13 @@ describe("Agents API", () => {
             // A real filesystem timestamp should be a positive Unix epoch value.
             expect(firstFile.modified_at).toBeGreaterThan(0);
             // Resolved owner names are non-empty while unknown numeric owners remain null.
-            expect(
-                firstFile.owner === null || firstFile.owner.length > 0,
-            ).toBe(true);
+            expect(firstFile.owner === null || firstFile.owner.length > 0).toBe(
+                true,
+            );
             // Resolved group names follow the same nullable contract as owners.
-            expect(
-                firstFile.group === null || firstFile.group.length > 0,
-            ).toBe(true);
+            expect(firstFile.group === null || firstFile.group.length > 0).toBe(
+                true,
+            );
         }
 
         const fileResult = await testAgent.ls(listedFilePath);
@@ -423,11 +424,9 @@ describe("Agents API", () => {
             "utf-8",
         );
 
-        const result = await searchAgentFiles(
-            testAgent,
-            searchRoot,
-            { query: "nestedsourcetarget" },
-        );
+        const result = await searchAgentFiles(testAgent, searchRoot, {
+            query: "nestedsourcetarget",
+        });
         // A small local tree must complete without consuming the three-second allowance.
         expect(result.timed_out).toBe(false);
         // Search timing comes from the agent that performed the filesystem traversal.
@@ -464,20 +463,16 @@ describe("Agents API", () => {
         await fs.writeFile(excludedTarget, "excluded", "utf-8");
         await fs.writeFile(quotedTarget, "quoted", "utf-8");
 
-        const excludedResult = await searchAgentFiles(
-            testAgent,
-            searchRoot,
-            { query: "-node_modules testtarget" },
-        );
+        const excludedResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: "-node_modules testtarget",
+        });
         // The positive term still finds files outside the excluded subtree.
         expect(excludedResult.results.map((entry) => entry.path)).toEqual([
             includedTarget,
         ]);
-        const quotedResult = await searchAgentFiles(
-            testAgent,
-            searchRoot,
-            { query: '"-node_modules"' },
-        );
+        const quotedResult = await searchAgentFiles(testAgent, searchRoot, {
+            query: '"-node_modules"',
+        });
         // Double quotes make a leading minus literal rather than exclusion syntax.
         expect(quotedResult.results.map((entry) => entry.path)).toEqual([
             quotedTarget,
@@ -577,11 +572,9 @@ describe("Agents API", () => {
             ),
         );
 
-        const result = await searchAgentFiles(
-            testAgent,
-            searchRoot,
-            { query: "boundedsearchresult" },
-        );
+        const result = await searchAgentFiles(testAgent, searchRoot, {
+            query: "boundedsearchresult",
+        });
         // The fixed cap keeps one control-socket JSON response memory-safe on broad searches.
         expect(result.results).toHaveLength(100);
         // Reaching the result cap alone is not a timeout; traversal still considered every entry.
@@ -670,6 +663,66 @@ describe("Agents API", () => {
         expect(agentsAfterReplacement.some((a) => a.name === AGENT_NAME)).toBe(
             true,
         );
+    });
+
+    it("disconnects a stale unmanaged agent", async () => {
+        const unmanagedAgentName = "stale-unmanaged-test-agent";
+        const control = new WebSocket(wsUrl, { autoPong: false });
+        onTestFinished(() => control.close());
+        await new Promise<void>((resolve, reject) => {
+            control.once("open", resolve);
+            control.once("error", reject);
+        });
+        control.send(
+            JSON.stringify({
+                type: "agent_register",
+                agent_id: unmanagedAgentName,
+                agent_name: unmanagedAgentName,
+                os: "linux",
+                arch: "x86_64",
+                hostname: "stale-host",
+                username: "stale-user",
+                cwd: "/tmp",
+                token: TEST_AGENT_TOKEN,
+                binary: {
+                    version: "0.0.0",
+                    git_rev: "test",
+                    git_dirty: false,
+                    version_dirty: false,
+                    build_mode: "debug",
+                    build_date: "unknown",
+                },
+                supports_self_exec: false,
+                supports_native_open: false,
+            }),
+        );
+
+        const connected = await waitForValue({
+            timeoutMs: 4000,
+            description: "unmanaged fixture to connect",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (agent) =>
+                        agent.name === unmanagedAgentName &&
+                        agent.connectionId !== null,
+                ),
+        });
+        // A control connection id proves the fixture was accepted without requiring a transfer socket.
+        expect(connected.managed).toBe(false);
+
+        const disconnected = await waitForValue({
+            timeoutMs: 4000,
+            description: "stale unmanaged fixture to disconnect",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (agent) =>
+                        agent.name === unmanagedAgentName &&
+                        agent.status === "disconnected" &&
+                        agent.connectionId === null,
+                ),
+        });
+        // Stale teardown must clear the authoritative socket even without a watchdog.
+        expect(disconnected.status).toBe("disconnected");
     });
 
     it("should echo message back from connected agent", async () => {

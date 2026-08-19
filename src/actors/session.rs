@@ -52,7 +52,7 @@ struct SessionRuntime {
     /// matching watchdog supervisor. The stale check uses this to signal
     /// the supervisor when the WebSocket goes silent. Stays `None` for
     /// agents that aren't supervised (e.g. manually-spawned external
-    /// agents), in which case the stale check is a no-op.
+    /// agents), whose stale sockets are closed without restarting a process.
     watchdog: Option<WatchdogHandle>,
     /// Expected top-level `agent_token`; registration without this secret is rejected.
     agent_token: String,
@@ -105,7 +105,7 @@ impl SessionRuntime {
                 // the registry still has access to it. A `None` result
                 // is fine: it just means the agent is not supervised by
                 // the watchdog (e.g. an external agent spawned outside
-                // the server) and the stale check will be a no-op.
+                // the server) and stale cleanup has no process to restart.
                 self.watchdog = watchdog_registry.lookup(&agent_name);
                 if let Some(watchdog) = self.watchdog.as_ref() {
                     if !watchdog.mark_connected(self.socket_id.clone()) {
@@ -321,6 +321,7 @@ pub async fn handle_websocket(
     // loop can stop promptly instead of waiting for the read side to notice the
     // broken connection.
     let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
+    let timeouts = crate::websocket::timeouts();
 
     let writer_task = tokio::spawn(async move {
         let mut text_closed = false;
@@ -333,7 +334,14 @@ pub async fn handle_websocket(
                 _ = ping_interval.tick() => {
                     // A ping forces a write; if the connection is dead the send
                     // fails and the session can tear down instead of lingering.
-                    if sender.send(WsMessage::Ping(bytes::Bytes::new())).await.is_err() {
+                    if !matches!(
+                        tokio::time::timeout(
+                            timeouts.stale_timeout,
+                            sender.send(WsMessage::Ping(bytes::Bytes::new())),
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
                         break;
                     }
                     continue;
@@ -347,7 +355,10 @@ pub async fn handle_websocket(
                 continue;
             };
 
-            if sender.send(message).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(timeouts.stale_timeout, sender.send(message)).await,
+                Ok(Ok(()))
+            ) {
                 // A send failure means the websocket is gone, so continuing to pull
                 // router output would only accumulate work for a dead session.
                 break;
@@ -361,8 +372,7 @@ pub async fn handle_websocket(
     // inbound frame (Text, Binary, Ping, Pong, Close) resets the timer.
     // If no frame arrives for the configured stale timeout we assume the
     // connection is half-open (e.g. SSH tunnel died without a TCP
-    // close) and ask the watchdog supervisor to restart the subprocess.
-    let timeouts = crate::websocket::timeouts();
+    // close). Managed sessions also ask their watchdog to restart the subprocess.
     let mut last_seen = Instant::now();
     let mut stale_check = tokio::time::interval(timeouts.stale_check_interval);
     stale_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -375,20 +385,26 @@ pub async fn handle_websocket(
             biased;
             _ = &mut writer_done_rx => break,
             _ = stale_check.tick() => {
-                if last_seen.elapsed() > timeouts.stale_timeout
-                    && let Some(watchdog) = runtime.watchdog.as_ref()
-                {
-                    log!(
-                        Level::Warning,
-                        "WebSocket stale for {:?}, requesting restart: agent_name={}, socket_id={}",
-                        last_seen.elapsed(),
-                        watchdog.key(),
-                        socket_id
-                    );
-                    watchdog.signal_stale();
+                if last_seen.elapsed() > timeouts.stale_timeout {
+                    if let Some(watchdog) = runtime.watchdog.as_ref() {
+                        log!(
+                            Level::Warning,
+                            "WebSocket stale for {:?}, requesting restart: agent_name={}, socket_id={}",
+                            last_seen.elapsed(),
+                            watchdog.key(),
+                            socket_id
+                        );
+                        watchdog.signal_stale();
+                    } else {
+                        log!(
+                            Level::Warning,
+                            "Unmanaged WebSocket stale for {:?}, closing session: socket_id={}",
+                            last_seen.elapsed(),
+                            socket_id
+                        );
+                    }
                     // Break out of the read loop; `runtime.shutdown()`
-                    // below closes the lanes and the writer task exits,
-                    // and the supervisor is already killing the subprocess.
+                    // below unregisters the agent and closes the writer lane.
                     break;
                 }
             }

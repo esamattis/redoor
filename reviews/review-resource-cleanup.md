@@ -55,7 +55,11 @@ The method was to inventory task/process/channel/temp-resource creation, then tr
 
 #### H2. Stale unmanaged agent sockets are never torn down
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Stale detection now closes every silent agent session and unregisters it from the router, while watchdog signaling remains conditional on the session having a managed supervisor. Every outbound control WebSocket write is also bounded by the configured stale timeout so a blackholed peer cannot pin the writer task. An integration test registers an unmanaged protocol fixture that does not answer pings and verifies its inventory entry becomes disconnected.
 
 **References:**
 
