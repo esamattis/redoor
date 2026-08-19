@@ -70,6 +70,8 @@ pub struct AgentListEntry {
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed lifecycle diagnostic.
     pub connection_issue: Option<String>,
+    /// Sticky SSH start steps copied from the supervisor snapshot.
+    pub provisioning_status: Vec<crate::commands::ProvisioningStatusMessage>,
     /// Binary identity from the latest registration when one has occurred.
     pub binary: Option<BinaryIdentity>,
     /// Latest registration's explicit support for replacement-path self-exec.

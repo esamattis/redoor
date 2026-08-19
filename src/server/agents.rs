@@ -83,6 +83,7 @@ pub(super) async fn list_agent_snapshots(
             connection_id: agent.connection_id,
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
+            provisioning_status: agent.provisioning_status,
             binary: agent.binary,
             supports_self_exec: agent.supports_self_exec,
             supports_native_open: agent.supports_native_open,
@@ -200,6 +201,7 @@ pub(crate) async fn start_agent_handler(
     }
     snapshot.status = lifecycle.status;
     snapshot.connection_issue = lifecycle.connection_issue;
+    snapshot.provisioning_status = lifecycle.provisioning_status;
     if snapshot.status != redoor::commands::AgentConnectionStatus::Connected {
         snapshot.connected_at = None;
     }

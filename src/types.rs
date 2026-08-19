@@ -196,6 +196,19 @@ impl fmt::Display for UnixTimestampSeconds {
     }
 }
 
+/// Unix timestamp in milliseconds so provisioning rows can show secs + ms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(type = "number")]
+pub struct UnixTimestampMillis(pub i64);
+
+impl UnixTimestampMillis {
+    /// Captures the current instant so step deltas can include milliseconds.
+    pub fn now() -> Self {
+        Self(chrono::Utc::now().timestamp_millis())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {

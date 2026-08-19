@@ -2,6 +2,7 @@
 import type { AgentConnectionStatus } from "./AgentConnectionStatus";
 import type { AgentId } from "./AgentId";
 import type { BinaryIdentity } from "./BinaryIdentity";
+import type { ProvisioningStatusMessage } from "./ProvisioningStatusMessage";
 import type { SocketId } from "./SocketId";
 import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 
@@ -21,6 +22,10 @@ ssh_target: string | null, status: AgentConnectionStatus, connected_at: UnixTime
  * Current WebSocket generation; changes whenever this agent reconnects.
  */
 connection_id: SocketId | null, last_seen_at: UnixTimestampSeconds | null, connection_issue: string | null, 
+/**
+ * Ordered SSH start steps for the current attempt; empty for local or dormant agents.
+ */
+provisioning_status: Array<ProvisioningStatusMessage>, 
 /**
  * Binary identity from the latest registration; absent until first connect.
  */

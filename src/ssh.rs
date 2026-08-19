@@ -47,6 +47,7 @@ use redoor::{Level, log};
 
 use crate::server_address::ServerAddress;
 use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
+use redoor::watchdog::ProvisioningStatusSink;
 use transport::{SshHost, SshRunOptions};
 
 /// Derives a default agent name from the ssh target by stripping any
@@ -229,8 +230,12 @@ impl PreparedSshBackedAgent {
 
     /// Starts an agent through a fresh random remote port and returns both the
     /// selected port and child so each launcher can apply its lifecycle policy.
-    async fn spawn_random(&self) -> Result<(u16, tokio::process::Child), std::io::Error> {
+    async fn spawn_random(
+        &self,
+        status: &ProvisioningStatusSink,
+    ) -> Result<(u16, tokio::process::Child), std::io::Error> {
         let remote_port = self.random_remote_port.next();
+        status.report(format!("Spawning the remote binary at {}", self.remote_bin));
         log!(
             Level::Info,
             "Spawning SSH-backed redoor agent: target={}, ssh_server_port={}, name={}, remote_bin={}, random_remote_port={}, destination={}:{}",
@@ -248,8 +253,11 @@ impl PreparedSshBackedAgent {
 
     /// Starts a TOML-managed agent with the shared random-port policy while
     /// leaving retries and stale-session handling to the server watchdog.
-    pub(crate) async fn spawn_managed(&self) -> Result<tokio::process::Child, std::io::Error> {
-        let (_, child) = self.spawn_random().await?;
+    pub(crate) async fn spawn_managed(
+        &self,
+        status: &ProvisioningStatusSink,
+    ) -> Result<tokio::process::Child, std::io::Error> {
+        let (_, child) = self.spawn_random(status).await?;
         Ok(child)
     }
 
@@ -310,6 +318,7 @@ pub(crate) async fn prepare_ssh_backed_agent(
     config: &SshBackedAgentConfig,
     redoor_port: u16,
     agent_token: &str,
+    status: &ProvisioningStatusSink,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
     prepare_ssh_backed_agent_for_destination(
         config,
@@ -317,6 +326,7 @@ pub(crate) async fn prepare_ssh_backed_agent(
         redoor_port,
         agent_token,
         RelayPreparationOptions::default(),
+        status,
     )
     .await
 }
@@ -329,6 +339,7 @@ async fn prepare_ssh_backed_agent_for_destination(
     destination_port: u16,
     agent_token: &str,
     preparation: RelayPreparationOptions<'_>,
+    status: &ProvisioningStatusSink,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
     let remote_bin = match config.remote_bin.clone() {
         Some(remote_bin) => remote_bin,
@@ -353,6 +364,8 @@ async fn prepare_ssh_backed_agent_for_destination(
     // intentionally placed at that path. Auto-install may redirect debug
     // uploads to the dedicated `debug` path instead of the versioned default.
     let remote_bin = if let Some(binary_source) = preparation.binary_source {
+        let remote_bin =
+            provision::force_upload_binary(&host, binary_source, &remote_bin, status).await?;
         log!(
             Level::Info,
             "Force-uploading operator-provided binary before relay: target={}, binary_source={}, remote_bin={}",
@@ -360,19 +373,22 @@ async fn prepare_ssh_backed_agent_for_destination(
             binary_source.display(),
             remote_bin
         );
-        provision::force_upload_binary(&host, binary_source, &remote_bin).await?;
         remote_bin
     } else if config.remote_bin.is_none() {
+        status.report("Sniffing the SSH target");
         log!(
             Level::Info,
-            "Sniffing SSH target before relay: target={}, ssh_server_port={}, remote_bin={}",
+            "Sniffing SSH target before relay: target={}, ssh_server_port={}",
             config.target,
-            host.server_port_label(),
-            remote_bin
+            host.server_port_label()
         );
         let sniff = sniff_remote(&host, &remote_bin).await?;
-        ensure_remote_binary(&host, &remote_bin, &sniff).await?
+        status.report(sniff.status_message());
+        ensure_remote_binary(&host, &sniff, status).await?
     } else {
+        status.report(format!(
+            "Using operator-provided remote binary at {remote_bin}"
+        ));
         log!(
             Level::Info,
             "Using operator-provided remote binary without sniffing or provisioning: target={}, remote_bin={}",
@@ -511,7 +527,9 @@ where
 async fn run_relay_attempt(
     prepared: &PreparedSshBackedAgent,
 ) -> Result<(u16, std::process::ExitStatus, bool), Box<dyn std::error::Error>> {
-    let (remote_port, mut child) = prepared.spawn_random().await?;
+    let (remote_port, mut child) = prepared
+        .spawn_random(&ProvisioningStatusSink::noop())
+        .await?;
     let stderr = child.stderr.take().ok_or_else(|| {
         std::io::Error::other("standalone SSH stderr was not piped for forward monitoring")
     })?;
@@ -558,6 +576,7 @@ pub(crate) async fn start_relay(
                     binary_source: binary_source.as_deref(),
                     agent_app_name: Some(agent_app_name.clone()),
                 },
+                &ProvisioningStatusSink::noop(),
             )
             .await
             {

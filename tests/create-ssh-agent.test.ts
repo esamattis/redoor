@@ -92,6 +92,7 @@ describe("SSH agent configuration API", () => {
             configuration_editable: true,
             ssh_target: "example-host",
             status: "stopped",
+            provisioning_status: [],
         });
         const inventory = await apiClient.listAgents();
         // Dynamic reload must expose exactly one retained managed inventory record.
@@ -450,4 +451,58 @@ describe("SSH agent configuration API", () => {
         ).toBe(false);
         expect(readFileSync(configPath, "utf8")).not.toContain(`name = "${name}"`);
     });
+
+    it("publishes sniffing progress for an unreachable SSH target", async () => {
+        const name = "unreachable-ssh-progress";
+        await apiClient.createSshAgent(
+            sshRequest({ target: "192.0.2.1", name }),
+        );
+        onTestFinished(async () => {
+            try {
+                await apiClient.deleteManagedAgent(name);
+            } catch {
+                // Cleanup must tolerate an already-removed leftover from a failed assertion.
+            }
+        });
+        const created = (await apiClient.listAgents()).find(
+            (agent) => agent.id === name,
+        );
+        if (!created) throw new Error("Unreachable SSH agent missing");
+        await created.start();
+
+        const sniffing = await waitForValue({
+            timeoutMs: 10_000,
+            description: "SSH sniffing status on the unreachable target",
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.id === name,
+                );
+                return agent?.provisioningStatus.some((step) =>
+                    step.message.includes("Sniffing the SSH target"),
+                )
+                    ? agent
+                    : undefined;
+            },
+        });
+        // Progress must appear on inventory before the TCP connect times out.
+        expect(
+            sniffing.provisioningStatus.map((step) => step.message),
+        ).toContain("Sniffing the SSH target");
+
+        const failed = await waitForValue({
+            timeoutMs: 25_000,
+            description: "connection_issue after unreachable SSH sniff",
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.id === name,
+                );
+                const hasSniff = agent?.provisioningStatus.some((step) =>
+                    step.message.includes("Sniffing the SSH target"),
+                );
+                return agent?.connectionIssue && hasSniff ? agent : undefined;
+            },
+        });
+        // Failures stay on connection_issue rather than replacing the progress list.
+        expect(failed.connectionIssue).toBeTruthy();
+    }, 40_000);
 });

@@ -244,10 +244,11 @@ pub(crate) async fn upgrade_agent_handler(
                 details.arch,
                 details.exe_path
             );
-            let source_path = match crate::binaries::ensure_local_binary(
+            let source_path = match crate::binaries::ensure_local_binary_reported(
                 &target_version,
                 &details.os,
                 &details.arch,
+                |_| {},
             )
             .await
             {

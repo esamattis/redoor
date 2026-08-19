@@ -773,6 +773,7 @@ describe("Agents API", () => {
                 connection_id: null,
                 last_seen_at: null,
                 connection_issue: null,
+                provisioning_status: [],
                 binary: null,
                 supports_self_exec: false,
                 supports_native_open: false,

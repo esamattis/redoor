@@ -580,6 +580,7 @@ fn stopped_agent_response(
         connection_id: None,
         last_seen_at: None,
         connection_issue: None,
+        provisioning_status: Vec::new(),
         binary: None,
         supports_self_exec: false,
         supports_native_open: false,

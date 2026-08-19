@@ -159,6 +159,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             connected_at: None,
             last_seen_at: None,
             connection_issue: None,
+            provisioning_status: Vec::new(),
             socket_id: None,
             binary: None,
             supports_self_exec: false,
@@ -440,6 +441,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             connected_at: None,
             last_seen_at: None,
             connection_issue: None,
+            provisioning_status: Vec::new(),
             socket_id: None,
             binary: None,
             supports_self_exec: false,
@@ -507,9 +509,11 @@ pub(crate) async fn apply_managed_lifecycle(
             known.status = snapshot.status.clone();
         }
         known.connection_issue = snapshot.connection_issue;
+        known.provisioning_status = snapshot.provisioning_status.clone();
     } else {
         known.status = snapshot.status.clone();
         known.connection_issue = snapshot.connection_issue;
+        known.provisioning_status = snapshot.provisioning_status;
         known.socket_id = snapshot.socket_id;
         if known.status != AgentConnectionStatus::Connected {
             known.connected_at = None;
@@ -555,6 +559,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             connection_id: info.socket_id.clone(),
             last_seen_at: info.last_seen_at,
             connection_issue: info.connection_issue.clone(),
+            provisioning_status: info.provisioning_status.clone(),
             binary: info.binary.clone(),
             supports_self_exec: info.supports_self_exec,
             supports_native_open: info.supports_native_open,

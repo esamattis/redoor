@@ -506,11 +506,15 @@ log = "${agentLogPath}"
             expect(configuredAgent.cwd).toBe(remoteRoot);
 
             await configuredAgent.start();
+            const seenProvisioning = new Set<string>();
             const firstConnection = await waitForValue({
                 predicate: async () => {
                     const agent = (await apiClient.listAgents()).find(
                         (entry) => entry.name === agentName,
                     );
+                    for (const step of agent?.provisioningStatus ?? []) {
+                        seenProvisioning.add(step.message);
+                    }
                     if (agent?.connectionId) {
                         return agent;
                     }
@@ -521,6 +525,40 @@ log = "${agentLogPath}"
                 timeoutMs: 60_000,
                 description: "managed SSH agent to connect",
             });
+            const provisioningMessages = [...seenProvisioning];
+            // Inventory must expose the SSH prepare stages that replace a generic loading state.
+            expect(
+                provisioningMessages.some((message) =>
+                    message.includes("Sniffing the SSH target"),
+                ),
+            ).toBe(true);
+            expect(
+                provisioningMessages.some((message) =>
+                    message.startsWith("Sniff results:"),
+                ),
+            ).toBe(true);
+            expect(
+                provisioningMessages.some(
+                    (message) =>
+                        message.startsWith("Downloading the matching binary from ") ||
+                        message.startsWith("Using cached binary from ") ||
+                        message.startsWith("Using existing remote binary at ") ||
+                        message.startsWith("Comparing the remote debug install") ||
+                        message.startsWith("Uploading the binary to "),
+                ),
+            ).toBe(true);
+            expect(
+                provisioningMessages.some((message) =>
+                    message.startsWith("Spawning the remote binary"),
+                ),
+            ).toBe(true);
+            expect(provisioningMessages).toContain("Connected");
+            expect(
+                firstConnection.provisioningStatus.every((step, index, steps) => {
+                    const previous = steps[index - 1];
+                    return previous === undefined || step.at >= previous.at;
+                }),
+            ).toBe(true);
             const firstConnectionId = firstConnection.connectionId;
             if (firstConnectionId === null) {
                 throw new Error(
@@ -752,6 +790,12 @@ home = "${remoteRoot}"
             expect(failed.connectionIssue).toContain(
                 "Configure a password, SSH key, or ssh-agent credential",
             );
+            // Progress lines may exist, but authentication failure still uses connection_issue.
+            expect(
+                failed.provisioningStatus.some((step) =>
+                    step.message.includes("Sniffing the SSH target"),
+                ),
+            ).toBe(true);
             // The failed startup remains desired-running so watchdog retries are visible.
             expect(failed.status).toBe("starting");
             const shutdown = await failed.shutdown();

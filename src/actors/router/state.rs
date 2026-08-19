@@ -81,6 +81,8 @@ pub struct KnownAgent {
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed spawn, exit, or registration issue.
     pub connection_issue: Option<String>,
+    /// Sticky SSH start steps for the current watchdog cycle.
+    pub provisioning_status: Vec<crate::commands::ProvisioningStatusMessage>,
     /// Guards the inventory against stale socket teardown.
     pub socket_id: Option<SocketId>,
     /// Last registered binary identity, retained after disconnect for list warnings.

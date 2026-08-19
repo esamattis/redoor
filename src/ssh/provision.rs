@@ -7,6 +7,7 @@ use tokio::io::AsyncReadExt;
 use tokio::time::{Duration, timeout};
 
 use super::transport::{SshHost, SshRunOptions};
+use redoor::watchdog::ProvisioningStatusSink;
 
 /// Bounds cancellation-triggered SSH cleanup so a second unreachable host cannot leak a task.
 const REMOTE_TEMP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -129,6 +130,8 @@ pub(super) struct RemoteSniff {
     /// bytes already match the local binary (critical for debug builds where
     /// `--version` stays constant across rebuilds).
     sha1sum: String,
+    /// Shell-expanded remote path so status lines can show the real file.
+    remote_bin: String,
 }
 
 /// Builds the shell script used to inspect a remote binary in one SSH
@@ -217,7 +220,30 @@ pub(super) async fn sniff_remote(
         arch: arch.to_string(),
         version_output,
         sha1sum,
+        remote_bin: resolved_remote_bin.to_string(),
     })
+}
+
+impl RemoteSniff {
+    /// Formats probe fields for the sticky starting UI without sending raw script output.
+    pub(super) fn status_message(&self) -> String {
+        format!(
+            "Sniff results: arch={}, platform={}, path={}, version={}, sha1sum={}",
+            self.arch,
+            self.os,
+            self.remote_bin,
+            if self.version_output.is_empty() {
+                "(none)"
+            } else {
+                self.version_output.as_str()
+            },
+            if self.sha1sum.is_empty() {
+                "(none)"
+            } else {
+                self.sha1sum.as_str()
+            }
+        )
+    }
 }
 
 /// Streams `path` through SHA-1 so large binaries never need to sit fully in
@@ -266,35 +292,46 @@ fn remote_binary_matches(
 /// corrupted uploads before agent startup.
 pub(super) async fn ensure_remote_binary(
     host: &SshHost,
-    versioned_remote_bin: &str,
     sniff: &RemoteSniff,
+    status: &ProvisioningStatusSink,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let expected = format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let debug_binary = available_debug_binary(&sniff.os, &sniff.arch).await?;
 
-    let (local_path, remote_bin) = if let Some(debug_binary) = debug_binary {
-        // Use a dedicated path so a debug binary never overwrites the versioned one.
-        // Content equality is decided by SHA-1 below because `--version` cannot
-        // tell whether the remote executable contains the current local debug code.
-        let remote_bin = debug_remote_bin()?;
+    let (local_path, remote_version, remote_sha1, remote_bin) = if let Some(debug_binary) =
+        debug_binary
+    {
+        // The first sniff targeted the versioned path. Debug installs live
+        // elsewhere, so this extra probe is the SHA-1 check, not a cache read.
+        status.report("Comparing the remote debug install to this local build");
+        let debug_sniff = sniff_remote(host, &debug_remote_bin()?).await?;
         log!(
             Level::Info,
             "Using local debug binary for matching remote platform: path={}, remote_bin={}, os={}, arch={}",
             debug_binary.display(),
-            remote_bin,
+            debug_sniff.remote_bin,
             sniff.os,
             sniff.arch
         );
-        (debug_binary, remote_bin)
+        (
+            debug_binary,
+            debug_sniff.version_output,
+            debug_sniff.sha1sum,
+            debug_sniff.remote_bin,
+        )
     } else {
         if sniff.version_output == expected {
+            status.report(format!(
+                "Using existing remote binary at {}",
+                sniff.remote_bin
+            ));
             log!(
                 Level::Info,
                 "Remote binary version already matches; no download or upload needed: remote_bin={}, version='{}'",
-                versioned_remote_bin,
+                sniff.remote_bin,
                 sniff.version_output
             );
-            return Ok(versioned_remote_bin.to_string());
+            return Ok(sniff.remote_bin.clone());
         }
         log!(
             Level::Info,
@@ -309,28 +346,30 @@ pub(super) async fn ensure_remote_binary(
             sniff.os,
             sniff.arch
         );
-        let local_path =
-            crate::binaries::ensure_local_binary(env!("CARGO_PKG_VERSION"), &sniff.os, &sniff.arch)
-                .await?;
+        let local_path = crate::binaries::ensure_local_binary_reported(
+            env!("CARGO_PKG_VERSION"),
+            &sniff.os,
+            &sniff.arch,
+            |line| status.report(line),
+        )
+        .await?;
         log!(
             Level::Info,
             "Relay binary available in local cache: path={}",
             local_path.display()
         );
-        (local_path, versioned_remote_bin.to_string())
+        (
+            local_path,
+            sniff.version_output.clone(),
+            sniff.sha1sum.clone(),
+            sniff.remote_bin.clone(),
+        )
     };
 
     let local_sha1 = file_sha1sum(&local_path).await?;
-    // Initial sniff targets the versioned path; debug installs live elsewhere
-    // and need their own SHA-1 before we can decide whether to upload.
-    let (remote_version, remote_sha1) = if remote_bin == versioned_remote_bin {
-        (sniff.version_output.clone(), sniff.sha1sum.clone())
-    } else {
-        let debug_sniff = sniff_remote(host, &remote_bin).await?;
-        (debug_sniff.version_output, debug_sniff.sha1sum)
-    };
 
     if remote_binary_matches(&remote_version, &remote_sha1, &expected, &local_sha1) {
+        status.report(format!("Using cached binary from {}", local_path.display()));
         if remote_sha1.is_empty() {
             log!(
                 Level::Info,
@@ -357,7 +396,7 @@ pub(super) async fn ensure_remote_binary(
         remote_bin
     );
 
-    upload_binary(host, &local_path, &remote_bin).await?;
+    upload_binary(host, &local_path, &remote_bin, status).await?;
     let post_upload = sniff_remote(host, &remote_bin).await?;
     // Prefer SHA-1 over `--version` for integrity when the remote host can
     // calculate it. Minimal hosts without a checksum utility fall back to the
@@ -391,7 +430,7 @@ pub(super) async fn ensure_remote_binary(
         post_upload.version_output,
         post_upload.sha1sum
     );
-    Ok(remote_bin)
+    Ok(post_upload.remote_bin)
 }
 
 /// Unconditionally streams an operator-selected binary to the remote install
@@ -402,7 +441,8 @@ pub(super) async fn force_upload_binary(
     host: &SshHost,
     local_path: &Path,
     remote_bin: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+    status: &ProvisioningStatusSink,
+) -> Result<String, Box<dyn std::error::Error>> {
     let metadata = tokio::fs::metadata(local_path).await.map_err(|error| {
         std::io::Error::other(format!(
             "failed to access binary source '{}': {error}",
@@ -418,7 +458,7 @@ pub(super) async fn force_upload_binary(
     }
 
     let local_sha1 = file_sha1sum(local_path).await?;
-    upload_binary(host, local_path, remote_bin).await?;
+    upload_binary(host, local_path, remote_bin, status).await?;
     let uploaded = sniff_remote(host, remote_bin).await?;
     if uploaded.version_output.is_empty() {
         return Err(format!(
@@ -439,11 +479,11 @@ pub(super) async fn force_upload_binary(
         Level::Info,
         "Forced binary upload verified: binary_source={}, remote_bin={}, version='{}', sha1sum='{}'",
         local_path.display(),
-        remote_bin,
+        uploaded.remote_bin,
         uploaded.version_output,
         uploaded.sha1sum
     );
-    Ok(())
+    Ok(uploaded.remote_bin)
 }
 
 /// Returns the workspace debug binary path when the running server was built
@@ -515,6 +555,7 @@ async fn upload_binary(
     host: &SshHost,
     local_path: &Path,
     remote_bin: &str,
+    status: &ProvisioningStatusSink,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = parent_dir_of(remote_bin);
     let options = SshRunOptions::default().compressed();
@@ -529,6 +570,7 @@ async fn upload_binary(
     let remote_tmp = remote_upload_tmp_path(remote_bin, &unique);
     let mut remote_tmp_guard = RemoteTempGuard::new(host, remote_tmp.clone());
 
+    status.report(format!("Uploading the binary to {remote_bin}"));
     log!(
         Level::Info,
         "Uploading binary to remote host: local_path={}, remote_bin={}, remote_tmp={}",

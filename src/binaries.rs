@@ -119,17 +119,18 @@ fn release_url(version: &str, os: &str, arch: &str) -> String {
     )
 }
 
-/// Ensures a released binary is cached, returning immediately for an existing file.
-pub(crate) async fn ensure_local_binary(
+/// Ensures a released binary is cached, reporting the source before slow download work.
+pub(crate) async fn ensure_local_binary_reported(
     version: &str,
     os: &str,
     arch: &str,
+    report: impl Fn(&str) + Send + Sync,
 ) -> Result<PathBuf, UpgradeBinaryError> {
     validate_release_version(version)?;
     validate_release_platform(os, arch)?;
     let binaries_dir = local_binaries_dir(version, os, arch)
         .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
-    ensure_local_binary_in(version, os, arch, &binaries_dir).await
+    ensure_local_binary_in(version, os, arch, &binaries_dir, report).await
 }
 
 /// Uses an explicit cache directory so cache-hit behavior can be tested without network access.
@@ -138,11 +139,12 @@ async fn ensure_local_binary_in(
     os: &str,
     arch: &str,
     binaries_dir: &Path,
+    report: impl Fn(&str) + Send + Sync,
 ) -> Result<PathBuf, UpgradeBinaryError> {
     validate_release_version(version)?;
     validate_release_platform(os, arch)?;
     let url = release_url(version, os, arch);
-    ensure_local_binary_in_from_url(version, os, arch, binaries_dir, &url).await
+    ensure_local_binary_in_from_url(version, os, arch, binaries_dir, &url, report).await
 }
 
 /// Provisions from an explicit URL so publication behavior can be tested locally.
@@ -152,6 +154,7 @@ async fn ensure_local_binary_in_from_url(
     arch: &str,
     binaries_dir: &Path,
     url: &str,
+    report: impl Fn(&str) + Send + Sync,
 ) -> Result<PathBuf, UpgradeBinaryError> {
     validate_release_version(version)?;
     validate_release_platform(os, arch)?;
@@ -161,6 +164,10 @@ async fn ensure_local_binary_in_from_url(
     let _provision_guard = BINARY_PROVISION_LOCK.lock().await;
     let final_path = binaries_dir.join("redoor");
     if cached_binary_is_ready(&final_path).await? {
+        report(&format!(
+            "Using cached binary from {}",
+            final_path.display()
+        ));
         return Ok(final_path);
     }
     if tokio::fs::try_exists(&final_path)
@@ -171,6 +178,7 @@ async fn ensure_local_binary_in_from_url(
             .await
             .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
     }
+    report(&format!("Downloading the matching binary from {url}"));
     download_binary(version, os, arch, binaries_dir, &final_path, url).await?;
     Ok(final_path)
 }
@@ -482,7 +490,7 @@ mod tests {
         let expected = dir.join("redoor");
         tokio::fs::write(&expected, b"cached").await.unwrap();
         make_executable(&expected).await.unwrap();
-        let selected = ensure_local_binary_in("1.2.3", "linux", "x86_64", &dir)
+        let selected = ensure_local_binary_in("1.2.3", "linux", "x86_64", &dir, |_| {})
             .await
             .unwrap();
         assert_eq!(selected, expected);
@@ -504,8 +512,8 @@ mod tests {
         let cache = root.join("cache");
 
         let (first, second) = tokio::join!(
-            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url),
-            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url)
+            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url, |_| {}),
+            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url, |_| {})
         );
         let first = first.unwrap();
         let second = second.unwrap();
@@ -541,7 +549,7 @@ mod tests {
         let cache = root.join("cache");
 
         let result =
-            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url).await;
+            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &cache, &url, |_| {}).await;
         // Extraction failure must be visible rather than publishing corrupt bytes.
         assert!(result.is_err());
         // No final path can be exposed after an unsuccessful provision.
@@ -568,8 +576,15 @@ mod tests {
         let (url, started, server) = start_hanging_archive_server().await;
         let provision_cache = cache.clone();
         let provision = tokio::spawn(async move {
-            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &provision_cache, &url)
-                .await
+            ensure_local_binary_in_from_url(
+                "1.2.3",
+                "linux",
+                "x86_64",
+                &provision_cache,
+                &url,
+                |_| {},
+            )
+            .await
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())

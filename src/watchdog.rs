@@ -15,10 +15,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::commands::AgentConnectionStatus;
+use crate::commands::{AgentConnectionStatus, ProvisioningStatusMessage};
 use crate::log;
 use crate::logging::Level;
-use crate::types::SocketId;
+use crate::types::{SocketId, UnixTimestampMillis};
 
 /// Backoff for the first retry after a quick failure.
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -31,10 +31,34 @@ const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bounds browser-visible subprocess output so repeated failures cannot grow API responses.
 const MAX_EXIT_DIAGNOSTIC_BYTES: u64 = 8 * 1024;
 
+/// Non-blocking sink so long SSH prepare/spawn work can publish inventory lines immediately.
+#[derive(Clone)]
+pub struct ProvisioningStatusSink {
+    report: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+impl ProvisioningStatusSink {
+    /// Ignores reports so CLI relay and silent local spawn stay off the inventory path.
+    pub fn noop() -> Self {
+        Self {
+            report: Arc::new(|_| {}),
+        }
+    }
+
+    /// Appends one small status line without awaiting REST or file I/O.
+    pub fn report(&self, message: impl Into<String>) {
+        (self.report)(message.into());
+    }
+}
+
 /// Spawn strategy kept transport-agnostic so local and SSH-backed agents share lifecycle code.
 pub struct SpawnFn {
     inner: Arc<
-        dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Child, String>> + Send + Sync,
+        dyn Fn(
+                ProvisioningStatusSink,
+            ) -> futures_util::future::BoxFuture<'static, Result<Child, String>>
+            + Send
+            + Sync,
     >,
     diagnostic_log: Option<PathBuf>,
 }
@@ -43,11 +67,11 @@ impl SpawnFn {
     /// Boxes a reusable async spawn closure once at the supervisor boundary.
     pub fn new<F, Fut>(f: F) -> Self
     where
-        F: Fn() -> Fut + Send + Sync + 'static,
+        F: Fn(ProvisioningStatusSink) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Child, String>> + Send + 'static,
     {
         Self {
-            inner: Arc::new(move || Box::pin(f())),
+            inner: Arc::new(move |status| Box::pin(f(status))),
             diagnostic_log: None,
         }
     }
@@ -58,9 +82,12 @@ impl SpawnFn {
         self
     }
 
-    /// Starts one transport-specific preparation/spawn attempt.
-    fn spawn(&self) -> futures_util::future::BoxFuture<'static, Result<Child, String>> {
-        (self.inner)()
+    /// Starts one transport-specific preparation/spawn attempt with a progress sink.
+    fn spawn(
+        &self,
+        status: ProvisioningStatusSink,
+    ) -> futures_util::future::BoxFuture<'static, Result<Child, String>> {
+        (self.inner)(status)
     }
 }
 
@@ -73,6 +100,8 @@ pub struct WatchdogSnapshot {
     pub status: AgentConnectionStatus,
     /// Retains the latest actionable spawn, exit, or startup issue.
     pub connection_issue: Option<String>,
+    /// Accumulated SSH prepare/spawn lines for the current start cycle.
+    pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Protects replacement connections from stale disconnect events.
     pub socket_id: Option<SocketId>,
 }
@@ -84,6 +113,7 @@ impl WatchdogSnapshot {
             desired_running: false,
             status: AgentConnectionStatus::Stopped,
             connection_issue: None,
+            provisioning_status: Vec::new(),
             socket_id: None,
         }
     }
@@ -142,6 +172,7 @@ impl WatchdogHandle {
                 snapshot.desired_running = true;
                 snapshot.status = AgentConnectionStatus::Starting;
                 snapshot.connection_issue = None;
+                snapshot.provisioning_status.clear();
                 snapshot.socket_id = None;
                 true
             }
@@ -203,10 +234,32 @@ impl WatchdogHandle {
         self.stale_signal.notify_one();
     }
 
-    /// Publishes one state transition after updating the shared snapshot.
-    fn publish(&self, snapshot: WatchdogSnapshot) {
-        *self.snapshot.lock().expect("watchdog snapshot poisoned") = snapshot.clone();
+    /// Mutates the live snapshot under one lock so progress reports cannot drop sibling fields.
+    fn publish_update(&self, update: impl FnOnce(&mut WatchdogSnapshot)) {
+        let snapshot = {
+            let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+            update(&mut snapshot);
+            snapshot.clone()
+        };
         (self.callback)(snapshot);
+    }
+
+    /// Appends one timestamped line and notifies inventory without blocking SSH work.
+    fn report_provisioning_status(&self, message: String) {
+        let at = UnixTimestampMillis::now();
+        self.publish_update(|snapshot| {
+            snapshot
+                .provisioning_status
+                .push(ProvisioningStatusMessage { message, at });
+        });
+    }
+
+    /// Builds a cloneable sink the spawn closure can hold across await points.
+    pub fn provisioning_status_sink(&self) -> ProvisioningStatusSink {
+        let handle = self.clone();
+        ProvisioningStatusSink {
+            report: Arc::new(move |message| handle.report_provisioning_status(message)),
+        }
     }
 }
 
@@ -320,12 +373,7 @@ async fn wait_until_running(
             SupervisorCommand::Start => return IdleWait::Start,
             SupervisorCommand::Remove => return IdleWait::Exit,
             SupervisorCommand::Shutdown { reply } => {
-                watchdog.publish(WatchdogSnapshot {
-                    desired_running: false,
-                    status: AgentConnectionStatus::Stopped,
-                    connection_issue: watchdog.snapshot().connection_issue,
-                    socket_id: None,
-                });
+                publish_stopped(watchdog);
                 let _ = reply.send(Ok(()));
             }
             SupervisorCommand::Connected(_) | SupervisorCommand::Disconnected(_) => {}
@@ -348,11 +396,11 @@ async fn run_supervisor(
         }
         let mut backoff = INITIAL_BACKOFF;
         loop {
-            watchdog.publish(WatchdogSnapshot {
-                desired_running: true,
-                status: AgentConnectionStatus::Starting,
-                connection_issue: watchdog.snapshot().connection_issue,
-                socket_id: None,
+            watchdog.publish_update(|snapshot| {
+                snapshot.desired_running = true;
+                snapshot.status = AgentConnectionStatus::Starting;
+                snapshot.socket_id = None;
+                snapshot.provisioning_status.clear();
             });
             let started = Instant::now();
             let cycle = run_started_cycle(&spawn, &watchdog, &mut commands).await;
@@ -385,12 +433,7 @@ async fn run_supervisor(
                 }
             }
         }
-        watchdog.publish(WatchdogSnapshot {
-            desired_running: false,
-            status: AgentConnectionStatus::Stopped,
-            connection_issue: watchdog.snapshot().connection_issue,
-            socket_id: None,
-        });
+        publish_stopped(&watchdog);
     }
 }
 
@@ -407,7 +450,7 @@ async fn run_started_cycle(
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
 ) -> CycleResult {
     let diagnostic_log_offset = diagnostic_log_len(spawn.diagnostic_log.as_deref()).await;
-    let spawn_future = spawn.spawn();
+    let spawn_future = spawn.spawn(watchdog.provisioning_status_sink());
     tokio::pin!(spawn_future);
     let child = loop {
         tokio::select! {
@@ -538,11 +581,10 @@ async fn handle_running_command(
         Some(SupervisorCommand::Disconnected(socket_id)) => {
             if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
                 *connected = false;
-                watchdog.publish(WatchdogSnapshot {
-                    desired_running: true,
-                    status: AgentConnectionStatus::Starting,
-                    connection_issue: watchdog.snapshot().connection_issue,
-                    socket_id: None,
+                watchdog.publish_update(|snapshot| {
+                    snapshot.desired_running = true;
+                    snapshot.status = AgentConnectionStatus::Starting;
+                    snapshot.socket_id = None;
                 });
             }
             CommandAction::Continue
@@ -618,31 +660,39 @@ enum CommandAction {
 
 /// Settles intentional shutdown before acknowledging the management request.
 fn publish_stopped(watchdog: &WatchdogHandle) {
-    watchdog.publish(WatchdogSnapshot {
-        desired_running: false,
-        status: AgentConnectionStatus::Stopped,
-        connection_issue: watchdog.snapshot().connection_issue,
-        socket_id: None,
+    watchdog.publish_update(|snapshot| {
+        snapshot.desired_running = false;
+        snapshot.status = AgentConnectionStatus::Stopped;
+        snapshot.socket_id = None;
     });
 }
 
 /// Publishes successful registration and clears stale diagnostic text.
 fn publish_connected(watchdog: &WatchdogHandle, socket_id: SocketId) {
-    watchdog.publish(WatchdogSnapshot {
-        desired_running: true,
-        status: AgentConnectionStatus::Connected,
-        connection_issue: None,
-        socket_id: Some(socket_id),
+    watchdog.publish_update(|snapshot| {
+        // Only the first connect of this attempt should append; replacements
+        // must not grow the sticky list with duplicate Connected lines.
+        if snapshot.status != AgentConnectionStatus::Connected {
+            snapshot
+                .provisioning_status
+                .push(ProvisioningStatusMessage {
+                    message: "Connected".into(),
+                    at: UnixTimestampMillis::now(),
+                });
+        }
+        snapshot.desired_running = true;
+        snapshot.status = AgentConnectionStatus::Connected;
+        snapshot.connection_issue = None;
+        snapshot.socket_id = Some(socket_id);
     });
 }
 
 /// Retains a concrete lifecycle issue while the desired-running retry loop continues.
 fn publish_issue(watchdog: &WatchdogHandle, issue: String) {
-    watchdog.publish(WatchdogSnapshot {
-        desired_running: true,
-        status: AgentConnectionStatus::Starting,
-        connection_issue: Some(issue),
-        socket_id: watchdog.snapshot().socket_id,
+    watchdog.publish_update(|snapshot| {
+        snapshot.desired_running = true;
+        snapshot.status = AgentConnectionStatus::Starting;
+        snapshot.connection_issue = Some(issue);
     });
 }
 
@@ -749,7 +799,7 @@ mod tests {
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "removed".into(),
-                SpawnFn::new(|| async {
+                SpawnFn::new(|_status| async {
                     Command::new("sh")
                         .arg("-c")
                         .arg("cat")
@@ -778,7 +828,7 @@ mod tests {
         crate::logging::init(None).await.unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let spawn_count = count.clone();
-        let spawn = SpawnFn::new(move || {
+        let spawn = SpawnFn::new(move |_status| {
             let spawn_count = spawn_count.clone();
             async move {
                 spawn_count.fetch_add(1, Ordering::SeqCst);
@@ -824,7 +874,7 @@ mod tests {
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "pending".into(),
-                SpawnFn::new(move || {
+                SpawnFn::new(move |_status| {
                     let observed_spawn = observed_spawn.clone();
                     async move {
                         observed_spawn.fetch_add(1, Ordering::SeqCst);
@@ -862,7 +912,7 @@ mod tests {
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "broken".into(),
-                SpawnFn::new(|| async { Err("missing executable".to_string()) }),
+                SpawnFn::new(|_status| async { Err("missing executable".to_string()) }),
                 &registry,
                 callback(),
             )
@@ -927,7 +977,7 @@ mod tests {
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "generation".into(),
-                SpawnFn::new(|| async {
+                SpawnFn::new(|_status| async {
                     Command::new("sh")
                         .arg("-c")
                         .arg("cat")
@@ -989,6 +1039,75 @@ mod tests {
         drop(snapshots);
         // Successful registration removes an earlier lifecycle diagnostic.
         assert_eq!(handle.snapshot().connection_issue, None);
+        handle.shutdown().await.expect("shutdown acknowledged");
+    }
+
+    #[tokio::test]
+    async fn provisioning_status_accumulates_then_resets_on_the_next_cycle() {
+        crate::logging::init(None).await.unwrap();
+        let first_spawn = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let wait_first = first_spawn.clone();
+        let hold_first = release_first.clone();
+        let observed_spawns = spawn_count.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "status".into(),
+                SpawnFn::new(move |status| {
+                    let wait_first = wait_first.clone();
+                    let hold_first = hold_first.clone();
+                    let observed_spawns = observed_spawns.clone();
+                    async move {
+                        let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
+                        status.report(format!("step-{attempt}"));
+                        if attempt == 0 {
+                            wait_first.notify_one();
+                            hold_first.notified().await;
+                        }
+                        Err(format!("spawn failed {attempt}"))
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("status").expect("managed handle");
+        handle.start().expect("start accepted");
+        first_spawn.notified().await;
+
+        // Progress published during the first cycle must stay visible until the next attempt.
+        assert_eq!(
+            handle
+                .snapshot()
+                .provisioning_status
+                .iter()
+                .map(|line| line.message.as_str())
+                .collect::<Vec<_>>(),
+            ["step-0"]
+        );
+        release_first.notify_one();
+        wait_until(|| {
+            handle
+                .snapshot()
+                .provisioning_status
+                .iter()
+                .any(|line| line.message == "step-1")
+        })
+        .await;
+
+        // A new cycle must replace the previous attempt instead of appending forever.
+        assert_eq!(
+            handle
+                .snapshot()
+                .provisioning_status
+                .iter()
+                .map(|line| line.message.as_str())
+                .collect::<Vec<_>>(),
+            ["step-1"]
+        );
         handle.shutdown().await.expect("shutdown acknowledged");
     }
 }

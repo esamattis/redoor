@@ -540,6 +540,7 @@ mod tests {
                 connection_id: list_agents[0].connection_id.clone(),
                 last_seen_at: None,
                 connection_issue: None,
+                provisioning_status: Vec::new(),
                 binary: Some(crate::commands::current_binary_identity()),
                 supports_self_exec: true,
                 supports_native_open: true,

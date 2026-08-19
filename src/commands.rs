@@ -3,7 +3,7 @@ mod handler;
 mod identity;
 mod metadata;
 
-use crate::types::{AgentId, SocketId, TransferId, UnixTimestampSeconds};
+use crate::types::{AgentId, SocketId, TransferId, UnixTimestampMillis, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -653,6 +653,16 @@ pub enum AgentConnectionStatus {
     Disconnected,
 }
 
+/// One sticky provisioning line so the starting UI can show SSH progress without a log stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProvisioningStatusMessage {
+    /// Operator-facing step text accumulated for the current start attempt.
+    pub message: String,
+    /// Server-side millisecond stamp so elapsed labels can show secs + ms.
+    pub at: UnixTimestampMillis,
+}
+
 /// Summarizes one known agent without requiring a current WebSocket connection.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -671,6 +681,8 @@ pub struct AgentInfoResponse {
     pub connection_id: Option<SocketId>,
     pub last_seen_at: Option<UnixTimestampSeconds>,
     pub connection_issue: Option<String>,
+    /// Ordered SSH start steps for the current attempt; empty for local or dormant agents.
+    pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Binary identity from the latest registration; absent until first connect.
     pub binary: Option<BinaryIdentity>,
     /// Whether the latest agent session can safely complete an in-place upgrade.

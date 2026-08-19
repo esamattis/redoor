@@ -339,4 +339,45 @@ describe("Local agent configuration API", () => {
             `name = "${name}"`,
         );
     });
+
+    it("keeps provisioning status empty for a local managed agent", async () => {
+        const name = "local-silent-provisioning";
+        await apiClient.createLocalAgent(localRequest({ name }));
+        onTestFinished(async () => {
+            try {
+                await apiClient.deleteManagedAgent(name);
+            } catch {
+                // Cleanup must tolerate a successful delete leaving nothing behind.
+            }
+        });
+        const created = (await apiClient.listAgents()).find(
+            (agent) => agent.id === name,
+        );
+        if (!created) throw new Error("Local silent-provisioning agent missing");
+        await created.start();
+        const connected = await waitForValue({
+            timeoutMs: 15_000,
+            description: "local managed agent to connect without SSH steps",
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.id === name,
+                );
+                const extra = agent?.provisioningStatus.filter(
+                    (step) => step.message !== "Connected",
+                );
+                if (extra && extra.length > 0) {
+                    throw new Error(
+                        `local agent published SSH provisioning status: ${JSON.stringify(extra)}`,
+                    );
+                }
+                return agent?.status === "connected" ? agent : undefined;
+            },
+        });
+        // Local spawn has no sniff/download/upload; Connected is the only lifecycle line.
+        expect(
+            connected.provisioningStatus.every(
+                (step) => step.message === "Connected",
+            ),
+        ).toBe(true);
+    }, 20_000);
 });
