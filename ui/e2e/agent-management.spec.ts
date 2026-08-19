@@ -59,6 +59,11 @@ test.describe.serial("Agent management", () => {
                 );
                 // Per-test cleanup must leave both managed children stopped for later suites.
                 expect(shutdownResponse.ok()).toBe(true);
+                await expect
+                    .poll(async () => (await getAgent(request, name)).status, {
+                        timeout: 20_000,
+                    })
+                    .toBe("stopped");
             }
         }
     });
@@ -486,6 +491,9 @@ test.describe.serial("Agent management", () => {
         ]);
         // The same-url navigation cannot serve as a persistence barrier.
         expect(updateResponse.ok()).toBe(true);
+        expect(updateResponse.request().postDataJSON()).toMatchObject({
+            clear_password: true,
+        });
         await expect(page).toHaveURL(
             new RegExp(`/agents/${CREATED_SSH_MODE_SWITCH_AGENT}/edit$`),
         );

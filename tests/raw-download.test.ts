@@ -520,7 +520,7 @@ describe("Raw Download API", () => {
     }, 40000);
 
     it("should cancel throttled download cleanly when client aborts", async () => {
-        const totalBytes = 1024 * 1024;
+        const totalBytes = 8 * 1024 * 1024;
         const downloadContent = Buffer.alloc(totalBytes, "c");
         const sourcePath = tempFiles.create(downloadContent, {
             suffix: ".bin",
@@ -536,6 +536,16 @@ describe("Raw Download API", () => {
             name: `raw-download-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             listen: `127.0.0.1:${proxyPort}`,
             upstream: `127.0.0.1:${serverPort}`,
+        });
+        // Limit the transfer socket from birth so the agent cannot finish the file before abort.
+        await proxy.addToxic({
+            name: "slow-cancel-download",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: {
+                rate: 512,
+            },
         });
         const proxiedAgentName = "raw-download-cancel-agent";
         const waitForProxiedAgent = waitForLogMessage(
@@ -567,16 +577,6 @@ describe("Raw Download API", () => {
         if (!proxiedAgent) {
             throw new Error(`Agent ${proxiedAgentName} was not registered`);
         }
-
-        await proxy.addToxic({
-            name: "slow-cancel-download",
-            type: "bandwidth",
-            stream: "upstream",
-            toxicity: 1,
-            attributes: {
-                rate: 512,
-            },
-        });
 
         const controller = new AbortController();
         const downloadResponsePromise = fetch(
