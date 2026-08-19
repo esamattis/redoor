@@ -157,6 +157,7 @@ export function TerminalPanel(props: {
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
     const [focusRequestId, setFocusRequestId] = React.useState(0);
+    const pendingTerminalFocusRef = React.useRef(false);
     const nextTabIdRef = React.useRef(1);
     const nextAgentTerminalNumberRef = React.useRef(new Map<string, number>());
 
@@ -185,6 +186,8 @@ export function TerminalPanel(props: {
         ]);
         setActiveTabId(id);
         activateBottomDrawerTab("terminal");
+        pendingTerminalFocusRef.current = true;
+        setFocusRequestId((current) => current + 1);
     };
 
     /** Updates only the session that emitted a lifecycle transition. */
@@ -227,6 +230,8 @@ export function TerminalPanel(props: {
         );
         setActiveTabId(tabId);
         activateBottomDrawerTab("terminal");
+        pendingTerminalFocusRef.current = true;
+        setFocusRequestId((current) => current + 1);
     };
 
     /** Gives arrow keys browser-style selection across terminal tabs. */
@@ -251,6 +256,11 @@ export function TerminalPanel(props: {
     React.useEffect(() => {
         /** Opens the routed shell or asks for an agent when the route has no terminal target. */
         const handleShortcut = (event: KeyboardEvent) => {
+            if (isUnmodifiedAltKey(event, "e")) {
+                // Alt+e already returned to the editor; a later connected state must not steal it.
+                pendingTerminalFocusRef.current = false;
+                return;
+            }
             const isEditorAltT =
                 isUnmodifiedAltKey(event, "t") &&
                 isEditorInputTarget(event.target);
@@ -282,6 +292,7 @@ export function TerminalPanel(props: {
             } else {
                 createTerminal(props.activeTarget);
             }
+            pendingTerminalFocusRef.current = true;
             setFocusRequestId((current) => current + 1);
         };
 
@@ -326,6 +337,7 @@ export function TerminalPanel(props: {
                         isActive={tab.id === activeTabId}
                         isPanelCollapsed={!props.isVisible}
                         focusRequestId={focusRequestId}
+                        pendingTerminalFocusRef={pendingTerminalFocusRef}
                         onStateChange={updateTabState}
                     />
                 ))}
@@ -508,6 +520,7 @@ type TerminalSessionProps = {
     isActive: boolean;
     isPanelCollapsed: boolean;
     focusRequestId: number;
+    pendingTerminalFocusRef: React.RefObject<boolean>;
     onStateChange: (tabId: number, state: TerminalState) => void;
 };
 
@@ -732,9 +745,6 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
             }
             if (stateRef.current.type === "connected") {
                 resources.fitAddonRef.current?.fit();
-                if (!isTerminalTabFocused()) {
-                    resources.terminalRef.current?.focus();
-                }
             }
         }
     }, [
@@ -775,8 +785,20 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         ) {
             return;
         }
-
-        resources.terminalRef.current?.focus();
+        if (props.pendingTerminalFocusRef.current) {
+            resources.terminalRef.current?.focus();
+            props.pendingTerminalFocusRef.current = false;
+            return;
+        }
+        // A late ready/connected must not keep the shell if Alt+e already restored the editor.
+        const editor =
+            document.querySelector<HTMLElement>("[data-file-editor]");
+        if (
+            editor &&
+            document.activeElement?.closest("[data-terminal-input]")
+        ) {
+            editor.focus();
+        }
     }, [
         props.focusRequestId,
         props.isActive,
