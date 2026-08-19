@@ -83,7 +83,13 @@ async function freeReservedPort(port: number): Promise<void> {
 
     for (const pid of await listenerPids(port)) {
         if (await isWorktreeRedoor(pid)) {
-            process.kill(pid, "SIGTERM");
+            try {
+                process.kill(pid, "SIGTERM");
+            } catch (error) {
+                if (!isErrorCode(error, "ESRCH")) {
+                    throw error;
+                }
+            }
         }
     }
 
@@ -96,9 +102,23 @@ async function freeReservedPort(port: number): Promise<void> {
 
     for (const pid of await listenerPids(port)) {
         if (await isWorktreeRedoor(pid)) {
-            process.kill(pid, "SIGKILL");
+            try {
+                process.kill(pid, "SIGKILL");
+            } catch (error) {
+                if (!isErrorCode(error, "ESRCH")) {
+                    throw error;
+                }
+            }
         }
     }
+
+    for (let attempt = 0; attempt < 20; attempt++) {
+        if (await isPortAvailable(port)) {
+            return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Test port ${port} remains occupied after cleanup`);
 }
 
 /** Clears leftover listeners on the already-reserved worktree ports. */

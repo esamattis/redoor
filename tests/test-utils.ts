@@ -200,7 +200,9 @@ export class TempFileManager {
 
 const TESTS_DIRECTORY = dirname(import.meta.filename);
 const PROJECT_ROOT = join(TESTS_DIRECTORY, "..");
-export const SERVER_PATH = join(TESTS_DIRECTORY, "../target/debug/redoor");
+export const SERVER_PATH =
+    process.env.REDOOR_TEST_BINARY ??
+    join(TESTS_DIRECTORY, "../target/debug/redoor");
 export const AGENT_PATH = SERVER_PATH;
 // A per-worktree port lets Vitest run alongside development and other worktrees.
 export const VITEST_SERVER_PORT = testPorts.vitest;
@@ -374,10 +376,16 @@ password = "${TEST_PASSWORD}"
         this.agentAppNames.delete(pid);
     }
 
-    killAll(): void {
-        for (const pid of this.processes.keys()) {
+    /** Reaps every owned process before the next serial test file can reuse its port. */
+    async killAll(): Promise<void> {
+        const processes = [...this.processes.entries()];
+        const exits = processes.map(([pid, child]) =>
+            this.waitForChildExit(pid, child),
+        );
+        for (const [pid] of processes) {
             this.kill(pid);
         }
+        await Promise.all(exits);
     }
 
     getProcess(pid: number): ChildProcess | undefined {
@@ -397,12 +405,25 @@ password = "${TEST_PASSWORD}"
             throw new Error(`Process not found: ${pid}`);
         }
 
+        return this.waitForChildExit(pid, process, timeoutMs);
+    }
+
+    /** Handles already-finished children as well as exits observed after teardown starts. */
+    private async waitForChildExit(
+        pid: number,
+        child: ChildProcess,
+        timeoutMs: number = 10000,
+    ): Promise<number | null> {
+        if (child.exitCode !== null || child.signalCode !== null) {
+            return child.exitCode;
+        }
+
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 reject(new Error(`Timeout waiting for process ${pid} to exit`));
             }, timeoutMs);
 
-            process.once("exit", (code) => {
+            child.once("exit", (code) => {
                 clearTimeout(timeout);
                 resolve(code);
             });

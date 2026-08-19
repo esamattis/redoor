@@ -40,9 +40,9 @@ beforeAll(async () => {
     agentPid = started.agentPid;
 }, 30_000);
 
-afterAll(() => {
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
-    processManager.killAll();
 });
 
 /** Parses one text WebSocket payload into the generated shared event shape. */

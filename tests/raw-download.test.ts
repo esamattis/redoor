@@ -53,9 +53,9 @@ describe("Raw Download API", () => {
         expect(testAgent).toBeDefined();
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should download small file via raw endpoint", async () => {

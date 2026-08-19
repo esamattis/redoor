@@ -64,9 +64,9 @@ afterEach(() => {
     tempFiles.emptyDirs();
 });
 
-afterAll(() => {
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
-    processManager.killAll();
 });
 
 /** Narrows retained inventory to the live test socket before issuing commands. */

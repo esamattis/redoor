@@ -442,7 +442,17 @@ test.describe.serial("Agent management", () => {
             page.getByLabel("SSH password", { exact: true }),
         ).toBeDisabled();
         await page.getByLabel("SSH username").fill("redoor");
-        await page.getByRole("button", { name: "Stop and Save" }).click();
+        const updateUrl = `${WEB_BASE_URL}/api/v1/agents/${encodeURIComponent(CREATED_SSH_MODE_SWITCH_AGENT)}`;
+        const [updateResponse] = await Promise.all([
+            page.waitForResponse(
+                (response) =>
+                    response.url() === updateUrl &&
+                    response.request().method() === "PUT",
+            ),
+            page.getByRole("button", { name: "Stop and Save" }).click(),
+        ]);
+        // The same-url navigation cannot serve as a persistence barrier.
+        expect(updateResponse.ok()).toBe(true);
         await expect(page).toHaveURL(
             new RegExp(`/agents/${CREATED_SSH_MODE_SWITCH_AGENT}/edit$`),
         );

@@ -101,8 +101,8 @@ describe("connected external agent upgrade", () => {
         chmodSync(cachedBinary, 0o755);
     }, 30000);
 
-    afterAll(() => {
-        processes.killAll();
+    afterAll(async () => {
+        await processes.killAll();
         tempFiles.cleanup();
     });
 

@@ -42,7 +42,7 @@
         "debug-install": "./scripts/debug-install",
         "preintegration-test": "node scripts/test/ensure-test-ports.mts",
         "pretest": "node scripts/test/ensure-test-ports.mts",
-        "integration-test": "vitest run --config vitest.config.ts tests",
+        "integration-test": "node scripts/test/run-integration-tests.mts",
         "test": "./scripts/build-and-test"
     },
     "dependencies": {

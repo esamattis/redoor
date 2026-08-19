@@ -44,9 +44,9 @@ describe("Raw Upload API", () => {
         testAgent = setup.testAgent;
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should upload small file via raw endpoint", async () => {

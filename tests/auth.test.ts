@@ -24,9 +24,7 @@ beforeAll(async () => {
     await waitForPort(VITEST_SERVER_PORT);
 });
 
-afterAll(() => {
-    processManager.killAll();
-});
+afterAll(() => processManager.killAll());
 
 /** Extracts the opaque identifier while keeping cookie attributes out of request headers. */
 function sessionIdFromCookie(cookie: string): string {

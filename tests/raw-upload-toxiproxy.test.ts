@@ -43,9 +43,9 @@ describe("Raw Upload API with toxiproxy", () => {
         testAgent = setup.testAgent;
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should keep a slowish upload observable via toxiproxy", async () => {

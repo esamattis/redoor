@@ -40,9 +40,7 @@ beforeAll(async () => {
     await waitForPort(VITEST_SERVER_PORT);
 });
 
-afterAll(() => {
-    processManager.killAll();
-});
+afterAll(() => processManager.killAll());
 
 describe("user state", () => {
     it("protects the preference document until a session exists", async () => {

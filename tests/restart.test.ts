@@ -92,8 +92,8 @@ beforeAll(async () => {
     await apiClient.waitForAgentNames([AGENT_NAME], 15000);
 }, 30000);
 
-afterAll(() => {
-    processManager.killAll();
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
 });
 

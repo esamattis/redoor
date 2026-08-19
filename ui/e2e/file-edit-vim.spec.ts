@@ -169,6 +169,12 @@ test.describe.serial("File editor options", () => {
         await page.keyboard.press("Alt+e");
         // Returning from the shell must restore the Vim editor, not a browser control.
         await expect(editor).toBeFocused();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        // The committed connected state must not reclaim focus after Alt+e.
+        await expect(editor).toBeFocused();
+        await expect(terminalInput).not.toBeFocused();
         await expect(page.getByText("--NORMAL--")).toBeVisible();
     });
 

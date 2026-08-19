@@ -214,6 +214,11 @@ async fn run_pty_session(
         Err(error) => SessionEnd::SocketWriter(Err(error)),
     };
 
+    // PTY EOF may be promoted to a child exit below, but its bridge handle was
+    // already consumed and must never be polled a second time during cleanup.
+    let pty_reader_completed = matches!(end, SessionEnd::PtyReader(_));
+    let socket_reader_completed = matches!(end, SessionEnd::SocketReader(_));
+    let socket_writer_completed = matches!(end, SessionEnd::SocketWriter(_));
     end = resolve_pty_end(end, &mut child).await;
 
     if let SessionEnd::Child(status) = &end {
@@ -225,9 +230,6 @@ async fn run_pty_session(
         .await;
     }
 
-    let pty_reader_completed = matches!(end, SessionEnd::PtyReader(_));
-    let socket_reader_completed = matches!(end, SessionEnd::SocketReader(_));
-    let socket_writer_completed = matches!(end, SessionEnd::SocketWriter(_));
     let _ = shutdown_sender.send(true);
     drop(control_sender);
     teardown_process_group(&mut child, process_group_id).await;

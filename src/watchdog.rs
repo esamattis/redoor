@@ -922,6 +922,8 @@ mod tests {
     async fn connection_generation_clears_issue_and_ignores_stale_disconnect() {
         crate::logging::init(None).await.unwrap();
         let registry = WatchdogRegistry::new();
+        let snapshots = Arc::new(Mutex::new(Vec::new()));
+        let callback_snapshots = snapshots.clone();
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "generation".into(),
@@ -930,30 +932,61 @@ mod tests {
                         .arg("-c")
                         .arg("cat")
                         .kill_on_drop(true)
-                        .stdin(Stdio::null())
+                        .stdin(Stdio::piped())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()
                         .map_err(|error| error.to_string())
                 }),
                 &registry,
-                callback(),
+                Arc::new(move |snapshot| {
+                    callback_snapshots
+                        .lock()
+                        .expect("snapshot history poisoned")
+                        .push(snapshot);
+                }),
             )
             .expect("register"),
         );
         let handle = registry.lookup("generation").expect("managed handle");
         handle.start().expect("start accepted");
+        publish_issue(&handle, "earlier lifecycle issue".into());
         let old_socket = SocketId::new();
         let new_socket = SocketId::new();
+        let fence_socket = SocketId::new();
         assert!(handle.mark_connected(old_socket.clone()));
         assert!(handle.mark_connected(new_socket.clone()));
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&new_socket)).await;
         handle.mark_disconnected(old_socket);
-        tokio::task::yield_now().await;
+        assert!(handle.mark_connected(fence_socket.clone()));
+        wait_until(|| {
+            snapshots
+                .lock()
+                .expect("snapshot history poisoned")
+                .iter()
+                .any(|snapshot| snapshot.socket_id.as_ref() == Some(&fence_socket))
+        })
+        .await;
 
         // A replacement connection stays authoritative when an old session exits late.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Connected);
-        assert_eq!(handle.snapshot().socket_id.as_ref(), Some(&new_socket));
+        assert_eq!(handle.snapshot().socket_id.as_ref(), Some(&fence_socket));
+        let snapshots = snapshots.lock().expect("snapshot history poisoned");
+        let replacement_index = snapshots
+            .iter()
+            .position(|snapshot| snapshot.socket_id.as_ref() == Some(&new_socket))
+            .expect("replacement connection published");
+        let fence_index = snapshots
+            .iter()
+            .position(|snapshot| snapshot.socket_id.as_ref() == Some(&fence_socket))
+            .expect("queue fence connection published");
+        // Processing the stale disconnect must not publish a Starting transition.
+        assert!(
+            snapshots[replacement_index..fence_index]
+                .iter()
+                .all(|snapshot| snapshot.status == AgentConnectionStatus::Connected)
+        );
+        drop(snapshots);
         // Successful registration removes an earlier lifecycle diagnostic.
         assert_eq!(handle.snapshot().connection_issue, None);
         handle.shutdown().await.expect("shutdown acknowledged");

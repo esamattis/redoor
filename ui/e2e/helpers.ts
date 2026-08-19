@@ -93,18 +93,21 @@ export async function teardownTestDir(testDirPath: string): Promise<void> {
 
 /** Collapses the drawer and waits so overlay chrome no longer covers file-list clicks. */
 export async function minimizeBottomDrawer(page: Page): Promise<void> {
-    const toggle = page.getByRole("button", {
+    const minimize = page.getByRole("button", {
         name: "Minimize bottom drawer",
     });
-    // Enter avoids a hover tooltip that would later collide with other tooltip assertions.
-    await toggle.press("Enter");
     const expand = page.getByRole("button", { name: "Expand bottom drawer" });
+    await expect(minimize.or(expand)).toBeVisible();
+    if (await minimize.isVisible()) {
+        // Enter avoids a hover tooltip that would later collide with other tooltip assertions.
+        await minimize.press("Enter");
+    }
     await expect(expand).toBeVisible();
     const panel = page.getByRole("region", { name: "Application tools" });
     // The close slide still covers the listing until height returns to the compact bar.
     await expect
         .poll(async () => (await panel.boundingBox())?.height ?? 0)
-        .toBeLessThan(60);
+        .toBe(49);
     await expand.blur();
 }
 

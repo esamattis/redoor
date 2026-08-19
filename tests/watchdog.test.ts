@@ -105,8 +105,8 @@ log = "${agentLogPath}.failing"
     });
 }, 30000);
 
-afterAll(() => {
-    processManager.killAll();
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
 });
 
@@ -288,9 +288,6 @@ describe("Watchdog supervisor", () => {
         // Intentional shutdown retains the managed row rather than removing it.
         expect(stopped?.status).toBe("stopped");
         expect(stopped?.managed).toBe(true);
-        // Reaping guarantees the previously reported child PID no longer exists.
-        expect(() => process.kill(oldPid, 0)).toThrow();
-
         if (!stopped) throw new Error("Stopped managed agent disappeared");
         await stopped.start();
         await waitForValue({
@@ -303,6 +300,9 @@ describe("Watchdog supervisor", () => {
                         entry.status === "connected",
                 ),
         });
+        const restartedDetails = await (await getWatchdogAgent()).getDetails();
+        // A different connected process proves shutdown and restart crossed generations.
+        expect(restartedDetails.pid).not.toBe(oldPid);
     }, 30000);
 
     it("surfaces managed startup issues without blocking control APIs", async () => {

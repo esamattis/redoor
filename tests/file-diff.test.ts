@@ -42,9 +42,9 @@ describe("File Diff API", () => {
         tempFiles.emptyDirs();
     });
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("returns a unified diff for files on the same agent", async () => {

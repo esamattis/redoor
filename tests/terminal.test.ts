@@ -45,9 +45,9 @@ beforeAll(async () => {
     testAgent = started.testAgent;
 }, 30_000);
 
-afterAll(() => {
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
-    processManager.killAll();
 });
 
 /** Opens a dedicated terminal and waits for its typed ready notification. */

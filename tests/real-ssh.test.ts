@@ -195,7 +195,7 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
                 try {
                     await cleanupSshTest({ remoteRoot, agentAppNames });
                 } finally {
-                    processManager.killAll();
+                    await processManager.killAll();
                     rmSync(home, { recursive: true, force: true });
                 }
             });
@@ -459,7 +459,7 @@ log = "${agentLogPath}"
             );
 
             onTestFinished(async () => {
-                processManager.killAll();
+                await processManager.killAll();
                 try {
                     await cleanupSshTest({
                         remoteRoot,
@@ -616,7 +616,7 @@ log = "${agentLogPath}"
         );
 
         onTestFinished(async () => {
-            processManager.killAll();
+            await processManager.killAll();
             try {
                 await cleanupSshTest({
                     remoteRoot,
@@ -712,8 +712,8 @@ home = "${remoteRoot}"
 `,
             );
 
-            onTestFinished(() => {
-                processManager.killAll();
+            onTestFinished(async () => {
+                await processManager.killAll();
                 rmSync(home, { recursive: true, force: true });
             });
 

@@ -569,15 +569,6 @@ function connectTerminal(props: {
         if (message.type === "ready") {
             props.isReadyRef.current = true;
             props.updateTerminalState({ type: "connected" });
-            if (
-                props.isActiveRef.current &&
-                !props.isPanelCollapsedRef.current
-            ) {
-                props.resources.fitAddonRef.current?.fit();
-                if (!isTerminalTabFocused()) {
-                    terminal?.focus();
-                }
-            }
             return;
         }
 

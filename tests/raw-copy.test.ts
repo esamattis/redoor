@@ -46,9 +46,9 @@ describe("Raw Copy API", () => {
         testAgent = setup.testAgent;
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should copy a file on the same agent and expose a single copy row", async () => {

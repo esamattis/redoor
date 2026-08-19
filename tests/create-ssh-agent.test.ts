@@ -64,8 +64,8 @@ name = "${LOCAL_AGENT_NAME}"
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 });
 
-afterAll(() => {
-    processManager.killAll();
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
 });
 

@@ -85,7 +85,7 @@ export default defineConfig({
 
     /* Run your local dev server before starting the tests */
     webServer: {
-        command: "../scripts/test/playwright-dev",
+        command: "node ../scripts/test/playwright-dev.mts",
         url: `http://localhost:${testPorts.playwright}/`,
         reuseExistingServer: false,
         env: {

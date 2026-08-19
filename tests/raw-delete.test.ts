@@ -30,9 +30,9 @@ describe("Raw Delete API", () => {
         testAgent = setup.testAgent;
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should delete existing file via raw endpoint", async () => {

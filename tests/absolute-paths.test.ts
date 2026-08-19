@@ -27,9 +27,9 @@ beforeAll(async () => {
     api = started.apiClient;
 }, 30_000);
 
-afterAll(() => {
+afterAll(async () => {
+    await processManager.killAll();
     tempFiles.cleanup();
-    processManager.killAll();
 });
 
 describe("absolute filesystem path contract", () => {

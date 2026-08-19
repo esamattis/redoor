@@ -48,9 +48,9 @@ describe("Raw Directory Archive Download API", () => {
         expect(testAgent).toBeDefined();
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("should stream a directory as a tar archive via the raw endpoint", async () => {

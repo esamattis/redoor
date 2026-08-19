@@ -28,9 +28,9 @@ describe("Rename Path API", () => {
         testAgent = setup.testAgent;
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     it("atomically renames files and directories through the agent", async () => {

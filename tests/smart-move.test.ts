@@ -55,9 +55,9 @@ describe("Smart Move API", () => {
         });
     }, 30000);
 
-    afterAll(() => {
+    afterAll(async () => {
+        await processManager.killAll();
         tempFiles.cleanup();
-        processManager.killAll();
     });
 
     /** Polls the public row because move work continues after the REST response returns. */
