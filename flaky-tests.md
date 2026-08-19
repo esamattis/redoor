@@ -1,5 +1,6 @@
 # Flaky tests
 
+- `ui/e2e/file-edit-vim.spec.ts > File editor options > should open the terminal with Alt+t from Vim normal mode` timed out waiting for the Vim editor to regain focus after Alt+e during `pn test`, then all 159 Playwright tests passed on the immediate rerun (2026-08-19).
 - `ui/e2e/terminal.spec.ts > Terminal panel lifecycle > keeps independent terminal tabs in their captured directories` timed out waiting for the minimized drawer control during `pn test`, then all 140 runnable Playwright tests passed on the immediate rerun (2026-08-18).
 - `ui/e2e/agent-management.spec.ts > Agent management > switches an existing agent from password auth to key auth` again reported `has_password: true` after Stop and Save during `pn test` (2026-08-18).
 - `pn playwright` failed because leftover `redoor` still held port 31533 after the previous suite, then Playwright started after that process was terminated (2026-08-18).
