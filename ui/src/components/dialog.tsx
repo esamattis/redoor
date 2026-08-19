@@ -26,17 +26,23 @@ export function Dialog(props: {
      * (end-aligned) rather than as a centered modal.
      */
     anchorRef?: React.RefObject<HTMLElement | null>;
+    /**
+     * Optional pointer location. Used when the menu has no trigger element,
+     * such as a canvas right-click.
+     */
+    anchorPoint?: { x: number; y: number };
 }) {
     const titleId = React.useId();
     const descriptionId = React.useId();
     const dialogRef = React.useRef<HTMLDialogElement>(null);
     const panelRef = React.useRef<HTMLDivElement>(null);
-    const isAnchored = props.anchorRef != null;
+    const isAnchored = props.anchorRef != null || props.anchorPoint != null;
     const anchorPosition = useDialogBehavior({
         isOpen: props.isOpen,
         isBusy: props.isBusy,
         isAnchored,
         anchorRef: props.anchorRef,
+        anchorPoint: props.anchorPoint,
         dialogRef,
         panelRef,
         onClose: props.onClose,
@@ -170,6 +176,7 @@ function useDialogBehavior(props: {
     isBusy?: boolean;
     isAnchored: boolean;
     anchorRef?: React.RefObject<HTMLElement | null>;
+    anchorPoint?: { x: number; y: number };
     dialogRef: React.RefObject<HTMLDialogElement | null>;
     panelRef: React.RefObject<HTMLDivElement | null>;
     onClose: () => void;
@@ -186,15 +193,18 @@ function useDialogBehavior(props: {
             return;
         }
 
-        /** Closes an idle dialog from the keyboard for accessible dismissal. */
+        /** Capture so Escape dismisses the menu before a focused terminal consumes it. */
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
                 props.onClose();
             }
         };
 
-        document.addEventListener("keydown", handleKeyDown);
-        return () => document.removeEventListener("keydown", handleKeyDown);
+        document.addEventListener("keydown", handleKeyDown, true);
+        return () =>
+            document.removeEventListener("keydown", handleKeyDown, true);
     }, [props.isAnchored, props.isBusy, props.isOpen, props.onClose]);
 
     React.useEffect(() => {
@@ -225,43 +235,21 @@ function useDialogBehavior(props: {
     }, [props.dialogRef, props.isAnchored, props.isOpen]);
 
     React.useLayoutEffect(() => {
-        if (!props.isOpen || !props.anchorRef) {
+        if (!props.isOpen || (!props.anchorRef && !props.anchorPoint)) {
             setAnchorPosition(null);
             return;
         }
 
-        /** Keeps the panel attached to the trigger across layout shifts. */
+        /** Keeps the panel attached to the trigger or pointer across layout shifts. */
         const updatePosition = () => {
-            const anchor = props.anchorRef?.current;
-            const panel = props.panelRef.current;
-            if (!anchor) {
-                return;
+            const nextPosition = getAnchoredDialogPosition({
+                panel: props.panelRef.current,
+                point: props.anchorPoint,
+                anchor: props.anchorRef?.current,
+            });
+            if (nextPosition) {
+                setAnchorPosition(nextPosition);
             }
-
-            const anchorRect = anchor.getBoundingClientRect();
-            const panelWidth = panel?.offsetWidth ?? 224;
-            const panelHeight = panel?.offsetHeight ?? 0;
-            const gap = 8;
-            const viewportPadding = 8;
-
-            let top = anchorRect.bottom + gap;
-            // Flip above the trigger when there is not enough room below.
-            if (
-                panelHeight > 0 &&
-                top + panelHeight > window.innerHeight - viewportPadding &&
-                anchorRect.top - gap - panelHeight >= viewportPadding
-            ) {
-                top = anchorRect.top - gap - panelHeight;
-            }
-
-            let left = anchorRect.right - panelWidth;
-            left = Math.min(
-                left,
-                window.innerWidth - panelWidth - viewportPadding,
-            );
-            left = Math.max(viewportPadding, left);
-
-            setAnchorPosition({ top, left });
         };
 
         updatePosition();
@@ -273,6 +261,7 @@ function useDialogBehavior(props: {
             window.removeEventListener("scroll", updatePosition, true);
         };
     }, [
+        props.anchorPoint,
         props.anchorRef,
         props.children,
         props.errorMessage,
@@ -281,4 +270,42 @@ function useDialogBehavior(props: {
     ]);
 
     return anchorPosition;
+}
+
+/** Keeps menus on screen without covering the click or trigger that opened them. */
+function getAnchoredDialogPosition(args: {
+    panel: HTMLDivElement | null;
+    point?: { x: number; y: number };
+    anchor?: HTMLElement | null;
+}) {
+    const panelWidth = args.panel?.offsetWidth ?? 224;
+    const panelHeight = args.panel?.offsetHeight ?? 0;
+    const gap = 8;
+    const viewportPadding = 8;
+    if (!args.point && !args.anchor) {
+        return null;
+    }
+
+    const anchorRect = args.anchor?.getBoundingClientRect();
+    let top = args.point ? args.point.y : (anchorRect?.bottom ?? 0) + gap;
+    let left = args.point
+        ? args.point.x
+        : (anchorRect?.right ?? 0) - panelWidth;
+
+    if (
+        panelHeight > 0 &&
+        top + panelHeight > window.innerHeight - viewportPadding
+    ) {
+        const flippedTop = args.point
+            ? args.point.y - panelHeight
+            : (anchorRect?.top ?? 0) - gap - panelHeight;
+        if (flippedTop >= viewportPadding) {
+            top = flippedTop;
+        }
+    }
+
+    left = Math.min(left, window.innerWidth - panelWidth - viewportPadding);
+    left = Math.max(viewportPadding, left);
+    top = Math.max(viewportPadding, top);
+    return { top, left };
 }

@@ -24,7 +24,9 @@ import {
 import { initializeGhostty } from "#ui/terminal/ghostty";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { AddButton } from "#ui/components/add-button";
+import { ContextMenu } from "#ui/components/context-menu";
 import { IconButton } from "#ui/components/icon-button";
+import { Toast } from "#ui/components/toast";
 import {
     isEditorInputTarget,
     isUnmodifiedAltKey,
@@ -811,12 +813,80 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         };
     }, []);
 
-    return hostRef;
+    return { hostRef, terminalRef: resources.terminalRef };
 }
 
 /** Owns one tab's browser resources so sibling sessions cannot affect it. */
 function TerminalSession(props: TerminalSessionProps) {
-    const hostRef = useTerminalLifecycle(props);
+    const { hostRef, terminalRef } = useTerminalLifecycle(props);
+    const [contextMenu, setContextMenu] = React.useState<{
+        x: number;
+        y: number;
+        canCopy: boolean;
+    } | null>(null);
+    const [clipboardError, setClipboardError] = React.useState<string | null>(
+        null,
+    );
+
+    React.useEffect(() => {
+        const host = hostRef.current;
+        if (!host) {
+            return;
+        }
+
+        /** Stops Ghostty's canvas image menu so copy and paste stay available. */
+        const handleContextMenu = (event: MouseEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const terminal = terminalRef.current;
+            setContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                canCopy: Boolean(terminal?.hasSelection()),
+            });
+        };
+
+        host.addEventListener("contextmenu", handleContextMenu, true);
+        return () =>
+            host.removeEventListener("contextmenu", handleContextMenu, true);
+    }, [hostRef, terminalRef]);
+
+    /** Returns keyboard focus to the shell after the overlay closes. */
+    const closeContextMenu = () => {
+        setContextMenu(null);
+        if (props.isActive && !props.isPanelCollapsed) {
+            terminalRef.current?.focus();
+        }
+    };
+
+    /** Copies the Ghostty selection because the canvas has no native text. */
+    const copySelection = async () => {
+        const text = terminalRef.current?.getSelection() ?? "";
+        if (!text) {
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            setClipboardError("Could not copy from the terminal");
+        }
+    };
+
+    /** Injects clipboard text through Ghostty so bracketed paste still works. */
+    const pasteClipboard = async () => {
+        const terminal = terminalRef.current;
+        if (!terminal) {
+            return;
+        }
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+                terminal.paste(text);
+            }
+        } catch {
+            setClipboardError("Could not paste into the terminal");
+        }
+    };
 
     return (
         <div
@@ -833,6 +903,42 @@ function TerminalSession(props: TerminalSessionProps) {
                 aria-label={`${props.tab.title} for ${props.agent.name}`}
                 className="h-full w-full overflow-hidden caret-transparent"
             />
+            <ContextMenu
+                isOpen={contextMenu !== null}
+                title="Terminal actions"
+                closeAriaLabel="Close terminal actions"
+                position={contextMenu}
+                onClose={closeContextMenu}
+            >
+                {(close) => (
+                    <>
+                        <ActionMenuButton
+                            disabled={!contextMenu?.canCopy}
+                            onClick={() => {
+                                void copySelection().finally(close);
+                            }}
+                        >
+                            Copy
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            onClick={() => {
+                                void pasteClipboard().finally(close);
+                            }}
+                        >
+                            Paste
+                        </ActionMenuButton>
+                    </>
+                )}
+            </ContextMenu>
+            {clipboardError ? (
+                <Toast
+                    tone="error"
+                    dismissAriaLabel="Dismiss clipboard error"
+                    onDismiss={() => setClipboardError(null)}
+                >
+                    {clipboardError}
+                </Toast>
+            ) : null}
             {props.tab.state.type === "disconnected" ? (
                 <div
                     role="alert"

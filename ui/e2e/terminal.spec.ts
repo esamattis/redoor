@@ -525,4 +525,89 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(page).toHaveURL(directoryUrl);
         await expect(terminalInput).toBeFocused();
     });
+
+    test("copies and pastes from the terminal context menu", async ({
+        page,
+        context,
+    }) => {
+        let terminalOutput = "";
+        page.on("websocket", (socket) => {
+            if (!socket.url().includes("/terminal/ws")) {
+                return;
+            }
+            socket.on("framereceived", (event) => {
+                terminalOutput += terminalFrameSchema.parse(event.payload);
+            });
+        });
+
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
+            origin: WEB_BASE_URL,
+        });
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const terminalHost = page.getByLabel(
+            `agent1_src 1 for ${ctx.agentName}`,
+        );
+        const terminalInput = terminalHost.locator("textarea");
+        const canvas = terminalHost.locator("canvas");
+        await canvas.click({ button: "right" });
+        const actions = page.getByRole("dialog", { name: "Terminal actions" });
+        // A canvas right-click must replace the browser image menu.
+        await expect(actions).toBeVisible();
+        // Copy stays unavailable until Ghostty has a real selection.
+        await expect(
+            actions.getByRole("button", { name: "Copy" }),
+        ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(actions).toHaveCount(0);
+
+        await terminalInput.focus();
+        // Octal escapes print the marker without putting it in the echoed command.
+        await terminalInput.pressSequentially(
+            "printf '\\164\\145\\162\\155\\151\\156\\141\\154\\055\\143\\157\\160\\171\\n'",
+        );
+        await terminalInput.press("Enter");
+        await expect.poll(() => terminalOutput).toContain("terminal-copy");
+
+        const box = await canvas.boundingBox();
+        if (box === null) {
+            throw new Error("terminal canvas is not visible");
+        }
+        await page.mouse.move(box.x + 4, box.y + 4);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width - 4, box.y + box.height - 4);
+        await page.mouse.up();
+
+        await canvas.click({ button: "right", position: { x: 12, y: 12 } });
+        await expect(actions).toBeVisible();
+        const copyButton = actions.getByRole("button", { name: "Copy" });
+        // Dragging across the canvas must create a copyable Ghostty selection.
+        await expect(copyButton).toBeEnabled();
+        await page.evaluate(() => navigator.clipboard.writeText(""));
+        await copyButton.click();
+        // The menu action must write the selected terminal text, not an image.
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+            .toContain("terminal-copy");
+
+        await page.evaluate(() =>
+            navigator.clipboard.writeText(
+                "printf '\\160\\141\\163\\164\\145\\055\\157\\153\\n'",
+            ),
+        );
+        await canvas.click({ button: "right", position: { x: 12, y: 12 } });
+        await actions.getByRole("button", { name: "Paste" }).click();
+        // The async clipboard read closes the menu only after text reaches Ghostty.
+        await expect(actions).toHaveCount(0);
+        await terminalInput.press("Enter");
+        // Paste must reach the PTY as input rather than staying in the browser.
+        await expect.poll(() => terminalOutput).toContain("paste-ok");
+    });
 });
