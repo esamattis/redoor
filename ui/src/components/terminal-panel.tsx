@@ -16,12 +16,16 @@ import type {
 } from "ghostty-web";
 import { z } from "zod";
 
-import {
-    type Agent,
-    type TerminalClientMessage,
-    type TerminalServerMessage,
-} from "#ui/api-client";
+import { type Agent, type TerminalServerMessage } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
+import {
+    bindTerminalInput,
+    disposeTerminalResources,
+    mountGhostty,
+    remountGhosttyForTheme,
+    type TerminalResources,
+} from "#ui/terminal/session";
+import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { AddButton } from "#ui/components/add-button";
 import { ContextMenu } from "#ui/components/context-menu";
@@ -147,6 +151,7 @@ export function TerminalPanel(props: {
     activeTarget: ActiveTerminalTarget | null;
     isVisible: boolean;
 }) {
+    const resolvedTheme = useResolvedTheme();
     const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
@@ -309,7 +314,10 @@ export function TerminalPanel(props: {
                     onTabKeyDown={handleTabKeyDown}
                 />
             </div>
-            <div className="terminal-surface relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12]">
+            <div
+                data-terminal-theme={resolvedTheme}
+                className="relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12]"
+            >
                 {tabs.map((tab) => (
                     <TerminalSession
                         key={tab.id}
@@ -503,15 +511,6 @@ type TerminalSessionProps = {
     onStateChange: (tabId: number, state: TerminalState) => void;
 };
 
-/** Groups mutable browser resources so teardown can release them consistently. */
-type TerminalResources = {
-    terminalRef: React.RefObject<GhosttyTerminal | null>;
-    fitAddonRef: React.RefObject<GhosttyFitAddon | null>;
-    socketRef: React.RefObject<WebSocket | null>;
-    terminalDisposablesRef: React.RefObject<IDisposable[]>;
-    removeSocketListenersRef: React.RefObject<(() => void) | null>;
-};
-
 /** Connects one initialized terminal to its shell while keeping socket protocol handling isolated. */
 function connectTerminal(props: {
     agent: Agent;
@@ -519,6 +518,7 @@ function connectTerminal(props: {
     generation: number;
     resources: TerminalResources;
     terminal: GhosttyTerminal;
+    isReadyRef: React.RefObject<boolean>;
     updateTerminalState: (state: TerminalState) => void;
     showDisconnected: (generation: number, message: string) => void;
     generationRef: React.RefObject<number>;
@@ -534,34 +534,21 @@ function connectTerminal(props: {
     );
     socket.binaryType = "arraybuffer";
     props.resources.socketRef.current = socket;
-    const encoder = new TextEncoder();
-    let isReady = false;
-
-    props.resources.terminalDisposablesRef.current = [
-        props.terminal.onData((data) => {
-            if (isReady && socket.readyState === WebSocket.OPEN) {
-                socket.send(encoder.encode(data));
-            }
-        }),
-        props.terminal.onResize((size) => {
-            if (!isReady || socket.readyState !== WebSocket.OPEN) {
-                return;
-            }
-            const message: TerminalClientMessage = {
-                type: "resize",
-                size: { rows: size.rows, cols: size.cols },
-            };
-            socket.send(JSON.stringify(message));
-        }),
-    ];
+    props.isReadyRef.current = false;
+    props.resources.terminalDisposablesRef.current = bindTerminalInput({
+        terminal: props.terminal,
+        socket,
+        isReady: () => props.isReadyRef.current,
+    });
 
     /** Applies typed binary output and lifecycle notifications. */
     const handleMessage = (event: MessageEvent) => {
         if (props.generationRef.current !== props.generation) {
             return;
         }
+        const terminal = props.resources.terminalRef.current;
         if (event.data instanceof ArrayBuffer) {
-            props.terminal.write(new Uint8Array(event.data));
+            terminal?.write(new Uint8Array(event.data));
             return;
         }
         const textFrame = z.string().safeParse(event.data);
@@ -580,7 +567,7 @@ function connectTerminal(props: {
             return;
         }
         if (message.type === "ready") {
-            isReady = true;
+            props.isReadyRef.current = true;
             props.updateTerminalState({ type: "connected" });
             if (
                 props.isActiveRef.current &&
@@ -588,7 +575,7 @@ function connectTerminal(props: {
             ) {
                 props.resources.fitAddonRef.current?.fit();
                 if (!isTerminalTabFocused()) {
-                    props.terminal.focus();
+                    terminal?.focus();
                 }
             }
             return;
@@ -613,7 +600,7 @@ function connectTerminal(props: {
         }
         props.showDisconnected(
             props.generation,
-            isReady
+            props.isReadyRef.current
                 ? "Terminal connection closed"
                 : "Terminal connection closed during setup",
         );
@@ -638,6 +625,7 @@ function connectTerminal(props: {
 
 /** Manages one terminal's browser resources independently from its tab presentation. */
 function useTerminalLifecycle(props: TerminalSessionProps) {
+    const resolvedTheme = useResolvedTheme();
     const hostRef = React.useRef<HTMLDivElement | null>(null);
     const stateRef = React.useRef<TerminalState>(props.tab.state);
     const resources: TerminalResources = {
@@ -651,8 +639,14 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
     const restartGenerationRef = React.useRef(props.tab.restartGeneration);
     const isActiveRef = React.useRef(props.isActive);
     const isPanelCollapsedRef = React.useRef(props.isPanelCollapsed);
+    const isReadyRef = React.useRef(false);
+    const appliedThemeRef = React.useRef<"dark" | "light" | null>(null);
+    const themeRef = React.useRef(resolvedTheme);
     isActiveRef.current = props.isActive;
     isPanelCollapsedRef.current = props.isPanelCollapsed;
+    themeRef.current = resolvedTheme;
+
+    const ariaLabel = `${props.tab.title} for ${props.agent.name}`;
 
     /** Keeps socket handlers and the parent tab badge on the same lifecycle. */
     const updateTerminalState = (nextState: TerminalState) => {
@@ -662,22 +656,12 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
 
     /** Releases every resource associated with only this terminal tab. */
     const disposeResources = () => {
-        const socket = resources.socketRef.current;
-        resources.socketRef.current = null;
-        resources.removeSocketListenersRef.current?.();
-        resources.removeSocketListenersRef.current = null;
-        if (socket && socket.readyState < WebSocket.CLOSING) {
-            socket.close();
-        }
-        resources.terminalDisposablesRef.current.forEach((disposable) =>
-            disposable.dispose(),
-        );
-        resources.terminalDisposablesRef.current = [];
-        const terminal = resources.terminalRef.current;
-        resources.terminalRef.current = null;
-        resources.fitAddonRef.current = null;
-        terminal?.dispose();
-        hostRef.current?.replaceChildren();
+        disposeTerminalResources({
+            resources,
+            hostRef,
+            isReadyRef,
+            appliedThemeRef,
+        });
     };
 
     /** Leaves setup failures visible so this tab can be explicitly restarted. */
@@ -708,31 +692,14 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 failSetup(generation, "Terminal host is unavailable");
                 return;
             }
-            const terminal = new ghostty.Terminal({
-                cursorBlink: true,
-                fontFamily:
-                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-                fontSize: 13,
-                scrollback: 5000,
-                theme: {
-                    background: "#0b0d12",
-                    foreground: "#cbd5e1",
-                    cursor: "#60a5fa",
-                    selectionBackground: "#334155",
-                },
+            const terminal = mountGhostty({
+                ghostty,
+                host,
+                themeMode: themeRef.current,
+                ariaLabel,
+                resources,
+                appliedThemeRef,
             });
-            resources.terminalRef.current = terminal;
-            const fitAddon = new ghostty.FitAddon();
-            resources.fitAddonRef.current = fitAddon;
-            terminal.loadAddon(fitAddon);
-            terminal.open(host);
-            host.setAttribute(
-                "aria-label",
-                `${props.tab.title} for ${props.agent.name}`,
-            );
-            host.setAttribute("data-terminal-input", "");
-            fitAddon.fit();
-            fitAddon.observeResize();
             if (generationRef.current !== generation) {
                 return;
             }
@@ -743,6 +710,7 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 generation,
                 resources,
                 terminal,
+                isReadyRef,
                 updateTerminalState,
                 showDisconnected: (currentGeneration, message) => {
                     if (generationRef.current === currentGeneration) {
@@ -784,6 +752,27 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         props.tab.restartGeneration,
         props.tab.state.type,
     ]);
+
+    React.useEffect(() => {
+        if (
+            !resources.terminalRef.current ||
+            appliedThemeRef.current === resolvedTheme
+        ) {
+            return;
+        }
+        void remountGhosttyForTheme({
+            themeMode: resolvedTheme,
+            resources,
+            hostRef,
+            appliedThemeRef,
+            isReadyRef,
+            ariaLabel,
+            shouldFocus: () =>
+                isActiveRef.current &&
+                !isPanelCollapsedRef.current &&
+                !isTerminalTabFocused(),
+        });
+    }, [resolvedTheme]);
 
     React.useEffect(() => {
         // Shortcut open/reuse must wait until the shell is connected; activation props may not change.

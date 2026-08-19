@@ -4,7 +4,9 @@ import {
     type WebSocket as PlaywrightWebSocket,
 } from "@playwright/test";
 import { z } from "zod";
+import { ApiClient } from "#ui/api-client";
 import {
+    API_BASE_URL,
     minimizeBottomDrawer,
     setupTestDir,
     teardownTestDir,
@@ -26,6 +28,24 @@ test.describe.serial("Terminal panel lifecycle", () => {
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+    });
+
+    test.afterEach(async () => {
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        // Later browser tests assume the default system theme.
+        await api.updateUserState({
+            state: {
+                showHiddenFiles: true,
+                theme: "system",
+                bookmarks: [],
+                vimMode: false,
+                wrapEditorLines: false,
+                recursiveSearchTimeoutSeconds: 5,
+                recursiveSearchIncludeHidden: false,
+                recursiveSearchRespectGitignore: true,
+            },
+        });
     });
 
     test("initializes a shell and executes a command", async ({ page }) => {
@@ -609,5 +629,50 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await terminalInput.press("Enter");
         // Paste must reach the PTY as input rather than staying in the browser.
         await expect.poll(() => terminalOutput).toContain("paste-ok");
+    });
+
+    test("follows the app light theme without dropping the shell", async ({
+        page,
+    }) => {
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await api.updateUserState({
+            state: {
+                showHiddenFiles: true,
+                theme: "dark",
+                bookmarks: [],
+                vimMode: false,
+                wrapEditorLines: false,
+                recursiveSearchTimeoutSeconds: 5,
+                recursiveSearchIncludeHidden: false,
+                recursiveSearchRespectGitignore: true,
+            },
+        });
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const surface = page.locator("[data-terminal-theme]");
+        // Dark mode must keep the Ghostty frame on the app canvas color.
+        await expect(surface).toHaveAttribute("data-terminal-theme", "dark");
+        await expect(surface).toHaveCSS("background-color", "rgb(11, 13, 18)");
+
+        await page.getByRole("button", { name: "Color theme: Dark" }).click();
+        // A live theme toggle must restyle the open terminal instead of leaving a dark hole.
+        await expect(surface).toHaveAttribute("data-terminal-theme", "light");
+        await expect(surface).toHaveCSS(
+            "background-color",
+            "rgb(248, 250, 252)",
+        );
+        // Remounting Ghostty for WASM default colors must keep the existing PTY.
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
     });
 });
