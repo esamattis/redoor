@@ -150,4 +150,49 @@ test.describe.serial("Transfer Path Links", () => {
         // Referencing the id ensures the API returned the public progress handle used by history.
         expect(moveRequestId).toEqual(expect.any(Number));
     });
+
+    test("should show directory smart moves as atomic", async ({ page }) => {
+        const sourceDirName = `move-source-dir-${Date.now()}`;
+        const destDirName = `move-destination-dir-${Date.now()}`;
+        const sourcePath = path.join(ctx.testDirPath, sourceDirName);
+        const destPath = path.join(ctx.testDirPath, destDirName);
+        await fs.mkdir(sourcePath);
+        await fs.writeFile(
+            path.join(sourcePath, "child.txt"),
+            "playwright directory smart move",
+        );
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("link", { name: "Transfers" })
+            .click();
+        const response = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/move`,
+            {
+                data: {
+                    source: { agent: ctx.agentId, path: sourcePath },
+                    dest: { agent: ctx.agentId, path: destPath },
+                    on_existing: "error",
+                },
+            },
+        );
+        // A successful start is required before transfer history can receive the directory move.
+        expect(response.ok()).toBe(true);
+
+        const moveRow = page
+            .getByRole("row")
+            .filter({ hasText: sourceDirName })
+            .filter({ hasText: destDirName });
+
+        // Directory same-FS renames must use the same atomic history label as files.
+        await expect(moveRow).toContainText("atomic move");
+        await expect(moveRow).toContainText("completed", { timeout: 15_000 });
+        // Instant directory metadata moves have no copy stream, so a speed would be meaningless.
+        await expect(moveRow.getByText(/\/s/)).toHaveCount(0);
+        await expect(
+            fs.readFile(path.join(destPath, "child.txt"), "utf8"),
+        ).resolves.toBe("playwright directory smart move");
+        await expect(fs.stat(sourcePath)).rejects.toThrow();
+    });
 });

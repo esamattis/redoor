@@ -116,12 +116,19 @@ describe("Smart Move API", () => {
             "nested move",
         );
 
+        const sourceInode = (await fs.lstat(sourcePath, { bigint: true })).ino;
         const response = await sourceAgent.moveTo(
             { agent: sourceAgent.id, path: destPath },
             sourcePath,
         );
-        await waitForMove(response.move_request_id);
+        const move = await waitForMove(response.move_request_id);
 
+        // Same-FS missing directory destinations must use renameat2, not copy/delete.
+        expect(move.atomic).toBe(true);
+        // Preserving the directory inode proves the tree was renamed rather than reconstructed.
+        expect((await fs.lstat(destPath, { bigint: true })).ino).toBe(
+            sourceInode,
+        );
         // Nested content proves directory moves preserve their full tree.
         expect(
             await fs.readFile(
@@ -230,8 +237,10 @@ describe("Smart Move API", () => {
             directorySource,
             { on_existing: "override" },
         );
-        await waitForMove(directoryResponse.move_request_id);
+        const directoryMove = await waitForMove(directoryResponse.move_request_id);
 
+        // Directory-over-file must stay on the atomic exchange path.
+        expect(directoryMove.atomic).toBe(true);
         // A directory must replace a file even though a plain POSIX replacement rename rejects that pair.
         expect(await fs.readFile(path.join(fileDestination, "source.txt"), "utf8")).toBe(
             "directory",
@@ -263,8 +272,10 @@ describe("Smart Move API", () => {
             fileSource,
             { on_existing: "override" },
         );
-        await waitForMove(fileResponse.move_request_id);
+        const fileMove = await waitForMove(fileResponse.move_request_id);
 
+        // File-over-directory must stay on the atomic exchange path.
+        expect(fileMove.atomic).toBe(true);
         // Override must remove the whole non-empty destination directory and publish the file.
         expect(await fs.readFile(directoryDestination, "utf8")).toBe(
             "file over directory",
@@ -295,8 +306,10 @@ describe("Smart Move API", () => {
             symlinkSource,
             { on_existing: "override" },
         );
-        await waitForMove(symlinkResponse.move_request_id);
+        const symlinkMove = await waitForMove(symlinkResponse.move_request_id);
 
+        // File-over-symlink must stay on the atomic exchange path.
+        expect(symlinkMove.atomic).toBe(true);
         // Dangling symlinks are existing directory entries and must be replaced rather than followed.
         expect(await fs.readFile(symlinkDestination, "utf8")).toBe(
             "file over symlink",
@@ -307,6 +320,58 @@ describe("Smart Move API", () => {
         );
         // The exchanged symlink must be removed from the source path after publication.
         await expect(fs.lstat(symlinkSource)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+
+        const directoryOverDirectorySource = tempFiles.tempFile({
+            suffix: "-override-directory-over-directory-source",
+        });
+        const directoryOverDirectoryDestination = tempFiles.tempFile({
+            suffix: "-override-directory-over-directory-destination",
+        });
+        await fs.mkdir(directoryOverDirectorySource);
+        await fs.mkdir(directoryOverDirectoryDestination);
+        await fs.writeFile(
+            path.join(directoryOverDirectorySource, "new.txt"),
+            "new directory",
+        );
+        await fs.writeFile(
+            path.join(directoryOverDirectoryDestination, "old.txt"),
+            "old directory",
+        );
+        const directoryOverDirectoryInode = (
+            await fs.lstat(directoryOverDirectorySource, { bigint: true })
+        ).ino;
+
+        const directoryOverDirectoryResponse = await sourceAgent.moveTo(
+            { agent: sourceAgent.id, path: directoryOverDirectoryDestination },
+            directoryOverDirectorySource,
+            { on_existing: "override" },
+        );
+        const directoryOverDirectoryMove = await waitForMove(
+            directoryOverDirectoryResponse.move_request_id,
+        );
+
+        // Non-empty directory replacement cannot use a POSIX rename, so this must stay atomic.
+        expect(directoryOverDirectoryMove.atomic).toBe(true);
+        // The source tree must occupy the destination name after the exchange.
+        expect(
+            await fs.readFile(
+                path.join(directoryOverDirectoryDestination, "new.txt"),
+                "utf8",
+            ),
+        ).toBe("new directory");
+        // Old destination children must not remain after the exchanged tree is published.
+        await expect(
+            fs.lstat(path.join(directoryOverDirectoryDestination, "old.txt")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        // Keeping the source directory inode proves the destination was exchanged, not rebuilt.
+        expect(
+            (await fs.lstat(directoryOverDirectoryDestination, { bigint: true }))
+                .ino,
+        ).toBe(directoryOverDirectoryInode);
+        // Cleanup after exchange must remove the displaced destination tree from the source name.
+        await expect(fs.lstat(directoryOverDirectorySource)).rejects.toMatchObject({
             code: "ENOENT",
         });
     });

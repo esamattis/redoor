@@ -435,6 +435,49 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
+    async fn atomic_rename_moves_missing_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "redoor-rename-noreplace-dir-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("rename test root should be created");
+        let source = root.join("source-directory");
+        let dest = root.join("dest-directory");
+        tokio::fs::create_dir(&source)
+            .await
+            .expect("source directory should be created");
+        tokio::fs::write(source.join("value.txt"), "moved")
+            .await
+            .expect("source child should be written");
+
+        let result = rename_atomically(source.clone(), dest.clone(), false, false)
+            .await
+            .expect("missing directory destinations should rename");
+        assert!(
+            matches!(result, AtomicRenameResult::Renamed),
+            "same-mount missing directory destinations should use the no-replace syscall"
+        );
+        assert!(
+            !tokio::fs::try_exists(&source).await.expect("source lookup"),
+            "a successful atomic directory rename must remove the source path"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("value.txt"))
+                .await
+                .expect("renamed destination directory should be readable"),
+            "moved",
+            "destination must contain the renamed source tree"
+        );
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("rename test root should be cleaned up");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
     async fn atomic_rename_moves_missing_destination() {
         let root =
             std::env::temp_dir().join(format!("redoor-rename-noreplace-{}", uuid::Uuid::new_v4()));
@@ -554,6 +597,59 @@ mod tests {
             tokio::fs::read_to_string(&source)
                 .await
                 .expect("displaced destination file should occupy the source name"),
+            "displaced",
+            "the old destination must be available for cleanup at the source name"
+        );
+
+        tokio::fs::remove_dir_all(&root)
+            .await
+            .expect("rename test root should be cleaned up");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn atomic_rename_exchanges_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "redoor-rename-exchange-dirs-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("rename test root should be created");
+        let source = root.join("source-directory");
+        let dest = root.join("dest-directory");
+        tokio::fs::create_dir(&source)
+            .await
+            .expect("source directory should be created");
+        tokio::fs::create_dir(&dest)
+            .await
+            .expect("destination directory should be created");
+        tokio::fs::write(source.join("source.txt"), "moved")
+            .await
+            .expect("source child should be written");
+        tokio::fs::write(dest.join("dest.txt"), "displaced")
+            .await
+            .expect("destination child should be written");
+
+        let result = rename_atomically(source.clone(), dest.clone(), true, true)
+            .await
+            .expect("directories should exchange atomically");
+
+        assert!(
+            matches!(result, AtomicRenameResult::Exchanged),
+            "an occupied override directory should use an atomic exchange"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("source.txt"))
+                .await
+                .expect("exchanged destination directory should be readable"),
+            "moved",
+            "the source directory must occupy the destination name"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(source.join("dest.txt"))
+                .await
+                .expect("displaced destination directory should occupy the source name"),
             "displaced",
             "the old destination must be available for cleanup at the source name"
         );
