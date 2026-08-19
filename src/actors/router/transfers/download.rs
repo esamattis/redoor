@@ -89,7 +89,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             request_id,
             command: request.command,
         });
-        let _ = request.reply.send(Ok(()));
+        let _ = request.reply.send(Ok(request_id));
     } else {
         log!(
             Level::Warning,

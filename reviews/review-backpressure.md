@@ -45,7 +45,11 @@ and most WebSocket sink paths otherwise preserve pull-based backpressure.
 
 ### High 1: A disconnected download is not canceled until another agent chunk arrives
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Direct-download startup now returns the allocated request ID. The HTTP body and the UI-used diff consumer retain a drop guard that reliably awaits router mailbox capacity before sending `CancelTransfer`; consuming a final or error frame disarms it. A router-backed body-lifetime regression test drops the body after one nonterminal frame and verifies cancellation reaches the agent without any subsequent chunk.
 
 **References:**
 

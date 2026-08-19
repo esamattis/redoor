@@ -606,10 +606,20 @@ describe("Raw Download API", () => {
         const response = await downloadResponsePromise;
         const abortReadPromise = response.arrayBuffer();
         const serverLogBeforeAbort = processManager.getStdout(serverPid);
+        const proxiedAgentProcess = processManager.getProcess(proxiedAgentPid);
+        if (!proxiedAgentProcess) {
+            throw new Error("Proxied agent process not found");
+        }
+        const waitForAgentCancel = waitForLogMessage(
+            proxiedAgentProcess,
+            /Received transfer cancel from server: request_id=/,
+            30000,
+        );
 
         controller.abort();
 
         await expect(abortReadPromise).rejects.toThrow(/abort|aborted|cancel/i);
+        await waitForAgentCancel;
 
         const finishedTransfer = await waitForValue({
             description: "errored download progress row after client abort",
@@ -633,30 +643,13 @@ describe("Raw Download API", () => {
         // The cancellation message confirms the server recognized a client abort rather than inventing a transport error.
         expect(finishedTransfer.error).toMatch(/canceled by client/i);
 
-        await waitForValue({
-            description:
-                "server cancel log without repeated missing-stream warnings",
-            timeoutMs: 30000,
-            predicate: async () => {
-                const stdout = processManager.getStdout(serverPid);
-                const newStdout = stdout.slice(serverLogBeforeAbort.length);
-                const missingStreamWarnings = newStdout.match(
-                    /No streaming response found for request_id=/g,
-                );
-
-                if ((missingStreamWarnings?.length ?? 0) > 0) {
-                    throw new Error(
-                        `Unexpected repeated missing-stream warnings: ${missingStreamWarnings?.length}`,
-                    );
-                }
-
-                return /Failed to send chunk to REST stream: request_id=/.test(
-                    newStdout,
-                )
-                    ? true
-                    : undefined;
-            },
-        });
+        const serverLogAfterCancel = processManager
+            .getStdout(serverPid)
+            .slice(serverLogBeforeAbort.length);
+        // Keeping canceled routing state until the agent acknowledges avoids noisy orphan chunks.
+        expect(serverLogAfterCancel).not.toMatch(
+            /No streaming response found for request_id=/,
+        );
 
         const resumedResponse = await proxiedAgent.download(sourcePath);
         // Android can retry a canceled browser download as a second full HTTP request.

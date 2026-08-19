@@ -240,8 +240,8 @@ pub struct ExecuteStreamRequest {
     pub full_size: Option<u64>,
     /// Starting file offset for a range request that may continue a canceled download.
     pub resume_offset: Option<u64>,
-    /// Reply port that confirms whether the stream started successfully.
-    pub reply: RouterReply<Result<(), RouterError>>,
+    /// Reply port that returns the allocated request id so the consumer can cancel on drop.
+    pub reply: RouterReply<Result<RequestId, RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
 }

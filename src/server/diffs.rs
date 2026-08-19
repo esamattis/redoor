@@ -9,6 +9,7 @@ use redoor::{
 
 use super::{
     agent_helpers::require_absolute_path,
+    raw::DownloadCancelGuard,
     responses::{command_error_status, router_error_response},
     state::ServerState,
 };
@@ -125,7 +126,7 @@ async fn download_editable_file(
     let (chunk_sender, mut chunk_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
 
-    match state
+    let request_id = match state
         .router_ref
         .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteStreamCommandRest(
@@ -147,14 +148,16 @@ async fn download_editable_file(
         })
         .await
     {
-        Ok(Ok(())) => {}
+        Ok(Ok(request_id)) => request_id,
         Ok(Err(error)) => return Err(router_error_response(error)),
         Err(error) => {
             return Err(internal_error_response(&format!(
                 "Failed to start file download: {error:?}"
             )));
         }
-    }
+    };
+    let mut cancel_guard =
+        DownloadCancelGuard::new(state.router_ref.clone(), endpoint.agent.clone(), request_id);
 
     let capacity = match usize::try_from(expected_size) {
         Ok(capacity) => capacity,
@@ -168,6 +171,7 @@ async fn download_editable_file(
     let mut completed = false;
     while let Some(chunk) = chunk_receiver.recv().await {
         if chunk.is_error {
+            cancel_guard.disarm();
             let message = if chunk.data.is_empty() {
                 format!("Failed to download {}", endpoint.path)
             } else {
@@ -182,6 +186,7 @@ async fn download_editable_file(
         }
         content.extend_from_slice(&chunk.data);
         if chunk.is_last {
+            cancel_guard.disarm();
             completed = true;
             break;
         }
