@@ -21,8 +21,10 @@ pub struct RegisterAgentRequest {
     pub agent_name: String,
     /// Unique websocket session identifier for this connection.
     pub socket_id: SocketId,
-    /// Unbounded control-message lane for websocket text frames.
-    pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    /// Bounded lane that admits ordinary commands without growing behind a slow socket.
+    pub outgoing_commands: tokio::sync::mpsc::Sender<WsMessage>,
+    /// Reserved lane that keeps lifecycle and cancellation frames independent of command load.
+    pub outgoing_priority: tokio::sync::mpsc::Sender<WsMessage>,
     /// Operating system string reported by the agent.
     pub os: String,
     /// CPU architecture string reported by the agent.
@@ -378,6 +380,8 @@ pub enum RouterMsg {
     UnregisterUiSubscriber {
         subscriber_id: String,
     },
+    /// Removes command reply ports whose REST callers have already timed out or disconnected.
+    PruneClosedPendingRest,
     ExecuteCommandRest(ExecuteCommandRequest),
     RouteStreamChunk(RouteStreamChunkRequest),
     FinishRoutedDownloadChunk(FinishDownloadChunkRoute),

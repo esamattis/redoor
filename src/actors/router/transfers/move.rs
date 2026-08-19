@@ -172,20 +172,25 @@ fn begin_source_deletion(
     {
         entry.total_bytes = total_bytes;
     }
-    if let Some(source_agent) = state.agents.by_id.get(&source_agent_id) {
-        source_agent.send_message(Message::Command {
-            agent_id: source_agent_id,
-            request_id: delete_request_id,
-            command: Command::DeleteMoveSource {
-                path: source_path,
-                expected_identity: source_identity,
-            },
+    let command_queued = state
+        .agents
+        .by_id
+        .get(&source_agent_id)
+        .is_some_and(|source_agent| {
+            source_agent.send_message(Message::Command {
+                agent_id: source_agent_id,
+                request_id: delete_request_id,
+                command: Command::DeleteMoveSource {
+                    path: source_path,
+                    expected_identity: source_identity,
+                },
+            })
         });
-    } else {
+    if !command_queued {
         progress::mark_transfer_errored(
             state,
             public_request_id,
-            "Source agent disconnected before move deletion".to_string(),
+            "Source agent unavailable before move deletion".to_string(),
         );
         cleanup_copy_tracking(state, public_request_id);
     }

@@ -11,6 +11,9 @@ pub enum RouterError {
     /// The control connection exists but its isolated payload transport is not ready.
     #[error("Transfer connection unavailable: agent_id={agent_id}")]
     TransferConnectionUnavailable { agent_id: String },
+    /// The agent control socket is not draining commands quickly enough to admit more work.
+    #[error("Agent control queue is full: agent_id={agent_id}")]
+    ControlQueueFull { agent_id: String },
     /// A transfer handshake could not be bound without exposing which credential was wrong.
     #[error("Transfer socket authentication failed")]
     TransferAuthenticationFailed,
@@ -49,7 +52,9 @@ impl RouterError {
             Self::AgentNotFound { .. }
             | Self::StreamNotFound { .. }
             | Self::CopyStreamNotFound { .. } => StatusCode::NOT_FOUND,
-            Self::TransferConnectionUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::TransferConnectionUnavailable { .. } | Self::ControlQueueFull { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::TransferAuthenticationFailed => StatusCode::UNAUTHORIZED,
             Self::ClientCanceledUpload => StatusCode::BAD_REQUEST,
             Self::UploadForwardFailed { .. }

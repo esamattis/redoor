@@ -22,7 +22,8 @@ impl AgentConnection {
             agent_id: request.agent_id,
             agent_name: request.agent_name,
             socket_id: request.socket_id,
-            outgoing_text: request.outgoing_text,
+            outgoing_commands: request.outgoing_commands,
+            outgoing_priority: request.outgoing_priority,
             transfer_token: uuid::Uuid::new_v4().to_string(),
             transfer: None,
             connected_at: crate::types::UnixTimestampSeconds::new(chrono::Utc::now().timestamp()),
@@ -37,15 +38,21 @@ impl AgentConnection {
         }
     }
 
-    /// Serializes and queues one control-plane message onto this agent's text lane.
+    /// Serializes and admits one ordinary command or bootstrap onto the bounded lane.
     pub(crate) fn send_message(&self, message: Message) -> bool {
+        self.send_to_lane(message, &self.outgoing_commands)
+    }
+
+    /// Queues lifecycle or cancellation traffic independently of command admission.
+    pub(crate) fn send_priority_message(&self, message: Message) -> bool {
+        self.send_to_lane(message, &self.outgoing_priority)
+    }
+
+    /// Serializes one message before attempting non-blocking admission to a bounded lane.
+    fn send_to_lane(&self, message: Message, lane: &tokio::sync::mpsc::Sender<WsMessage>) -> bool {
         match serde_json::to_string(&message) {
             Ok(json) => {
-                if self
-                    .outgoing_text
-                    .send(WsMessage::Text(json.into()))
-                    .is_err()
-                {
+                if lane.try_send(WsMessage::Text(json.into())).is_err() {
                     log!(
                         Level::Warning,
                         "Failed to queue text message for agent: socket_id={}",
@@ -135,7 +142,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let supports_self_exec = connection.supports_self_exec;
     let supports_native_open = connection.supports_native_open;
     let transfer_token = connection.transfer_token.clone();
-    let transfer_open_sender = connection.outgoing_text.clone();
+    let transfer_open_sender = connection.outgoing_priority.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
     let known = state
         .agents
@@ -179,7 +186,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
         token: transfer_token,
     }) {
-        let _ = transfer_open_sender.send(WsMessage::Text(message.into()));
+        let _ = transfer_open_sender.try_send(WsMessage::Text(message.into()));
     }
 }
 
@@ -235,7 +242,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
             }
             // Notify the old session so its agent process exits promptly
             // instead of lingering as a zombie.
-            let _ = old_connection.send_message(Message::Error {
+            let _ = old_connection.send_priority_message(Message::Error {
                 message: "Connection replaced by a new agent with the same name".to_string(),
             });
         }
@@ -248,7 +255,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
     }
 
     let agent_id = request.agent_id.clone();
-    let rejection_sender = request.outgoing_text.clone();
+    let rejection_sender = request.outgoing_priority.clone();
     let watchdog = request.watchdog.clone();
     let accepted = match watchdog.as_ref() {
         Some(watchdog) => watchdog
@@ -264,7 +271,7 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
             message: "Managed agent is intentionally stopped".to_string(),
         });
         if let Ok(rejection) = rejection {
-            let _ = rejection_sender.send(WsMessage::Text(rejection.into()));
+            let _ = rejection_sender.try_send(WsMessage::Text(rejection.into()));
         }
         log!(
             Level::Warning,
@@ -517,7 +524,7 @@ pub(crate) async fn apply_managed_lifecycle(
             chrono::Utc::now().timestamp(),
         ));
         known.socket_id = None;
-        let _ = connection.send_message(crate::types::Message::Error {
+        let _ = connection.send_priority_message(crate::types::Message::Error {
             message: "Managed agent was shut down".to_string(),
         });
         cleanup::cleanup_agent_requests(state, &agent_id).await;
@@ -557,6 +564,13 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
 
 /// Allocates an internal request id and routes a one-shot command to an agent.
 pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteCommandRequest) {
+    if request.reply.is_closed() {
+        return;
+    }
+    state
+        .pending_rest
+        .by_request_id
+        .retain(|_, (reply, _)| !reply.is_closed());
     let request_id = state.next_id();
 
     log!(
@@ -567,15 +581,21 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
         request.command
     );
     if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id) {
-        state
-            .pending_rest
-            .by_request_id
-            .insert(request_id, (request.reply, request.agent_id.clone()));
-        let _ = agent_connection.send_message(Message::Command {
-            agent_id: request.agent_id,
+        if agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id.clone(),
             request_id,
             command: request.command,
-        });
+        }) {
+            state
+                .pending_rest
+                .by_request_id
+                .insert(request_id, (request.reply, request.agent_id.clone()));
+        } else {
+            let _ = request.reply.send(CommandResult::error(
+                crate::commands::CommandErrorKind::ServiceUnavailable,
+                format!("Agent control queue is full: {}", request.agent_id),
+            ));
+        }
     } else {
         let _ = request.reply.send(CommandResult::error(
             crate::commands::CommandErrorKind::NotFound,
@@ -586,41 +606,45 @@ pub(crate) fn execute_command_rest(state: &mut RouterState, request: ExecuteComm
 
 /// Queues only the log bootstrap secret on the existing control connection.
 pub(crate) fn open_log_stream(state: &RouterState, request: OpenAgentLogStreamRequest) {
-    let result = state
-        .agents
-        .by_id
-        .get(&request.agent_id)
-        .filter(|connection| {
-            connection.send_message(Message::LogStreamOpen {
+    let result = match state.agents.by_id.get(&request.agent_id) {
+        Some(connection)
+            if connection.send_message(Message::LogStreamOpen {
                 log_stream_id: request.log_stream_id.clone(),
                 token: request.token.clone(),
-            })
-        })
-        .map(|_| ())
-        .ok_or_else(|| RouterError::AgentNotFound {
+            }) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(RouterError::ControlQueueFull {
             agent_id: request.agent_id.to_string(),
-        });
+        }),
+        None => Err(RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        }),
+    };
     let _ = request.reply.send(result);
 }
 
 /// Queues only the terminal bootstrap secret on the existing control connection.
 pub(crate) fn open_terminal(state: &RouterState, request: OpenTerminalRequest) {
-    let result = state
-        .agents
-        .by_id
-        .get(&request.agent_id)
-        .filter(|connection| {
-            connection.send_message(Message::TerminalOpen {
+    let result = match state.agents.by_id.get(&request.agent_id) {
+        Some(connection)
+            if connection.send_message(Message::TerminalOpen {
                 terminal_id: request.terminal_id.clone(),
                 token: request.token.clone(),
                 size: request.size,
                 cwd: request.cwd.clone(),
-            })
-        })
-        .map(|_| ())
-        .ok_or_else(|| RouterError::AgentNotFound {
+            }) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(RouterError::ControlQueueFull {
             agent_id: request.agent_id.to_string(),
-        });
+        }),
+        None => Err(RouterError::AgentNotFound {
+            agent_id: request.agent_id.to_string(),
+        }),
+    };
     let _ = request.reply.send(result);
 }
 
@@ -641,12 +665,14 @@ mod tests {
 
     /// Inserts one authoritative control connection and returns its issued transfer token.
     fn insert_control(state: &mut RouterState, agent_id: &str) -> String {
-        let (text_sender, _text_receiver) = mpsc::unbounded_channel();
+        let (command_sender, _command_receiver) = mpsc::channel(64);
+        let (priority_sender, _priority_receiver) = mpsc::channel(16);
         let request = RegisterAgentRequest {
             agent_id: AgentId::from(agent_id),
             agent_name: agent_id.to_string(),
             socket_id: crate::types::SocketId::new(),
-            outgoing_text: text_sender,
+            outgoing_commands: command_sender,
+            outgoing_priority: priority_sender,
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
             hostname: "host".to_string(),
@@ -903,5 +929,86 @@ mod tests {
                 .map(|transfer| transfer.socket_id.clone()),
             Some(current_socket)
         );
+    }
+
+    /// Verifies command overload is explicit while priority cancellation remains admitted.
+    #[tokio::test]
+    async fn full_control_queue_rejects_commands_and_preserves_priority_lane() {
+        crate::logging::init(None).await.unwrap();
+        let mut state = test_state();
+        let agent_id = AgentId::from("bounded-agent");
+        let (command_sender, mut command_receiver) = mpsc::channel(1);
+        let (priority_sender, mut priority_receiver) = mpsc::channel(1);
+        commit_registration(
+            &mut state,
+            RegisterAgentRequest {
+                agent_id: agent_id.clone(),
+                agent_name: agent_id.to_string(),
+                socket_id: crate::types::SocketId::new(),
+                outgoing_commands: command_sender,
+                outgoing_priority: priority_sender,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                hostname: "host".to_string(),
+                username: "user".to_string(),
+                default_directory: "/tmp".to_string(),
+                binary: crate::commands::current_binary_identity(),
+                supports_self_exec: true,
+                supports_native_open: true,
+                watchdog: None,
+            },
+        );
+        // Remove the lifecycle bootstrap so the reserved lane is available for cancellation.
+        assert!(matches!(
+            priority_receiver.recv().await,
+            Some(WsMessage::Text(_))
+        ));
+
+        let (first_reply, first_receiver) = oneshot::channel();
+        execute_command_rest(
+            &mut state,
+            ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: crate::commands::Command::GetAgentDetails,
+                reply: first_reply,
+            },
+        );
+        // The admitted command owns exactly one pending reply while its frame fills the lane.
+        assert_eq!(state.pending_rest.by_request_id.len(), 1);
+        drop(first_receiver);
+
+        let (overload_reply, overload_receiver) = oneshot::channel();
+        execute_command_rest(
+            &mut state,
+            ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: crate::commands::Command::GetAgentDetails,
+                reply: overload_reply,
+            },
+        );
+        // Closed timed-out callers are pruned and rejected commands never enter pending state.
+        assert!(state.pending_rest.by_request_id.is_empty());
+        assert!(matches!(
+            overload_receiver.await.expect("overload reply delivered"),
+            CommandResult::Error {
+                kind: crate::commands::CommandErrorKind::ServiceUnavailable,
+                ..
+            }
+        ));
+
+        let connection = &state.agents.by_id[&agent_id];
+        assert!(connection.send_priority_message(Message::CancelTransfer {
+            request_id: crate::types::RequestId::new(99),
+        }));
+        // Priority admission succeeds despite the unread ordinary command frame.
+        assert!(matches!(
+            priority_receiver.recv().await,
+            Some(WsMessage::Text(_))
+        ));
+        // The ordinary queue remains bounded to its single admitted frame.
+        assert!(matches!(
+            command_receiver.recv().await,
+            Some(WsMessage::Text(_))
+        ));
     }
 }

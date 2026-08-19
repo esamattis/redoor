@@ -175,7 +175,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
             if &dest_agent_id == agent_id
                 && let Some(source) = state.agents.by_id.get(&source_agent_id)
             {
-                source.send_message(Message::CancelTransfer {
+                source.send_priority_message(Message::CancelTransfer {
                     request_id: source_request_id,
                 });
             }
@@ -270,7 +270,7 @@ pub(crate) fn cancel_transfer(
                 .progress_id
                 .unwrap_or_else(|| request_id.as_transfer_id());
             if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
-                agent_connection.send_message(Message::CancelTransfer { request_id });
+                agent_connection.send_priority_message(Message::CancelTransfer { request_id });
             }
             // Downloads report cancellation immediately because the client has
             // already stopped consuming the stream at this point.
@@ -313,7 +313,7 @@ pub(crate) fn cancel_transfer(
                         agent_id,
                         request_id
                     );
-                    agent_connection.send_message(Message::CancelTransfer { request_id });
+                    agent_connection.send_priority_message(Message::CancelTransfer { request_id });
                 }
             }
             None => {

@@ -625,7 +625,8 @@ mod tests {
         let (router_ref, router_task) =
             actors::router::spawn_router(TerminalRegistry::new(), LogRegistry::new());
         let agent_id = AgentId::from("body-drop-agent");
-        let (text_sender, mut text_receiver) = mpsc::unbounded_channel();
+        let (text_sender, mut text_receiver) = mpsc::channel(64);
+        let (priority_sender, mut priority_receiver) = mpsc::channel(16);
         let (binary_sender, _binary_receiver) = mpsc::channel(1);
 
         router_ref
@@ -633,7 +634,8 @@ mod tests {
                 agent_id: agent_id.clone(),
                 agent_name: "body-drop-agent".to_string(),
                 socket_id: SocketId::new(),
-                outgoing_text: text_sender,
+                outgoing_commands: text_sender,
+                outgoing_priority: priority_sender,
                 os: "macos".to_string(),
                 arch: "arm64".to_string(),
                 hostname: "host".to_string(),
@@ -646,7 +648,11 @@ mod tests {
             }))
             .await
             .expect("agent registration queued");
-        let transfer_token = match text_receiver.recv().await.expect("transfer token queued") {
+        let transfer_token = match priority_receiver
+            .recv()
+            .await
+            .expect("transfer token queued")
+        {
             axum::extract::ws::Message::Text(text) => {
                 match serde_json::from_str::<Message>(&text).expect("valid transfer bootstrap") {
                     Message::TransferSocketOpen { token } => token,
@@ -740,7 +746,7 @@ mod tests {
 
         drop(body);
 
-        let cancel_request_id = match timeout(Duration::from_secs(1), text_receiver.recv())
+        let cancel_request_id = match timeout(Duration::from_secs(1), priority_receiver.recv())
             .await
             .expect("body drop should promptly reach the agent")
             .expect("cancel message queued")

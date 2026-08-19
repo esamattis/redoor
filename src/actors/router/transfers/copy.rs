@@ -212,11 +212,22 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     },
                 };
 
-                source_agent_connection.send_message(Message::Command {
+                if !source_agent_connection.send_message(Message::Command {
                     agent_id: request.source_agent_id,
                     request_id: local_request_id,
                     command,
-                });
+                }) {
+                    cleanup_copy_tracking(state, public_request_id);
+                    progress::mark_transfer_errored(
+                        state,
+                        public_request_id,
+                        "Agent control queue is full".to_string(),
+                    );
+                    let _ = request.reply.send(Err(RouterError::ControlQueueFull {
+                        agent_id: source_agent_connection.agent_id.to_string(),
+                    }));
+                    return;
+                }
 
                 let _ = request.reply.send(Ok(public_request_id));
                 return;
@@ -275,13 +286,24 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 },
             );
 
-            dest_agent_connection.send_message(Message::Command {
+            if !dest_agent_connection.send_message(Message::Command {
                 agent_id: request.dest_agent_id.clone(),
                 request_id: dest_request_id,
                 command: request
                     .content_kind
                     .upload_command(request.dest_path.clone(), request.on_existing),
-            });
+            }) {
+                cleanup_copy_tracking(state, public_request_id);
+                progress::mark_transfer_errored(
+                    state,
+                    public_request_id,
+                    "Agent control queue is full".to_string(),
+                );
+                let _ = request.reply.send(Err(RouterError::ControlQueueFull {
+                    agent_id: request.dest_agent_id.to_string(),
+                }));
+                return;
+            }
             let _ = request.reply.send(Ok(public_request_id));
         }
         (None, _) => {
@@ -333,13 +355,19 @@ pub(crate) fn start_source_after_destination_ready(
     let Some((source_agent_id, source_request_id, command)) = source_start else {
         return;
     };
-    if let Some(source) = state.agents.by_id.get(&source_agent_id) {
-        source.send_message(Message::Command {
+    if let Some(source) = state.agents.by_id.get(&source_agent_id)
+        && source.send_message(Message::Command {
             agent_id: source_agent_id,
             request_id: source_request_id,
             command,
-        });
+        })
+    {
+        return;
     }
+    let message = "Source agent control queue is unavailable".to_string();
+    let _ = abort_copy_upload(state, public_request_id, message.clone());
+    progress::mark_transfer_errored(state, public_request_id, message);
+    cleanup_copy_tracking(state, public_request_id);
 }
 
 /// Forwards one remote-copy source chunk to the destination agent incrementally.

@@ -38,6 +38,19 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             let _ = request.reply.send(Err(error));
             return;
         }
+        if request.reply.is_closed() {
+            return;
+        }
+        if !agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id.clone(),
+            request_id,
+            command: request.command,
+        }) {
+            let _ = request.reply.send(Err(RouterError::ControlQueueFull {
+                agent_id: request.agent_id.to_string(),
+            }));
+            return;
+        }
         progress::record_upload_start(
             state,
             UploadStartContext {
@@ -50,8 +63,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
             },
         );
 
-        // Caller already abandoned the RPC before learning the id; tear down
-        // locally without messaging the agent so no temp-file worker is left.
+        // Caller abandoned the RPC after admission; tear down local state and
+        // use the reserved lane so the agent does not retain a temp-file worker.
         if request.reply.send(Ok(request_id)).is_err() {
             if state.streams.uploads.remove(&request_id).is_some() {
                 progress::mark_transfer_errored(
@@ -61,14 +74,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartUploadRequest) {
                 );
                 ui::notify_transfer_refresh(state);
             }
-            return;
+            let _ = agent_connection.send_priority_message(Message::CancelTransfer { request_id });
         }
-
-        agent_connection.send_message(Message::Command {
-            agent_id: request.agent_id,
-            request_id,
-            command: request.command,
-        });
     } else {
         log!(
             Level::Warning,
@@ -295,7 +302,7 @@ pub(crate) fn finish_routed_chunk(
                 route.agent_id,
                 route.request_id
             );
-            agent_connection.send_message(Message::CancelTransfer {
+            agent_connection.send_priority_message(Message::CancelTransfer {
                 request_id: route.request_id,
             });
         }

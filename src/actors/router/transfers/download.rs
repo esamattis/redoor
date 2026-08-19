@@ -71,6 +71,16 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             let _ = request.reply.send(Err(error));
             return;
         }
+        if !agent_connection.send_message(Message::Command {
+            agent_id: request.agent_id.clone(),
+            request_id,
+            command: request.command,
+        }) {
+            let _ = request.reply.send(Err(RouterError::ControlQueueFull {
+                agent_id: request.agent_id.to_string(),
+            }));
+            return;
+        }
         progress::record_download_start(
             state,
             DownloadStartContext {
@@ -84,11 +94,6 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             },
         );
 
-        agent_connection.send_message(Message::Command {
-            agent_id: request.agent_id,
-            request_id,
-            command: request.command,
-        });
         let _ = request.reply.send(Ok(request_id));
     } else {
         log!(
@@ -246,7 +251,7 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                     route.agent_id,
                     route.request_id
                 );
-                agent_connection.send_message(Message::CancelTransfer {
+                agent_connection.send_priority_message(Message::CancelTransfer {
                     request_id: route.request_id,
                 });
             }

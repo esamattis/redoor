@@ -30,8 +30,10 @@ pub struct AgentConnection {
     pub agent_name: String,
     /// Unique websocket session identifier for logging.
     pub socket_id: SocketId,
-    /// Unbounded control-message lane for websocket text frames.
-    pub outgoing_text: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    /// Bounded lane for commands and session bootstraps subject to admission control.
+    pub outgoing_commands: tokio::sync::mpsc::Sender<WsMessage>,
+    /// Reserved lane for cancellation and connection lifecycle frames.
+    pub outgoing_priority: tokio::sync::mpsc::Sender<WsMessage>,
     /// Secret accepted only while this control connection remains authoritative.
     pub transfer_token: String,
     /// Payload transport may be absent briefly while the agent reconnects it.

@@ -87,7 +87,11 @@ must use an awaited or reserved reliable path rather than best-effort
 
 ### High 2: The control-socket output queue and timed-out command state are unbounded
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Each agent session now has a bounded ordinary control lane with fail-fast command admission and a separately bounded, writer-prioritized lane for transfer bootstrap, cancellation, and lifecycle errors. Saturated REST commands return an explicit service-unavailable result, and transfer/copy starts roll back instead of retaining work that was never queued. The router rejects already-closed command replies, prunes closed pending replies on every event, and requests a prompt prune after REST timeout. The agent also caps live non-upload command tasks per control generation while processing cancellation and socket lifecycle messages outside that limit. Regression tests cover queue saturation, priority cancellation admission, pending-reply pruning, and bounded agent task admission without sleeps.
 
 **References:**
 

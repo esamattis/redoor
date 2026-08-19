@@ -80,7 +80,12 @@ impl RouterHandle {
         match tokio::time::timeout(Duration::from_millis(timeout_ms), reply_rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => Err(RouterCallError::RouterStopped),
-            Err(error) => Err(RouterCallError::TimedOut(error)),
+            Err(error) => {
+                // The router may already own command reply state. A best-effort
+                // follow-up makes cleanup prompt; every router event also prunes.
+                let _ = self.send(RouterMsg::PruneClosedPendingRest);
+                Err(RouterCallError::TimedOut(error))
+            }
         }
     }
 }
@@ -123,6 +128,9 @@ impl CopyRegistry {
 impl RouterState {
     /// Routes a final agent command response to one-shot, copy, or upload handlers.
     fn route_response(&mut self, response: RouteResponse) {
+        self.pending_rest
+            .by_request_id
+            .retain(|_, (reply, _)| !reply.is_closed());
         if let Some((reply, stored_agent_id)) =
             self.pending_rest.by_request_id.remove(&response.request_id)
         {
@@ -180,6 +188,9 @@ impl RouterState {
         log!(Level::Info, "Router task started");
 
         while let Some(message) = receiver.recv().await {
+            self.pending_rest
+                .by_request_id
+                .retain(|_, (reply, _)| !reply.is_closed());
             match message {
                 RouterMsg::RegisterAgent(request) => {
                     agents::register(&mut self, request).await;
@@ -265,6 +276,7 @@ impl RouterState {
                 RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
                     ui::unregister_subscriber(&mut self, &subscriber_id);
                 }
+                RouterMsg::PruneClosedPendingRest => {}
                 RouterMsg::ExecuteCommandRest(request) => {
                     agents::execute_command_rest(&mut self, request);
                 }
@@ -350,7 +362,8 @@ mod tests {
 
         let (router_ref, router_task) = spawn_router(TerminalRegistry::new(), LogRegistry::new());
 
-        let (text_tx, mut text_rx) = mpsc::unbounded_channel::<WsMessage>();
+        let (text_tx, mut text_rx) = mpsc::channel::<WsMessage>(64);
+        let (priority_tx, mut priority_rx) = mpsc::channel::<WsMessage>(16);
         let (binary_tx, mut binary_rx) = mpsc::channel::<WsMessage>(1);
 
         router_ref
@@ -358,7 +371,8 @@ mod tests {
                 agent_id: AgentId::from("agent-1"),
                 agent_name: "agent-1".to_string(),
                 socket_id: SocketId::from(Uuid::from_u128(1)),
-                outgoing_text: text_tx,
+                outgoing_commands: text_tx,
+                outgoing_priority: priority_tx,
                 os: "macos".to_string(),
                 arch: "arm64".to_string(),
                 hostname: "host".to_string(),
@@ -371,7 +385,7 @@ mod tests {
             }))
             .expect("agent registered");
 
-        let transfer_token = match text_rx.recv().await.expect("transfer bootstrap queued") {
+        let transfer_token = match priority_rx.recv().await.expect("transfer bootstrap queued") {
             WsMessage::Text(text) => match serde_json::from_str::<crate::types::Message>(&text)
                 .expect("transfer bootstrap is valid control JSON")
             {

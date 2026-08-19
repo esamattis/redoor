@@ -13,6 +13,19 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
+/// Caps independently executing non-upload commands for one control generation.
+const MAX_CONCURRENT_COMMANDS: usize = 32;
+
+/// Reaps completed workers and reports whether another bounded command can start.
+fn command_task_capacity_available(command_tasks: &mut JoinSet<()>, is_upload: bool) -> bool {
+    while let Some(result) = command_tasks.try_join_next() {
+        if let Err(error) = result {
+            log!(Level::Warning, "Agent command task failed: {error}");
+        }
+    }
+    is_upload || command_tasks.len() < MAX_CONCURRENT_COMMANDS
+}
+
 /// Bundles one command's owned connection resources so task spawning stays explicit.
 struct CommandMessageContext {
     /// Prioritized control lane used for command responses and progress updates.
@@ -303,6 +316,10 @@ impl AgentActor {
                         request_id,
                         command.summary()
                     );
+                    let is_upload = matches!(
+                        command,
+                        Command::RawUpload { .. } | Command::TarUpload { .. }
+                    );
                     let requires_transfer = matches!(
                         command,
                         Command::RawUpload { .. }
@@ -310,11 +327,6 @@ impl AgentActor {
                             | Command::RawDownload { .. }
                             | Command::TarDownload { .. }
                     );
-                    let file_search_cancel = if matches!(&command, Command::FileSearch { .. }) {
-                        Some(state.begin_file_search())
-                    } else {
-                        None
-                    };
                     let transfer_sender = state.ws_transfer_tx.as_ref().cloned();
                     if requires_transfer && transfer_sender.is_none() {
                         let result = CommandResult::error(
@@ -333,6 +345,21 @@ impl AgentActor {
                         return;
                     }
 
+                    if !command_task_capacity_available(command_tasks, is_upload) {
+                        let result = CommandResult::error(
+                            CommandErrorKind::ServiceUnavailable,
+                            "Agent command execution limit reached",
+                        );
+                        self.send_command_response(write_text, &state.agent_id, request_id, result)
+                            .await;
+                        return;
+                    }
+                    let file_search_cancel = if matches!(&command, Command::FileSearch { .. }) {
+                        Some(state.begin_file_search())
+                    } else {
+                        None
+                    };
+
                     if !self
                         .start_upload_session(
                             state.active_uploads.clone(),
@@ -347,11 +374,6 @@ impl AgentActor {
                             Some(sender) => sender,
                             None => write_text.clone(),
                         };
-                        while let Some(result) = command_tasks.try_join_next() {
-                            if let Err(error) = result {
-                                log!(Level::Warning, "Agent command task failed: {error}");
-                            }
-                        }
                         let write_text = write_text.clone();
                         let agent_id = state.agent_id.clone();
                         let active_downloads = state.active_downloads.clone();
@@ -604,6 +626,28 @@ impl AgentActor {
         if let Ok(json) = serde_json::to_string(&message) {
             let _ = write.send(WsMessage::text(json)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies stalled command workers cannot create an unbounded task set.
+    #[tokio::test]
+    async fn non_upload_command_admission_is_bounded() {
+        let mut command_tasks = JoinSet::new();
+        for _ in 0..MAX_CONCURRENT_COMMANDS {
+            command_tasks.spawn(std::future::pending());
+        }
+
+        // A full set must reject ordinary commands without waiting and blocking cancel handling.
+        assert!(!command_task_capacity_available(&mut command_tasks, false));
+        // Upload setup is managed by its bounded transfer worker path rather than this task set.
+        assert!(command_task_capacity_available(&mut command_tasks, true));
+
+        command_tasks.abort_all();
+        while command_tasks.join_next().await.is_some() {}
     }
 }
 

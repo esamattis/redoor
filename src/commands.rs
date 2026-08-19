@@ -467,6 +467,7 @@ pub enum CommandErrorKind {
     IsDirectory,
     AlreadyExists,
     InvalidInput,
+    ServiceUnavailable,
     Internal,
 }
 
