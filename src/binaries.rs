@@ -8,6 +8,57 @@ use tokio::{io::AsyncWriteExt, process::Command};
 /// Serializes cache misses so one process downloads each missing artifact only once.
 static BINARY_PROVISION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Owns one unique provisioning directory across errors and future cancellation.
+struct ProvisionWorkDir {
+    path: Option<PathBuf>,
+}
+
+impl ProvisionWorkDir {
+    /// Begins ownership before the directory can be created.
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    /// Reports normal-path cleanup errors while leaving drop cleanup armed during this await.
+    async fn cleanup(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => {
+                self.path = None;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.path = None;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for ProvisionWorkDir {
+    /// Retries removal asynchronously because REST and watchdog callers may drop provisioning.
+    fn drop(&mut self) {
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Err(error) = tokio::fs::remove_dir_all(&path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                log!(
+                    Level::Warning,
+                    "Canceled binary provisioning cleanup failed: path={}, error={}",
+                    path.display(),
+                    error
+                );
+            }
+        });
+    }
+}
+
 /// Stable failure categories used by the REST endpoint to choose an operator-facing status.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UpgradeBinaryError {
@@ -151,6 +202,7 @@ async fn download_binary(
     ));
     let tar_path = work_dir.join("archive.tar.gz");
     let extract_dir = work_dir.join("extract");
+    let mut work_dir_guard = ProvisionWorkDir::new(work_dir.clone());
     log!(
         Level::Info,
         "Redoor binary cache miss; downloading release: version={version}, os={os}, arch={arch}, url={url}, cache_path={}",
@@ -187,11 +239,13 @@ async fn download_binary(
             .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
         drop(file);
 
-        let status = Command::new("tar")
-            .arg("-xzf")
+        let mut tar = Command::new("tar");
+        tar.arg("-xzf")
             .arg(&tar_path)
             .arg("-C")
             .arg(&extract_dir)
+            .kill_on_drop(true);
+        let status = tar
             .status()
             .await
             .map_err(|error| UpgradeBinaryError::Provision(error.to_string()))?;
@@ -221,10 +275,7 @@ async fn download_binary(
         Ok(())
     }
     .await;
-    let cleanup = match tokio::fs::remove_dir_all(&work_dir).await {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    };
+    let cleanup = work_dir_guard.cleanup().await;
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(error)) => Err(UpgradeBinaryError::Provision(format!(
@@ -258,6 +309,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tokio::io::AsyncReadExt;
+    use tokio::sync::Notify;
 
     /// State for a local server that streams one archive and records cache misses.
     #[derive(Clone)]
@@ -308,6 +360,45 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{address}/artifact"), requests, task)
+    }
+
+    /// Holds an artifact response open after signaling that provisioning reached the download.
+    async fn hanging_archive_handler(State(started): State<Arc<Notify>>) -> Body {
+        started.notify_one();
+        Body::from_stream(async_stream::stream! {
+            // One chunk ensures the response body is actively being streamed when canceled.
+            yield Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"partial archive"));
+            std::future::pending::<()>().await;
+        })
+    }
+
+    /// Starts an artifact host that deterministically holds provisioning in its streaming phase.
+    async fn start_hanging_archive_server() -> (String, Arc<Notify>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let started = Arc::new(Notify::new());
+        let app = Router::new()
+            .route("/artifact", get(hanging_archive_handler))
+            .with_state(started.clone());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/artifact"), started, task)
+    }
+
+    /// Waits cooperatively for a cache directory to contain no provisioning artifacts.
+    async fn wait_for_empty_directory(path: &Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let mut entries = tokio::fs::read_dir(path).await.unwrap();
+                if entries.next_entry().await.unwrap().is_none() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("provisioning artifacts should be removed");
     }
 
     /// Creates a small executable archive through Tokio's process API.
@@ -458,6 +549,46 @@ mod tests {
         let mut entries = tokio::fs::read_dir(&cache).await.unwrap();
         // Attempt directories are always removed, including after tar failures.
         assert!(entries.next_entry().await.unwrap().is_none());
+
+        server.abort();
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    /// Canceling a streaming download must not strand its unique provisioning directory.
+    #[tokio::test]
+    async fn canceled_provisioning_cleans_temporary_state() {
+        crate::logging::init(None).await.unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "redoor-binary-cache-canceled-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        let cache = root.join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let (url, started, server) = start_hanging_archive_server().await;
+        let provision_cache = cache.clone();
+        let provision = tokio::spawn(async move {
+            ensure_local_binary_in_from_url("1.2.3", "linux", "x86_64", &provision_cache, &url)
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .expect("artifact request should start");
+        provision.abort();
+        // Awaiting the abort proves the provisioning future and its ownership guard were dropped.
+        assert!(provision.await.unwrap_err().is_cancelled());
+        wait_for_empty_directory(&cache).await;
+        // An empty cache proves cancellation removed the hidden work directory before retry.
+        assert!(
+            tokio::fs::read_dir(&cache)
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         server.abort();
         let _ = tokio::fs::remove_dir_all(root).await;

@@ -260,6 +260,7 @@ impl SshHost {
             ssh_command_argv_debug(&ssh)
         );
 
+        ssh.kill_on_drop(true);
         ssh.status().await
     }
 

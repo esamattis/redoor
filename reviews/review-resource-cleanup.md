@@ -120,7 +120,11 @@ The method was to inventory task/process/channel/temp-resource creation, then tr
 
 #### H5. Canceled provisioning can orphan child processes and temporary artifacts
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Provisioning SSH commands and local tar extraction now set `kill_on_drop(true)`, so cancellation cannot detach their local child processes. Unique local provisioning directories are owned by a guard that retries asynchronous removal from `Drop`, including cancellation during ordinary cleanup. Remote sibling uploads are likewise guard-owned: normal failures await cleanup, successful rename disarms ownership, and cancellation schedules a bounded best-effort SSH `rm -f` whose own child is kill-on-drop. A deterministic streaming-server regression test cancels local release provisioning after the request starts and verifies its work directory is removed without sleeps.
 
 **References:**
 

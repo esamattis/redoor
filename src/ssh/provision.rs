@@ -4,8 +4,96 @@ use std::path::{Path, PathBuf};
 
 use redoor::{Level, log};
 use tokio::io::AsyncReadExt;
+use tokio::time::{Duration, timeout};
 
 use super::transport::{SshHost, SshRunOptions};
+
+/// Bounds cancellation-triggered SSH cleanup so a second unreachable host cannot leak a task.
+const REMOTE_TEMP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Owns a remote upload sibling until it is atomically renamed into place.
+struct RemoteTempGuard {
+    host: SshHost,
+    path: Option<String>,
+}
+
+impl RemoteTempGuard {
+    /// Starts guarding immediately after the path can first be created remotely.
+    fn new(host: &SshHost, path: String) -> Self {
+        Self {
+            host: host.clone(),
+            path: Some(path),
+        }
+    }
+
+    /// Removes the sibling on ordinary errors while retaining drop cleanup if this await is canceled.
+    async fn cleanup(&mut self) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        if remove_remote_temp(&self.host, path).await {
+            self.path = None;
+        }
+    }
+
+    /// Transfers ownership to the final binary after a successful remote rename.
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for RemoteTempGuard {
+    /// Schedules bounded cleanup because provisioning futures are intentionally cancellable.
+    fn drop(&mut self) {
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        let host = self.host.clone();
+        tokio::spawn(async move {
+            remove_remote_temp(&host, &path).await;
+        });
+    }
+}
+
+/// Best-effort removal is bounded and its SSH child is kill-on-drop through [`SshHost::run`].
+async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
+    let options = SshRunOptions::default().compressed();
+    let command = format!("rm -f {path}");
+    match timeout(
+        REMOTE_TEMP_CLEANUP_TIMEOUT,
+        host.run(&command, &[], &options),
+    )
+    .await
+    {
+        Ok(Ok(status)) if status.success() => true,
+        Ok(Ok(status)) => {
+            log!(
+                Level::Warning,
+                "Remote provisioning temp cleanup failed: path={}, status={}",
+                path,
+                status.code().unwrap_or(-1)
+            );
+            false
+        }
+        Ok(Err(error)) => {
+            log!(
+                Level::Warning,
+                "Remote provisioning temp cleanup failed: path={}, error={}",
+                path,
+                error
+            );
+            false
+        }
+        Err(_) => {
+            log!(
+                Level::Warning,
+                "Remote provisioning temp cleanup timed out: path={}",
+                path
+            );
+            false
+        }
+    }
+}
 
 /// Default remote redoor binary path when the user does not override it
 /// via `--remote-bin` or `REDOOR_REMOTE_BIN`.
@@ -439,6 +527,7 @@ async fn upload_binary(
             .unwrap_or(0)
     );
     let remote_tmp = remote_upload_tmp_path(remote_bin, &unique);
+    let mut remote_tmp_guard = RemoteTempGuard::new(host, remote_tmp.clone());
 
     log!(
         Level::Info,
@@ -462,10 +551,7 @@ async fn upload_binary(
     }
 
     if let Err(error) = host.upload_via_cat(local_path, &remote_tmp).await {
-        // Drop a partial temp so failed prepares do not litter the install dir.
-        let _ = host
-            .run(&format!("rm -f {}", remote_tmp), &[], &options)
-            .await;
+        remote_tmp_guard.cleanup().await;
         return Err(format!(
             "failed to upload binary to temporary remote path '{}': {}",
             remote_tmp, error
@@ -479,9 +565,7 @@ async fn upload_binary(
     let chmod_cmd = format!("chmod +x {}", remote_tmp);
     let chmod_status = host.run(&chmod_cmd, &[], &options).await?;
     if !chmod_status.success() {
-        let _ = host
-            .run(&format!("rm -f {}", remote_tmp), &[], &options)
-            .await;
+        remote_tmp_guard.cleanup().await;
         return Err(format!(
             "remote chmod +x '{}' failed with status {}",
             remote_tmp,
@@ -494,9 +578,7 @@ async fn upload_binary(
     let mv_cmd = format!("mv -f {} {}", remote_tmp, remote_bin);
     let mv_status = host.run(&mv_cmd, &[], &options).await?;
     if !mv_status.success() {
-        let _ = host
-            .run(&format!("rm -f {}", remote_tmp), &[], &options)
-            .await;
+        remote_tmp_guard.cleanup().await;
         return Err(format!(
             "remote mv -f '{}' -> '{}' failed with status {}",
             remote_tmp,
@@ -505,6 +587,7 @@ async fn upload_binary(
         )
         .into());
     }
+    remote_tmp_guard.disarm();
 
     log!(
         Level::Info,
