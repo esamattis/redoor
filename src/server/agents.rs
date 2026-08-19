@@ -22,8 +22,7 @@ mod open_path;
 mod upgrade;
 
 pub(crate) use files::{
-    cat_agent_handler, echo_agent_handler, file_search_agent_handler, ls_agent_handler,
-    metadata_agent_handler,
+    echo_agent_handler, file_search_agent_handler, ls_agent_handler, metadata_agent_handler,
 };
 pub(crate) use open_path::open_path_agent_handler;
 pub(crate) use upgrade::upgrade_agent_handler;

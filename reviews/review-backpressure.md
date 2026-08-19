@@ -122,39 +122,7 @@ oneshot sender `is_closed()`. Bound concurrent agent command tasks with a
 semaphore, while leaving transfer cancellation and socket lifecycle handling
 outside that semaphore.
 
-### High 3: `cat` eagerly buffers arbitrary files through the control protocol
-
-**Classification:** Confirmed bug.
-
-**References:**
-
-- `src/server/agents/files.rs:172-219`
-- `src/commands/handler.rs:281-286`
-- `src/agent/protocol.rs:227-244`
-- `src/agent/actor.rs:383-411`
-
-**Failure scenario and impact:** An authenticated caller can invoke the `cat`
-REST endpoint for an arbitrary-size file. The agent reads the whole file into a
-`String`, wraps it in `CommandResult`, serializes it into another JSON string,
-queues it as one control WebSocket message, parses it on the server, and then
-serializes it again as a JSON HTTP response. A large file therefore causes
-multiple full-size allocations on both processes and can exceed WebSocket
-message limits, disconnecting the control socket and disrupting unrelated
-commands.
-
-**Why current behavior is insufficient:** The raw endpoint has a bounded
-streaming implementation, but `cat` is another file-download path with no size
-gate and bypasses it. The UI's editable-file metadata limit does not protect the
-public REST endpoint itself. This conflicts directly with the repository's
-memory-constrained streaming requirement.
-
-**Minimal fix:** Enforce the same small explicit maximum used for editable text
-before reading, returning `413 Payload Too Large` when exceeded. Preferably
-retire file content from the command/result protocol and have clients consume
-the existing raw streaming endpoint; retain `cat` only as a size-bounded
-convenience API.
-
-### High 4: The logger command queue can grow without bound behind slow output
+### High 3: The logger command queue can grow without bound behind slow output
 
 **Classification:** Confirmed bug.
 
@@ -184,7 +152,7 @@ reserve capacity or use a small separate channel for subscription commands.
 Emit one synthetic dropped-record notice when capacity recovers. Avoid blocking
 stdout writes on a Tokio worker if stdout can be redirected to a slow pipe.
 
-### High 5: Tar upload backpressure blocks a Tokio runtime worker and delays cancellation
+### High 4: Tar upload backpressure blocks a Tokio runtime worker and delays cancellation
 
 **Classification:** Confirmed bug.
 
@@ -418,27 +386,24 @@ unbounded browser buffering.
    commands than its configured capacity, and assert bounded RSS plus explicit
    overload responses. Verify pending reply count returns to zero after caller
    timeouts.
-4. Test `cat` at the allowed limit and one byte above it. Monitor agent/server
-   RSS and verify oversized files fail before full read or JSON serialization;
-   keep the control socket usable afterward.
-5. Run the logger against a deliberately blocked file/stdout sink while
+4. Run the logger against a deliberately blocked file/stdout sink while
    producing a large burst. Assert queue memory is bounded, dropped records are
    counted, and a subscription command is not starved.
-6. Add a tar upload test with an unpack consumer that never drains. Cancel it
+5. Add a tar upload test with an unpack consumer that never drains. Cancel it
    and assert the async runtime remains responsive, the blocking reader exits,
    and the temp directory is removed without waiting for queue capacity.
-7. Start two same-agent downloads and two same-agent uploads. Stall one consumer
+6. Start two same-agent downloads and two same-agent uploads. Stall one consumer
    in each direction and assert the other transfer either continues under the
    new fairness protocol or is explicitly documented/rejected rather than
    silently blocked.
-8. Start transfers up to the new admission limit, verify the next request fails
+7. Start transfers up to the new admission limit, verify the next request fails
    predictably, and measure aggregate queue memory. Complete thousands of small
    transfers and assert progress history remains at its configured cap while
    active rows are never evicted.
-9. Create a very wide directory under a memory limit and stream it as tar. Track
+8. Create a very wide directory under a memory limit and stream it as tar. Track
    peak RSS and first-byte latency; assert memory stays near the fixed pipeline
    budget rather than growing with entry count.
-10. In Playwright, throttle a terminal WebSocket, paste beyond the high-water
+9. In Playwright, throttle a terminal WebSocket, paste beyond the high-water
     mark, and assert `bufferedAmount` remains bounded and the UI reports the
     pause/closure. Add an analogous slow UI-refresh socket test for event
     coalescing.

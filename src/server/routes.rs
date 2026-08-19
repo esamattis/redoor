@@ -13,10 +13,10 @@ use super::{
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agent_transfers::agent_transfer_websocket_handler,
     agents::{
-        cat_agent_handler, echo_agent_handler, file_search_agent_handler,
-        get_agent_details_handler, list_agents_handler, ls_agent_handler, metadata_agent_handler,
-        open_path_agent_handler, restart_agent_handler, server_info_handler,
-        shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
+        echo_agent_handler, file_search_agent_handler, get_agent_details_handler,
+        list_agents_handler, ls_agent_handler, metadata_agent_handler, open_path_agent_handler,
+        restart_agent_handler, server_info_handler, shutdown_agent_handler, start_agent_handler,
+        upgrade_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
     diffs::diff_files_handler,
@@ -123,8 +123,6 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}/search/{*path}",
             get(file_search_agent_handler),
         )
-        .route("/api/v1/agents/{agent}/cat", get(cat_agent_handler))
-        .route("/api/v1/agents/{agent}/cat/{*path}", get(cat_agent_handler))
         .route(
             "/api/v1/agents/{agent}/metadata",
             get(metadata_agent_handler),

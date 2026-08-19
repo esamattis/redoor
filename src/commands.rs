@@ -145,9 +145,6 @@ pub enum Command {
         #[serde(default = "default_true")]
         respect_gitignore: bool,
     },
-    Cat {
-        path: String,
-    },
     RawDownload {
         path: String,
         range_start: Option<u64>,
@@ -264,7 +261,6 @@ impl Command {
                     "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
                 )
             }
-            Self::Cat { path } => format!("Cat path={path}"),
             Self::RawDownload {
                 path,
                 range_start,
@@ -370,12 +366,6 @@ pub struct FileSearchResponse {
     pub timed_out: bool,
     #[ts(type = "number")]
     pub duration_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CatResult {
-    pub content: String,
-    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -503,7 +493,6 @@ pub enum CommandResult {
     LsDirectory(LsDirectoryResult),
     LsFile(LsFileResult),
     FileSearch(FileSearchResponse),
-    Cat(CatResult),
     RawDownload {
         path: String,
     },
@@ -744,13 +733,6 @@ pub struct LsFileResponse {
     pub uid: u32,
     pub gid: u32,
     pub permissions: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct CatResponse {
-    pub content: String,
-    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1028,7 +1010,6 @@ impl CommandResult {
                 result.results.len(),
                 result.timed_out
             ),
-            Self::Cat(_) => "ok Cat".to_string(),
             Self::RawDownload { path } => format!("ok RawDownload path={path}"),
             Self::TarDownload { path } => format!("ok TarDownload path={path}"),
             Self::RawUpload => "ok RawUpload".to_string(),
@@ -1120,42 +1101,6 @@ mod tests {
                 assert_eq!(kind, CommandErrorKind::NotFound);
                 // Naming the attempted path makes remote filesystem failures actionable.
                 assert!(message.contains(path), "ls error should include its path");
-            }
-            _ => panic!("Expected Error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cat_command() {
-        let handler = CommandHandler::new();
-        let result = handler
-            .execute(Command::Cat {
-                path: "Cargo.toml".to_string(),
-            })
-            .await;
-
-        match result {
-            CommandResult::Cat(cat_result) => {
-                assert!(cat_result.content.contains("[package]"));
-            }
-            _ => panic!("Expected CatResult"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cat_nonexistent_file() {
-        let handler = CommandHandler::new();
-        let result = handler
-            .execute(Command::Cat {
-                path: "nonexistent_file.txt".to_string(),
-            })
-            .await;
-
-        match result {
-            CommandResult::Error { kind, message } => {
-                // The typed kind keeps missing-file failures stable across OS error text changes.
-                assert_eq!(kind, CommandErrorKind::NotFound);
-                assert!(message.contains("Failed to read file"));
             }
             _ => panic!("Expected Error"),
         }

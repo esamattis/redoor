@@ -1,10 +1,10 @@
 #[cfg(not(target_os = "android"))]
 use super::MountPoint;
 use super::{
-    AgentDetailsResponse, AgentId, AgentInfoResult, CatResult, Command, CommandErrorKind,
-    CommandResult, EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult,
-    MoveMetadataResult, MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path,
-    current_binary_identity, current_exe_path, external_ip, file_search, metadata,
+    AgentDetailsResponse, AgentId, AgentInfoResult, Command, CommandErrorKind, CommandResult,
+    EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult, MoveMetadataResult,
+    MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity,
+    current_exe_path, external_ip, file_search, metadata,
 };
 use tokio::sync::watch;
 
@@ -58,7 +58,6 @@ impl CommandHandler {
                 )
                 .await
             }
-            Command::Cat { path } => self.cat(path).await,
             Command::RawDownload {
                 path,
                 range_start,
@@ -275,14 +274,6 @@ impl CommandHandler {
             Err(error) => {
                 CommandResult::io_error(&format!("Failed to get metadata for path {path:?}"), error)
             }
-        }
-    }
-
-    /// Reads text content for commands whose transport expects a complete string.
-    async fn cat(&self, path: String) -> CommandResult {
-        match tokio::fs::read_to_string(&path).await {
-            Ok(content) => CommandResult::Cat(CatResult { content, path }),
-            Err(error) => CommandResult::io_error("Failed to read file", error),
         }
     }
 

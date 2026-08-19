@@ -39,24 +39,22 @@ The main architectural weakness is that these strong local mechanisms are not co
 
 ## Findings
 
-### High 1: The Control Plane Still Carries Unbounded File And Directory Payloads
+### High 1: The Control Plane Still Carries Unbounded Directory Payloads
 
 **Classification:** Confirmed correctness defect.
 
 **Evidence:**
 
-- `CommandHandler::cat` reads an arbitrary file completely into a `String` (`src/commands/handler.rs:281-286`).
-- The public `cat` REST endpoint dispatches that command without a metadata or size gate (`src/server/agents/files.rs:172-218`).
 - `ls` accumulates every directory entry into a `Vec` and returns it as one command response (`src/commands/handler.rs:173-220`, `src/commands/handler.rs:233-241`).
 - Those results are serialized as one control `CommandResponse` (`src/agent/protocol.rs:227-244`).
 - The same control plane also lets the server queue outbound commands in an unbounded channel (`src/actors/router/state.rs:24-38`, `src/actors/session.rs:47-49`, `src/actors/session.rs:281-285`), so neither direction has a protocol-wide small-message invariant.
 - By contrast, the repository's intended large-payload boundary is a 64 KiB framed, bounded transfer lane (`src/streaming.rs:6-10`, `src/transfer_protocol.rs:15-16`).
 
-**Consequence:** A large `GET .../cat/...` or a directory with a very large entry count can allocate the complete result on the agent, allocate it again during JSON serialization and WebSocket handling, and occupy the control socket with one large frame. Independently, requests headed toward a slow agent can accumulate in the unbounded server-side control queue. This violates the repository's memory-restraint and control-responsiveness architecture. It can cause process memory exhaustion, control socket failure due to message limits, or starvation of lifecycle traffic.
+**Consequence:** A directory with a very large entry count can allocate the complete result on the agent, allocate it again during JSON serialization and WebSocket handling, and occupy the control socket with one large frame. Independently, requests headed toward a slow agent can accumulate in the unbounded server-side control queue. This violates the repository's memory-restraint and control-responsiveness architecture. It can cause process memory exhaustion, control socket failure due to message limits, or starvation of lifecycle traffic.
 
-**Missing invariant or boundary:** The control protocol lacks a mechanically enforced rule that every control message has a small bounded size. File bytes and unbounded collections are not confined to the transfer plane.
+**Missing invariant or boundary:** The control protocol lacks a mechanically enforced rule that every control message has a small bounded size. Unbounded collections are not confined to a bounded or paginated response model.
 
-**Incremental fix:** Deprecate or remove the unused public `cat` endpoint and route all file content through `RawDownload`. If a complete text command is still needed, define a specifically bounded command (for example, `ReadEditableText`) that checks metadata before reading and has the same 2 MiB ceiling already used by editability (`src/commands/metadata.rs:5-6`, `src/commands/metadata.rs:53-62`). Add pagination or an explicit maximum plus continuation token to `Ls`; do not return an unbounded directory in one control response. Finally, set an explicit small maximum control WebSocket message size on both peers so violations fail at the boundary rather than after large allocations.
+**Incremental fix:** Add pagination or an explicit maximum plus continuation token to `Ls`; do not return an unbounded directory in one control response. Finally, set an explicit small maximum control WebSocket message size on both peers so violations fail at the boundary rather than after large allocations.
 
 ### High 2: A Control Socket Is Not Bound To One Registered Agent Identity
 

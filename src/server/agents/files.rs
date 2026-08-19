@@ -7,8 +7,8 @@ use axum::{
 use redoor::{
     actors,
     commands::{
-        CatResponse, Command, CommandResult, EchoRequest, EchoResponse, ErrorResponse,
-        LsDirectoryResponse, LsFileResponse,
+        Command, CommandResult, EchoRequest, EchoResponse, ErrorResponse, LsDirectoryResponse,
+        LsFileResponse,
     },
     types::AgentId,
 };
@@ -166,56 +166,6 @@ pub(crate) async fn file_search_agent_handler(
             }),
         )
             .into_response(),
-    }
-}
-
-/// Route: `GET /api/v1/agents/{agent}/cat/{*path}`
-pub(crate) async fn cat_agent_handler(
-    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
-    AxumState(state): AxumState<ServerState>,
-) -> impl IntoResponse {
-    let path = absolute_path_from_url(path.unwrap_or_default());
-    let agent_id = AgentId::from(agent.clone());
-    match state
-        .router_ref
-        .request(30000, |reply| {
-            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command: Command::Cat { path },
-                reply,
-            })
-        })
-        .await
-    {
-        Ok(result) => match result {
-            CommandResult::Cat(cat_result) => (
-                StatusCode::OK,
-                Json(CatResponse {
-                    content: cat_result.content,
-                    path: cat_result.path,
-                }),
-            )
-                .into_response(),
-            CommandResult::Error { kind, message } => {
-                let status = command_error_status(&kind);
-                (status, Json(ErrorResponse { error: message })).into_response()
-            }
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Unexpected result type".to_string(),
-                }),
-            )
-                .into_response(),
-        },
-        Err(error) => {
-            let error_msg = format!("Failed to execute cat command: {:?}", error);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: error_msg }),
-            )
-                .into_response()
-        }
     }
 }
 
