@@ -1,13 +1,14 @@
 use axum::{
     Router, middleware,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use tower_http::cors::{Any, CorsLayer};
 
 use super::{
     agent_configuration::{
-        create_ssh_agent_handler, delete_ssh_agent_handler, get_ssh_agent_configuration_handler,
-        update_ssh_agent_handler,
+        create_local_agent_handler, create_ssh_agent_handler, delete_managed_agent_handler,
+        get_local_agent_configuration_handler, get_ssh_agent_configuration_handler,
+        update_local_agent_handler, update_ssh_agent_handler,
     },
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agent_transfers::agent_transfer_websocket_handler,
@@ -79,11 +80,20 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}",
             get(get_agent_details_handler)
                 .put(update_ssh_agent_handler)
-                .delete(delete_ssh_agent_handler),
+                .delete(delete_managed_agent_handler),
         )
         .route(
             "/api/v1/agents/{agent}/configuration",
             get(get_ssh_agent_configuration_handler),
+        )
+        .route("/api/v1/local-agents", post(create_local_agent_handler))
+        .route(
+            "/api/v1/local-agents/{agent}",
+            put(update_local_agent_handler),
+        )
+        .route(
+            "/api/v1/local-agents/{agent}/configuration",
+            get(get_local_agent_configuration_handler),
         )
         .route("/api/v1/agents/{agent}/start", post(start_agent_handler))
         .route(

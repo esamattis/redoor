@@ -13,6 +13,8 @@ const CREATED_SSH_PASSWORD_AGENT = `playwright-ssh-password-${process.pid}`;
 const CREATED_SSH_MISSING_PASSWORD_AGENT = `playwright-ssh-missing-password-${process.pid}`;
 const CREATED_SSH_MODE_SWITCH_AGENT = `playwright-ssh-mode-switch-${process.pid}`;
 const CREATED_SSH_PASSWORD_CHANGE_AGENT = `playwright-ssh-password-change-${process.pid}`;
+const CREATED_LOCAL_AGENT = `playwright-local-${process.pid}`;
+const EDITED_LOCAL_AGENT = `playwright-local-edit-${process.pid}`;
 const EDITED_AGENT = `playwright-edit-${process.pid}`;
 const RUNNING_EDIT_AGENT = `playwright-running-edit-${process.pid}`;
 const SERVER_LOG = path.resolve("log/playwright-redoor.log");
@@ -40,6 +42,8 @@ test.describe.serial("Agent management", () => {
             CREATED_SSH_MISSING_PASSWORD_AGENT,
             CREATED_SSH_MODE_SWITCH_AGENT,
             CREATED_SSH_PASSWORD_CHANGE_AGENT,
+            CREATED_LOCAL_AGENT,
+            EDITED_LOCAL_AGENT,
             EDITED_AGENT,
             `${EDITED_AGENT}-original`,
             RUNNING_EDIT_AGENT,
@@ -100,6 +104,87 @@ test.describe.serial("Agent management", () => {
         await expect(password).toHaveValue("secret-value");
         await page.getByRole("button", { name: "Hide characters" }).click();
         await expect(password).toHaveAttribute("type", "password");
+    });
+
+    test("adds, edits, and deletes a local managed agent", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/new`);
+        await page.getByRole("radio", { name: "Local process" }).check();
+        // Switching kinds must hide SSH-only fields so a local save cannot mix transports.
+        await expect(page.getByLabel("SSH target")).toHaveCount(0);
+        await page.getByLabel("Agent name").fill(CREATED_LOCAL_AGENT);
+        await page.getByLabel("Home directory").fill("/tmp");
+        await page.getByRole("button", { name: "Add managed agent" }).click();
+
+        // Submission dynamically adds and opens the managed tab without a server restart.
+        await expect(
+            page.getByRole("link", {
+                name: new RegExp(`^${CREATED_LOCAL_AGENT}, `),
+            }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(
+            page.getByRole("link", {
+                name: `${CREATED_LOCAL_AGENT}, connected`,
+            }),
+        ).toHaveAttribute("aria-current", "page", { timeout: 30_000 });
+
+        await page
+            .getByRole("link", { name: `Edit ${CREATED_LOCAL_AGENT}` })
+            .click();
+        await expect(
+            page.getByRole("heading", { name: "Edit managed agent" }),
+        ).toBeVisible();
+        // Edit must not offer SSH↔local conversion.
+        await expect(
+            page.getByRole("radio", { name: "Local process" }),
+        ).toHaveCount(0);
+        await expect(page.getByLabel("Agent name")).toHaveValue(
+            CREATED_LOCAL_AGENT,
+        );
+        await page.getByLabel("Agent name").fill(EDITED_LOCAL_AGENT);
+        await page.getByRole("button", { name: "Stop and Save" }).click();
+
+        // Renaming replaces the tab identity and keeps the user on the editable entry.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${EDITED_LOCAL_AGENT}/edit$`),
+        );
+        await expect(
+            page.getByRole("link", { name: `Edit ${EDITED_LOCAL_AGENT}` }),
+        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Delete managed agent" })
+            .click();
+        const confirmation = page.getByRole("dialog", {
+            name: `Delete ${EDITED_LOCAL_AGENT}?`,
+        });
+        await confirmation
+            .getByRole("button", { name: "Delete managed agent" })
+            .click();
+
+        await expect(page).toHaveURL(/\/agents\/?$/);
+        // Permanent deletion must remove the managed tab as well as the TOML entry.
+        await expect(
+            page.getByRole("link", { name: `Edit ${EDITED_LOCAL_AGENT}` }),
+        ).toHaveCount(0);
+    });
+
+    test("opens the edit form from the agents table", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/agents`);
+        const valid = page.getByRole("row", { name: `Agent ${VALID_AGENT}` });
+        await valid
+            .getByRole("button", { name: `Open actions for ${VALID_AGENT}` })
+            .click();
+        await page
+            .getByRole("dialog", { name: `${VALID_AGENT} actions` })
+            .getByRole("link", { name: "Edit" })
+            .click();
+        // Table actions must reach the same edit form as the sidebar pencil.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${VALID_AGENT}/edit$`),
+        );
+        await expect(
+            page.getByRole("heading", { name: "Edit managed agent" }),
+        ).toBeVisible();
+        await expect(page.getByLabel("Agent name")).toHaveValue(VALID_AGENT);
     });
 
     test("edits and deletes a managed SSH entry from its tab", async ({

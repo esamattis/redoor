@@ -607,7 +607,45 @@ pub struct UpdateSshAgentResponse {
     pub agent: AgentInfoResponse,
 }
 
-/// Confirms that a managed SSH entry and its dormant runtime registration were removed.
+/// Describes one local managed agent to persist and register at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateLocalAgentRequest {
+    /// Stable managed-agent name; defaults to the server hostname when omitted.
+    pub name: Option<String>,
+    /// Optional initial browser directory advertised before the first connection.
+    pub home: Option<String>,
+    /// Optional local path receiving the spawned agent process diagnostics.
+    pub log: Option<String>,
+}
+
+/// Returns the newly visible dormant inventory record after local persistence succeeds.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateLocalAgentResponse {
+    pub agent: AgentInfoResponse,
+}
+
+/// Returns the editable TOML fields for one local managed agent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ManagedLocalAgentConfigurationResponse {
+    /// Stable managed-agent name; defaults to the server hostname when omitted.
+    pub name: Option<String>,
+    /// Optional initial browser directory advertised before the first connection.
+    pub home: Option<String>,
+    /// Optional local path receiving the spawned agent process diagnostics.
+    pub log: Option<String>,
+}
+
+/// Returns the replacement dormant inventory record after a local configuration edit.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateLocalAgentResponse {
+    pub agent: AgentInfoResponse,
+}
+
+/// Confirms that a managed entry and its dormant runtime registration were removed.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DeleteManagedAgentResponse {
@@ -633,7 +671,7 @@ pub struct AgentInfoResponse {
     pub name: String,
     pub cwd: Option<String>,
     pub managed: bool,
-    /// Whether this managed entry is SSH-backed and supported by the configuration editor.
+    /// Whether this managed TOML entry can be edited or deleted from the UI.
     pub configuration_editable: bool,
     /// Configured SSH destination so list views can label remotes without a second request.
     pub ssh_target: Option<String>,

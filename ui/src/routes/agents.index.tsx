@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { MoreHorizontal, Play, Power, FolderOpen } from "lucide-react";
+import { MoreHorizontal, Pencil, Play, Power, FolderOpen } from "lucide-react";
 import type { Agent, BinaryIdentity } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import {
@@ -350,6 +350,17 @@ function AgentActionsMenu(props: {
                                 onClick={close}
                             >
                                 <FolderOpen className="h-4 w-4" /> Browse files
+                            </Link>
+                        </ActionMenuButton>
+                    ) : null}
+                    {props.agent.configurationEditable ? (
+                        <ActionMenuButton asChild>
+                            <Link
+                                to="/agents/$agentId/edit"
+                                params={{ agentId: props.agent.id }}
+                                onClick={close}
+                            >
+                                <Pencil className="h-4 w-4" /> Edit
                             </Link>
                         </ActionMenuButton>
                     ) : null}

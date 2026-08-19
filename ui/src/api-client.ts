@@ -50,6 +50,10 @@ import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
 import type { CreateSshAgentResponse } from "#bindings/CreateSshAgentResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
 import type { UpdateSshAgentResponse } from "#bindings/UpdateSshAgentResponse";
+import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
+import type { CreateLocalAgentResponse } from "#bindings/CreateLocalAgentResponse";
+import type { ManagedLocalAgentConfigurationResponse } from "#bindings/ManagedLocalAgentConfigurationResponse";
+import type { UpdateLocalAgentResponse } from "#bindings/UpdateLocalAgentResponse";
 import type { DeleteManagedAgentResponse } from "#bindings/DeleteManagedAgentResponse";
 import type { UpdateUserStateRequest } from "#bindings/UpdateUserStateRequest";
 import type { UserStateResponse } from "#bindings/UserStateResponse";
@@ -100,6 +104,10 @@ export type {
     CreateSshAgentResponse,
     ManagedSshAgentConfigurationResponse,
     UpdateSshAgentResponse,
+    CreateLocalAgentRequest,
+    CreateLocalAgentResponse,
+    ManagedLocalAgentConfigurationResponse,
+    UpdateLocalAgentResponse,
     DeleteManagedAgentResponse,
     UpdateUserStateRequest,
     UserStateResponse,
@@ -869,7 +877,49 @@ export class ApiClient {
         );
     }
 
-    /** Permanently removes one stopped SSH-backed managed-agent entry. */
+    /** Persists and dynamically registers one dormant local managed agent. */
+    async createLocalAgent(
+        request: CreateLocalAgentRequest,
+    ): Promise<CreateLocalAgentResponse> {
+        return apiRequest<CreateLocalAgentResponse>(
+            `${this.baseUrl}/api/v1/local-agents`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Loads persisted local settings for a managed-agent edit form. */
+    async getLocalAgentConfiguration(
+        agentId: string,
+    ): Promise<ManagedLocalAgentConfigurationResponse> {
+        return apiRequest<ManagedLocalAgentConfigurationResponse>(
+            `${this.baseUrl}/api/v1/local-agents/${encodeURIComponent(agentId)}/configuration`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Replaces one stopped local managed-agent configuration. */
+    async updateLocalAgent(
+        agentId: string,
+        request: CreateLocalAgentRequest,
+    ): Promise<UpdateLocalAgentResponse> {
+        return apiRequest<UpdateLocalAgentResponse>(
+            `${this.baseUrl}/api/v1/local-agents/${encodeURIComponent(agentId)}`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Permanently removes one stopped managed-agent entry. */
     async deleteManagedAgent(
         agentId: string,
     ): Promise<DeleteManagedAgentResponse> {

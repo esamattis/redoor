@@ -98,11 +98,11 @@ describe("SSH agent configuration API", () => {
         expect(
             inventory.filter((agent) => agent.name === AGENT_NAME),
         ).toHaveLength(1);
-        // Local TOML agents are managed but must stay out of the SSH configuration API.
+        // Local TOML agents are also configuration-editable, but stay out of the SSH APIs.
         expect(
             inventory.find((agent) => agent.id === LOCAL_AGENT_NAME)
                 ?.configurationEditable,
-        ).toBe(false);
+        ).toBe(true);
         // List inventory must carry the SSH destination so UI chips need no extra fetch.
         expect(
             inventory.find((agent) => agent.name === AGENT_NAME)?.sshTarget,
@@ -254,7 +254,7 @@ describe("SSH agent configuration API", () => {
         await expect(apiClient.deleteManagedAgent(missing)).rejects.toMatchObject(
             { status: 404 } satisfies Partial<ApiError>,
         );
-        // Local agents are managed but must stay out of the SSH configuration API.
+        // Local agents are managed but SSH GET/PUT must not convert them into SSH rows.
         await expect(
             apiClient.getSshAgentConfiguration(LOCAL_AGENT_NAME),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
@@ -267,17 +267,18 @@ describe("SSH agent configuration API", () => {
                 }),
             ),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
-        await expect(
-            apiClient.deleteManagedAgent(LOCAL_AGENT_NAME),
-        ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
         const local = (await apiClient.listAgents()).find(
             (agent) => agent.id === LOCAL_AGENT_NAME,
         );
         // A rejected SSH mutation must not convert or remove the local fixture.
         expect(local?.managed).toBe(true);
-        expect(local?.configurationEditable).toBe(false);
+        expect(local?.configurationEditable).toBe(true);
         expect(readFileSync(configPath, "utf8")).toContain(
             `name = "${LOCAL_AGENT_NAME}"`,
+        );
+        expect(readFileSync(configPath, "utf8")).toContain("local = true");
+        expect(readFileSync(configPath, "utf8")).not.toContain(
+            'target = "converted-host"',
         );
     });
 

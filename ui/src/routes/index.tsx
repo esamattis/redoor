@@ -85,10 +85,8 @@ function agentOriginTooltip(agent: Agent): string {
     if (!agent.managed) {
         return "Remote";
     }
-    if (agent.configurationEditable) {
-        return agent.sshTarget
-            ? `Managed, ssh ${agent.sshTarget}`
-            : "Managed, ssh";
+    if (agent.sshTarget) {
+        return `Managed, ssh ${agent.sshTarget}`;
     }
     return "Managed, local";
 }

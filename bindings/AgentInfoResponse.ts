@@ -10,7 +10,7 @@ import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
  */
 export type AgentInfoResponse = { id: AgentId, name: string, cwd: string | null, managed: boolean, 
 /**
- * Whether this managed entry is SSH-backed and supported by the configuration editor.
+ * Whether this managed TOML entry can be edited or deleted from the UI.
  */
 configuration_editable: boolean, 
 /**

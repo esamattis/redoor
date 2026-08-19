@@ -1,8 +1,10 @@
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 
-import type { CreateSshAgentRequest } from "#ui/api-client";
-import { ManagedAgentForm } from "#ui/components/managed-agent-form";
+import {
+    ManagedAgentForm,
+    type ManagedAgentSubmitRequest,
+} from "#ui/components/managed-agent-form";
 import { agentsQueryOptions } from "#ui/queries";
 import { Route as RootRoute } from "./__root";
 
@@ -10,14 +12,18 @@ export const Route = createFileRoute("/agents/new")({
     component: NewManagedAgentPage,
 });
 
-/** Persists a new managed SSH agent and opens its newly registered tab. */
+/** Persists a new managed local or SSH agent and opens its newly registered tab. */
 function NewManagedAgentPage() {
     const { api, queryClient } = Route.useRouteContext();
     const { serverInfo } = RootRoute.useLoaderData();
     const router = useRouter();
     const createMutation = useMutation({
-        mutationFn: (request: CreateSshAgentRequest) =>
-            api.createSshAgent(request),
+        mutationFn: async (submission: ManagedAgentSubmitRequest) => {
+            if (submission.kind === "local") {
+                return api.createLocalAgent(submission.request);
+            }
+            return api.createSshAgent(submission.request);
+        },
         onSuccess: async (response) => {
             await queryClient.invalidateQueries(agentsQueryOptions(api));
             await router.invalidate();

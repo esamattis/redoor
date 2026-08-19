@@ -59,7 +59,8 @@ pub(crate) async fn register_agent(
     let key = supervisor_key(&config);
     let agent_id = AgentId::from(key.clone());
     let default_directory = configured_directory(&config);
-    let configuration_editable = matches!(config, AgentConfig::SshBacked(_));
+    // Both local and SSH TOML entries are operator-owned, so the UI can edit either kind.
+    let configuration_editable = true;
     let ssh_target = match &config {
         AgentConfig::SshBacked(config) => Some(config.target.clone()),
         AgentConfig::Local(_) => None,

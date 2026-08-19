@@ -4,9 +4,12 @@ import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
 import { Button } from "#ui/components/button";
 
-import type { CreateSshAgentRequest } from "#ui/api-client";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import { ManagedAgentForm } from "#ui/components/managed-agent-form";
+import {
+    ManagedAgentForm,
+    type ManagedAgentFormConfiguration,
+    type ManagedAgentSubmitRequest,
+} from "#ui/components/managed-agent-form";
 import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions } from "#ui/queries";
 import { Route as RootRoute } from "./__root";
@@ -21,16 +24,26 @@ export const Route = createFileRoute("/agents/$agentId/edit")({
         if (!agent?.configurationEditable) {
             throw redirect({ to: "/agents" });
         }
-        return {
-            configuration: await context.api.getSshAgentConfiguration(
-                params.agentId,
-            ),
-        };
+        const configuration: ManagedAgentFormConfiguration =
+            agent.sshTarget === null
+                ? {
+                      kind: "local",
+                      value: await context.api.getLocalAgentConfiguration(
+                          params.agentId,
+                      ),
+                  }
+                : {
+                      kind: "ssh",
+                      value: await context.api.getSshAgentConfiguration(
+                          params.agentId,
+                      ),
+                  };
+        return { configuration };
     },
     component: EditManagedAgentPage,
 });
 
-/** Updates or permanently removes one stopped managed SSH agent. */
+/** Updates or permanently removes one stopped managed local or SSH agent. */
 function EditManagedAgentPage() {
     const { api, queryClient } = Route.useRouteContext();
     const { agentId } = Route.useParams();
@@ -41,8 +54,12 @@ function EditManagedAgentPage() {
     const [isDeleteOpen, setIsDeleteOpen] = React.useState(false);
     const isRunning = agent?.status !== "stopped";
     const updateMutation = useMutation({
-        mutationFn: (request: CreateSshAgentRequest) =>
-            api.updateSshAgent(agentId, request),
+        mutationFn: (submission: ManagedAgentSubmitRequest) => {
+            if (submission.kind === "local") {
+                return api.updateLocalAgent(agentId, submission.request);
+            }
+            return api.updateSshAgent(agentId, submission.request);
+        },
         onSuccess: async (response) => {
             await queryClient.invalidateQueries(agentsQueryOptions(api));
             await router.invalidate();
@@ -66,6 +83,7 @@ function EditManagedAgentPage() {
             : "Failed to update managed agent"
         : null;
     const isBusy = updateMutation.isPending || deleteMutation.isPending;
+    const kindLabel = configuration.kind === "local" ? "local" : "SSH";
     return (
         <>
             <ManagedAgentForm
@@ -89,7 +107,7 @@ function EditManagedAgentPage() {
                         ? "Wait for the current save or delete to finish"
                         : isRunning
                           ? "Stop the agent and save the new configuration"
-                          : "Save the managed SSH configuration"
+                          : `Save the managed ${kindLabel} configuration`
                 }
                 mutationError={mutationError}
                 onSubmit={(request) => updateMutation.mutate(request)}

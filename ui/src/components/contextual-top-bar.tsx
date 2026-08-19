@@ -84,10 +84,14 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
     const agentTarget = `/agents/${encodeURIComponent(agent.id)}`;
     const logsTarget = `${agentTarget}/logs`;
     const configurationTarget = `${agentTarget}/edit`;
-    const filesTarget = agent.getBrowserUrl(agent.cwd ?? "/");
     const isFilesystemContext =
         props.context.kind === "directory" || props.context.kind === "file";
     const canBrowse = agent.status === "connected" && agent.cwd !== null;
+    // Stopped TOML homes can be relative; only connected resolved paths are browser URLs.
+    const filesTarget =
+        canBrowse && agent.cwd !== null
+            ? agent.getBrowserUrl(agent.cwd)
+            : agentTarget;
     if (!isFilesystemContext) {
         return (
             <ViewSwitch label="Agent view">

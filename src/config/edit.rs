@@ -3,17 +3,27 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
+use crate::config::LocalAgentConfig;
 use crate::ssh::SshBackedAgentConfig;
 
 /// Appends one SSH agent while retaining comments and formatting in unrelated settings.
 pub(crate) async fn append_ssh_agent(path: &Path, config: &SshBackedAgentConfig) -> Result<()> {
+    append_agent_table(path, ssh_agent_table(config)).await
+}
+
+/// Appends one local agent while retaining comments and formatting in unrelated settings.
+pub(crate) async fn append_local_agent(path: &Path, config: &LocalAgentConfig) -> Result<()> {
+    append_agent_table(path, local_agent_table(config)).await
+}
+
+/// Pushes one `[[agents]]` table without rewriting unrelated document formatting.
+async fn append_agent_table(path: &Path, table: Table) -> Result<()> {
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("Failed to read config file '{}'", path.display()))?;
     let mut document = content
         .parse::<DocumentMut>()
         .with_context(|| format!("Failed to parse config file '{}'", path.display()))?;
-    let table = ssh_agent_table(config);
 
     match document.get_mut("agents") {
         Some(item) => item
@@ -57,6 +67,33 @@ pub(crate) async fn edit_ssh_agent(
     replace_atomically(path, document.to_string().as_bytes()).await
 }
 
+/// Applies an in-place local-agent edit while retaining unrelated document formatting.
+pub(crate) async fn edit_local_agent(
+    path: &Path,
+    agent_id: &str,
+    replacement: Option<&LocalAgentConfig>,
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read config file '{}'", path.display()))?;
+    let mut document = content
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse config file '{}'", path.display()))?;
+    let agents = document
+        .get_mut("agents")
+        .and_then(Item::as_array_of_tables_mut)
+        .context("top-level 'agents' must be an array of tables")?;
+    let index = agents
+        .iter()
+        .position(|table| local_agent_id(table).as_deref() == Some(agent_id))
+        .with_context(|| format!("Managed local agent '{agent_id}' was not found"))?;
+    agents.remove(index);
+    if let Some(config) = replacement {
+        agents.insert(index, local_agent_table(config));
+    }
+    replace_atomically(path, document.to_string().as_bytes()).await
+}
+
 /// Builds the persisted table in one place so create and update stay identical.
 fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
     let mut table = Table::new();
@@ -73,6 +110,16 @@ fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
     table
 }
 
+/// Writes `local = true` so parse cannot treat the row as SSH after a later edit.
+fn local_agent_table(config: &LocalAgentConfig) -> Table {
+    let mut table = Table::new();
+    table.insert("local", value(true));
+    insert_optional_string(&mut table, "name", &config.name);
+    insert_optional_string(&mut table, "home", &config.home);
+    insert_optional_string(&mut table, "log", &config.log);
+    table
+}
+
 /// Derives the runtime identity without treating local-agent entries as editable SSH entries.
 fn ssh_agent_id(table: &Table) -> Option<String> {
     if table.get("local").and_then(Item::as_bool).unwrap_or(false) {
@@ -85,6 +132,20 @@ fn ssh_agent_id(table: &Table) -> Option<String> {
             .and_then(Item::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| crate::ssh::default_agent_name(target)),
+    )
+}
+
+/// Derives the runtime identity without treating SSH-backed entries as local edits.
+fn local_agent_id(table: &Table) -> Option<String> {
+    if !table.get("local").and_then(Item::as_bool).unwrap_or(false) {
+        return None;
+    }
+    Some(
+        table
+            .get("name")
+            .and_then(Item::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(crate::config::default_local_agent_name),
     )
 }
 
