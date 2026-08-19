@@ -3,6 +3,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+static EFFECTIVE_USER_HOME: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+
 /// Recursively removes a directory only after excluding filesystem root and the effective user's home.
 pub async fn safe_rm_all(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
@@ -32,15 +34,24 @@ pub async fn safe_rm_all(path: impl AsRef<Path>) -> io::Result<()> {
 
 /// Looks up the effective account off-runtime because NSS-backed user resolution may block.
 async fn effective_user_home() -> io::Result<PathBuf> {
-    let uid = nix::unistd::Uid::effective();
-    tokio::task::spawn_blocking(move || nix::unistd::User::from_uid(uid))
+    EFFECTIVE_USER_HOME
+        .get_or_try_init(|| async {
+            let uid = nix::unistd::Uid::effective();
+            tokio::task::spawn_blocking(move || nix::unistd::User::from_uid(uid))
+                .await
+                .map_err(|error| {
+                    io::Error::other(format!("failed to join home directory lookup: {error}"))
+                })?
+                .map_err(|error| {
+                    io::Error::other(format!("failed to look up effective user: {error}"))
+                })?
+                .map(|user| user.dir)
+                .ok_or_else(|| {
+                    io::Error::other(format!("no system user exists for effective UID {uid}"))
+                })
+        })
         .await
-        .map_err(|error| {
-            io::Error::other(format!("failed to join home directory lookup: {error}"))
-        })?
-        .map_err(|error| io::Error::other(format!("failed to look up effective user: {error}")))?
-        .map(|user| user.dir)
-        .ok_or_else(|| io::Error::other(format!("no system user exists for effective UID {uid}")))
+        .cloned()
 }
 
 /// Produces a stable lexical form so aliases such as `/tmp/..` cannot bypass protected-path checks.
