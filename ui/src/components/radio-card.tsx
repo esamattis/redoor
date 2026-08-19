@@ -46,7 +46,7 @@ export function RadioCardOption(props: {
         "cursor-pointer rounded-lg border px-4 py-3 transition has-[:disabled]:cursor-default",
         props.checked
             ? props.layout === "compact"
-                ? "border-blue-500/60 bg-blue-500/10 text-blue-100"
+                ? "border-blue-500/60 bg-blue-500/10 text-slate-300"
                 : "border-blue-500/60 bg-blue-500/10"
             : props.layout === "compact"
               ? "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-slate-600 has-[:disabled]:hover:border-slate-700"
