@@ -132,7 +132,11 @@ outside that semaphore.
 
 ### High 3: The logger command queue can grow without bound behind slow output
 
-**Classification:** Confirmed bug.
+**Status:** Fixed.
+
+**Classification:** Confirmed bug (fixed).
+
+**Resolution:** Log records now use a bounded non-blocking queue with atomic dropped-record accounting and a synthetic warning emitted when capacity recovers. Subscription setup uses a separate bounded, prioritized control lane, and stdout writes use Tokio's asynchronous stdout implementation instead of blocking a runtime worker. Deterministic unit tests cover queue saturation, exact recovery accounting, and subscription priority without sleeps.
 
 **References:**
 

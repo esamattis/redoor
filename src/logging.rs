@@ -1,16 +1,25 @@
-use std::{collections::VecDeque, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use anyhow::{Context, Result};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{
         broadcast,
-        mpsc::{self, UnboundedSender},
+        mpsc::{self, Sender, error::TrySendError},
         oneshot,
     },
 };
 
 const LIVE_LOG_CAPACITY: usize = 1_024;
+const LOG_RECORD_CAPACITY: usize = 2_048;
+const LOGGER_CONTROL_CAPACITY: usize = 16;
 
 /// Caps every historical scan to the same browser-sized rolling window.
 pub const LOG_HISTORY_ENTRY_LIMIT: usize = 500;
@@ -51,11 +60,17 @@ struct LogMessage {
     message: String,
 }
 
-/// Serializes subscriptions with writes so each receiver has an exact history/live boundary.
+/// Distinguishes application records from overload notices generated when queue capacity returns.
+enum LogRecord {
+    /// Carries one application record without making its producer wait for output.
+    Message(LogMessage),
+    /// Makes bounded-queue loss visible once the logger can accept records again.
+    Dropped(u64),
+}
+
+/// Keeps subscription setup off the lossy record lane so output backlog cannot starve control.
 enum LoggerCommand {
-    /// Defers file I/O without making application control paths wait for the logger.
-    Write(LogMessage),
-    /// Creates the receiver only after every earlier queued write has completed.
+    /// Captures the current persisted prefix before subsequently processed records are published.
     Subscribe {
         reply: oneshot::Sender<LogSubscription>,
     },
@@ -63,7 +78,34 @@ enum LoggerCommand {
 
 /// Keeps normal logging non-blocking while allowing WebSocket setup to await an ordered reply.
 struct LoggerHandle {
-    commands: UnboundedSender<LoggerCommand>,
+    records: Sender<LogRecord>,
+    commands: Sender<LoggerCommand>,
+    dropped_records: Arc<AtomicU64>,
+}
+
+impl LoggerHandle {
+    /// Admits a record without waiting and preserves an exact count when bounded capacity is exhausted.
+    fn send_record(&self, message: LogMessage) {
+        let dropped = self.dropped_records.swap(0, Ordering::AcqRel);
+        if dropped > 0 {
+            match self.records.try_send(LogRecord::Dropped(dropped)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    self.dropped_records
+                        .fetch_add(dropped + 1, Ordering::Relaxed);
+                    return;
+                }
+                Err(TrySendError::Closed(_)) => return,
+            }
+        }
+
+        if matches!(
+            self.records.try_send(LogRecord::Message(message)),
+            Err(TrySendError::Full(_))
+        ) {
+            self.dropped_records.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Captures the stable file prefix and live receiver created at one logger queue position.
@@ -157,20 +199,35 @@ impl Logger {
         );
     }
 
-    /// Writes one accepted entry before publishing it so the history cutoff trails file output.
+    /// Formats one application record after applying the configured severity threshold.
     async fn write(&mut self, level: Level, message: String) {
         if level < self.level {
             return;
         }
-
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let formatted = format!("[{}] [{}] {}", timestamp, level.as_str(), message);
-        println!("{}", formatted);
+        self.write_formatted(formatted).await;
+    }
+
+    /// Writes a synthetic warning even when the configured level would hide ordinary warnings.
+    async fn write_drop_notice(&mut self, dropped: u64) {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let formatted = format!(
+            "[{}] [WARN] Logger dropped {dropped} records while its output queue was full",
+            timestamp
+        );
+        self.write_formatted(formatted).await;
+    }
+
+    /// Writes one accepted entry before publishing it so the history cutoff trails file output.
+    async fn write_formatted(&mut self, formatted: String) {
+        let mut bytes = formatted.as_bytes().to_vec();
+        bytes.push(b'\n');
+        if let Err(error) = tokio::io::stdout().write_all(&bytes).await {
+            eprintln!("Failed to write logger output to stdout: {error}");
+        }
 
         if let Some(file) = self.log_file.as_mut() {
-            let mut bytes = formatted.as_bytes().to_vec();
-            bytes.push(b'\n');
-
             match file.write_all(&bytes).await {
                 Ok(()) => self.log_file_position += bytes.len() as u64,
                 Err(error) => {
@@ -190,21 +247,53 @@ impl Logger {
         let _ = self.live_entries.send(formatted);
     }
 
-    /// Processes commands in queue order so subscription cutoffs cannot race accepted writes.
-    async fn run(mut self, mut receiver: mpsc::UnboundedReceiver<LoggerCommand>) {
-        while let Some(command) = receiver.recv().await {
-            match command {
-                LoggerCommand::Write(log_message) => {
-                    self.write(log_message.level, log_message.message).await;
-                }
-                LoggerCommand::Subscribe { reply } => {
-                    let subscription = LogSubscription {
-                        log_file_path: self.log_file_path.clone(),
-                        history_end: self.log_file_position,
-                        receiver: self.live_entries.subscribe(),
+    /// Processes one bounded record while retaining a single owner for output ordering.
+    async fn process_record(&mut self, record: LogRecord) {
+        match record {
+            LogRecord::Message(log_message) => {
+                self.write(log_message.level, log_message.message).await;
+            }
+            LogRecord::Dropped(dropped) => self.write_drop_notice(dropped).await,
+        }
+    }
+
+    /// Drains only the bounded backlog visible at admission before capturing a subscription boundary.
+    async fn process_command(
+        &mut self,
+        command: LoggerCommand,
+        records: &mut mpsc::Receiver<LogRecord>,
+    ) {
+        match command {
+            LoggerCommand::Subscribe { reply } => {
+                let backlog = records.len();
+                for _ in 0..backlog {
+                    let Some(record) = records.recv().await else {
+                        break;
                     };
-                    let _ = reply.send(subscription);
+                    self.process_record(record).await;
                 }
+                let subscription = LogSubscription {
+                    log_file_path: self.log_file_path.clone(),
+                    history_end: self.log_file_position,
+                    receiver: self.live_entries.subscribe(),
+                };
+                let _ = reply.send(subscription);
+            }
+        }
+    }
+
+    /// Prioritizes bounded control traffic while draining accepted records through one output owner.
+    async fn run(
+        mut self,
+        mut records: mpsc::Receiver<LogRecord>,
+        mut commands: mpsc::Receiver<LoggerCommand>,
+    ) {
+        loop {
+            tokio::select! {
+                biased;
+                Some(command) = commands.recv() => self.process_command(command, &mut records).await,
+                Some(record) = records.recv() => self.process_record(record).await,
+                else => break,
             }
         }
     }
@@ -236,14 +325,19 @@ pub async fn init(log_file_path: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    let (commands, receiver) = mpsc::unbounded_channel();
+    let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
+    let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
     let logger = Logger::new(log_file_path.map(PathBuf::from)).await?;
-    let handle = LoggerHandle { commands };
+    let handle = LoggerHandle {
+        records,
+        commands,
+        dropped_records: Arc::new(AtomicU64::new(0)),
+    };
     if LOGGER.set(handle).is_err() {
         return Ok(());
     }
 
-    tokio::spawn(logger.run(receiver));
+    tokio::spawn(logger.run(record_receiver, command_receiver));
     Ok(())
 }
 
@@ -254,6 +348,7 @@ pub async fn subscribe() -> Result<LogSubscription, SubscribeError> {
     logger
         .commands
         .send(LoggerCommand::Subscribe { reply })
+        .await
         .map_err(|_| SubscribeError::LoggerClosed)?;
     response.await.map_err(|_| SubscribeError::ResponseDropped)
 }
@@ -261,9 +356,7 @@ pub async fn subscribe() -> Result<LogSubscription, SubscribeError> {
 /// Enqueues an entry immediately so application work never waits for formatting or file output.
 pub fn log(level: Level, message: String) {
     let logger = LOGGER.get().expect("global logger is unavailable");
-    let _ = logger
-        .commands
-        .send(LoggerCommand::Write(LogMessage { level, message }));
+    logger.send_record(LogMessage { level, message });
 }
 
 /// Formats application log arguments only after callers select the intended severity.
@@ -303,14 +396,18 @@ mod tests {
     }
 
     /// Starts a directly owned logger because the process-global OnceLock cannot be reset between tests.
-    async fn start_logger(
-        path: Option<PathBuf>,
-    ) -> (UnboundedSender<LoggerCommand>, tokio::task::JoinHandle<()>) {
+    async fn start_logger(path: Option<PathBuf>) -> (LoggerHandle, tokio::task::JoinHandle<()>) {
         let mut logger = Logger::new(path).await.expect("test logger should open");
         logger.level = Level::Info;
-        let (commands, receiver) = mpsc::unbounded_channel();
-        let task = tokio::spawn(logger.run(receiver));
-        (commands, task)
+        let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
+        let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
+        let handle = LoggerHandle {
+            records,
+            commands,
+            dropped_records: Arc::new(AtomicU64::new(0)),
+        };
+        let task = tokio::spawn(logger.run(record_receiver, command_receiver));
+        (handle, task)
     }
 
     /// Verifies missing parent directories are created so first-boot log paths work.
@@ -333,10 +430,12 @@ mod tests {
     }
 
     /// Requests a subscription as a deterministic barrier for every command queued before it.
-    async fn request_subscription(commands: &UnboundedSender<LoggerCommand>) -> LogSubscription {
+    async fn request_subscription(logger: &LoggerHandle) -> LogSubscription {
         let (reply, response) = oneshot::channel();
-        commands
+        logger
+            .commands
             .send(LoggerCommand::Subscribe { reply })
+            .await
             .expect("test logger should accept subscription commands");
         response
             .await
@@ -344,13 +443,92 @@ mod tests {
     }
 
     /// Sends a record through the same command lane used by production log producers.
-    fn send_log(commands: &UnboundedSender<LoggerCommand>, level: Level, message: &str) {
-        commands
-            .send(LoggerCommand::Write(LogMessage {
-                level,
-                message: message.to_string(),
-            }))
-            .expect("test logger should accept write commands");
+    fn send_log(logger: &LoggerHandle, level: Level, message: &str) {
+        logger.send_record(LogMessage {
+            level,
+            message: message.to_string(),
+        });
+    }
+
+    /// Proves overload remains bounded and reports the exact loss after capacity returns.
+    #[test]
+    fn bounded_record_queue_reports_drops_on_recovery() {
+        let (records, mut record_receiver) = mpsc::channel(2);
+        let (commands, _command_receiver) = mpsc::channel(1);
+        let logger = LoggerHandle {
+            records,
+            commands,
+            dropped_records: Arc::new(AtomicU64::new(0)),
+        };
+
+        send_log(&logger, Level::Info, "accepted one");
+        send_log(&logger, Level::Info, "accepted two");
+        send_log(&logger, Level::Info, "dropped");
+        // A full queue must retain only its configured number of allocated records.
+        assert_eq!(logger.records.max_capacity() - logger.records.capacity(), 2);
+        // Every rejected application record must contribute to explicit loss accounting.
+        assert_eq!(logger.dropped_records.load(Ordering::Relaxed), 1);
+
+        let _ = record_receiver
+            .try_recv()
+            .expect("first record should be queued");
+        let _ = record_receiver
+            .try_recv()
+            .expect("second record should be queued");
+        send_log(&logger, Level::Info, "accepted after recovery");
+
+        let notice = record_receiver
+            .try_recv()
+            .expect("drop notice should be queued");
+        // Recovery must report the exact accumulated loss before the next accepted record.
+        assert!(matches!(notice, LogRecord::Dropped(1)));
+        let recovered = record_receiver
+            .try_recv()
+            .expect("post-recovery record should be queued");
+        // Capacity recovery must not discard the record that exposed the loss notice.
+        assert!(matches!(recovered, LogRecord::Message(_)));
+        // Once reported, the loss counter must return to zero for the next overload interval.
+        assert_eq!(logger.dropped_records.load(Ordering::Relaxed), 0);
+    }
+
+    /// Proves subscription control drains a fixed backlog rather than waiting behind later records.
+    #[tokio::test]
+    async fn subscription_control_is_not_starved_by_record_backlog() {
+        let path = temporary_log_path();
+        let mut logger = Logger::new(Some(path.clone()))
+            .await
+            .expect("test logger should open");
+        logger.level = Level::Info;
+        let (records, record_receiver) = mpsc::channel(2);
+        let (commands, command_receiver) = mpsc::channel(1);
+        let handle = LoggerHandle {
+            records,
+            commands,
+            dropped_records: Arc::new(AtomicU64::new(0)),
+        };
+        send_log(&handle, Level::Info, "backlog one");
+        send_log(&handle, Level::Info, "backlog two");
+        let (reply, response) = oneshot::channel();
+        handle
+            .commands
+            .try_send(LoggerCommand::Subscribe { reply })
+            .expect("control lane should remain available beside a full record lane");
+
+        let task = tokio::spawn(logger.run(record_receiver, command_receiver));
+        let subscription = response
+            .await
+            .expect("prioritized subscription should receive a response");
+        let history = read_latest_entries(&path, subscription.history_end)
+            .await
+            .expect("subscription history should be readable");
+        // Both records visible at control admission must be included in the stable boundary.
+        assert_eq!(history.len(), 2);
+
+        drop(handle);
+        task.await.expect("test logger task should stop cleanly");
+        tokio::fs::remove_file(path)
+            .await
+            .expect("test history file should be removable");
     }
 
     /// Protects complete chronological snapshots when no eviction is necessary.
