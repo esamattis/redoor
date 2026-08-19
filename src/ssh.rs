@@ -257,8 +257,25 @@ impl PreparedSshBackedAgent {
         &self,
         status: &ProvisioningStatusSink,
     ) -> Result<tokio::process::Child, std::io::Error> {
-        let (_, child) = self.spawn_random(status).await?;
-        Ok(child)
+        let remote_port = self.random_remote_port.next();
+        status.report(format!("Spawning the remote binary at {}", self.remote_bin));
+        log!(
+            Level::Info,
+            "Spawning SSH-backed redoor agent: target={}, ssh_server_port={}, name={}, remote_bin={}, random_remote_port={}, destination={}:{}",
+            self.host.target(),
+            self.host.server_port_label(),
+            self.agent_name,
+            self.remote_bin,
+            remote_port,
+            self.destination_host,
+            self.destination_port
+        );
+        let (remote_argv, options) = self.launch_settings(remote_port);
+        let options = options.with_managed_agent();
+        let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
+        self.host
+            .spawn(&self.remote_bin, &argv_refs, &options)
+            .await
     }
 
     /// Builds the matching remote agent argv and reverse-forward options so the

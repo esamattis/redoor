@@ -64,6 +64,9 @@ pub(super) struct SshRunOptions {
     /// Pipes stderr so a standalone launcher can detect an initial reverse
     /// forwarding bind failure while still copying agent logs to its terminal.
     pipe_stderr: bool,
+    /// Managed SSH agents must skip the remote singleton PID lock so sequential
+    /// TOML-backed agents on one user can start after the previous session.
+    managed_agent: bool,
 }
 
 /// Selects who owns SSH stderr so forwarding diagnostics remain observable even
@@ -127,6 +130,12 @@ impl SshRunOptions {
     /// Sets a local log file to redirect the ssh process's stdout/stderr into.
     pub(super) fn with_log_file(mut self, path: impl Into<String>) -> Self {
         self.log_file = Some(path.into());
+        self
+    }
+
+    /// Marks the remote process as supervisor-owned so it does not take the user-wide agent lock.
+    pub(super) fn with_managed_agent(mut self) -> Self {
+        self.managed_agent = true;
         self
     }
 
@@ -504,12 +513,21 @@ async fn build_ssh_command(
     apply_non_interactive_auth(&mut ssh, host.password.as_deref())?;
 
     ssh.arg(&host.target);
+    let managed_export = if options.managed_agent {
+        format!("export {}=1; ", crate::process_control::MANAGED_AGENT_ENV)
+    } else {
+        String::new()
+    };
     if let Some((name, _)) = &options.secret_env {
         // Keep the secret out of both the local ssh argv and the remote agent argv,
         // since either can be exposed by process listings. `spawn` writes the value
         // as the first stdin line; this preamble reads and exports it, then `exec`
         // replaces the shell so the agent inherits the environment without a wrapper.
-        ssh.arg(format!("read -r {name}; export {name}; exec {command}"));
+        ssh.arg(format!(
+            "read -r {name}; export {name}; {managed_export}exec {command}"
+        ));
+    } else if options.managed_agent {
+        ssh.arg(format!("{managed_export}exec {command}"));
     } else {
         ssh.arg(command);
     }
@@ -778,6 +796,30 @@ mod tests {
         assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
         // The remote agent command must still be present after the environment preamble.
         assert!(debug_command.contains("/opt/redoor"));
+    }
+
+    /// Sequential managed SSH agents share one remote user and must not take the singleton lock.
+    #[tokio::test]
+    async fn managed_agent_exports_the_skip_lock_environment() {
+        let host = super::SshHost::new("example.test".to_string());
+        let options = super::SshRunOptions::default()
+            .with_secret_env("REDOOR_AGENT_TOKEN", "top-secret-token")
+            .with_managed_agent();
+        let command = super::build_ssh_command(
+            &host,
+            "/opt/redoor",
+            &["agent", "ws://localhost:50000/ws"],
+            &options,
+        )
+        .await
+        .unwrap();
+        let debug_command = format!("{command:?}");
+
+        // The remote preamble must mark the process managed so it skips the user-wide PID lock.
+        assert!(debug_command.contains("REDOOR_MANAGED_AGENT=1"));
+        // Token delivery must still use the stdin preamble after the managed export is added.
+        assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
+        assert!(!debug_command.contains("top-secret-token"));
     }
 
     /// Keeps the configured SSH password out of argv logs while still enabling askpass.
