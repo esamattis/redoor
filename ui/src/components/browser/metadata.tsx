@@ -7,6 +7,7 @@ import type {
     LsFileResponse,
 } from "#ui/api-client";
 import { Button } from "#ui/components/button";
+import { DetailCard } from "#ui/components/detail-card";
 import { IconButton } from "#ui/components/icon-button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
@@ -305,7 +306,7 @@ export function DirectoryDetailView(props: {
     const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
 
     return (
-        <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+        <DetailCard>
             <PathDetailHeader
                 entryType="directory"
                 name={props.directoryName}
@@ -331,7 +332,7 @@ export function DirectoryDetailView(props: {
                 entryCount={props.lsResult.files.length}
                 headingPrefix="directory"
             />
-        </article>
+        </DetailCard>
     );
 }
 
@@ -373,53 +374,51 @@ export function FileDetailView(props: {
     };
 
     return (
-        <div>
-            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-                <PathDetailHeader
-                    entryType="file"
-                    name={props.fileName}
-                    path={props.lsResult.path}
-                    pathCopied={copiedCommand === "path"}
-                    nameActions={
-                        <PersistentPathActions
-                            agent={props.agent}
-                            path={props.path}
-                            currentName={props.fileName}
-                            entryType="file"
-                            view="details"
-                            downloadUrl={props.downloadUrl}
-                            downloadName={props.fileName}
-                        />
-                    }
-                    onCopyPath={() =>
-                        copyToClipboard(props.lsResult.path, "path")
-                    }
-                />
+        <DetailCard>
+            <PathDetailHeader
+                entryType="file"
+                name={props.fileName}
+                path={props.lsResult.path}
+                pathCopied={copiedCommand === "path"}
+                nameActions={
+                    <PersistentPathActions
+                        agent={props.agent}
+                        path={props.path}
+                        currentName={props.fileName}
+                        entryType="file"
+                        view="details"
+                        downloadUrl={props.downloadUrl}
+                        downloadName={props.fileName}
+                    />
+                }
+                onCopyPath={() =>
+                    copyToClipboard(props.lsResult.path, "path")
+                }
+            />
 
-                <FilesystemMetadataSections
-                    metadata={props.lsResult}
-                    size={props.lsResult.size}
-                    headingPrefix="file"
-                />
+            <FilesystemMetadataSections
+                metadata={props.lsResult}
+                size={props.lsResult.size}
+                headingPrefix="file"
+            />
 
-                <ShareableLinksSection
-                    downloadUrl={props.downloadUrl}
-                    oneTimeTokens={oneTimeTokens}
-                    isCreating={createShareableLinkMutation.isPending}
-                    errorMessage={
-                        createShareableLinkMutation.isError
-                            ? getErrorMessage(
-                                  createShareableLinkMutation.error,
-                                  "Could not create a shareable link",
-                              )
-                            : null
-                    }
-                    copiedCommand={copiedCommand}
-                    onCreate={() => createShareableLinkMutation.mutate()}
-                    onCopy={copyToClipboard}
-                />
-            </article>
-        </div>
+            <ShareableLinksSection
+                downloadUrl={props.downloadUrl}
+                oneTimeTokens={oneTimeTokens}
+                isCreating={createShareableLinkMutation.isPending}
+                errorMessage={
+                    createShareableLinkMutation.isError
+                        ? getErrorMessage(
+                              createShareableLinkMutation.error,
+                              "Could not create a shareable link",
+                          )
+                        : null
+                }
+                copiedCommand={copiedCommand}
+                onCreate={() => createShareableLinkMutation.mutate()}
+                onCopy={copyToClipboard}
+            />
+        </DetailCard>
     );
 }
 

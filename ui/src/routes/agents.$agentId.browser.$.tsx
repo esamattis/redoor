@@ -305,7 +305,7 @@ function FileBrowser() {
                 entryType="file"
                 activeView={activeView}
                 editable={editable}
-                constrainContent={!isEditView && activeView !== "sync"}
+                constrainContent={!isEditView}
                 fillAvailableHeight={isEditView}
             >
                 {content}
@@ -355,7 +355,7 @@ function DirectoryBrowserPage(props: {
             parentPath={props.parentPath}
             entryType="directory"
             activeView={activeView}
-            constrainContent={activeView !== "files" && activeView !== "sync"}
+            constrainContent={activeView !== "files"}
         >
             {activeView === "details" ? (
                 <DirectoryDetailView
