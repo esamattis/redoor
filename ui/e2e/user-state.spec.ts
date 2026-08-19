@@ -32,6 +32,9 @@ test.describe.serial("User state", () => {
                 bookmarks: [],
                 vimMode: false,
                 wrapEditorLines: false,
+                recursiveSearchTimeoutSeconds: 5,
+                recursiveSearchIncludeHidden: false,
+                recursiveSearchRespectGitignore: true,
             },
         });
     });
@@ -108,6 +111,46 @@ test.describe.serial("User state", () => {
         await expect(
             page.getByRole("button", { name: "Show hidden files" }),
         ).toHaveAttribute("aria-pressed", "false");
+    });
+
+    test("should persist recursive search settings on the server", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+        await page.getByRole("button", { name: "Search recursively" }).click();
+
+        const timeoutInput = page.getByRole("spinbutton", {
+            name: "Search timeout in seconds",
+        });
+        const hiddenToggle = page.getByRole("button", {
+            name: "Search hidden directories",
+        });
+        const gitignoreToggle = page.getByRole("button", {
+            name: "Respect .gitignore files",
+        });
+        await timeoutInput.fill("23");
+        await hiddenToggle.click();
+        await gitignoreToggle.click();
+
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        // Server readback proves all recursive options share the account-level user state.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({
+                recursiveSearchTimeoutSeconds: 23,
+                recursiveSearchIncludeHidden: true,
+                recursiveSearchRespectGitignore: false,
+            });
+
+        await page.reload();
+        await page.getByRole("button", { name: "Search recursively" }).click();
+
+        // Reload restores each option while leaving recursive mode opt-in.
+        await expect(timeoutInput).toHaveValue("23");
+        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
     });
 
     test("should follow the system theme and persist an override", async ({

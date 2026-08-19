@@ -32,6 +32,9 @@ test.describe.serial("Bookmarks", () => {
                 bookmarks: [],
                 vimMode: false,
                 wrapEditorLines: false,
+                recursiveSearchTimeoutSeconds: 5,
+                recursiveSearchIncludeHidden: false,
+                recursiveSearchRespectGitignore: true,
             },
         });
     });

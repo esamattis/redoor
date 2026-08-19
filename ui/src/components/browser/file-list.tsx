@@ -51,6 +51,7 @@ import { formatSize } from "#ui/utils/path";
 import { fileSearchQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
+import { useUserState } from "#ui/user-state";
 
 /** Identifies the destination that should restore filter focus after Enter navigation. */
 const filterFocusPathAtom = atom<string | null>(null);
@@ -167,10 +168,10 @@ export function FileList(props: {
     const filterInputRef = React.useRef<HTMLInputElement>(null);
     const [filter, setFilter] = React.useState("");
     const [searchRecursively, setSearchRecursively] = React.useState(false);
-    const [searchTimeoutSeconds, setSearchTimeoutSeconds] = React.useState(5);
-    const [includeHiddenDirectories, setIncludeHiddenDirectories] =
-        React.useState(false);
-    const [respectGitignore, setRespectGitignore] = React.useState(true);
+    const [userState, setUserState] = useUserState();
+    const searchTimeoutSeconds = userState.recursiveSearchTimeoutSeconds;
+    const includeHiddenDirectories = userState.recursiveSearchIncludeHidden;
+    const respectGitignore = userState.recursiveSearchRespectGitignore;
     const [debouncedFilter, setDebouncedFilter] = React.useState("");
     const [sort, setSort] = React.useState<{
         column: FileSortColumn;
@@ -283,9 +284,26 @@ export function FileList(props: {
                     includeHiddenDirectories={includeHiddenDirectories}
                     respectGitignore={respectGitignore}
                     onActiveChange={setSearchRecursively}
-                    onTimeoutChange={setSearchTimeoutSeconds}
-                    onIncludeHiddenChange={setIncludeHiddenDirectories}
-                    onRespectGitignoreChange={setRespectGitignore}
+                    onTimeoutChange={(recursiveSearchTimeoutSeconds) =>
+                        setUserState((current) => ({
+                            ...current,
+                            recursiveSearchTimeoutSeconds,
+                        }))
+                    }
+                    onIncludeHiddenChange={(recursiveSearchIncludeHidden) =>
+                        setUserState((current) => ({
+                            ...current,
+                            recursiveSearchIncludeHidden,
+                        }))
+                    }
+                    onRespectGitignoreChange={(
+                        recursiveSearchRespectGitignore,
+                    ) =>
+                        setUserState((current) => ({
+                            ...current,
+                            recursiveSearchRespectGitignore,
+                        }))
+                    }
                 />
             </div>
             {searchRecursively ? (
@@ -345,9 +363,9 @@ function RecursiveSearchControls(props: {
     includeHiddenDirectories: boolean;
     respectGitignore: boolean;
     onActiveChange: React.Dispatch<React.SetStateAction<boolean>>;
-    onTimeoutChange: React.Dispatch<React.SetStateAction<number>>;
-    onIncludeHiddenChange: React.Dispatch<React.SetStateAction<boolean>>;
-    onRespectGitignoreChange: React.Dispatch<React.SetStateAction<boolean>>;
+    onTimeoutChange: (timeoutSeconds: number) => void;
+    onIncludeHiddenChange: (includeHiddenDirectories: boolean) => void;
+    onRespectGitignoreChange: (respectGitignore: boolean) => void;
 }) {
     return (
         <>
@@ -385,7 +403,9 @@ function RecursiveSearchControls(props: {
                                 : "Click to search from hidden directories"
                         }
                         onClick={() =>
-                            props.onIncludeHiddenChange((current) => !current)
+                            props.onIncludeHiddenChange(
+                                !props.includeHiddenDirectories,
+                            )
                         }
                     >
                         {props.includeHiddenDirectories ? (
@@ -404,7 +424,7 @@ function RecursiveSearchControls(props: {
                         }
                         onClick={() =>
                             props.onRespectGitignoreChange(
-                                (current) => !current,
+                                !props.respectGitignore,
                             )
                         }
                     >

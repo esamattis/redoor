@@ -33,6 +33,9 @@ test.describe.serial("File editor options", () => {
                 bookmarks: [],
                 vimMode: false,
                 wrapEditorLines: false,
+                recursiveSearchTimeoutSeconds: 5,
+                recursiveSearchIncludeHidden: false,
+                recursiveSearchRespectGitignore: true,
             },
         });
     });
