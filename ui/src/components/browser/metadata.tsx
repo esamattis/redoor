@@ -391,9 +391,7 @@ export function FileDetailView(props: {
                         downloadName={props.fileName}
                     />
                 }
-                onCopyPath={() =>
-                    copyToClipboard(props.lsResult.path, "path")
-                }
+                onCopyPath={() => copyToClipboard(props.lsResult.path, "path")}
             />
 
             <FilesystemMetadataSections
