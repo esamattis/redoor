@@ -14,19 +14,14 @@ import {
     Eye,
     EyeOff,
     LoaderCircle,
-    MoreHorizontal,
-    Pencil,
     Search,
-    Trash2,
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
 import type { MountPoint } from "#bindings/MountPoint";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
-import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
-import { RenamePathAction } from "#ui/components/browser/path-actions";
-import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { PathActionMenu } from "#ui/components/browser/path-actions";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { InputControl } from "#ui/components/input-control";
 import { Dialog } from "#ui/components/dialog";
@@ -715,80 +710,23 @@ function FileEntryActions(props: {
 
     return (
         <>
-            <RenamePathAction
+            <PathActionMenu
+                label={`Actions for ${entryType} ${props.entryName}`}
                 agent={props.agent}
                 path={props.fullPath}
                 currentName={props.entryName}
                 entryType={entryType}
                 navigateAfterRename={false}
-            >
-                {(renameAction) => (
-                    <>
-                        <ActionMenu
-                            label={`Actions for ${entryType} ${props.entryName}`}
-                            icon={<MoreHorizontal className="h-4 w-4" />}
-                            hideLabel={true}
-                        >
-                            {(close) => (
-                                <>
-                                    <ActionMenuButton
-                                        onClick={() => {
-                                            close();
-                                            renameAction.open();
-                                        }}
-                                    >
-                                        <Pencil className="h-4 w-4 text-slate-400" />
-                                        Rename
-                                    </ActionMenuButton>
-                                    {props.isDirectory ? (
-                                        <ActionMenuButton
-                                            onClick={() => {
-                                                close();
-                                                setIsDownloadDialogOpen(true);
-                                            }}
-                                        >
-                                            <Download className="h-4 w-4 text-slate-400" />
-                                            Download
-                                        </ActionMenuButton>
-                                    ) : (
-                                        <a
-                                            href={downloadUrl}
-                                            download={downloadName}
-                                            onClick={close}
-                                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                                        >
-                                            <Download className="h-4 w-4 text-slate-400" />
-                                            Download
-                                        </a>
-                                    )}
-                                    <BookmarkMenuButton
-                                        close={close}
-                                        bookmark={{
-                                            agentId: props.agentId,
-                                            path: props.fullPath,
-                                            name: props.entryName,
-                                            entryType: entryType,
-                                        }}
-                                    />
-                                    <div className="my-1 border-t border-slate-800" />
-                                    <ActionMenuButton
-                                        tone="danger"
-                                        onClick={() => {
-                                            close();
-                                            deleteMutation.reset();
-                                            setIsDeleteDialogOpen(true);
-                                        }}
-                                    >
-                                        <Trash2 className="h-4 w-4" />
-                                        Delete
-                                    </ActionMenuButton>
-                                </>
-                            )}
-                        </ActionMenu>
-                        {renameAction.dialog}
-                    </>
-                )}
-            </RenamePathAction>
+                showOpenNatively={true}
+                showDownload={true}
+                downloadUrl={downloadUrl}
+                downloadName={downloadName}
+                onDownloadDirectory={() => setIsDownloadDialogOpen(true)}
+                onDelete={() => {
+                    deleteMutation.reset();
+                    setIsDeleteDialogOpen(true);
+                }}
+            />
             <Dialog
                 isOpen={isDownloadDialogOpen}
                 title="Download directory"

@@ -508,9 +508,7 @@ test.describe.serial("File Detail View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(originalPath)}?view=details`,
         );
 
-        await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
         // The compact details menu keeps destructive actions away from the primary download control.
         await expect(
             page.getByRole("button", { name: "Delete file", exact: true }),
@@ -543,12 +541,10 @@ test.describe.serial("File Detail View", () => {
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("file1.txt");
 
-        await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
-        const fileActions = page.getByRole("dialog", { name: "File actions" });
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        const fileActions = page.getByRole("dialog", { name: "More" });
         const selectFile = fileActions.getByRole("button", {
-            name: "Select this file",
+            name: "Select",
             exact: true,
         });
         // An unselected path must render the empty checkbox, not a checked icon.
@@ -570,11 +566,9 @@ test.describe.serial("File Detail View", () => {
             }),
         ).toBeVisible();
 
-        await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
         const unselectFile = fileActions.getByRole("button", {
-            name: "Unselect this file",
+            name: "Unselect",
             exact: true,
         });
         // Reopening the menu must show the path as already selected.
@@ -584,6 +578,38 @@ test.describe.serial("File Detail View", () => {
         // The same menu must also be able to remove the current file from the selection.
         await expect(
             page.getByRole("tab", { name: "Selected 0" }),
+        ).toBeVisible();
+        await minimizeBottomDrawer(page);
+    });
+
+    test("should select the open directory from the details more menu", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}?view=details`,
+        );
+        await expect(
+            page.getByRole("heading", { name: "Directory name" }),
+        ).toContainText("subdir3");
+
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        const moreMenu = page.getByRole("dialog", { name: "More" });
+        const selectDirectory = moreMenu.getByRole("button", {
+            name: "Select",
+            exact: true,
+        });
+        // Directory details had no object menu before, so selection must work from this header.
+        await expect(selectDirectory).toHaveAttribute("aria-pressed", "false");
+        await selectDirectory.click();
+
+        await expect(
+            page.getByRole("tab", { name: "Selected 1" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("tabpanel", { name: /Selected/ }).getByRole("link", {
+                name: "subdir3",
+                exact: true,
+            }),
         ).toBeVisible();
         await minimizeBottomDrawer(page);
     });

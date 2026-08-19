@@ -281,6 +281,7 @@ function FileBrowser() {
             ) : activeView === "view" && viewableImage ? (
                 <FileImageView
                     agent={agent}
+                    path={path}
                     fileName={fileName}
                     downloadUrl={downloadUrl}
                 />
@@ -358,6 +359,7 @@ function DirectoryBrowserPage(props: {
         >
             {activeView === "details" ? (
                 <DirectoryDetailView
+                    agent={props.agent}
                     path={props.path}
                     directoryName={
                         props.path.split("/").filter(Boolean).pop() ?? "/"

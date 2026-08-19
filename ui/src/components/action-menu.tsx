@@ -16,6 +16,8 @@ export function ActionMenu(props: {
     /** Shrinks the trigger to an icon in narrow toolbars without hiding the menu title. */
     hideLabelOnMobile?: boolean;
     hideTitle?: boolean;
+    /** Square icon trigger for overflow menus that already have a nearby primary action. */
+    variant?: "default" | "icon";
     tooltip?: React.ReactNode;
     disabled?: boolean;
     className?: string;
@@ -31,6 +33,8 @@ export function ActionMenu(props: {
         props.onOpenChange?.(nextIsOpen);
     };
     const close = () => setIsOpen(false);
+    const isIcon = props.variant === "icon";
+    const hideLabel = props.hideLabel ?? isIcon;
 
     const trigger = (
         <button
@@ -43,11 +47,13 @@ export function ActionMenu(props: {
             onClick={() => setIsOpen(true)}
             className={twMerge(
                 "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50",
+                isIcon &&
+                    "h-8 w-8 shrink-0 justify-center p-0 text-slate-400 hover:text-slate-100",
                 props.className,
             )}
         >
             {props.icon}
-            {props.hideLabel ? null : (
+            {hideLabel ? null : (
                 <span
                     className={
                         props.hideLabelOnMobile ? "hidden sm:inline" : undefined
@@ -71,7 +77,7 @@ export function ActionMenu(props: {
             <Dialog
                 isOpen={isOpen}
                 title={props.title ?? props.label}
-                hideTitle={props.hideTitle ?? props.hideLabel}
+                hideTitle={props.hideTitle ?? hideLabel}
                 closeAriaLabel={
                     props.closeAriaLabel ??
                     `Close ${props.label.toLowerCase()} menu`

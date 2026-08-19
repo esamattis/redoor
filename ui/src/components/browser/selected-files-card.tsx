@@ -407,7 +407,6 @@ function SelectedFilesCardActions(props: {
                     <ActionMenu
                         label="Actions"
                         icon={<MoreHorizontal className="h-4 w-4" />}
-                        tooltip={false}
                         className="h-9 px-2.5 py-0"
                     >
                         {(close) => (

@@ -1,16 +1,6 @@
 import React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import {
-    Check,
-    Copy,
-    Download,
-    File,
-    Folder,
-    MoreHorizontal,
-    Pencil,
-    Trash2,
-} from "lucide-react";
+import { Check, Copy, Download, File, Folder } from "lucide-react";
 import type {
     Agent,
     LsDirectoryResponse,
@@ -19,17 +9,8 @@ import type {
 import { Button } from "#ui/components/button";
 import { IconButton } from "#ui/components/icon-button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
-import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
-import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
-import {
-    RenamePathAction,
-    SelectPathMenuButton,
-} from "#ui/components/browser/path-actions";
-import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import {
-    getErrorMessage,
-    getImmediateParentPath,
-} from "#ui/components/browser/utils";
+import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import { getErrorMessage } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
 
 /** Converts permission bits to the compact notation people expect from Unix tools. */
@@ -250,7 +231,6 @@ function PathDetailHeader(props: {
     pathCopied?: boolean;
     onCopyPath?: () => void;
     nameActions?: React.ReactNode;
-    cornerActions?: React.ReactNode;
 }) {
     const isDirectory = props.entryType === "directory";
     const typeLabel = isDirectory ? "Directory" : "File";
@@ -258,12 +238,7 @@ function PathDetailHeader(props: {
     return (
         <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
             <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-            {props.cornerActions ? (
-                <div className="absolute right-3 top-3 z-10">
-                    {props.cornerActions}
-                </div>
-            ) : null}
-            <div className="relative flex min-w-0 items-start gap-4 pr-10">
+            <div className="relative flex min-w-0 items-start gap-4">
                 <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
                     {isDirectory ? (
                         <Folder className="h-7 w-7 text-blue-400" />
@@ -283,7 +258,7 @@ function PathDetailHeader(props: {
                             {props.name}
                         </h1>
                         {props.nameActions ? (
-                            <div className="flex w-full shrink-0 justify-start md:ml-auto md:w-auto md:justify-end">
+                            <div className="ml-auto shrink-0">
                                 {props.nameActions}
                             </div>
                         ) : null}
@@ -320,142 +295,35 @@ function PathDetailHeader(props: {
     );
 }
 
-/** Keeps destructive file-detail actions compact while preserving confirmation and navigation. */
-function FileDetailMenu(props: {
-    agent: Agent;
-    path: string;
-    fileName: string;
-}) {
-    const navigate = useNavigate();
-    const parentPath = getImmediateParentPath(props.path);
-    const [isDeleteOpen, setIsDeleteOpen] = React.useState(false);
-    const deleteMutation = useMutation({
-        mutationFn: () => props.agent.deleteFile(props.path),
-        onSuccess: async () => {
-            if (parentPath === null) {
-                return;
-            }
-            setIsDeleteOpen(false);
-            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
-        },
-    });
-
-    /** Closes deletion only when no request is still using the dialog state. */
-    const closeDeleteDialog = () => {
-        if (deleteMutation.isPending) {
-            return;
-        }
-        setIsDeleteOpen(false);
-        deleteMutation.reset();
-    };
-
-    return (
-        <RenamePathAction
-            agent={props.agent}
-            path={props.path}
-            currentName={props.fileName}
-            entryType="file"
-            view="details"
-        >
-            {(renameAction) => (
-                <>
-                    <ActionMenu
-                        label="File actions"
-                        icon={<MoreHorizontal className="h-4 w-4" />}
-                        hideLabel={true}
-                    >
-                        {(close) => (
-                            <>
-                                <ActionMenuButton
-                                    disabled={renameAction.disabled}
-                                    onClick={() => {
-                                        close();
-                                        renameAction.open();
-                                    }}
-                                >
-                                    <Pencil className="h-4 w-4 text-slate-400" />
-                                    Rename
-                                </ActionMenuButton>
-                                <SelectPathMenuButton
-                                    agent={props.agent}
-                                    path={props.path}
-                                    fileName={props.fileName}
-                                    entryType="file"
-                                    close={close}
-                                />
-                                <BookmarkMenuButton
-                                    close={close}
-                                    bookmark={{
-                                        agentId: props.agent.id,
-                                        path: props.path,
-                                        name: props.fileName,
-                                        entryType: "file",
-                                    }}
-                                />
-                                <ActionMenuButton
-                                    tone="danger"
-                                    disabled={parentPath === null}
-                                    onClick={() => {
-                                        close();
-                                        deleteMutation.reset();
-                                        setIsDeleteOpen(true);
-                                    }}
-                                >
-                                    <Trash2 className="h-4 w-4" />
-                                    Delete file
-                                </ActionMenuButton>
-                            </>
-                        )}
-                    </ActionMenu>
-                    {renameAction.dialog}
-                    <ConfirmationDialog
-                        isOpen={isDeleteOpen}
-                        title="Delete this file?"
-                        description={
-                            <>
-                                This permanently deletes
-                                <span className="mx-1 font-medium text-slate-100">
-                                    {props.fileName}
-                                </span>
-                                from the agent filesystem.
-                            </>
-                        }
-                        confirmLabel="Delete file"
-                        busyLabel="Deleting..."
-                        isBusy={deleteMutation.isPending}
-                        errorMessage={
-                            deleteMutation.isError
-                                ? getErrorMessage(
-                                      deleteMutation.error,
-                                      "Delete failed",
-                                  )
-                                : null
-                        }
-                        onClose={closeDeleteDialog}
-                        onConfirm={() => deleteMutation.mutate()}
-                    >
-                        <p className="overflow-x-auto whitespace-nowrap rounded-md border border-slate-800 bg-[#0b0d12] px-3 py-2.5 font-mono text-sm text-slate-300">
-                            {props.path}
-                        </p>
-                    </ConfirmationDialog>
-                </>
-            )}
-        </RenamePathAction>
-    );
-}
-
 /** Presents directory metadata while the query-selected details view replaces the file list. */
 export function DirectoryDetailView(props: {
+    agent: Agent;
     path: string;
     directoryName: string;
     lsResult: LsDirectoryResponse;
 }) {
+    const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
+
     return (
         <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
             <PathDetailHeader
                 entryType="directory"
                 name={props.directoryName}
                 path={props.path}
+                nameActions={
+                    <PersistentPathActions
+                        agent={props.agent}
+                        path={props.path}
+                        currentName={props.directoryName}
+                        entryType="directory"
+                        view="details"
+                        downloadUrl={props.agent.getRawUrl(props.path, {
+                            download: true,
+                        })}
+                        downloadName={archiveName}
+                        downloadTooltip="Downloads this directory as a .tar.gz archive."
+                    />
+                }
             />
 
             <FilesystemMetadataSections
@@ -513,20 +381,14 @@ export function FileDetailView(props: {
                     path={props.lsResult.path}
                     pathCopied={copiedCommand === "path"}
                     nameActions={
-                        <a
-                            href={props.downloadUrl}
-                            download={props.fileName}
-                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
-                        >
-                            <Download className="h-4 w-4" aria-hidden="true" />
-                            Download
-                        </a>
-                    }
-                    cornerActions={
-                        <FileDetailMenu
+                        <PersistentPathActions
                             agent={props.agent}
                             path={props.path}
-                            fileName={props.fileName}
+                            currentName={props.fileName}
+                            entryType="file"
+                            view="details"
+                            downloadUrl={props.downloadUrl}
+                            downloadName={props.fileName}
                         />
                     }
                     onCopyPath={() =>

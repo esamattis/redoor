@@ -271,7 +271,7 @@ test.describe.serial("File Edit View", () => {
             name: "Editor options",
         });
         const selectFile = editorOptions.getByRole("button", {
-            name: "Select this file",
+            name: "Select",
             exact: true,
         });
         // An unselected path must render the empty checkbox, not a checked icon.
@@ -295,7 +295,7 @@ test.describe.serial("File Edit View", () => {
 
         await page.getByRole("button", { name: "Editor options" }).click();
         const unselectFile = editorOptions.getByRole("button", {
-            name: "Unselect this file",
+            name: "Unselect",
             exact: true,
         });
         // Reopening the menu must show the path as already selected.
@@ -557,6 +557,24 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("heading", { name: "File name" }),
         ).toContainText("photo.bin");
+        // The default image representation must expose the same object actions as Details.
+        await expect(
+            page.getByRole("link", { name: "Download", exact: true }),
+        ).toBeVisible();
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        const imageMore = page.getByRole("dialog", { name: "More" });
+        await expect(
+            imageMore.getByRole("button", { name: "Rename", exact: true }),
+        ).toBeVisible();
+        await expect(
+            imageMore.getByRole("button", {
+                name: "Select",
+                exact: true,
+            }),
+        ).toBeVisible();
+        await expect(
+            imageMore.getByRole("button", { name: "Delete file", exact: true }),
+        ).toBeVisible();
     });
 
     test("should save edits with the conventional shortcut", async ({

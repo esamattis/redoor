@@ -451,7 +451,6 @@ function TerminalTabActions(props: {
                 label="Choose agent for new terminal"
                 title="New terminal"
                 closeAriaLabel="Close agent picker"
-                hideLabel
                 hideTitle={false}
                 tooltip={
                     props.activeTarget
@@ -459,9 +458,9 @@ function TerminalTabActions(props: {
                         : "Choose agent for new terminal (t)"
                 }
                 icon={<MoreHorizontal className="h-4 w-4" />}
+                variant="icon"
                 isOpen={props.isPickerOpen}
                 onOpenChange={props.onPickerOpenChange}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md p-0 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
             >
                 {(close) => (
                     <>

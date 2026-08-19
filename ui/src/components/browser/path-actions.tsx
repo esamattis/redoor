@@ -228,6 +228,229 @@ export function RenamePathAction(props: {
     });
 }
 
+/** Owns native-open feedback so the menu can close without losing the toast. */
+function OpenNativelyAction(props: {
+    agent: Agent;
+    path: string;
+    children: (action: {
+        open: () => void;
+        isPending: boolean;
+        toast: React.ReactNode;
+    }) => React.ReactNode;
+}) {
+    const openMutation = useMutation({
+        mutationFn: () => props.agent.openPath(props.path),
+    });
+
+    return props.children({
+        open: () => openMutation.mutate(),
+        isPending: openMutation.isPending,
+        toast:
+            openMutation.isSuccess || openMutation.isError ? (
+                <Toast
+                    tone={openMutation.isError ? "error" : "success"}
+                    icon={<ExternalLink className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss native open message"
+                    onDismiss={() => openMutation.reset()}
+                >
+                    {openMutation.isError
+                        ? getErrorMessage(
+                              openMutation.error,
+                              "Could not open the path",
+                          )
+                        : "Opened on the agent computer"}
+                </Toast>
+            ) : null,
+    });
+}
+
+/** Renders the shared path verbs so each surface only chooses which ones apply. */
+function PathActionMenuItems(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    close: () => void;
+    renameDisabled: boolean;
+    onRename: () => void;
+    showOpenNatively?: boolean;
+    openNativelyPending?: boolean;
+    onOpenNatively?: () => void;
+    showSelect?: boolean;
+    showDownload?: boolean;
+    downloadUrl?: string;
+    downloadName?: string;
+    onDownloadDirectory?: () => void;
+    onDelete?: () => void;
+    deleteDisabled?: boolean;
+}) {
+    return (
+        <>
+            {props.showOpenNatively &&
+            props.agent.supportsNativeOpen &&
+            props.onOpenNatively ? (
+                <ActionMenuButton
+                    disabled={props.openNativelyPending}
+                    onClick={() => {
+                        props.close();
+                        props.onOpenNatively?.();
+                    }}
+                >
+                    {props.openNativelyPending ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
+                    ) : (
+                        <ExternalLink className="h-4 w-4 text-slate-400" />
+                    )}
+                    {props.openNativelyPending ? "Opening..." : "Open natively"}
+                </ActionMenuButton>
+            ) : null}
+            <ActionMenuButton
+                disabled={props.renameDisabled}
+                onClick={() => {
+                    props.close();
+                    props.onRename();
+                }}
+            >
+                <Pencil className="h-4 w-4 text-slate-400" />
+                Rename
+            </ActionMenuButton>
+            {props.showDownload ? (
+                props.entryType === "directory" ? (
+                    <ActionMenuButton
+                        onClick={() => {
+                            props.close();
+                            props.onDownloadDirectory?.();
+                        }}
+                    >
+                        <Download className="h-4 w-4 text-slate-400" />
+                        Download
+                    </ActionMenuButton>
+                ) : (
+                    <ActionMenuButton asChild>
+                        <a
+                            href={props.downloadUrl}
+                            download={props.downloadName}
+                            onClick={props.close}
+                        >
+                            <Download className="h-4 w-4 text-slate-400" />
+                            Download
+                        </a>
+                    </ActionMenuButton>
+                )
+            ) : null}
+            {props.showSelect ? (
+                <SelectPathMenuButton
+                    agent={props.agent}
+                    path={props.path}
+                    fileName={props.currentName}
+                    entryType={props.entryType}
+                    close={props.close}
+                />
+            ) : null}
+            <BookmarkMenuButton
+                close={props.close}
+                bookmark={{
+                    agentId: props.agent.id,
+                    path: props.path,
+                    name: props.currentName,
+                    entryType: props.entryType,
+                }}
+            />
+            {props.onDelete ? (
+                <>
+                    <div className="my-1 border-t border-slate-800" />
+                    <ActionMenuButton
+                        tone="danger"
+                        disabled={props.deleteDisabled}
+                        onClick={() => {
+                            props.close();
+                            props.onDelete?.();
+                        }}
+                    >
+                        <Trash2 className="h-4 w-4" />
+                        Delete {props.entryType}
+                    </ActionMenuButton>
+                </>
+            ) : null}
+        </>
+    );
+}
+
+/** Owns rename and native-open dialogs so the overflow menu can close first. */
+export function PathActionMenu(props: {
+    label: string;
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    view?: "details" | "sync";
+    navigateAfterRename?: boolean;
+    showOpenNatively?: boolean;
+    showSelect?: boolean;
+    showDownload?: boolean;
+    downloadUrl?: string;
+    downloadName?: string;
+    onDownloadDirectory?: () => void;
+    onDelete?: () => void;
+}) {
+    const canModify = getImmediateParentPath(props.path) !== null;
+
+    return (
+        <RenamePathAction
+            agent={props.agent}
+            path={props.path}
+            currentName={props.currentName}
+            entryType={props.entryType}
+            view={props.view}
+            navigateAfterRename={props.navigateAfterRename}
+        >
+            {(renameAction) => (
+                <OpenNativelyAction agent={props.agent} path={props.path}>
+                    {(openNatively) => (
+                        <>
+                            <ActionMenu
+                                label={props.label}
+                                icon={<MoreHorizontal className="h-4 w-4" />}
+                                variant="icon"
+                            >
+                                {(close) => (
+                                    <PathActionMenuItems
+                                        agent={props.agent}
+                                        path={props.path}
+                                        currentName={props.currentName}
+                                        entryType={props.entryType}
+                                        close={close}
+                                        renameDisabled={renameAction.disabled}
+                                        onRename={renameAction.open}
+                                        showOpenNatively={
+                                            props.showOpenNatively
+                                        }
+                                        openNativelyPending={
+                                            openNatively.isPending
+                                        }
+                                        onOpenNatively={openNatively.open}
+                                        showSelect={props.showSelect}
+                                        showDownload={props.showDownload}
+                                        downloadUrl={props.downloadUrl}
+                                        downloadName={props.downloadName}
+                                        onDownloadDirectory={
+                                            props.onDownloadDirectory
+                                        }
+                                        onDelete={props.onDelete}
+                                        deleteDisabled={!canModify}
+                                    />
+                                )}
+                            </ActionMenu>
+                            {renameAction.dialog}
+                            {openNatively.toast}
+                        </>
+                    )}
+                </OpenNativelyAction>
+            )}
+        </RenamePathAction>
+    );
+}
+
 /** Lets any path menu add or remove the current entry without duplicating selection wiring. */
 export function SelectPathMenuButton(props: {
     agent: Agent;
@@ -240,9 +463,7 @@ export function SelectPathMenuButton(props: {
     const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
     const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const isSelected = selectedFileKeys.has(`${props.agent.id}:${props.path}`);
-    const label = isSelected
-        ? `Unselect this ${props.entryType}`
-        : `Select this ${props.entryType}`;
+    const label = isSelected ? "Unselect" : "Select";
 
     return (
         <Checkbox
@@ -267,122 +488,6 @@ export function SelectPathMenuButton(props: {
         >
             {label}
         </Checkbox>
-    );
-}
-
-/** Keeps rename and destructive object actions out of the primary action row. */
-function PathMoreActions(props: {
-    agent: Agent;
-    path: string;
-    currentName: string;
-    entryType: "file" | "directory";
-    view?: "details" | "sync";
-    onDelete?: () => void;
-}) {
-    const canModify = getImmediateParentPath(props.path) !== null;
-    const openMutation = useMutation({
-        mutationFn: () => props.agent.openPath(props.path),
-    });
-
-    return (
-        <RenamePathAction
-            agent={props.agent}
-            path={props.path}
-            currentName={props.currentName}
-            entryType={props.entryType}
-            view={props.view}
-        >
-            {(renameAction) => (
-                <>
-                    <ActionMenu
-                        label="More"
-                        icon={<MoreHorizontal className="h-4 w-4" />}
-                        hideLabel={true}
-                    >
-                        {(close) => (
-                            <>
-                                {props.agent.supportsNativeOpen ? (
-                                    <ActionMenuButton
-                                        disabled={openMutation.isPending}
-                                        onClick={() => {
-                                            close();
-                                            openMutation.mutate();
-                                        }}
-                                    >
-                                        {openMutation.isPending ? (
-                                            <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
-                                        ) : (
-                                            <ExternalLink className="h-4 w-4 text-slate-400" />
-                                        )}
-                                        {openMutation.isPending
-                                            ? "Opening..."
-                                            : "Open natively"}
-                                    </ActionMenuButton>
-                                ) : null}
-                                <ActionMenuButton
-                                    disabled={renameAction.disabled}
-                                    onClick={() => {
-                                        close();
-                                        renameAction.open();
-                                    }}
-                                >
-                                    <Pencil className="h-4 w-4 text-slate-400" />
-                                    Rename
-                                </ActionMenuButton>
-                                <SelectPathMenuButton
-                                    agent={props.agent}
-                                    path={props.path}
-                                    fileName={props.currentName}
-                                    entryType={props.entryType}
-                                    close={close}
-                                />
-                                <BookmarkMenuButton
-                                    close={close}
-                                    bookmark={{
-                                        agentId: props.agent.id,
-                                        path: props.path,
-                                        name: props.currentName,
-                                        entryType: props.entryType,
-                                    }}
-                                />
-                                {props.onDelete ? (
-                                    <>
-                                        <div className="my-1 border-t border-slate-800" />
-                                        <ActionMenuButton
-                                            tone="danger"
-                                            disabled={!canModify}
-                                            onClick={() => {
-                                                close();
-                                                props.onDelete?.();
-                                            }}
-                                        >
-                                            <Trash2 className="h-4 w-4" />
-                                            Delete {props.entryType}
-                                        </ActionMenuButton>
-                                    </>
-                                ) : null}
-                            </>
-                        )}
-                    </ActionMenu>
-                    {renameAction.dialog}
-                    {openMutation.isSuccess || openMutation.isError ? (
-                        <Toast
-                            tone={openMutation.isError ? "error" : "success"}
-                            icon={<ExternalLink className="h-4 w-4" />}
-                            dismissAriaLabel="Dismiss native open message"
-                            onDismiss={() => openMutation.reset()}
-                        >
-                            {openMutation.isError
-                                ? getErrorMessage(
-                                      openMutation.error,
-                                      "Could not open the path",
-                                  )
-                                : "Opened on the agent computer"}
-                        </Toast>
-                    ) : null}
-                </>
-            )}
-        </RenamePathAction>
     );
 }
 
@@ -448,21 +553,26 @@ export function PersistentPathActions(props: {
 
     return (
         <>
-            <Tooltip content={props.downloadTooltip ?? "Download"}>
-                {downloadLink}
-            </Tooltip>
-            {props.afterDownload}
-            <PathMoreActions
-                agent={props.agent}
-                path={props.path}
-                currentName={props.currentName}
-                entryType={props.entryType}
-                view={props.view}
-                onDelete={() => {
-                    deleteMutation.reset();
-                    setIsConfirmDeleteOpen(true);
-                }}
-            />
+            <div className="flex items-center gap-1">
+                <Tooltip content={props.downloadTooltip ?? "Download"}>
+                    {downloadLink}
+                </Tooltip>
+                {props.afterDownload}
+                <PathActionMenu
+                    label="More"
+                    agent={props.agent}
+                    path={props.path}
+                    currentName={props.currentName}
+                    entryType={props.entryType}
+                    view={props.view}
+                    showOpenNatively={true}
+                    showSelect={true}
+                    onDelete={() => {
+                        deleteMutation.reset();
+                        setIsConfirmDeleteOpen(true);
+                    }}
+                />
+            </div>
             <ConfirmationDialog
                 isOpen={isConfirmDeleteOpen}
                 title={`Delete this ${props.entryType}?`}

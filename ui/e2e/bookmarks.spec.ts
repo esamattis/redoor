@@ -111,11 +111,9 @@ test.describe.serial("Bookmarks", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=details`,
         );
 
+        await page.getByRole("button", { name: "More", exact: true }).click();
         await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
-        await page
-            .getByRole("dialog", { name: "File actions" })
+            .getByRole("dialog", { name: "More" })
             .getByRole("button", { name: "Bookmark", exact: true })
             .click();
 
@@ -127,11 +125,9 @@ test.describe.serial("Bookmarks", () => {
             agentBookmarks.getByRole("link", { name: fileName, exact: true }),
         ).toBeVisible();
 
+        await page.getByRole("button", { name: "More", exact: true }).click();
         await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
-        await page
-            .getByRole("dialog", { name: "File actions" })
+            .getByRole("dialog", { name: "More" })
             .getByRole("button", { name: "Remove bookmark", exact: true })
             .click();
 

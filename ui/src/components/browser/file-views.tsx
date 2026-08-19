@@ -13,7 +13,10 @@ import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { CodeEditor } from "#ui/components/browser/code-editor";
-import { SelectPathMenuButton } from "#ui/components/browser/path-actions";
+import {
+    PersistentPathActions,
+    SelectPathMenuButton,
+} from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
@@ -116,10 +119,9 @@ function EditorOptionsMenu(props: {
             label="Editor options"
             title="Editor options"
             closeAriaLabel="Close editor options"
-            hideLabel
             hideTitle={false}
             icon={<MoreHorizontal className="h-4 w-4" />}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md p-0 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+            variant="icon"
         >
             {(close) => (
                 <>
@@ -438,6 +440,7 @@ function useUnsavedEditorNavigationGuard(isDirty: boolean) {
 /** Renders agent-verified images through the authenticated raw download URL. */
 export function FileImageView(props: {
     agent: Agent;
+    path: string;
     fileName: string;
     downloadUrl: string;
 }) {
@@ -448,12 +451,24 @@ export function FileImageView(props: {
                     <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
                         Image
                     </p>
-                    <h1
-                        aria-label="File name"
-                        className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                    >
-                        {props.fileName}
-                    </h1>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <h1
+                            aria-label="File name"
+                            className="min-w-0 break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                        >
+                            {props.fileName}
+                        </h1>
+                        <div className="ml-auto shrink-0">
+                            <PersistentPathActions
+                                agent={props.agent}
+                                path={props.path}
+                                currentName={props.fileName}
+                                entryType="file"
+                                downloadUrl={props.downloadUrl}
+                                downloadName={props.fileName}
+                            />
+                        </div>
+                    </div>
                 </header>
 
                 <div className="flex items-center justify-center p-4 md:p-6">

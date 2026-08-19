@@ -724,10 +724,28 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
-        // Directory metadata no longer adds a separate action row below its view switch.
+        // Details reuses the same current-path chrome as the Files toolbar.
         await expect(
             page.getByRole("link", { name: "Download", exact: true }),
-        ).toHaveCount(0);
+        ).toBeVisible();
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        const detailsMore = page.getByRole("dialog", { name: "More" });
+        await expect(
+            detailsMore.getByRole("button", { name: "Rename", exact: true }),
+        ).toBeVisible();
+        await expect(
+            detailsMore.getByRole("button", {
+                name: "Select",
+                exact: true,
+            }),
+        ).toBeVisible();
+        await expect(
+            detailsMore.getByRole("button", {
+                name: "Delete directory",
+                exact: true,
+            }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
         // Activating details replaces the child list instead of rendering both dense views together.
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),

@@ -664,7 +664,7 @@ test.describe.serial("File Operations", () => {
             .click();
         await page
             .getByRole("dialog", { name: `Actions for file ${fileName}` })
-            .getByRole("button", { name: "Delete", exact: true })
+            .getByRole("button", { name: "Delete file", exact: true })
             .click();
         const dialog = page.getByRole("dialog", {
             name: "Delete this file?",
@@ -699,9 +699,7 @@ test.describe.serial("File Operations", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(deletableFilePath)}?view=details`,
         );
 
-        await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
         await page
             .getByRole("button", { name: "Delete file", exact: true })
             .click();
@@ -716,9 +714,7 @@ test.describe.serial("File Operations", () => {
             page.getByRole("dialog", { name: "Delete this file?" }),
         ).toBeHidden();
 
-        await page
-            .getByRole("button", { name: "File actions", exact: true })
-            .click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
         await page
             .getByRole("button", { name: "Delete file", exact: true })
             .click();
@@ -792,7 +788,7 @@ test.describe.serial("File Operations", () => {
         await page.getByRole("button", { name: "More", exact: true }).click();
         const moreMenu = page.getByRole("dialog", { name: "More" });
         const selectDirectory = moreMenu.getByRole("button", {
-            name: "Select this directory",
+            name: "Select",
             exact: true,
         });
         // An unselected path must render the empty checkbox, not a checked icon.
@@ -816,7 +812,7 @@ test.describe.serial("File Operations", () => {
 
         await page.getByRole("button", { name: "More", exact: true }).click();
         const unselectDirectory = moreMenu.getByRole("button", {
-            name: "Unselect this directory",
+            name: "Unselect",
             exact: true,
         });
         // Reopening the menu must show the path as already selected.
