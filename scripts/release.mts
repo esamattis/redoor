@@ -29,26 +29,18 @@ async function requireMainBranch(): Promise<void> {
     }
 }
 
-/** Fetch origin first so a stale or unpublished main cannot be tagged as the release tip. */
+/** A rejected push is the remote saying this tip cannot become the release. */
 async function requireSyncedWithOriginMain(): Promise<void> {
-    await $`git fetch origin --tags`;
-    const head = (await $`git rev-parse HEAD`).stdout.trim();
-    const originMain = (await $`git rev-parse origin/main`).stdout.trim();
-    if (head === originMain) {
-        return;
+    const pushResult = await $`git push origin main`.nothrow();
+    if (pushResult.exitCode !== 0) {
+        console.error(
+            "Error: Local main is not in sync with origin/main. Pull until `git push origin main` succeeds.",
+        );
+        process.exit(1);
     }
 
-    const mergeBase = (await $`git merge-base HEAD origin/main`).stdout.trim();
-    let reason = "has diverged from";
-    if (mergeBase === head) {
-        reason = "is behind";
-    } else if (mergeBase === originMain) {
-        reason = "is ahead of";
-    }
-    console.error(
-        `Error: Local main ${reason} origin/main. Pull or push until they match before releasing.`,
-    );
-    process.exit(1);
+    // Tags are not updated by the branch push, so refresh them before incrementing.
+    await $`git fetch origin --tags`;
 }
 
 /** Skills cannot answer prompts, so the bump type is a required CLI argument. */

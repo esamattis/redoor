@@ -14,8 +14,8 @@ Accept only `patch`, `minor`, or `major`. If the user did not name one, ask and 
 ## Preconditions
 
 1. Run every shell command through `mise exec --`.
-2. Do not switch branches, commit, stash, pull, or push to make the tree releasable. The release script enforces a clean `main` that matches `origin/main`.
-3. If the working tree is dirty or the branch is not synced `main`, stop and report what the user must do first.
+2. Do not switch branches, commit, stash, pull, or push to make the tree releasable. The release script pushes `main` first and aborts if that push fails.
+3. If the working tree is dirty or `git push origin main` would fail, stop and report what the user must do first.
 
 ## Release
 
