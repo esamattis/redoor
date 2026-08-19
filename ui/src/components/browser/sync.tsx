@@ -31,6 +31,7 @@ export function AgentPathFields(props: {
     agents: Array<Agent>;
     agentId: string;
     path: string;
+    resolvedPath: string;
     disabled: boolean;
     viewHref: string | null;
     onAgentChange: (agentId: string) => void;
@@ -38,7 +39,7 @@ export function AgentPathFields(props: {
     onView: () => void;
 }) {
     return (
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+        <div className="grid items-end gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Agent
                 <span className="relative block">
@@ -79,14 +80,14 @@ export function AgentPathFields(props: {
                 {props.viewHref === null ? (
                     <span
                         aria-disabled="true"
-                        className="self-end pb-3 text-sm font-medium text-slate-600"
+                        className="pb-3 text-sm font-medium text-slate-600"
                     >
                         view
                     </span>
                 ) : (
                     <a
                         href={props.viewHref}
-                        className="self-end pb-3 text-sm font-medium text-blue-400 underline decoration-blue-400/50 underline-offset-4 transition-colors hover:text-blue-300 hover:decoration-blue-300 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        className="pb-3 text-sm font-medium text-blue-400 underline decoration-blue-400/50 underline-offset-4 transition-colors hover:text-blue-300 hover:decoration-blue-300 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                         onClick={(event) => {
                             // Keep unmodified left-click in-app; middle/modified clicks use the href.
                             if (
@@ -107,6 +108,14 @@ export function AgentPathFields(props: {
                     </a>
                 )}
             </Tooltip>
+            {props.resolvedPath !== props.path ? (
+                <span
+                    aria-label="Absolute path"
+                    className="break-all font-mono text-xs text-slate-400 md:col-start-2"
+                >
+                    {props.resolvedPath}
+                </span>
+            ) : null}
         </div>
     );
 }
@@ -130,6 +139,24 @@ function resolveSyncPath(agent: Agent, path: string): string {
     return agent.cwd === "/"
         ? `/${path.slice(2)}`
         : `${agent.cwd.replace(/\/+$/, "")}/${path.slice(2)}`;
+}
+
+/** Keeps the editable path home-relative so another agent can resolve it against its own home. */
+function shortenSyncPath(agent: Agent, path: string): string {
+    if (agent.cwd === null || path === "~" || path.startsWith("~/")) {
+        return path;
+    }
+    const home = agent.cwd === "/" ? "/" : agent.cwd.replace(/\/+$/, "");
+    if (path === home || path === `${home}/`) {
+        return "~";
+    }
+    if (home === "/") {
+        return path.startsWith("/") ? `~${path}` : path;
+    }
+    if (path.startsWith(`${home}/`)) {
+        return `~${path.slice(home.length)}`;
+    }
+    return path;
 }
 
 /** 404 means Copy/Move can start immediately; any other failure must stay visible. */
@@ -188,7 +215,9 @@ function useSyncEndpointSelection(props: {
     const [selectedAgentId, setSelectedAgentId] = React.useState(
         defaultAgent?.id ?? "",
     );
-    const [selectedPath, setSelectedPath] = React.useState(props.sourcePath);
+    const [selectedPath, setSelectedPath] = React.useState(() =>
+        shortenSyncPath(props.sourceAgent, props.sourcePath),
+    );
     const [direction, setDirection] = React.useState<SyncDirection>(
         "current-to-selected",
     );
@@ -423,6 +452,7 @@ function useSyncWorkspace(props: {
         selectedAgentId,
         selectedPath,
         selectedAgent,
+        selectedEndpoint,
         direction,
         changeSelectedAgent,
         changeSelectedPath,
@@ -473,7 +503,7 @@ function SyncDirectionFields(props: {
 }) {
     const workspace = props.workspace;
     const currentLabel = `${props.currentAgent.name}: ${props.currentPath}`;
-    const selectedLabel = `${workspace.selectedAgent?.name ?? "Unavailable agent"}: ${workspace.selectedPath}`;
+    const selectedLabel = `${workspace.selectedAgent?.name ?? "Unavailable agent"}: ${workspace.selectedEndpoint?.path ?? workspace.selectedPath}`;
     return (
         <RadioCardGroup
             legend="Sync direction"
@@ -762,6 +792,10 @@ export function SyncView(props: {
                     agents={workspace.availableAgents}
                     agentId={workspace.selectedAgentId}
                     path={workspace.selectedPath}
+                    resolvedPath={
+                        workspace.selectedEndpoint?.path ??
+                        workspace.selectedPath
+                    }
                     disabled={workspace.isBusy}
                     viewHref={workspace.selectedHref}
                     onAgentChange={workspace.changeSelectedAgent}

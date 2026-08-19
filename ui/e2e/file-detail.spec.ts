@@ -245,7 +245,11 @@ test.describe.serial("File Detail View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(sourcePath)}?view=sync`,
         );
-        await page.getByLabel("Sync path").fill(`~/${filename}`);
+        // Home-directory files must start as ~ so the peer agent expands them under its own home.
+        await expect(page.getByLabel("Sync path")).toHaveValue(`~/${filename}`);
+        await expect(page.getByLabel("Absolute path")).toHaveText(
+            destinationPath,
+        );
         await page.getByRole("button", { name: "Copy", exact: true }).click();
         await page
             .getByRole("dialog", { name: "Copy file?" })
