@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@replit/codemirror-vim-core@0.1.0': f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583
+
 importers:
 
   .:
@@ -3476,7 +3479,7 @@ snapshots:
     dependencies:
       nopt: 1.0.10
 
-  '@replit/codemirror-vim-core@0.1.0': {}
+  '@replit/codemirror-vim-core@0.1.0(patch_hash=f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583)': {}
 
   '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.0)(@codemirror/language@6.12.4)(@codemirror/search@6.7.1)(@codemirror/state@6.7.1)(@codemirror/view@6.43.9)':
     dependencies:
@@ -3485,7 +3488,7 @@ snapshots:
       '@codemirror/search': 6.7.1
       '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.9
-      '@replit/codemirror-vim-core': 0.1.0
+      '@replit/codemirror-vim-core': 0.1.0(patch_hash=f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583)
 
   '@rolldown/binding-android-arm64@1.2.3':
     optional: true

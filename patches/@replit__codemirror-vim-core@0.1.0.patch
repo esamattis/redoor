@@ -1,0 +1,14 @@
+diff --git a/vim.js b/vim.js
+index 3cafa6bcf0c99f2ae25a5da8936d3f29445f2d6d..12cc77618d2212b3af06ba026fadde84c6f35efc 100644
+--- a/vim.js
++++ b/vim.js
+@@ -2905,3 +2905,9 @@ export function initVim(CM) {
+       vimGlobalState.registerController.pushText(
+           args.registerName, 'yank',
+           text, args.linewise, vim.visualBlock);
++      // Emit the operator-resolved range because key events cannot represent motions, counts, or Visual mode.
++      CM.signal(cm, 'vim-yank', {
++        from: ranges[0].anchor,
++        to: ranges[0].head,
++        linewise: args.linewise === true
++      });

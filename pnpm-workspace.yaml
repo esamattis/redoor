@@ -1,2 +1,4 @@
 allowBuilds:
   esbuild: true
+patchedDependencies:
+  '@replit/codemirror-vim-core@0.1.0': patches/@replit__codemirror-vim-core@0.1.0.patch

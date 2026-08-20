@@ -97,6 +97,72 @@ test.describe.serial("File editor options", () => {
         await expect(page.getByLabel("File editor")).toHaveText("content1");
     });
 
+    test("should briefly highlight the exact Vim yank range", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "vim-yank.txt");
+        await fs.writeFile(
+            filePath,
+            `one two
+three four
+
+five`,
+        );
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        await page.getByRole("button", { name: "Editor options" }).click();
+        await page.getByRole("button", { name: "Vim mode" }).click();
+        await page
+            .getByRole("button", { name: "Close editor options" })
+            .click();
+        const editor = page.getByLabel("File editor");
+        const lineHighlights = editor.locator(
+            '[data-vim-yank-highlight="line"]',
+        );
+        const characterHighlights = editor.locator(
+            '[data-vim-yank-highlight="character"]',
+        );
+        await editor.focus();
+
+        await page.keyboard.type("yy");
+        // The active-line background must not cover a single-line yank flash.
+        await expect(lineHighlights).toHaveCount(1);
+        await expect(lineHighlights).toHaveText("one two");
+        expect(
+            await lineHighlights.evaluate(
+                (element) => getComputedStyle(element).backgroundImage,
+            ),
+        ).not.toBe("none");
+        await expect(lineHighlights).toHaveCount(0);
+
+        await page.keyboard.type("3yy");
+        // A counted linewise yank must decorate all affected visible lines, including the empty one.
+        await expect(lineHighlights).toHaveCount(3);
+        await expect(lineHighlights.nth(0)).toHaveText("one two");
+        await expect(lineHighlights.nth(1)).toHaveText("three four");
+        await expect(lineHighlights.nth(2)).toHaveText("");
+        // Polling for removal verifies the timer without making the test sleep.
+        await expect(lineHighlights).toHaveCount(0);
+
+        await page.keyboard.type("ggyw");
+        // The character decoration follows Vim's resolved word motion, including its trailing space.
+        await expect(characterHighlights).toHaveText("one ");
+        await expect(characterHighlights).toHaveCount(0);
+
+        await page.keyboard.type("ggvey");
+        // Visual mode must flash the former selection after Vim exits Visual mode.
+        await expect(characterHighlights).toHaveText("one");
+        await expect(characterHighlights).toHaveCount(0);
+
+        await page.keyboard.type("jjyy");
+        // A line decoration gives an empty line visible feedback despite its zero-width text.
+        await expect(lineHighlights).toHaveCount(1);
+        await expect(lineHighlights).toHaveText("");
+        await expect(lineHighlights).toHaveCount(0);
+    });
+
     test("should persist line wrapping and apply it to the editor", async ({
         page,
     }) => {

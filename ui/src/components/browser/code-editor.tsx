@@ -10,6 +10,7 @@ import {
     EditorSearch,
     type EditorSearchHandle,
 } from "#ui/components/browser/editor-search";
+import { vimYankHighlightExtension } from "./vim-yank-highlight";
 import { languageFromFileName } from "#ui/utils/editor-language";
 import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
 import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
@@ -66,7 +67,10 @@ export function CodeEditor(props: {
     const extensions = React.useMemo(() => {
         const language = languageFromFileName(props.fileName, languageContent);
         return [
-            ...(props.vimMode ? [vim({ status: true })] : []), // Vim must precede other keymaps so normal-mode keys win.
+            // Vim must precede both its observer and other keymaps so its adapter exists and normal-mode keys win.
+            ...(props.vimMode
+                ? [vim({ status: true }), vimYankHighlightExtension]
+                : []),
             ...(props.wrapLines ? [EditorView.lineWrapping] : []),
             search(),
             EditorView.contentAttributes.of({
