@@ -16,7 +16,6 @@ use clap::{Args, Subcommand};
 use tokio::process::Command;
 
 use crate::ServiceRole;
-#[cfg(target_os = "macos")]
 use crate::service_management::{DisableArgs, InstallArgs};
 
 /// Arguments for role-scoped `redoor agent|server launchd` management.
