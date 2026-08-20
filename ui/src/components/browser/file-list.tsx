@@ -26,6 +26,8 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { InputControl } from "#ui/components/input-control";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
+import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
 import { ToggleButton } from "#ui/components/toggle-button";
 import type { FileSearchEntry, FileSearchResponse } from "#ui/api-client";
@@ -47,6 +49,13 @@ import { fileSearchQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 import { useUserState } from "#ui/user-state";
+import {
+    buildUnarchiveCommand,
+    getArchiveInfo,
+    getCustomArchiveDirectoryError,
+    type UnarchiveDestination,
+} from "#ui/utils/archive";
+import { requestTerminalCreationAtom } from "#ui/bottom-drawer-state";
 
 /** Identifies the destination that should restore filter focus after Enter navigation. */
 const filterFocusPathAtom = atom<string | null>(null);
@@ -672,18 +681,146 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
     );
 }
 
+/** Owns target validation and fresh-terminal startup for one archive extraction. */
+function UnarchiveDialog(props: {
+    agent: Agent;
+    entryName: string;
+    directoryPath: string;
+    onClose: () => void;
+}) {
+    const [destination, setDestination] =
+        React.useState<UnarchiveDestination>("current");
+    const [customDirectory, setCustomDirectory] = React.useState("");
+    const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+    const requestTerminalCreation = useSetAtom(requestTerminalCreationAtom);
+    const archive = getArchiveInfo(props.entryName);
+
+    /** Validates before queuing so invalid shell input remains visible and actionable. */
+    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (destination === "custom") {
+            const error = getCustomArchiveDirectoryError(customDirectory);
+            if (error) {
+                setErrorMessage(error);
+                return;
+            }
+        }
+        const command = buildUnarchiveCommand(
+            props.entryName,
+            destination,
+            customDirectory,
+        );
+        if (!command) {
+            setErrorMessage("Unable to create a safe extraction command");
+            return;
+        }
+        props.onClose();
+        requestTerminalCreation({
+            agent: props.agent,
+            cwd: props.directoryPath,
+            startupCommand: command,
+            refreshTarget: {
+                agentId: props.agent.id,
+                path: props.directoryPath,
+            },
+        });
+    };
+
+    /** Clears stale validation whenever a different target policy is selected. */
+    const selectDestination = (nextDestination: UnarchiveDestination) => {
+        setDestination(nextDestination);
+        setErrorMessage(null);
+    };
+
+    return (
+        <Dialog
+            isOpen={true}
+            title="Unarchive"
+            description={`Choose where to extract ${props.entryName}. A new terminal will run the extraction command.`}
+            closeAriaLabel="Close unarchive dialog"
+            errorMessage={errorMessage}
+            onClose={props.onClose}
+        >
+            <form noValidate onSubmit={handleSubmit}>
+                <RadioCardGroup
+                    legend="Extraction destination"
+                    legendClassName="mt-4 text-sm font-medium text-slate-200"
+                    optionsClassName="mt-2"
+                >
+                    <RadioCardOption
+                        name="unarchive-destination"
+                        value="current"
+                        label="Current directory"
+                        description={props.directoryPath}
+                        checked={destination === "current"}
+                        layout="descriptive"
+                        onChange={() => selectDestination("current")}
+                    />
+                    <RadioCardOption
+                        name="unarchive-destination"
+                        value="subdirectory"
+                        label={`Subdirectory ${archive?.directoryName ?? ""}`}
+                        description="Create a directory named after the archive and extract into it."
+                        checked={destination === "subdirectory"}
+                        layout="descriptive"
+                        onChange={() => selectDestination("subdirectory")}
+                    />
+                    <RadioCardOption
+                        name="unarchive-destination"
+                        value="custom"
+                        label="Custom directory"
+                        description="Create one directory with a name you choose and extract into it."
+                        checked={destination === "custom"}
+                        layout="descriptive"
+                        onChange={() => selectDestination("custom")}
+                    />
+                </RadioCardGroup>
+                {destination === "custom" ? (
+                    <TextField
+                        label="Target directory name"
+                        value={customDirectory}
+                        placeholder="extracted files"
+                        description="Enter one directory name beneath the archive's containing directory."
+                        required
+                        autoFocus
+                        className="mt-4"
+                        disabled={false}
+                        onChange={(value) => {
+                            setCustomDirectory(value);
+                            setErrorMessage(null);
+                        }}
+                    />
+                ) : null}
+                <DialogActions>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={props.onClose}
+                    >
+                        Cancel
+                    </Button>
+                    <Button type="submit">Unarchive</Button>
+                </DialogActions>
+            </form>
+        </Dialog>
+    );
+}
+
 /** Keeps mutations and download confirmation behind one compact row menu. */
 function FileEntryActions(props: {
     agent: Agent;
     agentId: string;
     entryName: string;
     fullPath: string;
+    directoryPath: string;
     isDirectory: boolean;
 }) {
     const router = useRouter();
     const unselectFile = useSetAtom(unselectFileAtom);
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
     const [isDownloadDialogOpen, setIsDownloadDialogOpen] =
+        React.useState(false);
+    const [isUnarchiveDialogOpen, setIsUnarchiveDialogOpen] =
         React.useState(false);
     const entryType = props.isDirectory ? "directory" : "file";
     const downloadUrl = props.agent.getRawUrl(props.fullPath, {
@@ -700,6 +837,7 @@ function FileEntryActions(props: {
             await router.invalidate();
         },
     });
+    const archive = props.isDirectory ? null : getArchiveInfo(props.entryName);
 
     const closeDeleteDialog = () => {
         if (!deleteMutation.isPending) {
@@ -722,11 +860,21 @@ function FileEntryActions(props: {
                 downloadUrl={downloadUrl}
                 downloadName={downloadName}
                 onDownloadDirectory={() => setIsDownloadDialogOpen(true)}
+                showUnarchive={archive !== null}
+                onUnarchive={() => setIsUnarchiveDialogOpen(true)}
                 onDelete={() => {
                     deleteMutation.reset();
                     setIsDeleteDialogOpen(true);
                 }}
             />
+            {isUnarchiveDialogOpen ? (
+                <UnarchiveDialog
+                    agent={props.agent}
+                    entryName={props.entryName}
+                    directoryPath={props.directoryPath}
+                    onClose={() => setIsUnarchiveDialogOpen(false)}
+                />
+            ) : null}
             <Dialog
                 isOpen={isDownloadDialogOpen}
                 title="Download directory"
@@ -877,6 +1025,7 @@ function FileEntry(props: {
                     agentId={agentId}
                     entryName={entry.name}
                     fullPath={fullPath}
+                    directoryPath={directoryPath}
                     isDirectory={isDirectory}
                 />
             </td>

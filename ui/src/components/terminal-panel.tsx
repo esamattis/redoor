@@ -8,13 +8,14 @@ import {
     RotateCcw,
     X,
 } from "lucide-react";
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import type {
     FitAddon as GhosttyFitAddon,
     IDisposable,
     Terminal as GhosttyTerminal,
 } from "ghostty-web";
 import { z } from "zod";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { type Agent, type TerminalServerMessage } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
@@ -36,7 +37,14 @@ import {
     isUnmodifiedAltKey,
     shouldIgnoreKeyboardShortcut,
 } from "#ui/utils/keyboard";
-import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
+import {
+    activateBottomDrawerTabAtom,
+    type BrowserListingRefreshTarget,
+    consumeTerminalCreationRequestsAtom,
+    terminalCreationRequestsAtom,
+} from "#ui/bottom-drawer-state";
+import { queryKeys } from "#ui/queries";
+import { OneShotTerminalCommand } from "#ui/terminal/one-shot-command";
 
 type TerminalState =
     | { type: "not_started" }
@@ -68,6 +76,8 @@ type TerminalTab = {
     cwd: string;
     state: TerminalState;
     restartGeneration: number;
+    startupCommand: string | null;
+    refreshTarget: BrowserListingRefreshTarget | null;
 };
 
 /** Gives each terminal tab its own concise lifecycle label and color. */
@@ -124,6 +134,12 @@ type ActiveTerminalTarget = {
     cwd: string;
 };
 
+/** Adds one-shot shell input only for feature-created terminals. */
+type TerminalCreationTarget = ActiveTerminalTarget & {
+    startupCommand?: string;
+    refreshTarget?: BrowserListingRefreshTarget;
+};
+
 /** Reuses a live shell only when it was opened in the same directory as the current browse path. */
 function findOpenTerminalForAgent(
     tabs: TerminalTab[],
@@ -145,6 +161,56 @@ function findOpenTerminalForAgent(
     );
 }
 
+/** Keeps earned listing refreshes alive across tab closure but releases them with the app shell. */
+function useListingRefreshScheduler() {
+    const queryClient = useQueryClient();
+    const timersRef = React.useRef(new Set<number>());
+
+    React.useEffect(() => {
+        return () => {
+            for (const timer of timersRef.current) {
+                window.clearTimeout(timer);
+            }
+            timersRef.current.clear();
+        };
+    }, []);
+
+    /** Invalidates only the immutable listing that originated the terminal command. */
+    return React.useCallback(
+        (target: BrowserListingRefreshTarget) => {
+            const timer = window.setTimeout(() => {
+                timersRef.current.delete(timer);
+                void queryClient.invalidateQueries({
+                    queryKey: queryKeys.browserListing(
+                        target.agentId,
+                        target.path,
+                    ),
+                    exact: true,
+                    refetchType: "active",
+                });
+            }, 1000);
+            timersRef.current.add(timer);
+        },
+        [queryClient],
+    );
+}
+
+/** Atomically drains feature-created terminal requests so remounts cannot replay them. */
+function useTerminalCreationRequests(
+    onCreate: (target: TerminalCreationTarget) => void,
+) {
+    const requests = useAtomValue(terminalCreationRequestsAtom);
+    const consumeRequests = useSetAtom(consumeTerminalCreationRequestsAtom);
+    React.useEffect(() => {
+        if (requests.length === 0) {
+            return;
+        }
+        for (const request of consumeRequests()) {
+            onCreate(request);
+        }
+    }, [consumeRequests, onCreate, requests]);
+}
+
 /** Owns terminal tabs globally so route and agent navigation cannot destroy live shells. */
 export function TerminalPanel(props: {
     agents: Agent[];
@@ -152,6 +218,7 @@ export function TerminalPanel(props: {
     isVisible: boolean;
 }) {
     const resolvedTheme = useResolvedTheme();
+    const scheduleListingRefresh = useListingRefreshScheduler();
     const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
@@ -160,9 +227,8 @@ export function TerminalPanel(props: {
     const pendingTerminalFocusRef = React.useRef(false);
     const nextTabIdRef = React.useRef(1);
     const nextAgentTerminalNumberRef = React.useRef(new Map<string, number>());
-
     /** Captures the selected agent and directory without changing older tabs. */
-    const createTerminal = (target: ActiveTerminalTarget) => {
+    const createTerminal = (target: TerminalCreationTarget) => {
         const id = nextTabIdRef.current;
         nextTabIdRef.current += 1;
         const agentTerminalNumber =
@@ -182,6 +248,8 @@ export function TerminalPanel(props: {
                 cwd: target.cwd,
                 state: { type: "not_started" },
                 restartGeneration: 0,
+                startupCommand: target.startupCommand ?? null,
+                refreshTarget: target.refreshTarget ?? null,
             },
         ]);
         setActiveTabId(id);
@@ -189,6 +257,8 @@ export function TerminalPanel(props: {
         pendingTerminalFocusRef.current = true;
         setFocusRequestId((current) => current + 1);
     };
+
+    useTerminalCreationRequests(createTerminal);
 
     /** Updates only the session that emitted a lifecycle transition. */
     const updateTabState = (tabId: number, state: TerminalState) => {
@@ -338,6 +408,7 @@ export function TerminalPanel(props: {
                         isPanelCollapsed={!props.isVisible}
                         focusRequestId={focusRequestId}
                         pendingTerminalFocusRef={pendingTerminalFocusRef}
+                        onStartupCommandSent={scheduleListingRefresh}
                         onStateChange={updateTabState}
                     />
                 ))}
@@ -358,7 +429,7 @@ function TerminalTabActions(props: {
     isPickerOpen: boolean;
     tabs: TerminalTab[];
     activeTabId: number | null;
-    onCreate: (target: ActiveTerminalTarget) => void;
+    onCreate: (target: TerminalCreationTarget) => void;
     onPickerOpenChange: (isOpen: boolean) => void;
     onClose: (tabId: number) => void;
     onRestart: (tabId: number) => void;
@@ -521,6 +592,7 @@ type TerminalSessionProps = {
     isPanelCollapsed: boolean;
     focusRequestId: number;
     pendingTerminalFocusRef: React.RefObject<boolean>;
+    onStartupCommandSent: (target: BrowserListingRefreshTarget) => void;
     onStateChange: (tabId: number, state: TerminalState) => void;
 };
 
@@ -581,6 +653,12 @@ function connectTerminal(props: {
         }
         if (message.type === "ready") {
             props.isReadyRef.current = true;
+            props.resources.startupCommand?.reserve(
+                socket,
+                () =>
+                    props.generationRef.current === props.generation &&
+                    props.resources.socketRef.current === socket,
+            );
             props.updateTerminalState({ type: "connected" });
             return;
         }
@@ -596,6 +674,7 @@ function connectTerminal(props: {
 
     /** Distinguishes setup loss from an established shell disconnect. */
     const handleClose = () => {
+        props.resources.startupCommand?.cancelPending();
         if (
             props.generationRef.current !== props.generation ||
             props.stateRef.current.type === "disconnected"
@@ -632,12 +711,25 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
     const resolvedTheme = useResolvedTheme();
     const hostRef = React.useRef<HTMLDivElement | null>(null);
     const stateRef = React.useRef<TerminalState>(props.tab.state);
+    const startupCommandRef = React.useRef<OneShotTerminalCommand | null>(null);
+    if (
+        startupCommandRef.current === null &&
+        props.tab.startupCommand !== null &&
+        props.tab.refreshTarget !== null
+    ) {
+        const refreshTarget = props.tab.refreshTarget;
+        startupCommandRef.current = new OneShotTerminalCommand(
+            props.tab.startupCommand,
+            () => props.onStartupCommandSent(refreshTarget),
+        );
+    }
     const resources: TerminalResources = {
         terminalRef: React.useRef<GhosttyTerminal | null>(null),
         fitAddonRef: React.useRef<GhosttyFitAddon | null>(null),
         socketRef: React.useRef<WebSocket | null>(null),
         terminalDisposablesRef: React.useRef<IDisposable[]>([]),
         removeSocketListenersRef: React.useRef<(() => void) | null>(null),
+        startupCommand: startupCommandRef.current,
     };
     const generationRef = React.useRef(0);
     const restartGenerationRef = React.useRef(props.tab.restartGeneration);

@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import {
@@ -30,7 +31,11 @@ import {
     getPathLoadError,
     sortFileEntries,
 } from "#ui/components/browser/utils";
-import { fileContentQueryOptions } from "#ui/queries";
+import {
+    browserListingQueryOptions,
+    fileContentQueryOptions,
+    queryKeys,
+} from "#ui/queries";
 import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
@@ -79,7 +84,16 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         // Missing paths still resolve the route so breadcrumbs stay available for correction.
         try {
-            const lsResult: LsResponse = await agent.ls(path);
+            const lsResult: LsResponse = await context.queryClient.fetchQuery({
+                ...browserListingQueryOptions(agent, path),
+                // Route invalidation is an explicit refresh even if the mounted listing is retained.
+                staleTime: 0,
+            });
+            // Canonicalize the cache identity so aliases refresh the listing the route actually displays.
+            context.queryClient.setQueryData(
+                queryKeys.browserListing(agent.id, lsResult.path),
+                lsResult,
+            );
             const downloadUrl = isLsFileResponse(lsResult)
                 ? agent.getRawUrl(lsResult.path)
                 : undefined;
@@ -330,10 +344,17 @@ function DirectoryBrowserPage(props: {
     view?: "details" | "edit" | "diff" | "sync";
 }) {
     const [userState, setUserState] = useUserState();
+    const listingQuery = useQuery(
+        browserListingQueryOptions(props.agent, props.lsResult.path),
+    );
+    const lsResult =
+        listingQuery.data && isLsDirectoryResponse(listingQuery.data)
+            ? listingQuery.data
+            : props.lsResult;
     const showHiddenFiles = userState.showHiddenFiles;
     const visibleFiles = showHiddenFiles
-        ? props.lsResult.files
-        : props.lsResult.files.filter((file) => !file.name.startsWith("."));
+        ? lsResult.files
+        : lsResult.files.filter((file) => !file.name.startsWith("."));
     const directories = sortFileEntries(
         visibleFiles.filter((file) => file.type === "directory"),
     );
@@ -368,43 +389,43 @@ function DirectoryBrowserPage(props: {
                 />
             ) : activeView === "sync" ? (
                 <SyncView
-                    key={`${props.agentId}:${props.lsResult.path}`}
+                    key={`${props.agentId}:${lsResult.path}`}
                     api={props.api}
                     sourceAgent={props.agent}
                     agents={props.agents}
-                    sourcePath={props.lsResult.path}
+                    sourcePath={lsResult.path}
                     entryType="directory"
                 />
             ) : (
                 <>
                     <UploadQueue
                         agentId={props.agentId}
-                        destinationPath={props.path}
+                        destinationPath={lsResult.path}
                     />
                     <SelectedFilesCard
                         api={props.api}
                         agents={props.agents}
                         destinationAgent={props.agent}
-                        directoryPath={props.path}
-                        destinationFileNames={props.lsResult.files.map(
+                        directoryPath={lsResult.path}
+                        destinationFileNames={lsResult.files.map(
                             (file) => file.name,
                         )}
                     />
                     <FileList
-                        key={props.path}
+                        key={lsResult.path}
                         agent={props.agent}
                         agentId={props.agentId}
                         agentName={props.agentName}
-                        directoryPath={props.path}
+                        directoryPath={lsResult.path}
                         files={[...directories, ...regularFiles]}
                         mountPoint={getMountPointForPath(
                             props.mountPoints,
-                            props.path,
+                            lsResult.path,
                         )}
                         actions={
                             <DirectoryFilesActions
                                 agent={props.agent}
-                                directoryPath={props.path}
+                                directoryPath={lsResult.path}
                                 showHiddenFiles={showHiddenFiles}
                                 onToggleHiddenFiles={() =>
                                     setUserState((current) => ({

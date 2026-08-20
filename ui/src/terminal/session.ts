@@ -9,6 +9,7 @@ import type {
 import type { TerminalClientMessage } from "#ui/api-client";
 import { initializeGhostty } from "#ui/terminal/ghostty";
 import { getTerminalTheme } from "#ui/terminal/theme";
+import type { OneShotTerminalCommand } from "#ui/terminal/one-shot-command";
 
 /** Groups mutable browser resources so teardown can release them consistently. */
 export type TerminalResources = {
@@ -17,6 +18,7 @@ export type TerminalResources = {
     socketRef: React.RefObject<WebSocket | null>;
     terminalDisposablesRef: React.RefObject<IDisposable[]>;
     removeSocketListenersRef: React.RefObject<(() => void) | null>;
+    startupCommand: OneShotTerminalCommand | null;
 };
 
 type GhosttyModule = Awaited<ReturnType<typeof initializeGhostty>>;
@@ -98,6 +100,7 @@ export function disposeTerminalResources(props: {
     isReadyRef: React.RefObject<boolean>;
     appliedThemeRef: React.RefObject<"dark" | "light" | null>;
 }) {
+    props.resources.startupCommand?.cancelPending();
     const socket = props.resources.socketRef.current;
     props.resources.socketRef.current = null;
     props.resources.removeSocketListenersRef.current?.();

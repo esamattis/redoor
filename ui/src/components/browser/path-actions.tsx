@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
+    ArchiveRestore,
     Download,
     ExternalLink,
     LoaderCircle,
@@ -281,6 +282,8 @@ function PathActionMenuItems(props: {
     downloadUrl?: string;
     downloadName?: string;
     onDownloadDirectory?: () => void;
+    showUnarchive?: boolean;
+    onUnarchive?: () => void;
     onDelete?: () => void;
     deleteDisabled?: boolean;
 }) {
@@ -338,6 +341,17 @@ function PathActionMenuItems(props: {
                     </ActionMenuButton>
                 )
             ) : null}
+            {props.showUnarchive && props.onUnarchive ? (
+                <ActionMenuButton
+                    onClick={() => {
+                        props.close();
+                        props.onUnarchive?.();
+                    }}
+                >
+                    <ArchiveRestore className="h-4 w-4 text-slate-400" />
+                    Unarchive
+                </ActionMenuButton>
+            ) : null}
             {props.showSelect ? (
                 <SelectPathMenuButton
                     agent={props.agent}
@@ -391,6 +405,8 @@ export function PathActionMenu(props: {
     downloadUrl?: string;
     downloadName?: string;
     onDownloadDirectory?: () => void;
+    showUnarchive?: boolean;
+    onUnarchive?: () => void;
     onDelete?: () => void;
 }) {
     const canModify = getImmediateParentPath(props.path) !== null;
@@ -436,6 +452,8 @@ export function PathActionMenu(props: {
                                         onDownloadDirectory={
                                             props.onDownloadDirectory
                                         }
+                                        showUnarchive={props.showUnarchive}
+                                        onUnarchive={props.onUnarchive}
                                         onDelete={props.onDelete}
                                         deleteDisabled={!canModify}
                                     />

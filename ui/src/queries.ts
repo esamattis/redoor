@@ -14,6 +14,8 @@ export const queryKeys = {
      */
     fileContent: (agentId: string, path: string) =>
         [...queryKeys.all, "file-content", agentId, path] as const,
+    browserListing: (agentId: string, path: string) =>
+        [...queryKeys.all, "agents", agentId, "browser-listing", path] as const,
     fileSearch: (
         agentId: string,
         path: string,
@@ -75,6 +77,15 @@ export function fileContentQueryOptions(agent: Agent, path: string) {
             const response = await agent.download(path);
             return response.text();
         },
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares one canonical browser listing so background actions can refresh its mounted view. */
+export function browserListingQueryOptions(agent: Agent, path: string) {
+    return queryOptions({
+        queryKey: queryKeys.browserListing(agent.id, path),
+        queryFn: () => agent.ls(path),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }
