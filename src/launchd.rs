@@ -11,14 +11,13 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use anyhow::Context;
 use anyhow::{Result, bail};
-use clap::Args;
+use clap::{Args, Subcommand};
 #[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 use crate::ServiceRole;
 #[cfg(target_os = "macos")]
-use crate::service_management::InstallArgs;
-use crate::service_management::ServiceCommand;
+use crate::service_management::{DisableArgs, InstallArgs};
 
 /// Arguments for role-scoped `redoor agent|server launchd` management.
 #[derive(Args)]
@@ -29,7 +28,30 @@ pub(crate) struct LaunchdArgs {
     verbose: bool,
     /// Selects the launchd operation while keeping service targeting consistent.
     #[command(subcommand)]
-    command: ServiceCommand,
+    command: LaunchdCommand,
+}
+
+/// Operations supported by macOS LaunchAgent management.
+#[derive(Subcommand)]
+enum LaunchdCommand {
+    /// Install and enable the service, remaining stopped unless requested.
+    Install(InstallArgs),
+    /// Stop, disable, and remove the service while preserving its config.
+    Uninstall,
+    /// Start the installed service.
+    Start,
+    /// Stop the installed service while leaving it enabled for future startup.
+    Stop,
+    /// Reload and restart the installed service.
+    Restart,
+    /// Show installation, enablement, and process state.
+    Status,
+    /// Enable the installed service without starting it.
+    Enable,
+    /// Disable automatic startup, optionally stopping the service now.
+    Disable(DisableArgs),
+    /// Replace a stale ad-hoc identity so macOS asks for Local Network access again.
+    RefreshLocalNetworkPermission,
 }
 
 /// Runs one macOS LaunchAgent operation for the invoking non-root user.
@@ -44,28 +66,31 @@ pub(crate) async fn run(args: LaunchdArgs, role: ServiceRole) -> Result<()> {
     {
         ensure_non_root()?;
         match args.command {
-            ServiceCommand::Install(install_args) => {
+            LaunchdCommand::Install(install_args) => {
                 install(install_args, role, args.verbose).await
             }
-            ServiceCommand::Uninstall => uninstall(role, args.verbose).await,
-            ServiceCommand::Start => manage_service(role, ServiceAction::Start, args.verbose).await,
-            ServiceCommand::Stop => manage_service(role, ServiceAction::Stop, args.verbose).await,
-            ServiceCommand::Restart => {
+            LaunchdCommand::Uninstall => uninstall(role, args.verbose).await,
+            LaunchdCommand::Start => manage_service(role, ServiceAction::Start, args.verbose).await,
+            LaunchdCommand::Stop => manage_service(role, ServiceAction::Stop, args.verbose).await,
+            LaunchdCommand::Restart => {
                 manage_service(role, ServiceAction::Restart, args.verbose).await
             }
-            ServiceCommand::Status => {
+            LaunchdCommand::Status => {
                 manage_service(role, ServiceAction::Status, args.verbose).await
             }
-            ServiceCommand::Enable => {
+            LaunchdCommand::Enable => {
                 manage_service(role, ServiceAction::Enable, args.verbose).await
             }
-            ServiceCommand::Disable(disable) => {
+            LaunchdCommand::Disable(disable) => {
                 manage_service(
                     role,
                     ServiceAction::Disable { now: disable.now },
                     args.verbose,
                 )
                 .await
+            }
+            LaunchdCommand::RefreshLocalNetworkPermission => {
+                refresh_local_network_permission(role).await
             }
         }
     }
@@ -180,6 +205,157 @@ async fn uninstall(role: ServiceRole, verbose: bool) -> Result<()> {
         println!("LaunchAgent '{service}' is already uninstalled; configuration was preserved.");
     }
     Ok(())
+}
+
+/// Gives an ad-hoc-signed executable a fresh identity so macOS prompts again.
+#[cfg(target_os = "macos")]
+async fn refresh_local_network_permission(role: ServiceRole) -> Result<()> {
+    let service = service_name(role)?;
+    let plist_path = launch_agent_path(&service)?;
+    ensure_plist_exists(&plist_path, &service, role).await?;
+
+    let plist = plist_path.to_string_lossy().into_owned();
+    let binary_output = run_logged_output(
+        "plutil",
+        &[
+            "-extract".to_string(),
+            "ProgramArguments.0".to_string(),
+            "raw".to_string(),
+            "-o".to_string(),
+            "-".to_string(),
+            plist,
+        ],
+    )
+    .await?;
+    let binary = PathBuf::from(String::from_utf8(binary_output.stdout)?.trim());
+    if binary.as_os_str().is_empty() {
+        bail!(
+            "LaunchAgent '{}' does not contain an executable path",
+            plist_path.display()
+        );
+    }
+
+    let binary_argument = binary.to_string_lossy().into_owned();
+    let signature =
+        run_logged_output("codesign", &["-dvv".to_string(), binary_argument.clone()]).await?;
+    let signature_details = String::from_utf8_lossy(&signature.stderr);
+    if signature_has_team_identifier(&signature_details) {
+        bail!(
+            "Refusing to replace the Developer ID signature on '{}'",
+            binary.display()
+        );
+    }
+
+    let temporary = local_network_signature_temp_path(&binary)?;
+    let prepare_result = prepare_local_network_signature(&binary, &temporary).await;
+    if let Err(error) = prepare_result {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+
+    let target = service_target(&service);
+    let print_arguments = ["print".to_string(), target.clone()];
+    let loaded = match run_logged_status("launchctl", &print_arguments).await {
+        Ok(status) => status.success(),
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error);
+        }
+    };
+    if loaded
+        && let Err(error) =
+            run_logged_command("launchctl", &["bootout".to_string(), target.clone()]).await
+    {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+
+    if let Err(error) = tokio::fs::rename(&temporary, &binary).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error).with_context(|| {
+            format!(
+                "Failed to atomically replace '{}' with the refreshed executable",
+                binary.display()
+            )
+        });
+    }
+    run_logged_command(
+        "launchctl",
+        &[
+            "bootstrap".to_string(),
+            user_domain(),
+            plist_path.to_string_lossy().into_owned(),
+        ],
+    )
+    .await?;
+    println!("Select Allow when macOS asks whether Redoor may find devices on local networks.");
+    Ok(())
+}
+
+/// Creates and verifies the replacement before the running service is stopped.
+#[cfg(target_os = "macos")]
+async fn prepare_local_network_signature(binary: &Path, temporary: &Path) -> Result<()> {
+    tokio::fs::copy(binary, temporary).await.with_context(|| {
+        format!(
+            "Failed to copy '{}' to temporary executable '{}'",
+            binary.display(),
+            temporary.display()
+        )
+    })?;
+    let identifier = format!("local.redoor.network.{}", uuid::Uuid::new_v4().simple());
+    let temporary_argument = temporary.to_string_lossy().into_owned();
+    run_logged_command(
+        "codesign",
+        &[
+            "--force".to_string(),
+            "--sign".to_string(),
+            "-".to_string(),
+            "--identifier".to_string(),
+            identifier,
+            temporary_argument.clone(),
+        ],
+    )
+    .await?;
+    run_logged_command(
+        "codesign",
+        &[
+            "--verify".to_string(),
+            "--verbose=2".to_string(),
+            temporary_argument,
+        ],
+    )
+    .await?;
+    tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(temporary)
+        .await
+        .with_context(|| format!("Failed to open signed executable '{}'", temporary.display()))?
+        .sync_all()
+        .await
+        .with_context(|| format!("Failed to sync signed executable '{}'", temporary.display()))
+}
+
+/// Places the replacement beside the destination so the final rename is atomic.
+#[cfg(target_os = "macos")]
+fn local_network_signature_temp_path(binary: &Path) -> Result<PathBuf> {
+    let file_name = binary
+        .file_name()
+        .context("LaunchAgent executable path has no file name")?
+        .to_string_lossy();
+    Ok(binary.with_file_name(format!(
+        ".{file_name}.local-network.{}.{}",
+        std::process::id(),
+        fastrand::u64(..)
+    )))
+}
+
+/// Distinguishes publisher-signed releases from ad-hoc signatures safely replaceable here.
+#[cfg(any(target_os = "macos", test))]
+fn signature_has_team_identifier(details: &str) -> bool {
+    details.lines().any(|line| {
+        line.strip_prefix("TeamIdentifier=")
+            .is_some_and(|team| !team.is_empty() && team != "not set")
+    })
 }
 
 /// Supported launchctl lifecycle operations.
@@ -581,6 +757,69 @@ async fn run_command(program: &str, arguments: &[&str], verbose: bool) -> Result
     )
 }
 
+/// Runs a visible command used by the operator-requested permission repair.
+#[cfg(target_os = "macos")]
+async fn run_logged_command(program: &str, arguments: &[String]) -> Result<()> {
+    println!("Executing: {}", format_command(program, arguments));
+    let status = Command::new(program)
+        .args(arguments)
+        .status()
+        .await
+        .with_context(|| format!("Failed to run {program}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!(
+        "{} failed with {status}",
+        format_command(program, arguments)
+    )
+}
+
+/// Captures command output while still showing exactly what Redoor executes.
+#[cfg(target_os = "macos")]
+async fn run_logged_output(program: &str, arguments: &[String]) -> Result<std::process::Output> {
+    println!("Executing: {}", format_command(program, arguments));
+    let output = Command::new(program)
+        .args(arguments)
+        .output()
+        .await
+        .with_context(|| format!("Failed to run {program}"))?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    bail!(
+        "{} failed with {}: {}",
+        format_command(program, arguments),
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
+}
+
+/// Returns status for a logged probe whose non-zero result can be expected state.
+#[cfg(target_os = "macos")]
+async fn run_logged_status(
+    program: &str,
+    arguments: &[String],
+) -> Result<std::process::ExitStatus> {
+    println!("Executing: {}", format_command(program, arguments));
+    Command::new(program)
+        .args(arguments)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .with_context(|| format!("Failed to run {program}"))
+}
+
+/// Formats logged commands unambiguously without relying on shell interpolation.
+#[cfg(any(target_os = "macos", test))]
+fn format_command(program: &str, arguments: &[String]) -> String {
+    std::iter::once(program.to_string())
+        .chain(arguments.iter().map(|argument| format!("{argument:?}")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Runs a command with visible streams only when launchd diagnostics were requested.
 #[cfg(target_os = "macos")]
 async fn run_status_command(
@@ -603,8 +842,9 @@ async fn run_status_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        LaunchdProcessState, ServiceRole, escape_xml, format_status, parse_enabled_override,
-        parse_process_state, render_plist, service_name,
+        LaunchdProcessState, ServiceRole, escape_xml, format_command, format_status,
+        parse_enabled_override, parse_process_state, render_plist, service_name,
+        signature_has_team_identifier,
     };
     use std::path::Path;
 
@@ -737,6 +977,41 @@ pid = 1234",
             parse_enabled_override("redoor-agent", older_output),
             Some(true),
             "the older false representation means the disabled selection is clear"
+        );
+    }
+
+    /// Ensures only a real signing team prevents the ad-hoc repair operation.
+    #[test]
+    fn detects_publisher_signed_executables() {
+        assert!(
+            signature_has_team_identifier(
+                "Identifier=fi.example.redoor
+TeamIdentifier=ABCDE12345"
+            ),
+            "a Developer ID team must protect the publisher signature from replacement"
+        );
+        assert!(
+            !signature_has_team_identifier(
+                "Identifier=redoor-123
+TeamIdentifier=not set"
+            ),
+            "an ad-hoc signature should remain eligible for the permission repair"
+        );
+    }
+
+    /// Keeps command logs explicit about argument boundaries and paths containing spaces.
+    #[test]
+    fn formats_executed_commands() {
+        assert_eq!(
+            format_command(
+                "codesign",
+                &[
+                    "--verify".to_string(),
+                    "/Users/test user/bin/redoor".to_string()
+                ]
+            ),
+            "codesign \"--verify\" \"/Users/test user/bin/redoor\"",
+            "logged commands should preserve every argument as a distinct quoted value"
         );
     }
 }

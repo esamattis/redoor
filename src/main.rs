@@ -725,6 +725,26 @@ mod tests {
             "server launchd install should accept explicit startup"
         );
         assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "launchd",
+                "refresh-local-network-permission"
+            ])
+            .is_ok(),
+            "launchd should expose the macOS Local Network permission repair"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "redoor",
+                "agent",
+                "systemd",
+                "refresh-local-network-permission"
+            ])
+            .is_err(),
+            "the macOS-specific repair must not appear under systemd"
+        );
+        assert!(
             Cli::try_parse_from(["redoor", "server", "launchd", "--verbose", "start"]).is_ok()
                 && Cli::try_parse_from(["redoor", "server", "launchd", "start", "--verbose",])
                     .is_ok(),
