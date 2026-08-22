@@ -147,7 +147,7 @@ export function RouteError(
             role="alert"
             className="flex min-h-full items-center justify-center p-6"
         >
-            <div className="w-full max-w-xl rounded-xl border border-red-900/60 bg-[#141821] shadow-lg shadow-black/40">
+            <div className="w-full max-w-xl rounded-xl border border-red-900/60 bg-[#141821]">
                 <div className="border-b border-red-900/40 px-5 py-4">
                     <div className="flex items-start gap-3">
                         <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-400">
@@ -218,7 +218,7 @@ export function RouteError(
                                 <div className="space-y-3 border-t border-slate-800 px-3 py-3">
                                     {responseBody ? (
                                         <div>
-                                            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                            <p className="mb-1 text-[11px] font-medium text-slate-500">
                                                 Response body
                                             </p>
                                             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-400">
@@ -228,7 +228,7 @@ export function RouteError(
                                     ) : null}
                                     {stack ? (
                                         <div>
-                                            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                            <p className="mb-1 text-[11px] font-medium text-slate-500">
                                                 Stack
                                             </p>
                                             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-400">
@@ -238,7 +238,7 @@ export function RouteError(
                                     ) : null}
                                     {componentStack ? (
                                         <div>
-                                            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                            <p className="mb-1 text-[11px] font-medium text-slate-500">
                                                 Component stack
                                             </p>
                                             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-500">

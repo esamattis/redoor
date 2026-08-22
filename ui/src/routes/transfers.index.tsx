@@ -23,8 +23,8 @@ function TransfersPage() {
         <div className="p-4 sm:p-8">
             <div className="mx-auto max-w-7xl">
                 <div className="mb-6 flex items-center gap-3">
-                    <ArrowLeftRight className="h-6 w-6 shrink-0 text-blue-400" />
-                    <h1 className="text-2xl font-bold text-slate-100">
+                    <ArrowLeftRight className="h-6 w-6 shrink-0 text-slate-400" />
+                    <h1 className="text-2xl font-semibold text-slate-100">
                         Transfer history
                     </h1>
                 </div>

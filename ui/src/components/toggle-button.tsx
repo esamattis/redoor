@@ -20,7 +20,7 @@ type ToggleButtonProps = Omit<
 
 const variantClasses = {
     outline:
-        "rounded-md border aria-[pressed=true]:border-blue-500 aria-[pressed=true]:bg-blue-500/15 aria-[pressed=true]:text-blue-300 aria-[pressed=false]:border-slate-700 aria-[pressed=false]:bg-slate-900 aria-[pressed=false]:text-slate-400 aria-[pressed=false]:hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+        "rounded-md border aria-[pressed=true]:border-slate-400 aria-[pressed=true]:bg-slate-800 aria-[pressed=true]:text-slate-100 aria-[pressed=false]:border-slate-700 aria-[pressed=false]:bg-transparent aria-[pressed=false]:text-slate-400 aria-[pressed=false]:hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
     subtle: "rounded-md font-medium text-slate-400 hover:bg-white/5 hover:text-slate-100 aria-pressed:bg-slate-800 aria-pressed:text-slate-200",
 } satisfies Record<ToggleButtonVariant, string>;
 

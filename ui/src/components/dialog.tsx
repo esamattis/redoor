@@ -59,8 +59,8 @@ export function Dialog(props: {
             ref={panelRef}
             className={
                 isAnchored
-                    ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
-                    : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 text-left shadow-2xl shadow-black/40"
+                    ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3"
+                    : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 text-left"
             }
             style={
                 isAnchored && anchorPosition

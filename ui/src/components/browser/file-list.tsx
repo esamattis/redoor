@@ -613,7 +613,7 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
             >
                 {props.state.status === "searching" ? (
                     <>
-                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-blue-400" />
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-slate-400" />
                         Updating results...
                     </>
                 ) : (
@@ -659,12 +659,12 @@ function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
                                     className="group flex items-start gap-2 px-2 py-1.5 transition-colors hover:bg-white/5 sm:gap-3 sm:px-3 sm:py-2"
                                 >
                                     {isDirectory ? (
-                                        <Folder className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
+                                        <Folder className="mt-0.5 h-5 w-5 shrink-0 text-slate-300" />
                                     ) : (
                                         <File className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
                                     )}
                                     <span className="min-w-0">
-                                        <span className="block font-medium text-blue-400 group-hover:underline">
+                                        <span className="block font-medium text-slate-100 group-hover:underline">
                                             {entry.name}
                                         </span>
                                         <span className="block truncate font-mono text-xs text-slate-500">
@@ -898,7 +898,7 @@ function FileEntryActions(props: {
                         href={downloadUrl}
                         download={downloadName}
                         onClick={() => setIsDownloadDialogOpen(false)}
-                        className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500"
+                        className="inline-flex items-center gap-2 rounded bg-[var(--app-primary)] px-4 py-2 font-medium text-[var(--app-primary-ink)] hover:bg-[var(--app-primary-hover)]"
                     >
                         <Download className="h-4 w-4" />
                         Download .tar.gz
@@ -972,7 +972,7 @@ function FileEntry(props: {
             </td>
             <td className="p-1.5 sm:p-2">
                 {isDirectory ? (
-                    <Folder className="h-5 w-5 text-blue-400" />
+                    <Folder className="h-5 w-5 text-slate-300" />
                 ) : (
                     <File className="h-5 w-5 text-slate-500" />
                 )}
@@ -981,7 +981,7 @@ function FileEntry(props: {
                 <Link
                     to={agent.getBrowserUrl(fullPath)}
                     data-keyboard-focus-entry="true"
-                    className="block min-w-0 truncate font-medium text-blue-400 hover:underline"
+                    className="block min-w-0 truncate font-medium text-slate-100 hover:underline"
                 >
                     {entry.name}
                 </Link>

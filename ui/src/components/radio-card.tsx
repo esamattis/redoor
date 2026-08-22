@@ -46,8 +46,8 @@ export function RadioCardOption(props: {
         "cursor-pointer rounded-lg border px-4 py-3 transition has-[:disabled]:cursor-default",
         props.checked
             ? props.layout === "compact"
-                ? "border-blue-500/60 bg-blue-500/10 text-slate-300"
-                : "border-blue-500/60 bg-blue-500/10"
+                ? "border-slate-400 bg-slate-900 text-slate-200"
+                : "border-slate-400 bg-slate-900"
             : props.layout === "compact"
               ? "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-slate-600 has-[:disabled]:hover:border-slate-700"
               : "border-slate-700 bg-slate-950/50 hover:border-slate-600 has-[:disabled]:hover:border-slate-700",
@@ -64,7 +64,7 @@ export function RadioCardOption(props: {
             disabled={props.disabled}
             onChange={props.onChange}
             className={twMerge(
-                "h-4 w-4 accent-blue-500",
+                "h-4 w-4 accent-slate-100",
                 props.layout === "descriptive" && "mt-0.5",
             )}
         />

@@ -458,7 +458,7 @@ function TerminalTabActions(props: {
                             key={tab.id}
                             className={`flex shrink-0 items-center overflow-hidden rounded-md border transition-colors ${
                                 isActive
-                                    ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
+                                    ? "border-slate-400 bg-slate-700"
                                     : "border-slate-700 bg-slate-900"
                             }`}
                             title={`${tab.title}: ${tab.cwd}`}
@@ -507,7 +507,7 @@ function TerminalTabActions(props: {
                                     type="button"
                                     label={`Restart ${tab.title}`}
                                     onClick={() => props.onRestart(tab.id)}
-                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-blue-400 transition-colors hover:bg-blue-500/10 hover:text-blue-300"
+                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-300 transition-colors hover:bg-white/5 hover:text-slate-100"
                                 >
                                     <RotateCcw className="h-3.5 w-3.5" />
                                 </IconButton>
@@ -1036,7 +1036,7 @@ function TerminalSession(props: TerminalSessionProps) {
             {props.tab.state.type === "disconnected" ? (
                 <div
                     role="alert"
-                    className="absolute inset-x-0 bottom-0 rounded-md border border-red-500/20 bg-[#161018]/95 px-3 py-2 text-sm text-red-300 shadow-lg"
+                    className="absolute inset-x-0 bottom-0 rounded-md border border-red-500/20 bg-[#161018]/95 px-3 py-2 text-sm text-red-300"
                 >
                     {props.tab.state.message}
                 </div>

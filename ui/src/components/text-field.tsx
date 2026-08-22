@@ -28,7 +28,7 @@ export function TextField(props: {
                 >
                     {props.label}
                 </label>
-                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                <span className="text-xs font-medium text-slate-500">
                     {props.required ? "Required" : "Optional"}
                 </span>
             </div>

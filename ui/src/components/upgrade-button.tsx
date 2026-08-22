@@ -108,7 +108,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2
                     id="agent-upgrade-title"
-                    className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300"
+                    className="flex items-center gap-2 text-sm font-medium text-slate-300"
                 >
                     <PackageOpen
                         className="h-5 w-5 text-slate-400"

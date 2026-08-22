@@ -79,7 +79,7 @@ export function SideMenu(props: {
             </aside>
             {!isPersistent && props.isOpen ? (
                 <div
-                    className="fixed inset-0 z-50 bg-black/60"
+                    className="fixed inset-0 z-50 bg-black/44"
                     role="dialog"
                     aria-modal="true"
                     aria-label={props.label}
@@ -93,7 +93,7 @@ export function SideMenu(props: {
                         ref={drawerRef}
                         id={props.drawerId}
                         tabIndex={-1}
-                        className={`absolute ${edgeClass} flex h-full w-72 max-w-[85vw] flex-col overflow-y-auto ${borderClass} border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/50`}
+                        className={`absolute ${edgeClass} flex h-full w-72 max-w-[85vw] flex-col overflow-y-auto ${borderClass} border-slate-700 bg-[#11141b] p-3`}
                     >
                         <div
                             className={`mb-2 flex ${props.placement === "left" ? "justify-end" : "justify-start"}`}

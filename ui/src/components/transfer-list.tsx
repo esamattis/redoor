@@ -267,11 +267,7 @@ export function TransferList(props: {
                                 </td>
                                 <td className="whitespace-nowrap p-3">
                                     <span
-                                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
-                                            transfer.direction === "upload"
-                                                ? "bg-blue-500/15 text-blue-300"
-                                                : "bg-emerald-500/15 text-emerald-300"
-                                        }`}
+                                        className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200"
                                     >
                                         {transfer.direction === "upload" ? (
                                             <ArrowUpFromLine className="h-3.5 w-3.5" />
@@ -304,7 +300,7 @@ export function TransferList(props: {
                                                             transfer.source
                                                                 ?.path ?? "",
                                                         )}
-                                                        className="text-blue-400 hover:underline"
+                                                        className="text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                                                         title={
                                                             transfer.source
                                                                 ?.path
@@ -326,7 +322,7 @@ export function TransferList(props: {
                                                             transfer.dest
                                                                 ?.path ?? "",
                                                         )}
-                                                        className="text-blue-400 hover:underline"
+                                                        className="text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                                                         title={
                                                             transfer.dest?.path
                                                         }
@@ -345,7 +341,7 @@ export function TransferList(props: {
                                                     to={agent.getBrowserUrl(
                                                         transfer.path,
                                                     )}
-                                                    className="text-blue-400 hover:underline"
+                                                    className="text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                                                     title={transfer.path}
                                                 >
                                                     {transfer.path}

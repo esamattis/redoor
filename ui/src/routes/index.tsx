@@ -173,8 +173,8 @@ server = ${JSON.stringify(serverAddress)}
         <div className="p-8">
             <div className="mx-auto max-w-3xl">
                 <div className="mb-6 flex items-center gap-3">
-                    <Server className="h-6 w-6 text-blue-400" />
-                    <h1 className="text-2xl font-bold text-slate-100">
+                    <Server className="h-6 w-6 text-slate-400" />
+                    <h1 className="text-2xl font-semibold text-slate-100">
                         Server
                     </h1>
                 </div>

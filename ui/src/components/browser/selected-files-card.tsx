@@ -374,7 +374,7 @@ function SelectedFilesTransferButton(props: {
                 onClick={props.trigger.start}
                 aria-label={props.trigger.labels.buttonAriaLabel}
                 size="sm"
-                className="h-9 rounded-md px-3.5 py-0 font-semibold shadow-sm shadow-blue-950/30"
+                className="h-9 rounded-md px-3.5 py-0 font-medium"
             >
                 <props.trigger.labels.Icon className="h-3.5 w-3.5" />
                 {props.trigger.labels.buttonLabel}
@@ -609,9 +609,9 @@ export function SelectedFilesCard(props: {
                         {(moveTrigger) => (
                             <section
                                 aria-label="Selected files actions"
-                                className="mb-3 flex h-14 min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-blue-500/25 bg-blue-500/5 px-2 sm:gap-3 sm:px-3"
+                                className="mb-3 flex h-14 min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-slate-800 bg-slate-900 px-2 sm:gap-3 sm:px-3"
                             >
-                                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-300">
+                                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-300">
                                     <Files
                                         className="h-4 w-4"
                                         aria-hidden="true"

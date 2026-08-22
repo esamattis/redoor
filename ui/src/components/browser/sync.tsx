@@ -86,7 +86,7 @@ export function AgentPathFields(props: {
                 ) : (
                     <a
                         href={props.viewHref}
-                        className="pb-3 text-sm font-medium text-blue-400 underline decoration-blue-400/50 underline-offset-4 transition-colors hover:text-blue-300 hover:decoration-blue-300 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        className="pb-3 text-sm font-medium text-slate-200 underline decoration-slate-500 underline-offset-4 transition-colors hover:text-slate-100 hover:decoration-slate-300 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                         onClick={(event) => {
                             // Keep unmodified left-click in-app; middle/modified clicks use the href.
                             if (
@@ -638,7 +638,7 @@ function SyncActionBar(props: { workspace: SyncWorkspace }) {
                     disabled={workspace.isBusy || !workspace.selectedAgentId}
                     isLoading={workspace.copyInFlight}
                     onClick={() => workspace.setConfirmationOperation("copy")}
-                    className="rounded-md text-sm font-semibold shadow-sm shadow-blue-950/30"
+                    className="rounded-md text-sm font-medium"
                 >
                     {workspace.copyInFlight ? (
                         <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -852,11 +852,11 @@ export function SyncView(props: {
 
     return (
         <DetailCard>
-            <header className="border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+            <header className="border-b border-slate-800 p-6 md:p-8">
+                <p className="mb-1 text-xs font-medium text-slate-500">
                     Sync {entryLabel}
                 </p>
-                <h1 className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl">
+                <h1 className="break-all text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
                     {props.sourcePath.split("/").filter(Boolean).pop() ?? "/"}
                 </h1>
                 <p className="mt-3 max-w-3xl text-sm text-slate-400">

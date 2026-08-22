@@ -85,7 +85,7 @@ export function CopyableCodeRow(props: {
                 />
             ) : null}
             <div className="relative flex items-center justify-between gap-3 border-b border-slate-800/80 px-3 py-1.5">
-                <span className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-500">
+                <span className="font-mono text-xs font-medium text-slate-500">
                     {props.label}
                 </span>
                 <Button
@@ -160,7 +160,7 @@ export function CopyablePath(props: {
                 <Link
                     to={props.to}
                     aria-label={props.linkAriaLabel}
-                    className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-blue-300 underline decoration-blue-400/30 underline-offset-2 hover:text-blue-200 hover:decoration-blue-300"
+                    className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-slate-200 underline decoration-slate-500 underline-offset-2 hover:text-slate-100 hover:decoration-slate-400"
                 >
                     {props.value}
                 </Link>

@@ -51,7 +51,7 @@ function FileEditActions(props: {
                     disabled={!props.canEdit || !props.isDirty}
                     isLoading={props.isSaving}
                     size="sm"
-                    className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
+                    className="rounded-md px-3.5 font-medium"
                 >
                     <Save className="h-4 w-4" aria-hidden="true" />
                     {props.isSaving ? "Saving..." : "Save"}
@@ -314,7 +314,7 @@ export function FileEditView(props: {
         <div className="flex min-h-0 flex-1 flex-col">
             <article
                 aria-label="Editing panel"
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20 ${
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden border border-slate-800 bg-[#11141b] ${
                     isFullWindow
                         ? "fixed inset-0 z-[60] rounded-none"
                         : "rounded-lg"
@@ -446,15 +446,15 @@ export function FileImageView(props: {
 }) {
     return (
         <div>
-            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
                 <header className="border-b border-slate-800 p-6 md:p-8">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                    <p className="mb-1 text-xs font-medium text-slate-500">
                         Image
                     </p>
                     <div className="flex flex-wrap items-center gap-3">
                         <h1
                             aria-label="File name"
-                            className="min-w-0 break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                            className="min-w-0 break-all text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl"
                         >
                             {props.fileName}
                         </h1>

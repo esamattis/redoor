@@ -2,17 +2,22 @@
 
 :root {
     color-scheme: light dark;
-    --color-slate-50: light-dark(#020617, #f8fafc);
-    --color-slate-100: light-dark(#0f172a, #f1f5f9);
-    --color-slate-200: light-dark(#1e293b, #e2e8f0);
-    --color-slate-300: light-dark(#334155, #cbd5e1);
-    --color-slate-400: light-dark(#475569, #94a3b8);
-    --color-slate-500: #64748b;
-    --color-slate-600: light-dark(#94a3b8, #475569);
-    --color-slate-700: light-dark(#cbd5e1, #334155);
-    --color-slate-800: light-dark(#e2e8f0, #1e293b);
-    --color-slate-900: light-dark(#f1f5f9, #0f172a);
-    --color-slate-950: light-dark(#f8fafc, #020617);
+    /*
+     * True-neutral rungs replace cool slate so chrome has no color cast.
+     * Opaque hex keeps Tailwind alpha modifiers (bg-slate-900/60) working.
+     * The inverted light-dark order preserves existing class usage.
+     */
+    --color-slate-50: light-dark(#0a0a0a, #fafafa);
+    --color-slate-100: light-dark(#171717, #f5f5f5);
+    --color-slate-200: light-dark(#262626, #e5e5e5);
+    --color-slate-300: light-dark(#404040, #d4d4d4);
+    --color-slate-400: light-dark(#525252, #a3a3a3);
+    --color-slate-500: #737373;
+    --color-slate-600: light-dark(#a3a3a3, #525252);
+    --color-slate-700: light-dark(#d4d4d4, #404040);
+    --color-slate-800: light-dark(#e5e5e5, #262626);
+    --color-slate-900: light-dark(#f5f5f5, #171717);
+    --color-slate-950: light-dark(#fafafa, #0a0a0a);
     --color-blue-200: light-dark(#1e40af, #bfdbfe);
     --color-blue-300: light-dark(#1d4ed8, #93c5fd);
     --color-blue-400: light-dark(#2563eb, #60a5fa);
@@ -34,22 +39,25 @@
     --color-amber-950: light-dark(#fffbeb, #451a03);
     --color-emerald-300: light-dark(#047857, #6ee7b7);
     --color-emerald-400: light-dark(#059669, #34d399);
-    --app-canvas: light-dark(#f8fafc, #0b0d12);
-    --app-chrome: light-dark(#f1f5f9, #0f1218);
-    --app-surface: light-dark(#ffffff, #11141b);
-    --app-active-surface: light-dark(#ffffff, #161a23);
-    --app-raised-surface: light-dark(#e2e8f0, #1a1f2a);
-    --app-code-surface: light-dark(#f8fafc, #080a0e);
-    --app-error-surface: light-dark(#ffffff, #141821);
+    --app-canvas: light-dark(#ffffff, #0a0a0a);
+    --app-chrome: light-dark(#ffffff, #0a0a0a);
+    --app-surface: light-dark(#ffffff, #111111);
+    --app-active-surface: light-dark(#ffffff, #141414);
+    --app-raised-surface: light-dark(#f5f5f5, #171717);
+    --app-code-surface: light-dark(#fafafa, #111111);
+    --app-error-surface: light-dark(#ffffff, #141414);
     --app-error-tint: light-dark(#fff1f2, #161018);
     --app-subtle-overlay: light-dark(
-        rgb(15 23 42 / 0.06),
-        rgb(255 255 255 / 0.05)
+        rgb(0 0 0 / 0.05),
+        rgb(255 255 255 / 0.09)
     );
     --app-hover-overlay: light-dark(
-        rgb(15 23 42 / 0.1),
-        rgb(255 255 255 / 0.1)
+        rgb(0 0 0 / 0.09),
+        rgb(255 255 255 / 0.14)
     );
+    --app-primary: light-dark(#000000, #ffffff);
+    --app-primary-ink: light-dark(#ffffff, #000000);
+    --app-primary-hover: light-dark(#1a1a1a, #e8e8e8);
     --breakpoint-sm: theme(--breakpoint-sm);
     --breakpoint-md: theme(--breakpoint-md);
     --breakpoint-lg: theme(--breakpoint-lg);

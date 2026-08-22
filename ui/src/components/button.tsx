@@ -21,7 +21,8 @@ type AnchorButtonProps = React.AnchorHTMLAttributes<HTMLAnchorElement> &
     };
 
 const variantClasses = {
-    primary: "bg-blue-600 text-white hover:bg-blue-500",
+    primary:
+        "bg-[var(--app-primary)] text-[var(--app-primary-ink)] hover:bg-[var(--app-primary-hover)]",
     secondary: "border border-slate-700 text-slate-200 hover:bg-white/5",
     danger: "border border-red-800 text-red-300 hover:bg-red-950/30",
     warning: "warning-action border",

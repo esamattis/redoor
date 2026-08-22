@@ -76,7 +76,7 @@ export function TabbedBottomDrawer(props: {
                 style={{ height: panelHeight }}
                 aria-label="Application tools"
                 data-overlay-bottom-panel=""
-                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80 motion-reduce:transition-none ${
+                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 backdrop-blur supports-backdrop-filter:bg-[#11141b]/80 motion-reduce:transition-none ${
                     resize.isResizing
                         ? ""
                         : "transition-[height] duration-150 ease-out"
@@ -94,10 +94,10 @@ export function TabbedBottomDrawer(props: {
                         onPointerUp={resize.handleResizeEnd}
                         onPointerCancel={resize.handleResizeEnd}
                         onKeyDown={resize.handleResizeKeyDown}
-                        className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
-                            resize.isResizing
-                                ? "bg-blue-400/40"
-                                : "hover:bg-blue-400/25"
+                        className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-slate-400/40 ${
+                            isDragging
+                                ? "bg-slate-400/40"
+                                : "hover:bg-slate-400/25"
                         }`}
                     />
                 ) : null}

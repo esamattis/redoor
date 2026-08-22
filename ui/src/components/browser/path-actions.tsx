@@ -561,7 +561,7 @@ export function PersistentPathActions(props: {
             className={
                 props.secondaryDownload
                     ? "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/5 hover:text-white"
-                    : "inline-flex items-center gap-2 rounded-md bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition-colors hover:bg-blue-500"
+                    : "inline-flex items-center gap-2 rounded-md bg-[var(--app-primary)] px-3.5 py-2 text-sm font-medium text-[var(--app-primary-ink)] transition-colors hover:bg-[var(--app-primary-hover)]"
             }
         >
             <Download className="h-4 w-4" aria-hidden="true" />

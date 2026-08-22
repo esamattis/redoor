@@ -542,8 +542,8 @@ function RouteLoadingIndicator() {
                 isVisible ? "opacity-100" : "opacity-0"
             }`}
         >
-            <div className="route-loading-progress-bar h-full w-full bg-blue-500/10">
-                <div className="route-loading-progress-bar__indicator h-full bg-blue-400" />
+            <div className="route-loading-progress-bar h-full w-full bg-slate-800">
+                <div className="route-loading-progress-bar__indicator h-full bg-slate-400" />
             </div>
         </div>
     );
@@ -593,7 +593,7 @@ function SelectedFilesTable(props: {
                                         )
                                         ?.getBrowserUrl(file.path) ?? "/"
                                 }
-                                className="block break-words text-sm font-medium text-blue-400 hover:underline"
+                                className="block break-words text-sm font-medium text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                             >
                                 {file.fileName}
                             </Link>
@@ -664,7 +664,7 @@ function SelectedFilesTable(props: {
                                             )
                                             ?.getBrowserUrl(file.path) ?? "/"
                                     }
-                                    className="text-sm font-medium text-blue-400 hover:underline"
+                                    className="text-sm font-medium text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                                 >
                                     {file.fileName}
                                 </Link>
@@ -802,7 +802,7 @@ function TransferProgressPane(props: {
                     No active transfers.{" "}
                     <Link
                         to="/transfers"
-                        className="text-blue-400 hover:underline"
+                        className="text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                     >
                         View all
                     </Link>

@@ -224,7 +224,7 @@ export function ManagedAgentForm(props: {
 
     return (
         <div className="min-h-full bg-[#0b0d12] px-4 py-8 sm:px-8">
-            <main className="mx-auto max-w-4xl overflow-hidden rounded-xl border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
+            <main className="mx-auto max-w-4xl overflow-hidden rounded-xl border border-slate-800 bg-[#11141b]">
                 <FormHeader mode={props.mode} kind={kind} />
                 <form onSubmit={submit} className="space-y-7 p-6 sm:p-8">
                     {isEdit ? null : (
@@ -287,13 +287,13 @@ export function ManagedAgentForm(props: {
 /** Keeps the shared chrome title aligned with the selected transport. */
 function FormHeader(props: { mode: "add" | "edit"; kind: ManagedAgentKind }) {
     return (
-        <div className="border-b border-slate-800 bg-gradient-to-r from-blue-500/10 via-transparent to-transparent px-6 py-6 sm:px-8">
+        <div className="border-b border-slate-800 px-6 py-6 sm:px-8">
             <div className="flex items-center gap-3">
-                <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-2 text-blue-300">
+                <div className="rounded-lg border border-slate-700 bg-slate-900 p-2 text-slate-300">
                     <Server className="h-5 w-5" aria-hidden="true" />
                 </div>
                 <div>
-                    <h1 className="text-2xl font-bold text-slate-100">
+                    <h1 className="text-2xl font-semibold text-slate-100">
                         {props.mode === "edit"
                             ? "Edit managed agent"
                             : "Add managed agent"}
@@ -387,7 +387,7 @@ function KindFields(props: {
                     on a remote host.
                 </p>
             }
-            legendClassName="text-sm font-semibold uppercase tracking-wider text-slate-300"
+            legendClassName="text-sm font-medium text-slate-300"
             optionsClassName="sm:grid-cols-2"
         >
             <RadioCardOption
@@ -420,7 +420,7 @@ function LocalFields(props: {
 }) {
     return (
         <section>
-            <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-slate-300">
+            <h2 className="flex items-center gap-2 text-sm font-medium text-slate-300">
                 <TerminalSquare className="h-4 w-4" aria-hidden="true" />
                 Local agent
             </h2>
@@ -470,7 +470,7 @@ function ConnectionFields(props: {
         props.mode === "edit" && props.hasStoredPassword && passwordMode;
     return (
         <section>
-            <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-slate-300">
+            <h2 className="flex items-center gap-2 text-sm font-medium text-slate-300">
                 <TerminalSquare className="h-4 w-4" aria-hidden="true" />
                 Connection
             </h2>
@@ -597,7 +597,7 @@ function AdvancedFields(props: {
 }) {
     return (
         <section className="border-t border-slate-800 pt-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+            <h2 className="text-sm font-medium text-slate-300">
                 Advanced
             </h2>
             <div className="mt-4 grid gap-5 sm:grid-cols-2">

@@ -35,7 +35,7 @@ export function Checkbox(props: {
             )}
         >
             {props.checked ? (
-                <CheckSquare className="h-4 w-4 shrink-0 text-blue-400" />
+                <CheckSquare className="h-4 w-4 shrink-0 text-slate-100" />
             ) : (
                 <Square className="h-4 w-4 shrink-0" />
             )}

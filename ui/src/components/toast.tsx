@@ -25,7 +25,7 @@ export function Toast(props: {
             role={props.tone === "error" ? "alert" : "status"}
             aria-live={props.tone === "error" ? "assertive" : "polite"}
             aria-atomic="true"
-            className={`fixed left-1/2 top-16 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-lg border px-4 py-3 text-sm shadow-2xl ${toneClasses[props.tone]}`}
+            className={`fixed left-1/2 top-16 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-lg border px-4 py-3 text-sm ${toneClasses[props.tone]}`}
         >
             {props.icon}
             <span>{props.children}</span>

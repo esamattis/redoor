@@ -44,7 +44,7 @@ function MetadataItem(props: {
 }) {
     return (
         <div className="rounded-xl border border-slate-800/80 bg-slate-950/35 px-4 py-3.5">
-            <dt className="text-xs font-medium uppercase tracking-wider text-slate-500">
+            <dt className="text-xs font-medium text-slate-500">
                 {props.label}
             </dt>
             <dd
@@ -69,7 +69,7 @@ function PermissionsGrid(props: { permissions: number }) {
     return (
         <div className="overflow-hidden rounded-xl border border-slate-800/80">
             <table className="w-full table-fixed text-sm">
-                <thead className="bg-slate-950/60 text-xs font-medium uppercase tracking-wider text-slate-500">
+                <thead className="bg-slate-950/60 text-xs font-medium text-slate-500">
                     <tr>
                         <th scope="col" className="px-3 py-3 text-left">
                             Scope
@@ -108,7 +108,7 @@ function PermissionsGrid(props: { permissions: number }) {
                                         className="px-2 py-2 text-center"
                                     >
                                         <span
-                                            className={`inline-flex h-7 w-7 items-center justify-center rounded-md font-mono text-xs font-bold ${isAllowed ? "bg-emerald-500/15 text-emerald-400" : "bg-slate-800/50 text-slate-600"}`}
+                                            className={`inline-flex h-7 w-7 items-center justify-center rounded-md font-mono text-xs font-medium ${isAllowed ? "bg-emerald-500/15 text-emerald-400" : "bg-slate-800/50 text-slate-600"}`}
                                         >
                                             {isAllowed
                                                 ? column.charAt(0).toLowerCase()
@@ -237,24 +237,23 @@ function PathDetailHeader(props: {
     const typeLabel = isDirectory ? "Directory" : "File";
 
     return (
-        <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-            <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
+        <header className="relative border-b border-slate-800 p-6 md:p-8">
             <div className="relative flex min-w-0 items-start gap-4">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-slate-800 bg-slate-900">
                     {isDirectory ? (
-                        <Folder className="h-7 w-7 text-blue-400" />
+                        <Folder className="h-7 w-7 text-slate-300" />
                     ) : (
-                        <File className="h-7 w-7 text-blue-400" />
+                        <File className="h-7 w-7 text-slate-300" />
                     )}
                 </div>
                 <div className="min-w-0 flex-1 pt-0.5">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                    <p className="mb-1 text-xs font-medium text-slate-500">
                         {typeLabel} details
                     </p>
                     <div className="flex flex-wrap items-center gap-3">
                         <h1
                             aria-label={`${typeLabel} name`}
-                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                            className="break-all text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl"
                         >
                             {props.name}
                         </h1>
@@ -268,7 +267,7 @@ function PathDetailHeader(props: {
             </div>
             <div className="relative mt-6">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                    <p className="text-xs font-medium text-slate-500">
                         Full Path
                     </p>
                     {props.onCopyPath ? (
@@ -453,7 +452,7 @@ function ShareableLinksSection(props: {
                     variant="secondary"
                     size="lg"
                     isLoading={props.isCreating}
-                    className="rounded-lg border-blue-500/30 bg-blue-500/10 text-sm font-semibold text-blue-300 hover:border-blue-500/50 hover:bg-blue-500/20 disabled:opacity-60"
+                    className="rounded-lg border-slate-700 bg-slate-900 text-sm font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-800 disabled:opacity-60"
                 >
                     <Download className="h-4 w-4" />
                     {props.isCreating
@@ -517,7 +516,7 @@ function ShareableLinkCard(props: {
             <div className="mt-3 flex min-w-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
                 <a
                     href={shareableUrl}
-                    className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-blue-300 underline decoration-blue-400/40 underline-offset-4 hover:text-blue-200"
+                    className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-slate-200 underline decoration-slate-500 underline-offset-4 hover:text-slate-100 hover:decoration-slate-300"
                 >
                     {shareableUrl}
                 </a>

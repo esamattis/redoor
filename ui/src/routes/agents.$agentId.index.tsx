@@ -202,7 +202,7 @@ function AgentLifecycle(props: { agent: Agent }) {
         <div className="flex h-full items-center justify-center p-8">
             <section aria-live="polite" className="max-w-xl text-center">
                 {shouldAppearStarting ? (
-                    <LoaderCircle className="mx-auto h-12 w-12 animate-spin text-blue-400" />
+                    <LoaderCircle className="mx-auto h-12 w-12 animate-spin text-slate-400" />
                 ) : (
                     <HardDrive className="mx-auto h-12 w-12 text-slate-500" />
                 )}
@@ -595,14 +595,14 @@ function MountPoints(props: {
                 <HardDrive className="h-5 w-5" />
                 <h2
                     id="mount-points-heading"
-                    className="text-sm uppercase tracking-wide"
+                    className="text-sm font-medium"
                 >
                     Mount Points
                 </h2>
             </div>
             <div className="overflow-x-auto">
                 <table className="w-full min-w-[36rem] text-left text-sm">
-                    <thead className="bg-slate-900/60 text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="bg-slate-900/60 text-xs font-medium text-slate-500">
                         <tr>
                             <th scope="col" className="px-4 py-2 font-medium">
                                 Path
@@ -632,7 +632,7 @@ function MountPoints(props: {
                                                 mountPoint.path,
                                             )}
                                             aria-label={`Browse mount point ${mountPoint.path}`}
-                                            className="block truncate font-mono text-xs text-blue-400 hover:text-blue-300 hover:underline"
+                                            className="block truncate font-mono text-xs text-slate-200 underline decoration-slate-500 underline-offset-2 hover:text-slate-100 hover:decoration-slate-300"
                                         >
                                             {mountPoint.path}
                                         </Link>
@@ -687,9 +687,9 @@ function AgentDetailsHeader(props: {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h1
                     aria-label="Agent name"
-                    className="flex min-w-0 items-center gap-3 text-2xl font-bold text-slate-100"
+                    className="flex min-w-0 items-center gap-3 text-2xl font-semibold text-slate-100"
                 >
-                    <HardDrive className="h-8 w-8 shrink-0 text-blue-400" />
+                    <HardDrive className="h-8 w-8 shrink-0 text-slate-400" />
                     <span className="truncate">{props.details.name}</span>
                 </h1>
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -729,7 +729,7 @@ function AgentDetailsHeader(props: {
                     </Link>
                     <Link
                         to={getBrowserUrl(props.details.id, props.details.cwd)}
-                        className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+                        className="flex items-center gap-2 rounded bg-[var(--app-primary)] px-4 py-2 text-sm text-[var(--app-primary-ink)] hover:bg-[var(--app-primary-hover)]"
                     >
                         <FolderOpen className="h-4 w-4" /> Browse Files
                     </Link>
@@ -752,7 +752,7 @@ function DetailCard(props: {
         <div className="rounded-lg border border-slate-800 bg-[#11141b] p-4">
             <div className="mb-3 flex items-center gap-2 font-semibold text-slate-300">
                 {props.icon}
-                <h3 className="text-sm uppercase tracking-wide">
+                <h3 className="text-sm font-medium">
                     {props.title}
                 </h3>
             </div>

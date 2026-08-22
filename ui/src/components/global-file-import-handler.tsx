@@ -531,13 +531,13 @@ function FileImportDropOverlay(props: {
     }
 
     return (
-        <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-blue-950/75 p-8 backdrop-blur-sm">
-            <div className="flex max-w-3xl flex-col items-center gap-5 rounded-3xl border-4 border-dashed border-blue-300 bg-slate-950/90 px-12 py-16 text-center shadow-2xl shadow-blue-950">
-                <Upload className="h-20 w-20 text-blue-300" />
-                <p className="text-3xl font-bold text-white">
+        <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-[rgb(0_0_0/0.44)] p-8">
+            <div className="flex max-w-3xl flex-col items-center gap-5 rounded-xl border-2 border-dashed border-slate-400 bg-[#11141b] px-12 py-16 text-center">
+                <Upload className="h-20 w-20 text-slate-200" />
+                <p className="text-3xl font-semibold text-slate-100">
                     Drop files here to upload them to
                 </p>
-                <p className="max-w-full break-all font-mono text-2xl text-blue-200">
+                <p className="max-w-full break-all font-mono text-2xl text-slate-200">
                     {props.destination.path}
                 </p>
             </div>

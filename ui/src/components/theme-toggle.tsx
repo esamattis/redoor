@@ -32,7 +32,7 @@ export function ThemeManager() {
                 .querySelector('meta[name="theme-color"]')
                 ?.setAttribute(
                     "content",
-                    resolvedTheme === "dark" ? "#0b0d12" : "#f8fafc",
+                    resolvedTheme === "dark" ? "#0a0a0a" : "#ffffff",
                 );
         };
 

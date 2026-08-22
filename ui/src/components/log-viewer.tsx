@@ -177,10 +177,10 @@ export function LogViewer(props: {
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
                         <ScrollText
-                            className="h-6 w-6 text-blue-400"
+                            className="h-6 w-6 text-slate-400"
                             aria-hidden="true"
                         />
-                        <h1 className="text-2xl font-bold text-slate-100">
+                        <h1 className="text-2xl font-semibold text-slate-100">
                             {props.title}
                         </h1>
                     </div>

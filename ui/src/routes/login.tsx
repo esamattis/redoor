@@ -81,9 +81,9 @@ function LoginPage() {
                     <div
                         role="status"
                         aria-live="polite"
-                        className="rounded-xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-center shadow-2xl shadow-amber-950/40"
+                        className="rounded-xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-center"
                     >
-                        <p className="text-sm font-semibold uppercase tracking-wide text-amber-200">
+                        <p className="text-sm font-medium text-amber-200">
                             Getting started
                         </p>
                         <p className="mt-2 text-base font-medium text-amber-50">
@@ -91,7 +91,7 @@ function LoginPage() {
                         </p>
                     </div>
                 ) : null}
-                <div className="w-full rounded-xl border border-slate-800 bg-[#11141b] p-8 shadow-2xl">
+                <div className="w-full rounded-xl border border-slate-800 bg-[#11141b] p-8">
                     <div className="mb-8 flex items-center justify-center gap-3">
                         <span
                             className="relative h-9 w-9 shrink-0"
@@ -112,7 +112,7 @@ function LoginPage() {
                             Redoor
                         </span>
                     </div>
-                    <h1 className="mb-6 text-center text-2xl font-bold text-slate-100">
+                    <h1 className="mb-6 text-center text-2xl font-semibold text-slate-100">
                         Sign in to Redoor
                     </h1>
                     <form onSubmit={submit} className="space-y-5">

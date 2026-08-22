@@ -33,7 +33,7 @@ function AgentLogsPage() {
                     <Link
                         to="/agents/$agentId"
                         params={{ agentId: agent.id }}
-                        className="mt-6 inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
+                        className="mt-6 inline-flex items-center gap-2 rounded bg-[var(--app-primary)] px-4 py-2 text-[var(--app-primary-ink)] hover:bg-[var(--app-primary-hover)]"
                     >
                         <HardDrive className="h-4 w-4" />
                         Agent

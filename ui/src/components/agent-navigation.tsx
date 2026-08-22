@@ -92,7 +92,7 @@ function AgentMenu(props: {
     return (
         <nav aria-label="Agents" className="flex min-h-0 flex-1 flex-col">
             <div className="mb-3 flex items-center justify-between gap-2 px-2">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
+                <h2 className="text-sm font-medium text-slate-400">
                     Agents
                 </h2>
                 <AddButton tooltip="Add managed agent">
@@ -133,7 +133,7 @@ function AgentMenu(props: {
                         return (
                             <div key={agent.id} className="flex flex-col">
                                 <div
-                                    className={`group flex items-center rounded-md border text-sm ${isActive ? "border-blue-500/40 bg-blue-500/10" : "border-transparent hover:bg-white/5"}`}
+                                    className={`group flex items-center rounded-md border text-sm ${isActive ? "border-slate-700 bg-slate-900" : "border-transparent hover:bg-white/5"}`}
                                 >
                                     <Link
                                         to={target}
@@ -152,7 +152,7 @@ function AgentMenu(props: {
                                         className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2.5 text-slate-300 group-hover:text-slate-100"
                                     >
                                         <HardDrive
-                                            className={`h-4 w-4 shrink-0 ${isActive ? "text-blue-400" : "text-slate-500"}`}
+                                            className={`h-4 w-4 shrink-0 ${isActive ? "text-slate-100" : "text-slate-500"}`}
                                             aria-hidden="true"
                                         />
                                         <span className="min-w-0 flex-1">
@@ -247,7 +247,7 @@ function AgentBookmarks(props: {
                                 aria-current={isActive ? "page" : undefined}
                                 className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs ${
                                     isActive
-                                        ? "bg-blue-500/10 text-blue-300"
+                                        ? "bg-slate-900 text-slate-100"
                                         : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
                                 }`}
                             >

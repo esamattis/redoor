@@ -178,7 +178,7 @@ export function getViewSwitchItemClass(isActive: boolean) {
     const baseClass =
         "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm font-medium transition-colors";
     return isActive
-        ? `${baseClass} border-slate-700 bg-[#161a23] text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset] [&_svg]:text-blue-400`
+        ? `${baseClass} border-slate-700 bg-[#161a23] text-slate-100 [&_svg]:text-slate-100`
         : `${baseClass} border-transparent text-slate-400 hover:bg-white/5 hover:text-slate-100`;
 }
 
@@ -187,7 +187,7 @@ function getPageViewTabClass(isActive: boolean) {
     const baseClass =
         "inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 py-1.5 text-sm font-medium transition-colors";
     return isActive
-        ? `${baseClass} border-blue-500 text-slate-100 [&_svg]:text-blue-400`
+        ? `${baseClass} border-slate-100 text-slate-100 [&_svg]:text-slate-100`
         : `${baseClass} border-transparent text-slate-400 hover:border-slate-600 hover:text-slate-100`;
 }
 
@@ -452,7 +452,7 @@ function Breadcrumbs(props: {
                         ) : (
                             <Link
                                 to={props.agent.getBrowserUrl("/")}
-                                className="-my-1 shrink-0 rounded px-1.5 py-1 text-blue-400 hover:underline"
+                                className="-my-1 shrink-0 rounded px-1.5 py-1 text-slate-200 hover:underline"
                             >
                                 /
                             </Link>
@@ -480,7 +480,7 @@ function Breadcrumbs(props: {
                                             to={props.agent.getBrowserUrl(
                                                 accumulatedPath,
                                             )}
-                                            className={`whitespace-nowrap font-medium text-blue-400 hover:underline ${part.length < 3 ? "-my-1 rounded px-1.5 py-1" : ""}`}
+                                            className={`whitespace-nowrap font-medium text-slate-200 hover:underline ${part.length < 3 ? "-my-1 rounded px-1.5 py-1" : ""}`}
                                         >
                                             {part}
                                         </Link>

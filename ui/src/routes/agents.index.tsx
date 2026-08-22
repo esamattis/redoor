@@ -115,7 +115,7 @@ function AgentManagement() {
     return (
         <div className="p-8">
             <div className="mx-auto max-w-7xl">
-                <h1 className="text-2xl font-bold text-slate-100">Agents</h1>
+                <h1 className="text-2xl font-semibold text-slate-100">Agents</h1>
                 <p className="mt-2 text-sm text-slate-400">
                     Manage TOML agents and observe external connections known
                     during this server run.
@@ -198,7 +198,7 @@ function AgentTable(props: {
                                 <Link
                                     to="/agents/$agentId"
                                     params={{ agentId: agent.id }}
-                                    className="font-medium text-blue-400 hover:underline"
+                                    className="font-medium text-slate-100 underline decoration-slate-500 underline-offset-2 hover:decoration-slate-300"
                                 >
                                     {agent.name}
                                 </Link>
