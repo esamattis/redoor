@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,29 @@ import {
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
+
+const supportsMoveToTrash =
+    process.platform === "linux" || process.platform === "darwin";
+
+/** Exercises the macOS trash UI contract without leaving test fixtures in native Trash. */
+async function interceptMacosTrashMove(
+    page: Page,
+    sourcePath: string,
+): Promise<void> {
+    if (process.platform !== "darwin") {
+        return;
+    }
+    await page.route("**/raw/**?trash=true", async (route) => {
+        // The native-trash action must retain the same destructive API method.
+        expect(route.request().method()).toBe("DELETE");
+        await fs.rm(sourcePath, { force: true, recursive: true });
+        await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ path: sourcePath }),
+        });
+    });
+}
 
 test.describe.serial("File Operations", () => {
     let ctx: TestContext;
@@ -701,6 +724,7 @@ test.describe.serial("File Operations", () => {
             "delete-me.txt",
         );
         await fs.writeFile(deletableFilePath, "temporary content");
+        await interceptMacosTrashMove(page, deletableFilePath);
 
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(deletableFilePath)}?view=details`,
@@ -728,17 +752,14 @@ test.describe.serial("File Operations", () => {
         const confirmDialog = page.getByRole("dialog", {
             name: "Delete this file?",
         });
-        if (process.platform !== "linux") {
+        if (!supportsMoveToTrash) {
             await confirmDialog
                 .getByRole("checkbox", { name: "Delete permanently" })
                 .click();
         }
         await confirmDialog
             .getByRole("button", {
-                name:
-                    process.platform === "linux"
-                        ? "Move to trash"
-                        : "Delete file",
+                name: supportsMoveToTrash ? "Move to trash" : "Delete file",
             })
             .click();
 
@@ -804,6 +825,7 @@ test.describe.serial("File Operations", () => {
         );
         const parentDirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(parentDirectoryPath)}`;
         await fs.mkdir(deletableDirectoryPath);
+        await interceptMacosTrashMove(page, deletableDirectoryPath);
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(deletableDirectoryPath)}`,
         );
@@ -817,17 +839,16 @@ test.describe.serial("File Operations", () => {
         });
         // The directory action must retain the same explicit destructive confirmation as file deletion.
         await expect(dialog).toBeVisible();
-        if (process.platform !== "linux") {
+        if (!supportsMoveToTrash) {
             await dialog
                 .getByRole("checkbox", { name: "Delete permanently" })
                 .click();
         }
         await dialog
             .getByRole("button", {
-                name:
-                    process.platform === "linux"
-                        ? "Move to trash"
-                        : "Delete directory",
+                name: supportsMoveToTrash
+                    ? "Move to trash"
+                    : "Delete directory",
             })
             .click();
 
@@ -906,6 +927,7 @@ test.describe.serial("File Operations", () => {
         );
 
         await fs.writeFile(deletableFilePath, "temporary content");
+        await interceptMacosTrashMove(page, deletableFilePath);
 
         await page.goto(ctx.agentBrowserUrl);
         await page
@@ -936,17 +958,16 @@ test.describe.serial("File Operations", () => {
 
         // The confirmation must appear before the destructive selected-items request can run.
         await expect(deleteSelectedItemsDialog).toBeVisible();
-        if (process.platform !== "linux") {
+        if (!supportsMoveToTrash) {
             await deleteSelectedItemsDialog
                 .getByRole("checkbox", { name: "Delete permanently" })
                 .click();
         }
         await deleteSelectedItemsDialog
             .getByRole("button", {
-                name:
-                    process.platform === "linux"
-                        ? "Move selected item to trash"
-                        : "Delete selected item",
+                name: supportsMoveToTrash
+                    ? "Move selected item to trash"
+                    : "Delete selected item",
             })
             .click();
 
