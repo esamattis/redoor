@@ -37,11 +37,11 @@ supports_self_exec: boolean,
 /**
  * Whether the latest agent session can launch paths in a graphical desktop.
  */
-supports_native_open: boolean,
+supports_native_open: boolean, 
 /**
  * Whether the latest agent session can move entries to its platform trash.
  */
-supports_move_to_trash: boolean,
+supports_move_to_trash: boolean, 
 /**
  * Whether the latest agent session can also list and restore trash entries.
  */
