@@ -23,7 +23,6 @@
         "vite": "vite ./ui",
         "build": "vite build ./ui && cargo build",
         "build-and-restart": "./scripts/build-and-restart",
-        "check": "run-s types lint",
         "types": "tsc -p tsconfig.json",
         "format": "cd ui && prettier --write .",
         "format:check": "cd ui && prettier --check .",
