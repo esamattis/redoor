@@ -91,6 +91,12 @@ test.describe.serial("Git browser", () => {
         await expect(
             directoryView.getByRole("link", { name: "Git", exact: true }),
         ).toHaveAttribute("aria-current", "page");
+        // Repository identity links directly to the root Git status view.
+        await expect(
+            page.getByRole("link", {
+                name: `Repository: ${repositoryPath}`,
+            }),
+        ).toBeVisible();
         // Structured status must expose staged, unstaged, and untracked groups.
         await expect(
             page.getByRole("heading", { name: /Staged changes/ }),
@@ -113,12 +119,33 @@ test.describe.serial("Git browser", () => {
         const fullDiff = page.getByRole("region", { name: "Full Git diff" });
         // The default comparison must show current worktree content.
         await expect(fullDiff).toContainText("worktree version");
+        const fullDiffBox = await fullDiff.boundingBox();
+        // The diff should use nearly all phone width instead of retaining desktop card padding.
+        expect(fullDiffBox?.width).toBeGreaterThan(330);
+        // Mobile diff text stays compact enough to expose useful code beside its gutter.
+        await expect(fullDiff.locator(".d2h-diff-table")).toHaveCSS(
+            "font-size",
+            "9px",
+        );
+        // File comparisons retain a compact route back to repository-level status.
+        await expect(
+            page.getByRole("link", {
+                name: `Repository: ${repositoryPath}`,
+            }),
+        ).toBeVisible();
         const fileView = page.getByLabel("File view");
         const fileTabs = await fileView.getByRole("link").allTextContents();
         // File Git uses the same stable post-Sync tab position as directory Git.
         expect(fileTabs.slice(-2)).toEqual(["Sync", "Git"]);
 
-        await page.getByRole("radio", { name: /^Staged / }).check();
+        await page.getByRole("button", { name: "Git diff options" }).click();
+        const stagedOnly = page
+            .getByRole("dialog", { name: "Git diff options" })
+            .getByRole("button", { name: "Staged changes only" });
+        // Staged filtering belongs to the compact overflow menu and starts disabled.
+        await expect(stagedOnly).toHaveAttribute("aria-pressed", "false");
+        await stagedOnly.click();
+        await expect(stagedOnly).toHaveAttribute("aria-pressed", "true");
         const stagedDiff = page.getByRole("region", {
             name: "Staged Git diff",
         });
@@ -126,7 +153,8 @@ test.describe.serial("Git browser", () => {
         await expect(stagedDiff).toContainText("staged version");
         await expect(stagedDiff).not.toContainText("worktree version");
 
-        await page.getByRole("radio", { name: /^Full / }).check();
+        await stagedOnly.click();
+        await expect(stagedOnly).toHaveAttribute("aria-pressed", "false");
         await fs.writeFile(trackedPath, "refreshed worktree version\n");
         await simulateTabRefocus(page);
         // Focus refresh must invalidate the Git cache independently of the unchanged listing.

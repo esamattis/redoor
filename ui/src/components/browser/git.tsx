@@ -1,10 +1,16 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2, GitBranch } from "lucide-react";
+import {
+    AlertTriangle,
+    CheckCircle2,
+    GitBranch,
+    MoreHorizontal,
+} from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import { ActionMenu } from "#ui/components/action-menu";
+import { Checkbox } from "#ui/components/checkbox";
 import { DetailCard } from "#ui/components/detail-card";
-import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
 import { gitDiffQueryOptions, gitStatusQueryOptions } from "#ui/queries";
 import { getErrorMessage } from "#ui/components/browser/utils";
@@ -16,26 +22,31 @@ import type { GitStatusEntry } from "#bindings/GitStatusEntry";
 
 /** Presents repository identity consistently above status and file comparisons. */
 function GitHeader(props: {
+    agent: Agent;
     title: string;
     repositoryRoot: string;
     reference: string;
     description: string;
 }) {
     return (
-        <header className="border-b border-slate-800 bg-linear-to-br from-emerald-500/10 via-transparent to-transparent p-6 md:p-8">
+        <header className="border-b border-slate-800 bg-linear-to-br from-emerald-500/10 via-transparent to-transparent p-4 sm:p-5">
             <p className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-400">
                 <GitBranch className="h-4 w-4" aria-hidden="true" />
                 {props.reference}
             </p>
-            <h1 className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl">
+            <h1 className="break-all text-xl font-bold tracking-tight text-slate-50 sm:text-2xl">
                 {props.title}
             </h1>
-            <p className="mt-3 max-w-3xl text-sm text-slate-400">
+            <p className="mt-1.5 max-w-3xl text-sm text-slate-400">
                 {props.description}
             </p>
-            <p className="mt-3 break-all font-mono text-xs text-slate-500">
+            <Link
+                to={props.agent.getBrowserUrl(props.repositoryRoot)}
+                search={{ view: "git" }}
+                className="mt-1.5 block break-all font-mono text-xs text-blue-300 hover:underline"
+            >
                 Repository: {props.repositoryRoot}
-            </p>
+            </Link>
         </header>
     );
 }
@@ -65,16 +76,16 @@ function GitStatusSection(props: {
         >
             <h2
                 id={`git-${props.title.toLowerCase().replace(" ", "-")}`}
-                className="mb-2 text-sm font-semibold text-slate-200"
+                className="mb-1 text-sm font-semibold text-slate-200"
             >
                 {props.title}{" "}
                 <span className="text-slate-500">({props.entries.length})</span>
             </h2>
-            <ul className="divide-y divide-slate-800 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/40">
+            <ul className="divide-y divide-slate-800 overflow-hidden rounded-md border border-slate-800 bg-slate-950/40">
                 {props.entries.map((item) => (
                     <li
                         key={`${props.title}:${item.entry.path}`}
-                        className="flex min-w-0 items-center justify-between gap-4 px-4 py-3"
+                        className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
                     >
                         <span className="min-w-0">
                             <Link
@@ -161,6 +172,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
     return (
         <DetailCard>
             <GitHeader
+                agent={props.agent}
                 title={status.path.split("/").filter(Boolean).pop() ?? "/"}
                 repositoryRoot={status.repository_root}
                 reference={reference}
@@ -170,7 +182,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                         : "Changes below this directory, compared with HEAD and the index."
                 }
             />
-            <div className="grid gap-6 p-6 md:p-8">
+            <div className="grid gap-4 p-3 sm:p-5">
                 {status.entries.length === 0 ? (
                     <div
                         role="status"
@@ -258,66 +270,74 @@ export function GitFileView(props: {
     const diffQuery = useQuery(
         gitDiffQueryOptions(props.agent, props.path, mode),
     );
-    const repositoryRoot =
-        props.context.repository_root ?? "Unknown repository";
-    const relativePath = props.context.repository_relative_path ?? props.path;
-
+    const repositoryRoot = props.context.repository_root;
     return (
         <DetailCard>
-            <GitHeader
-                title={
-                    relativePath.split("/").filter(Boolean).pop() ??
-                    relativePath
-                }
-                repositoryRoot={repositoryRoot}
-                reference={props.context.tracking_state ?? "Git file"}
-                description="Compare this path with HEAD using the current worktree or only the staged index entry."
-            />
-            <div className="grid gap-6 p-6 md:p-8">
-                <RadioCardGroup
-                    legend="Comparison"
-                    legendClassName="text-sm font-medium text-slate-200"
-                    optionsClassName="sm:grid-cols-2"
-                >
-                    <RadioCardOption
-                        name="git-diff-mode"
-                        value="full"
-                        label="Full"
-                        description="HEAD compared with the current worktree file, including staged and unstaged edits."
-                        checked={mode === "full"}
-                        layout="descriptive"
-                        onChange={() => setMode("full")}
+            <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-800 px-3 py-1.5 sm:px-4">
+                <div className="flex min-w-0 items-center gap-2 text-sm text-slate-300">
+                    <GitBranch
+                        className="h-4 w-4 shrink-0 text-emerald-400"
+                        aria-hidden="true"
                     />
-                    <RadioCardOption
-                        name="git-diff-mode"
-                        value="staged"
-                        label="Staged"
-                        description="HEAD compared only with the index entry."
-                        checked={mode === "staged"}
-                        layout="descriptive"
-                        onChange={() => setMode("staged")}
-                    />
-                </RadioCardGroup>
-                <section
-                    aria-label={`${mode === "full" ? "Full" : "Staged"} Git diff`}
-                    className="file-diff-host w-full min-w-0 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/30 p-4 md:p-6"
+                    <span className="min-w-0">
+                        <span className="block truncate font-medium">
+                            {mode === "staged"
+                                ? "Staged changes"
+                                : "All changes"}
+                        </span>
+                        {repositoryRoot === null ? null : (
+                            <Link
+                                to={props.agent.getBrowserUrl(repositoryRoot)}
+                                search={{ view: "git" }}
+                                className="block truncate font-mono text-[11px] leading-3.5 text-blue-300 hover:underline"
+                            >
+                                Repository: {repositoryRoot}
+                            </Link>
+                        )}
+                    </span>
+                </div>
+                <ActionMenu
+                    label="Git diff options"
+                    title="Git diff options"
+                    closeAriaLabel="Close Git diff options"
+                    hideTitle={false}
+                    icon={<MoreHorizontal className="h-4 w-4" />}
+                    variant="icon"
                 >
-                    {diffQuery.isPending ? (
-                        <p role="status" className="text-sm text-slate-400">
-                            Loading {mode} Git diff...
-                        </p>
-                    ) : diffQuery.isError ? (
-                        <p role="alert" className="text-sm text-red-300">
-                            {getErrorMessage(
-                                diffQuery.error,
-                                "Failed to load Git diff",
-                            )}
-                        </p>
-                    ) : (
-                        <GitDiffResultView result={diffQuery.data.result} />
+                    {() => (
+                        <Checkbox
+                            checked={mode === "staged"}
+                            label="Staged changes only"
+                            title={false}
+                            className="w-full px-3 py-2"
+                            onCheckedChange={(stagedOnly) =>
+                                setMode(stagedOnly ? "staged" : "full")
+                            }
+                        >
+                            Staged changes only
+                        </Checkbox>
                     )}
-                </section>
-            </div>
+                </ActionMenu>
+            </header>
+            <section
+                aria-label={`${mode === "full" ? "Full" : "Staged"} Git diff`}
+                className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden bg-slate-950/30"
+            >
+                {diffQuery.isPending ? (
+                    <p role="status" className="p-4 text-sm text-slate-400">
+                        Loading {mode} Git diff...
+                    </p>
+                ) : diffQuery.isError ? (
+                    <p role="alert" className="p-4 text-sm text-red-300">
+                        {getErrorMessage(
+                            diffQuery.error,
+                            "Failed to load Git diff",
+                        )}
+                    </p>
+                ) : (
+                    <GitDiffResultView result={diffQuery.data.result} />
+                )}
+            </section>
         </DetailCard>
     );
 }

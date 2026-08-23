@@ -291,10 +291,7 @@ code {
     animation: copy-success-flash 0.7s ease-out forwards;
 }
 
-/*
- * diff2html tables grow with the longest line. The host is full width and
- * scrolls sideways so wide hunks never clip the surrounding browser chrome.
- */
+/* Sync diffs grow with their longest line and scroll within their labeled host. */
 .file-diff-host .d2h-wrapper,
 .file-diff-host .d2h-file-wrapper,
 .file-diff-host .d2h-file-diff,
@@ -309,6 +306,44 @@ code {
     overflow: visible;
 }
 
+.file-diff-host .d2h-code-linenumber {
+    z-index: 1;
+}
+
 .file-diff-host .d2h-code-line-ctn {
     white-space: pre;
+}
+
+.git-file-diff .d2h-file-wrapper {
+    margin-bottom: 0;
+    border: 0;
+    border-radius: 0;
+}
+
+/* Git keeps file chrome fixed while only wide diff rows scroll sideways. */
+.git-file-diff .file-diff-html,
+.git-file-diff .d2h-wrapper,
+.git-file-diff .d2h-file-wrapper {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.git-file-diff .d2h-file-diff {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.git-file-diff .d2h-diff-table {
+    width: max-content;
+    min-width: 100%;
+}
+
+@media (max-width: 639px) {
+    .git-file-diff .d2h-diff-table {
+        font-size: 9px;
+    }
 }

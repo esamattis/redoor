@@ -294,7 +294,6 @@ function FileBrowser() {
                 entryType="file"
                 activeView="git"
                 gitAvailable
-                constrainContent
             >
                 <GitFileView
                     agent={agent}
@@ -429,7 +428,7 @@ function FileBrowser() {
                 activeView={activeView}
                 editable={editable}
                 gitAvailable={data.gitContext.inside_worktree}
-                constrainContent={!isEditView}
+                constrainContent={!isEditView && activeView !== "git"}
                 fillAvailableHeight={isEditView}
             >
                 {content}
