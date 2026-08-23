@@ -23,7 +23,7 @@ pub async fn rename_no_replace(
     .await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// Uses a held destination directory so path replacement cannot redirect publication.
 pub async fn rename_no_replace_at(
     source: impl AsRef<Path>,
@@ -57,7 +57,7 @@ enum RenameMode {
     Exchange,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 /// Moves path conversion and the synchronous platform call off Tokio's worker threads.
 async fn rename_with_mode(
     source: PathBuf,
@@ -69,7 +69,7 @@ async fn rename_with_mode(
         .map_err(std::io::Error::other)?
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// Uses the syscall directly because musl does not expose glibc's `renameat2` wrapper.
 fn rename_with_mode_blocking(
     source: PathBuf,
@@ -100,7 +100,7 @@ fn rename_with_mode_blocking(
     classify_result(result)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// Calls renameat2 relative to an already-open destination directory descriptor.
 fn rename_no_replace_at_blocking(
     source: PathBuf,
@@ -158,7 +158,7 @@ fn rename_with_mode_blocking(
     classify_result(result as libc::c_long)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 /// Converts platform errno values into semantic outcomes shared by move and trash.
 fn classify_result(result: libc::c_long) -> std::io::Result<AtomicRenameOutcome> {
     if result == 0 {
@@ -169,7 +169,7 @@ fn classify_result(result: libc::c_long) -> std::io::Result<AtomicRenameOutcome>
         Some(libc::EEXIST) => Ok(AtomicRenameOutcome::DestinationExists),
         Some(libc::ENOENT) => Ok(AtomicRenameOutcome::Missing),
         Some(libc::EXDEV) => Ok(AtomicRenameOutcome::CrossDevice),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         Some(libc::ENOSYS | libc::EINVAL) => Ok(AtomicRenameOutcome::Unsupported),
         #[cfg(target_os = "macos")]
         Some(libc::ENOTSUP | libc::EINVAL) => Ok(AtomicRenameOutcome::Unsupported),
@@ -177,7 +177,7 @@ fn classify_result(result: libc::c_long) -> std::io::Result<AtomicRenameOutcome>
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 /// Reports unsupported rather than silently degrading atomic no-replace semantics.
 async fn rename_with_mode(
     _source: PathBuf,
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     #[tokio::test]
     async fn no_replace_preserves_an_existing_destination() {
         let temp_dir = TempDir::create();

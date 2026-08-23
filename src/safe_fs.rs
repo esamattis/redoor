@@ -28,6 +28,22 @@ pub async fn safe_rm_all(path: impl AsRef<Path>) -> io::Result<()> {
 
 /// Validates the target before deleting it through cancellable, entry-by-entry filesystem calls.
 async fn remove_validated_tree(path: &Path) -> io::Result<()> {
+    validate_recursive_remove(path).await?;
+
+    if tokio::fs::symlink_metadata(path)
+        .await?
+        .file_type()
+        .is_symlink()
+    {
+        return tokio::fs::remove_file(path).await;
+    }
+
+    remove_tree_iteratively(path).await
+}
+
+/// Applies recursive deletion guards before callers rename or remove a protected path.
+pub async fn validate_recursive_remove(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
     let absolute_path = absolute_lexical_path(path)?;
     let home = effective_user_home().await?;
     let absolute_home = absolute_lexical_path(&home)?;
@@ -48,16 +64,7 @@ async fn remove_validated_tree(path: &Path) -> io::Result<()> {
         };
         refuse_protected_path(&canonical_path, &canonical_home)?;
     }
-
-    if tokio::fs::symlink_metadata(path)
-        .await?
-        .file_type()
-        .is_symlink()
-    {
-        return tokio::fs::remove_file(path).await;
-    }
-
-    remove_tree_iteratively(path).await
+    Ok(())
 }
 
 /// Uses an explicit stack so cancellation stops traversal instead of leaving an opaque recursive job running.

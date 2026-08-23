@@ -6,7 +6,16 @@ use super::{
     MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity,
     current_exe_path, external_ip, file_search, git, metadata,
 };
+use crate::atomic_rename::AtomicRenameOutcome;
+use crate::logging::Level;
+use std::future::Future;
 use tokio::sync::watch;
+
+const DIRECT_DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+const MOVE_SOURCE_QUARANTINE_ATTEMPTS: usize = 16;
+const MAX_MOVE_SOURCE_CLEANUPS: usize = 2;
+static MOVE_SOURCE_CLEANUP_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_MOVE_SOURCE_CLEANUPS);
 
 /// Converts platform metadata into the identity checked before move-source deletion.
 fn move_source_identity(metadata: &std::fs::Metadata) -> MoveSourceIdentity {
@@ -139,6 +148,27 @@ impl CommandHandler {
         path: String,
         expected_identity: MoveSourceIdentity,
     ) -> CommandResult {
+        self.delete_move_source_with_cleanup(
+            path,
+            expected_identity,
+            &MOVE_SOURCE_CLEANUP_PERMITS,
+            |quarantine_path| async move { crate::safe_fs::safe_rm_all(quarantine_path).await },
+        )
+        .await
+    }
+
+    /// Publishes directory removal by quarantine rename before running best-effort cleanup.
+    async fn delete_move_source_with_cleanup<C, F>(
+        &self,
+        path: String,
+        expected_identity: MoveSourceIdentity,
+        cleanup_permits: &'static tokio::sync::Semaphore,
+        cleanup: C,
+    ) -> CommandResult
+    where
+        C: FnOnce(std::path::PathBuf) -> F,
+        F: Future<Output = std::io::Result<()>> + Send + 'static,
+    {
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -154,7 +184,43 @@ impl CommandHandler {
                 "Move source changed while it was being copied; refusing to delete it",
             );
         }
-        self.raw_delete(path).await
+        if !metadata.is_dir() {
+            return match tokio::fs::remove_file(&path).await {
+                Ok(()) => CommandResult::RawDelete,
+                Err(error) => CommandResult::io_error("Failed to delete move source", error),
+            };
+        }
+        if let Err(error) = crate::safe_fs::validate_recursive_remove(&path).await {
+            return CommandResult::io_error("Failed to validate move source deletion", error);
+        }
+
+        let quarantine_path = match quarantine_move_source(std::path::Path::new(&path)).await {
+            Ok(path) => path,
+            Err(error) => {
+                return CommandResult::io_error("Failed to quarantine move source", error);
+            }
+        };
+        match cleanup_permits.try_acquire() {
+            Ok(cleanup_permit) => {
+                let cleanup_future = cleanup(quarantine_path.clone());
+                spawn_move_source_cleanup(quarantine_path, cleanup_permit, cleanup_future);
+            }
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                crate::log!(
+                    Level::Warning,
+                    "Move source quarantine cleanup capacity exhausted; leaving path for later recovery: {}",
+                    quarantine_path.display()
+                );
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                crate::log!(
+                    Level::Error,
+                    "Move source quarantine cleanup unavailable; leaving path for later recovery: {}",
+                    quarantine_path.display()
+                );
+            }
+        }
+        CommandResult::RawDelete
     }
 
     /// Runs recursive search with the agent runtime's per-connection supersession signal.
@@ -311,22 +377,23 @@ impl CommandHandler {
         CommandResult::TarUpload
     }
 
-    /// Removes files or directory trees according to the target metadata.
+    /// Keeps direct REST-backed deletion within its short control-command deadline.
     async fn raw_delete(&self, path: String) -> CommandResult {
-        const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
-
         match tokio::fs::metadata(&path).await {
             Ok(metadata) => {
                 let delete_result = if metadata.is_dir() {
-                    match tokio::time::timeout(DELETE_TIMEOUT, crate::safe_fs::safe_rm_all(&path))
-                        .await
+                    match tokio::time::timeout(
+                        DIRECT_DELETE_TIMEOUT,
+                        crate::safe_fs::safe_rm_all(&path),
+                    )
+                    .await
                     {
                         Ok(result) => result,
                         Err(_) => Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!(
                                 "recursive deletion exceeded {} seconds and may be partial",
-                                DELETE_TIMEOUT.as_secs()
+                                DIRECT_DELETE_TIMEOUT.as_secs()
                             ),
                         )),
                     }
@@ -489,6 +556,78 @@ impl CommandHandler {
     }
 }
 
+/// Atomically hides a directory under an exclusive sibling name without replacing another entry.
+async fn quarantine_move_source(source: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let parent = source.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("move source has no parent directory: {}", source.display()),
+        )
+    })?;
+    if source.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("move source has no file name: {}", source.display()),
+        ));
+    }
+
+    for _ in 0..MOVE_SOURCE_QUARANTINE_ATTEMPTS {
+        let quarantine_name = format!(".redoor-move-{}", uuid::Uuid::new_v4().simple());
+        let quarantine_path = parent.join(quarantine_name);
+        match crate::atomic_rename::rename_no_replace(source, &quarantine_path).await? {
+            AtomicRenameOutcome::Renamed => return Ok(quarantine_path),
+            AtomicRenameOutcome::DestinationExists => continue,
+            AtomicRenameOutcome::Missing => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "move source disappeared before quarantine: {}",
+                        source.display()
+                    ),
+                ));
+            }
+            AtomicRenameOutcome::CrossDevice => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::CrossesDevices,
+                    "move source quarantine unexpectedly crossed filesystems",
+                ));
+            }
+            AtomicRenameOutcome::Unsupported => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "atomic no-replace move source quarantine is unsupported",
+                ));
+            }
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "failed to reserve a unique move source quarantine path",
+    ))
+}
+
+/// Runs best-effort quarantine deletion under a permit so detached cleanup remains bounded.
+fn spawn_move_source_cleanup<F>(
+    quarantine_path: std::path::PathBuf,
+    cleanup_permit: tokio::sync::SemaphorePermit<'static>,
+    cleanup: F,
+) where
+    F: Future<Output = std::io::Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let _cleanup_permit = cleanup_permit;
+        if let Err(error) = cleanup.await {
+            crate::log!(
+                Level::Error,
+                "Failed to clean quarantined move source: path={}, error={}",
+                quarantine_path.display(),
+                error
+            );
+        }
+    });
+}
+
 /// Rejects path syntax so a rename name cannot escape or change its directory.
 fn is_filename(name: &str) -> bool {
     !name.is_empty()
@@ -504,6 +643,326 @@ fn is_filename(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    /// Verifies a directory disappears from its source name before quarantine cleanup completes.
+    #[tokio::test]
+    async fn directory_move_source_is_published_deleted_before_cleanup() {
+        static CLEANUP_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+        let temp = TempDir::create();
+        let path = temp.path().join("directory-move-source");
+        tokio::fs::create_dir(&path)
+            .await
+            .expect("move source directory should be created");
+        tokio::fs::write(path.join("child"), "copied")
+            .await
+            .expect("move source child should be created");
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .expect("move source metadata should be readable");
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        let (finished_sender, finished_receiver) = tokio::sync::oneshot::channel();
+
+        let result = CommandHandler::new()
+            .delete_move_source_with_cleanup(
+                path.display().to_string(),
+                move_source_identity(&metadata),
+                &CLEANUP_PERMITS,
+                move |quarantine_path| async move {
+                    started_sender
+                        .send(quarantine_path.clone())
+                        .expect("cleanup should report its quarantine path");
+                    release_receiver
+                        .await
+                        .expect("test should release quarantine cleanup");
+                    crate::safe_fs::safe_rm_all(&quarantine_path).await?;
+                    finished_sender
+                        .send(())
+                        .expect("cleanup should report completion");
+                    Ok(())
+                },
+            )
+            .await;
+        let quarantine_path = started_receiver
+            .await
+            .expect("quarantine cleanup should start");
+
+        // The router must receive success without waiting for recursive cleanup.
+        assert!(
+            matches!(result, CommandResult::RawDelete),
+            "directory quarantine should preserve the move deletion response"
+        );
+        // Atomic quarantine publication removes the user-visible source name first.
+        assert!(
+            !tokio::fs::try_exists(&path)
+                .await
+                .expect("source existence check should succeed"),
+            "original directory source should disappear before cleanup completes"
+        );
+        // The blocked cleanup must still own the complete tree under its unique sibling name.
+        assert!(
+            tokio::fs::try_exists(quarantine_path.join("child"))
+                .await
+                .expect("quarantine existence check should succeed"),
+            "quarantine should retain source contents until cleanup resumes"
+        );
+        // A sibling quarantine guarantees rename publication cannot cross filesystems.
+        assert_eq!(
+            quarantine_path.parent(),
+            path.parent(),
+            "quarantine should share the source parent directory"
+        );
+        release_sender
+            .send(())
+            .expect("cleanup should remain blocked after command success");
+        finished_receiver
+            .await
+            .expect("quarantine cleanup should finish after release");
+        // Successful best-effort cleanup should remove the hidden quarantine tree.
+        assert!(
+            !tokio::fs::try_exists(&quarantine_path)
+                .await
+                .expect("cleaned quarantine existence check should succeed"),
+            "completed cleanup should remove the quarantine path"
+        );
+    }
+
+    /// Verifies a timed-out quarantine cleanup cannot change the published command success.
+    #[tokio::test]
+    async fn directory_move_source_cleanup_timeout_does_not_fail_the_move() {
+        static CLEANUP_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+        crate::logging::init(None)
+            .await
+            .expect("test logger should initialize");
+        let temp = TempDir::create();
+        let path = temp.path().join("timeout-move-source");
+        tokio::fs::create_dir(&path)
+            .await
+            .expect("move source directory should be created");
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .expect("move source metadata should be readable");
+        let (failed_sender, failed_receiver) = tokio::sync::oneshot::channel();
+
+        let result = CommandHandler::new()
+            .delete_move_source_with_cleanup(
+                path.display().to_string(),
+                move_source_identity(&metadata),
+                &CLEANUP_PERMITS,
+                move |quarantine_path| async move {
+                    failed_sender
+                        .send(quarantine_path)
+                        .expect("cleanup should report the failed quarantine path");
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "simulated bounded cleanup timeout",
+                    ))
+                },
+            )
+            .await;
+        let quarantine_path = failed_receiver
+            .await
+            .expect("timed-out cleanup should complete independently");
+
+        // Cleanup timeout occurs after publication and therefore cannot fail the logical move.
+        assert!(
+            matches!(result, CommandResult::RawDelete),
+            "cleanup timeout should not alter the successful command response"
+        );
+        // The original source remains absent even when best-effort cleanup leaves quarantine behind.
+        assert!(
+            !tokio::fs::try_exists(&path)
+                .await
+                .expect("source existence check should succeed"),
+            "cleanup timeout must not restore the original source name"
+        );
+        // A failed cleanup leaves only the hidden owned path for later operator recovery.
+        assert!(
+            tokio::fs::try_exists(&quarantine_path)
+                .await
+                .expect("quarantine existence check should succeed"),
+            "timed-out cleanup should leave the quarantined tree intact"
+        );
+        crate::safe_fs::safe_rm_all(quarantine_path)
+            .await
+            .expect("test should remove the failed quarantine fixture");
+    }
+
+    /// Verifies saturated cleanup capacity neither blocks success nor constructs cleanup work.
+    #[tokio::test]
+    async fn directory_move_source_succeeds_when_cleanup_capacity_is_saturated() {
+        static SATURATED_CLEANUP_PERMITS: tokio::sync::Semaphore =
+            tokio::sync::Semaphore::const_new(0);
+
+        crate::logging::init(None)
+            .await
+            .expect("test logger should initialize");
+        let temp = TempDir::create();
+        let path = temp.path().join("saturated-move-source");
+        tokio::fs::create_dir(&path)
+            .await
+            .expect("move source directory should be created");
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .expect("move source metadata should be readable");
+        let cleanup_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cleanup_created_for_factory = cleanup_created.clone();
+
+        let result = CommandHandler::new()
+            .delete_move_source_with_cleanup(
+                path.display().to_string(),
+                move_source_identity(&metadata),
+                &SATURATED_CLEANUP_PERMITS,
+                move |_quarantine_path| {
+                    cleanup_created_for_factory.store(true, std::sync::atomic::Ordering::SeqCst);
+                    async { Ok(()) }
+                },
+            )
+            .await;
+
+        // Capacity exhaustion happens after publication and cannot delay or fail the move.
+        assert!(
+            matches!(result, CommandResult::RawDelete),
+            "saturated cleanup admission should retain move success"
+        );
+        // Nonblocking admission must not create cleanup work that would wait for a permit.
+        assert!(
+            !cleanup_created.load(std::sync::atomic::Ordering::SeqCst),
+            "cleanup factory should not run without available capacity"
+        );
+        // The original source name must remain published as deleted despite deferred recovery.
+        assert!(
+            !tokio::fs::try_exists(&path)
+                .await
+                .expect("source existence check should succeed"),
+            "saturated cleanup should leave the original source absent"
+        );
+
+        let mut entries = tokio::fs::read_dir(temp.path())
+            .await
+            .expect("test parent should remain readable");
+        let quarantine_path = entries
+            .next_entry()
+            .await
+            .expect("quarantine listing should succeed")
+            .expect("saturated cleanup should leave one quarantine path")
+            .path();
+        // Capacity exhaustion leaves only a recognizable owned path for later recovery.
+        assert!(
+            quarantine_path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".redoor-move-")),
+            "leftover quarantine should use the owned fixed prefix"
+        );
+        crate::safe_fs::safe_rm_all(quarantine_path)
+            .await
+            .expect("test should remove the deferred quarantine fixture");
+    }
+
+    /// Verifies quarantine publication remains valid for a maximum-length source component.
+    #[tokio::test]
+    async fn directory_move_source_with_maximum_length_name_uses_a_short_quarantine() {
+        static CLEANUP_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+        let temp = TempDir::create();
+        let path = temp.path().join("s".repeat(255));
+        tokio::fs::create_dir(&path)
+            .await
+            .expect("filesystem should accept a 255-byte source name");
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .expect("move source metadata should be readable");
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        let (finished_sender, finished_receiver) = tokio::sync::oneshot::channel();
+
+        let result = CommandHandler::new()
+            .delete_move_source_with_cleanup(
+                path.display().to_string(),
+                move_source_identity(&metadata),
+                &CLEANUP_PERMITS,
+                move |quarantine_path| async move {
+                    started_sender
+                        .send(quarantine_path.clone())
+                        .expect("cleanup should report its short quarantine path");
+                    release_receiver
+                        .await
+                        .expect("test should release quarantine cleanup");
+                    crate::safe_fs::safe_rm_all(quarantine_path).await?;
+                    finished_sender
+                        .send(())
+                        .expect("cleanup should report completion");
+                    Ok(())
+                },
+            )
+            .await;
+        let quarantine_path = started_receiver
+            .await
+            .expect("maximum-name quarantine cleanup should start");
+
+        // A source at NAME_MAX must still publish successfully under an independent short name.
+        assert!(
+            matches!(result, CommandResult::RawDelete),
+            "maximum-length source should quarantine successfully"
+        );
+        let quarantine_name = quarantine_path
+            .file_name()
+            .expect("quarantine should have a file name")
+            .to_string_lossy();
+        // Fixed-prefix UUID naming stays well below common supported filesystem component limits.
+        assert!(
+            quarantine_name.starts_with(".redoor-move-") && quarantine_name.len() < 255,
+            "quarantine name should not inherit the source component length"
+        );
+        // Successful quarantine removes the maximum-length original source pathname immediately.
+        assert!(
+            !tokio::fs::try_exists(&path)
+                .await
+                .expect("source existence check should succeed"),
+            "maximum-length source should disappear before cleanup"
+        );
+        release_sender
+            .send(())
+            .expect("cleanup should remain blocked until assertions finish");
+        finished_receiver
+            .await
+            .expect("maximum-name quarantine cleanup should finish");
+    }
+
+    /// Verifies conditional cleanup retains the RawDelete response consumed by the move router.
+    #[tokio::test]
+    async fn move_source_deletion_returns_the_compatible_response() {
+        let temp = TempDir::create();
+        let path = temp.path().join("completed-move-source");
+        tokio::fs::write(&path, "published at destination")
+            .await
+            .expect("move source should be created");
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .expect("move source metadata should be readable");
+
+        let result = CommandHandler::new()
+            .execute(Command::DeleteMoveSource {
+                path: path.display().to_string(),
+                expected_identity: move_source_identity(&metadata),
+            })
+            .await;
+
+        // The router completes source-deletion state only for the established RawDelete result.
+        assert!(
+            matches!(result, CommandResult::RawDelete),
+            "move source deletion should preserve its wire response"
+        );
+        // A successful response must mean the identity-verified source pathname is gone.
+        assert!(
+            !tokio::fs::try_exists(&path)
+                .await
+                .expect("source existence check should succeed"),
+            "move source should be deleted before success is returned"
+        );
+    }
 
     #[tokio::test]
     async fn transfer_commands_remain_runtime_markers() {
