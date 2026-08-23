@@ -31,6 +31,7 @@ import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { AddButton } from "#ui/components/add-button";
 import { ContextMenu } from "#ui/components/context-menu";
 import { IconButton } from "#ui/components/icon-button";
+import { TerminalToolbar } from "#ui/components/terminal-toolbar";
 import { Toast } from "#ui/components/toast";
 import {
     isEditorInputTarget,
@@ -216,6 +217,8 @@ export function TerminalPanel(props: {
     agents: Agent[];
     activeTarget: ActiveTerminalTarget | null;
     isVisible: boolean;
+    isFullWindow: boolean;
+    onFullWindowChange: (isFullWindow: boolean) => void;
 }) {
     const resolvedTheme = useResolvedTheme();
     const scheduleListingRefresh = useListingRefreshScheduler();
@@ -379,8 +382,14 @@ export function TerminalPanel(props: {
     ]);
 
     return (
-        <div className="flex h-full min-h-0 flex-col">
-            <div className="shrink-0 overflow-x-auto overscroll-x-contain pb-2">
+        <section
+            aria-label="Terminal panel"
+            className="flex h-full min-h-0 flex-col bg-[#11141b]"
+        >
+            <TerminalToolbar
+                isFullWindow={props.isFullWindow}
+                onFullWindowChange={props.onFullWindowChange}
+            >
                 <TerminalTabActions
                     agents={props.agents}
                     activeTarget={props.activeTarget}
@@ -394,10 +403,10 @@ export function TerminalPanel(props: {
                     onSelect={setActiveTabId}
                     onTabKeyDown={handleTabKeyDown}
                 />
-            </div>
+            </TerminalToolbar>
             <div
                 data-terminal-theme={resolvedTheme}
-                className="relative min-h-0 flex-1 overflow-hidden rounded-md bg-[#0b0d12]"
+                className={`relative min-h-0 flex-1 overflow-hidden bg-[#0b0d12] ${props.isFullWindow ? "mx-2 mb-2 rounded-md sm:mx-4 sm:mb-4" : "rounded-md"}`}
             >
                 {tabs.map((tab) => (
                     <TerminalSession
@@ -418,7 +427,7 @@ export function TerminalPanel(props: {
                     </div>
                 ) : null}
             </div>
-        </div>
+        </section>
     );
 }
 

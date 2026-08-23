@@ -22,6 +22,7 @@ export function TabbedBottomDrawer(props: {
     tabs: BottomDrawerTab[];
     activeTab: BottomDrawerTabId;
     isCollapsed: boolean;
+    isFullWindow: boolean;
     onActiveTabChange: (tab: BottomDrawerTabId) => void;
     onCollapsedChange: (isCollapsed: boolean) => void;
 }) {
@@ -69,20 +70,24 @@ export function TabbedBottomDrawer(props: {
     return (
         <div
             data-collapsed={props.isCollapsed}
-            className="relative z-10 h-[49px] shrink-0"
+            className={
+                props.isFullWindow
+                    ? "fixed inset-0 z-[60]"
+                    : "relative z-10 h-[49px] shrink-0"
+            }
         >
             <section
                 ref={resize.panelRef}
-                style={{ height: panelHeight }}
+                style={{ height: props.isFullWindow ? "100%" : panelHeight }}
                 aria-label="Application tools"
                 data-overlay-bottom-panel=""
-                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80 motion-reduce:transition-none ${
-                    resize.isResizing
+                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden bg-[#11141b]/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-[#11141b]/80 motion-reduce:transition-none ${props.isFullWindow ? "" : "border-t border-slate-800"} ${
+                    resize.isResizing || props.isFullWindow
                         ? ""
                         : "transition-[height] duration-150 ease-out"
                 }`}
             >
-                {isContentVisible ? (
+                {isContentVisible && !props.isFullWindow ? (
                     <div
                         role="separator"
                         aria-label="Resize bottom drawer"
@@ -102,10 +107,11 @@ export function TabbedBottomDrawer(props: {
                     />
                 ) : null}
                 <div
-                    className={`flex min-h-0 max-w-full flex-col px-2 sm:px-4 ${isContentVisible ? "flex-1 py-2" : "py-1.5"}`}
+                    className={`flex min-h-0 max-w-full flex-col ${props.isFullWindow ? "h-full" : "px-2 sm:px-4"} ${isContentVisible ? (props.isFullWindow ? "flex-1" : "flex-1 py-2") : "py-1.5"}`}
                 >
                     <div
                         ref={resize.headerRef}
+                        hidden={props.isFullWindow}
                         className="flex min-w-0 shrink-0 items-center gap-1"
                     >
                         <div
@@ -148,7 +154,7 @@ export function TabbedBottomDrawer(props: {
                     <div
                         hidden={!isContentVisible}
                         aria-hidden={!isContentVisible}
-                        className="mt-2 min-h-0 flex-1 overflow-hidden border-t border-slate-800 pt-2"
+                        className={`min-h-0 flex-1 overflow-hidden ${props.isFullWindow ? "" : "mt-2 border-t border-slate-800 pt-2"}`}
                     >
                         {props.tabs.map((tab) => {
                             const isActive = tab.id === props.activeTab;

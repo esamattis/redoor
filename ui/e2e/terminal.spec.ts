@@ -82,6 +82,69 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect.poll(() => terminalOutput).toContain("terminal-ok");
     });
 
+    test("expands the terminal to the full window without replacing its session", async ({
+        page,
+    }) => {
+        const terminalSockets: PlaywrightWebSocket[] = [];
+        page.on("websocket", (socket) => {
+            if (socket.url().includes("/terminal/ws")) {
+                terminalSockets.push(socket);
+            }
+        });
+
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const terminalPanel = page.getByRole("region", {
+            name: "Terminal panel",
+        });
+        const expandButton = page.getByRole("button", {
+            name: "Expand terminal to full window",
+        });
+        await expect(expandButton).toHaveAttribute("aria-pressed", "false");
+        await expandButton.click();
+
+        const panelBox = await terminalPanel.boundingBox();
+        const viewport = page.viewportSize();
+        expect(panelBox).not.toBeNull();
+        expect(viewport).not.toBeNull();
+        if (panelBox === null || viewport === null) {
+            throw new Error("expected expanded terminal measurements");
+        }
+        // The terminal panel, including its tabs and controls, fills the browser window.
+        expect(panelBox.x).toBe(0);
+        expect(panelBox.y).toBe(0);
+        expect(panelBox.width).toBe(viewport.width);
+        expect(panelBox.height).toBe(viewport.height);
+        await expect(
+            terminalPanel.getByRole("button", {
+                name: "Restore terminal size",
+            }),
+        ).toHaveAttribute("aria-pressed", "true");
+        await expect(
+            terminalPanel.getByRole("tab", { name: "agent1_src 1" }),
+        ).toBeVisible();
+        // Full-window expansion must retain the connected PTY rather than remounting it.
+        expect(terminalSockets).toHaveLength(1);
+
+        await terminalPanel
+            .getByRole("button", { name: "Restore terminal size" })
+            .click();
+        await expect(
+            page.getByRole("button", {
+                name: "Expand terminal to full window",
+            }),
+        ).toHaveAttribute("aria-pressed", "false");
+        // Restoring also retains the same live terminal session.
+        expect(terminalSockets).toHaveLength(1);
+    });
+
     test("keeps independent terminal tabs in their captured directories", async ({
         page,
         request,

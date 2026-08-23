@@ -5,6 +5,7 @@ import { useTouchChromeVisibility } from "#ui/utils/use-touch-chrome-visibility"
 export function OverlayChromeLayout(props: {
     topChrome: React.ReactNode;
     bottomChrome: React.ReactNode;
+    isBottomChromeFullWindow: boolean;
     children: React.ReactNode;
 }) {
     const touchChrome = useTouchChromeVisibility();
@@ -30,7 +31,7 @@ export function OverlayChromeLayout(props: {
             </main>
             <div
                 ref={touchChrome.bottomChromeRef}
-                className="touch-hide-bottom-stack absolute inset-x-0 bottom-0 z-20 flex translate-y-0 flex-col transition-transform duration-200 ease-out motion-reduce:transition-none"
+                className={`touch-hide-bottom-stack flex flex-col transition-transform duration-200 ease-out motion-reduce:transition-none ${props.isBottomChromeFullWindow ? "fixed inset-0 z-[60]" : "absolute inset-x-0 bottom-0 z-20 translate-y-0"}`}
             >
                 {props.bottomChrome}
             </div>

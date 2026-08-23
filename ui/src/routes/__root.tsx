@@ -255,6 +255,8 @@ function RootLayout() {
     const router = useRouter();
     const { api, queryClient } = Route.useRouteContext();
     const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
+    const [isTerminalFullWindow, setIsTerminalFullWindow] =
+        React.useState(false);
     const isPersistentSideMenus = usePersistentSideMenus();
     const applicationMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
     const agentMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
@@ -393,6 +395,7 @@ function RootLayout() {
                 api={api}
             />
             <OverlayChromeLayout
+                isBottomChromeFullWindow={isTerminalFullWindow}
                 topChrome={
                     <ContextualTopBar
                         context={agentViewContext}
@@ -409,6 +412,8 @@ function RootLayout() {
                         agents={agents}
                         transfers={transferProgress.transfers}
                         activeTerminalTarget={activeTerminalTarget}
+                        isTerminalFullWindow={isTerminalFullWindow}
+                        onTerminalFullWindowChange={setIsTerminalFullWindow}
                     />
                 }
             >
@@ -444,6 +449,8 @@ function ApplicationBottomDrawer(props: {
         agent: RootLoaderData["agents"][number];
         cwd: string;
     } | null;
+    isTerminalFullWindow: boolean;
+    onTerminalFullWindowChange: (isFullWindow: boolean) => void;
 }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const drawerActivation = useAtomValue(bottomDrawerActivationAtom);
@@ -472,6 +479,7 @@ function ApplicationBottomDrawer(props: {
         <TabbedBottomDrawer
             activeTab={activeTab}
             isCollapsed={isCollapsed}
+            isFullWindow={props.isTerminalFullWindow}
             onActiveTabChange={setActiveTab}
             onCollapsedChange={setIsCollapsed}
             tabs={[
@@ -506,6 +514,10 @@ function ApplicationBottomDrawer(props: {
                             agents={props.agents}
                             activeTarget={props.activeTerminalTarget}
                             isVisible={!isCollapsed && activeTab === "terminal"}
+                            isFullWindow={props.isTerminalFullWindow}
+                            onFullWindowChange={
+                                props.onTerminalFullWindowChange
+                            }
                         />
                     ),
                 },
