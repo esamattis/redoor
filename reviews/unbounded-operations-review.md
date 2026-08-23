@@ -4,10 +4,6 @@
 
 This review covers recursive filesystem work and resource-pressure paths such as queues, channels, buffers, task spawning, and retained collections. It distinguishes finite control operations, which should have total deadlines, from long-running streamed transfers, which should use cancellation and inactivity limits rather than short total timeouts.
 
-## Changes Made
-
-- `safe_rm_all` now performs iterative, entry-by-entry deletion without following directory symlinks. The traversal has a five-minute total deadline, so cleanup cannot occupy a task forever. Timing out reports that deletion may be partial.
-- permanent raw directory deletion now has a 25-second agent-side deadline, shorter than the REST router's 30-second wait. Dropping the timed traversal stops scheduling further filesystem operations instead of leaving an opaque recursive `remove_dir_all` job running.
 
 ## Recursive Filesystem Findings
 
