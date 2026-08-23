@@ -97,13 +97,20 @@ describe("Git browser REST API", () => {
 
         const trackedContext = await gitContext(tracked);
         // Repository roots let browser navigation retain context across nested paths.
-        expect(trackedContext.repository_root).toBe(repo);
+        expect(trackedContext).toMatchObject({
+            status: "inside_worktree",
+            repository_root: repo,
+        });
         // Clean index membership must still classify a file as tracked.
-        expect(trackedContext.tracking_state).toBe("tracked");
+        expect(trackedContext).toMatchObject({ tracking_state: "tracked" });
         // Status/exclude traversal distinguishes ordinary untracked content.
-        expect((await gitContext(untracked)).tracking_state).toBe("untracked");
+        expect(await gitContext(untracked)).toMatchObject({
+            tracking_state: "untracked",
+        });
         // Direct ignored-file inspection remains available even though status omits it.
-        expect((await gitContext(ignored)).tracking_state).toBe("ignored");
+        expect(await gitContext(ignored)).toMatchObject({
+            tracking_state: "ignored",
+        });
         const ignoredDiff = await gitDiff(ignored);
         // Ignored files have an explicit result instead of exposing their worktree content.
         expect(ignoredDiff.result.type).toBe("ignored");
@@ -114,11 +121,13 @@ describe("Git browser REST API", () => {
         await rm(tracked);
         const deletedContext = await gitContext(tracked);
         // Discovery from the nearest existing parent keeps deleted tracked links useful.
-        expect(deletedContext.tracking_state).toBe("deleted");
+        expect(deletedContext).toMatchObject({ tracking_state: "deleted" });
         await $({ cwd: repo })`git add tracked.txt`;
         const stagedDeletedContext = await gitContext(tracked);
         // A deletion remains deleted after it moves from the worktree side to the index side.
-        expect(stagedDeletedContext.tracking_state).toBe("deleted");
+        expect(stagedDeletedContext).toMatchObject({
+            tracking_state: "deleted",
+        });
         const stagedDeletedDiff = await gitDiff(tracked, "?mode=staged");
         // Staged deletion compares the HEAD blob with a missing index entry.
         expect(stagedDeletedDiff.result).toMatchObject({
@@ -129,7 +138,7 @@ describe("Git browser REST API", () => {
         const outside = tempFiles.create("outside\n", { suffix: ".txt" });
         const outsideContext = await gitContext(outside);
         // Outside paths are a normal availability result rather than an API error.
-        expect(outsideContext.inside_worktree).toBe(false);
+        expect(outsideContext).toEqual({ status: "outside_worktree" });
     });
 
     it("supports linked worktrees and does not execute configured external diff commands", async () => {
@@ -146,9 +155,9 @@ describe("Git browser REST API", () => {
 
         const linkedContext = await gitContext(linkedFile);
         // A `.git` indirection file must discover the linked worktree as its own browser root.
-        expect(linkedContext.repository_root).toBe(linked);
+        expect(linkedContext).toMatchObject({ repository_root: linked });
         // Linked worktree files retain ordinary tracked classification.
-        expect(linkedContext.tracking_state).toBe("tracked");
+        expect(linkedContext).toMatchObject({ tracking_state: "tracked" });
 
         const marker = join(repo, "external-diff-ran");
         await writeFile(

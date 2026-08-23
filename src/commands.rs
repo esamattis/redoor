@@ -448,15 +448,21 @@ pub enum GitTrackingState {
     Deleted,
 }
 
-/// Provides the inexpensive Git-tab availability and file classification contract.
+/// Prevents repository-only context from being represented for paths outside a worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct GitContextResponse {
-    pub inside_worktree: bool,
-    pub entry_type: GitEntryType,
-    pub tracking_state: Option<GitTrackingState>,
-    pub repository_root: Option<String>,
-    pub repository_relative_path: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case")]
+#[ts(tag = "status", rename_all = "snake_case")]
+pub enum GitContextResponse {
+    /// Reports Git-tab unavailability without duplicating general filesystem metadata.
+    OutsideWorktree,
+    /// Provides classification and repository paths only when repository discovery succeeded.
+    InsideWorktree {
+        entry_type: GitEntryType,
+        tracking_state: Option<GitTrackingState>,
+        repository_root: String,
+        repository_relative_path: String,
+    },
 }
 
 /// Normalizes index and worktree status into a stable public vocabulary.
@@ -1279,10 +1285,12 @@ impl CommandResult {
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
-            Self::GitContext(result) => format!(
-                "ok GitContext inside_worktree={} tracking={:?}",
-                result.inside_worktree, result.tracking_state
-            ),
+            Self::GitContext(GitContextResponse::OutsideWorktree) => {
+                "ok GitContext status=outside_worktree".to_string()
+            }
+            Self::GitContext(GitContextResponse::InsideWorktree { tracking_state, .. }) => {
+                format!("ok GitContext status=inside_worktree tracking={tracking_state:?}")
+            }
             Self::GitStatus(result) => format!(
                 "ok GitStatus entries={} truncated={} omitted_non_utf8={}",
                 result.entries.len(),

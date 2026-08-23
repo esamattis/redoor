@@ -3,6 +3,6 @@ import type { GitEntryType } from "./GitEntryType";
 import type { GitTrackingState } from "./GitTrackingState";
 
 /**
- * Provides the inexpensive Git-tab availability and file classification contract.
+ * Prevents repository-only context from being represented for paths outside a worktree.
  */
-export type GitContextResponse = { inside_worktree: boolean, entry_type: GitEntryType, tracking_state: GitTrackingState | null, repository_root: string | null, repository_relative_path: string | null, };
+export type GitContextResponse = { "status": "outside_worktree" } | { "status": "inside_worktree", entry_type: GitEntryType, tracking_state: GitTrackingState | null, repository_root: string, repository_relative_path: string, };

@@ -164,17 +164,13 @@ async fn run_blocking(
 /// Discovers repository context and classifies the exact requested path.
 fn context_blocking(path: String, interrupt: Arc<AtomicBool>) -> Result<CommandResult, GitFailure> {
     let requested = validate_absolute_path(&path)?;
-    let entry_type = entry_type(&requested)?;
     let Some(repository) = discover_repository(requested.clone())? else {
-        return Ok(CommandResult::GitContext(GitContextResponse {
-            inside_worktree: false,
-            entry_type,
-            tracking_state: None,
-            repository_root: None,
-            repository_relative_path: None,
-        }));
+        return Ok(CommandResult::GitContext(
+            GitContextResponse::OutsideWorktree,
+        ));
     };
 
+    let entry_type = entry_type(&requested)?;
     let relative = utf8_relative(&repository.relative)?;
     let tracking_state = if entry_type == GitEntryType::Directory {
         None
@@ -185,13 +181,14 @@ fn context_blocking(path: String, interrupt: Arc<AtomicBool>) -> Result<CommandR
             interrupt,
         )?)
     };
-    Ok(CommandResult::GitContext(GitContextResponse {
-        inside_worktree: true,
-        entry_type,
-        tracking_state,
-        repository_root: Some(repository.root.display().to_string()),
-        repository_relative_path: Some(relative),
-    }))
+    Ok(CommandResult::GitContext(
+        GitContextResponse::InsideWorktree {
+            entry_type,
+            tracking_state,
+            repository_root: repository.root.display().to_string(),
+            repository_relative_path: relative,
+        },
+    ))
 }
 
 /// Produces deterministic merged status while retaining non-UTF-8 omission accounting.

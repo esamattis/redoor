@@ -270,7 +270,10 @@ export function GitFileView(props: {
     const diffQuery = useQuery(
         gitDiffQueryOptions(props.agent, props.path, mode),
     );
-    const repositoryRoot = props.context.repository_root;
+    const repositoryRoot =
+        props.context.status === "inside_worktree"
+            ? props.context.repository_root
+            : null;
     return (
         <DetailCard>
             <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-800 px-3 py-1.5 sm:px-4">

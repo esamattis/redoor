@@ -103,7 +103,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 Awaited<ReturnType<Agent["gitContext"]>>,
                 LsResponse,
             ] = await Promise.all([gitContextPromise, listingPromise]);
-            if (deps.view === "git" && !gitContext.inside_worktree) {
+            if (
+                deps.view === "git" &&
+                gitContext.status === "outside_worktree"
+            ) {
                 throw redirect({
                     to: "/agents/$agentId/browser/$",
                     params,
@@ -133,7 +136,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     );
                 }
             }
-            if (deps.view === "git" && gitContext.inside_worktree) {
+            if (
+                deps.view === "git" &&
+                gitContext.status === "inside_worktree"
+            ) {
                 if (isLsDirectoryResponse(lsResult)) {
                     await context.queryClient.fetchQuery({
                         ...gitStatusQueryOptions(agent, lsResult.path),
@@ -168,7 +174,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             const gitContext = await gitContextPromise;
             if (
                 deps.view === "git" &&
-                gitContext.inside_worktree &&
+                gitContext.status === "inside_worktree" &&
                 gitContext.entry_type === "missing" &&
                 gitContext.tracking_state === "deleted"
             ) {
@@ -190,7 +196,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     gitContext,
                 };
             }
-            if (deps.view === "git" && !gitContext.inside_worktree) {
+            if (
+                deps.view === "git" &&
+                gitContext.status === "outside_worktree"
+            ) {
                 throw redirect({
                     to: "/agents/$agentId/browser/$",
                     params,
@@ -277,11 +286,12 @@ function FileBrowser() {
     useRefreshBrowserOnWindowFocus();
 
     const parentPath = getImmediateParentPath(path);
+    const gitAvailable = data.gitContext.status === "inside_worktree";
 
     if (
         pathError?.type === "missing" &&
         search.view === "git" &&
-        data.gitContext.inside_worktree &&
+        data.gitContext.status === "inside_worktree" &&
         data.gitContext.entry_type === "missing" &&
         data.gitContext.tracking_state === "deleted"
     ) {
@@ -313,7 +323,7 @@ function FileBrowser() {
                 parentPath={parentPath}
                 entryType="directory"
                 activeView="files"
-                gitAvailable={data.gitContext.inside_worktree}
+                gitAvailable={gitAvailable}
                 constrainContent
                 pathUnavailable
                 startEditingPath={pathError.type !== "missing"}
@@ -349,7 +359,7 @@ function FileBrowser() {
                 lsResult={lsResult}
                 mountPoints={data.mountPoints}
                 view={search.view}
-                gitAvailable={data.gitContext.inside_worktree}
+                gitAvailable={gitAvailable}
             />
         );
     }
@@ -427,7 +437,7 @@ function FileBrowser() {
                 entryType="file"
                 activeView={activeView}
                 editable={editable}
-                gitAvailable={data.gitContext.inside_worktree}
+                gitAvailable={gitAvailable}
                 constrainContent={!isEditView && activeView !== "git"}
                 fillAvailableHeight={isEditView}
             >
