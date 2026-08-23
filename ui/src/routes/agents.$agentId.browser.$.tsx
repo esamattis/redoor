@@ -236,7 +236,6 @@ function BrowserRouteShell(props: {
     activeView: "files" | "details" | "view" | "sync" | "git";
     gitAvailable: boolean;
     editable?: boolean;
-    constrainContent?: boolean;
     /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
     fillAvailableHeight?: boolean;
     pathUnavailable?: boolean;
@@ -264,9 +263,7 @@ function BrowserRouteShell(props: {
                 startEditingPath={props.startEditingPath}
             />
             <div
-                className={`${
-                    props.constrainContent ? "mx-auto max-w-6xl" : "w-full"
-                } ${
+                className={`w-full ${
                     props.fillAvailableHeight === true
                         ? "flex min-h-0 flex-1 flex-col overflow-hidden"
                         : ""
@@ -324,7 +321,6 @@ function FileBrowser() {
                 entryType="directory"
                 activeView="files"
                 gitAvailable={gitAvailable}
-                constrainContent
                 pathUnavailable
                 startEditingPath={pathError.type !== "missing"}
             >
@@ -438,7 +434,6 @@ function FileBrowser() {
                 activeView={activeView}
                 editable={editable}
                 gitAvailable={gitAvailable}
-                constrainContent={!isEditView && activeView !== "git"}
                 fillAvailableHeight={isEditView}
             >
                 {content}
@@ -499,7 +494,6 @@ function DirectoryBrowserPage(props: {
             entryType="directory"
             activeView={activeView}
             gitAvailable={props.gitAvailable}
-            constrainContent={activeView !== "files"}
         >
             {activeView === "git" ? (
                 <GitDirectoryView agent={props.agent} path={lsResult.path} />

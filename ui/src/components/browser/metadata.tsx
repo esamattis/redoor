@@ -7,7 +7,7 @@ import type {
     LsFileResponse,
 } from "#ui/api-client";
 import { Button } from "#ui/components/button";
-import { DetailCard } from "#ui/components/detail-card";
+import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { IconButton } from "#ui/components/icon-button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
@@ -306,7 +306,7 @@ export function DirectoryDetailView(props: {
     const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
 
     return (
-        <DetailCard>
+        <BrowserViewCard>
             <PathDetailHeader
                 entryType="directory"
                 name={props.directoryName}
@@ -332,7 +332,7 @@ export function DirectoryDetailView(props: {
                 entryCount={props.lsResult.files.length}
                 headingPrefix="directory"
             />
-        </DetailCard>
+        </BrowserViewCard>
     );
 }
 
@@ -374,7 +374,7 @@ export function FileDetailView(props: {
     };
 
     return (
-        <DetailCard>
+        <BrowserViewCard>
             <PathDetailHeader
                 entryType="file"
                 name={props.fileName}
@@ -416,7 +416,7 @@ export function FileDetailView(props: {
                 onCreate={() => createShareableLinkMutation.mutate()}
                 onCopy={copyToClipboard}
             />
-        </DetailCard>
+        </BrowserViewCard>
     );
 }
 

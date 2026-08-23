@@ -82,4 +82,4 @@ Use `Tooltip` to clarify the purpose of most buttons and other form controls, es
 
 Do not use use plain <button> or <input> elements. Always use reusable component or create one.
 
-Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AddButton, Button, Checkbox, ConfirmationDialog, ContextMenu, CopyableCodeRow, CopyablePath, DetailCard, Dialog, DialogActions, FoldingSection, FullWindowToggle, IconButton, InputControl, LogViewer, OverlayChromeLayout, Password, RadioCardGroup, RadioCardOption, SidebarModeToggle, SideMenu, TabbedBottomDrawer, TextField, ThemeToggle, Toast, ToggleButton, Tooltip
+Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AddButton, BrowserViewCard, Button, Checkbox, ConfirmationDialog, ContextMenu, CopyableCodeRow, CopyablePath, DetailCard, Dialog, DialogActions, FoldingSection, FullWindowToggle, IconButton, InputControl, LogViewer, OverlayChromeLayout, Password, RadioCardGroup, RadioCardOption, SidebarModeToggle, SideMenu, TabbedBottomDrawer, TextField, ThemeToggle, Toast, ToggleButton, Tooltip

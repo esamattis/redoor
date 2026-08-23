@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { Button } from "#ui/components/button";
 import { BookmarkButton } from "#ui/components/browser/bookmark-action";
 import {
@@ -480,40 +481,38 @@ export function FileImageView(props: {
     downloadUrl: string;
 }) {
     return (
-        <div>
-            <article className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20">
-                <header className="border-b border-slate-800 p-6 md:p-8">
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                        Image
-                    </p>
-                    <div className="flex flex-wrap items-center gap-3">
-                        <h1
-                            aria-label="File name"
-                            className="min-w-0 break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
-                        >
-                            {props.fileName}
-                        </h1>
-                        <div className="ml-auto shrink-0">
-                            <PersistentPathActions
-                                agent={props.agent}
-                                path={props.path}
-                                currentName={props.fileName}
-                                entryType="file"
-                                downloadUrl={props.downloadUrl}
-                                downloadName={props.fileName}
-                            />
-                        </div>
+        <BrowserViewCard>
+            <header className="border-b border-slate-800 p-6 md:p-8">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                    Image
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                    <h1
+                        aria-label="File name"
+                        className="min-w-0 break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                    >
+                        {props.fileName}
+                    </h1>
+                    <div className="ml-auto shrink-0">
+                        <PersistentPathActions
+                            agent={props.agent}
+                            path={props.path}
+                            currentName={props.fileName}
+                            entryType="file"
+                            downloadUrl={props.downloadUrl}
+                            downloadName={props.fileName}
+                        />
                     </div>
-                </header>
-
-                <div className="flex items-center justify-center p-4 md:p-6">
-                    <img
-                        src={props.downloadUrl}
-                        alt={props.fileName}
-                        className="max-h-[70vh] max-w-full rounded-xl object-contain"
-                    />
                 </div>
-            </article>
-        </div>
+            </header>
+
+            <div className="flex items-center justify-center p-4 md:p-6">
+                <img
+                    src={props.downloadUrl}
+                    alt={props.fileName}
+                    className="max-h-[70vh] max-w-full rounded-xl object-contain"
+                />
+            </div>
+        </BrowserViewCard>
     );
 }

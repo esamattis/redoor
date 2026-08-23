@@ -11,7 +11,7 @@ import {
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import { DetailCard } from "#ui/components/detail-card";
+import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { InputControl } from "#ui/components/input-control";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
@@ -822,7 +822,7 @@ export function SyncView(props: {
     );
 
     return (
-        <DetailCard>
+        <BrowserViewCard>
             <header className="border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
                 <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
                     Sync {entryLabel}
@@ -897,6 +897,6 @@ export function SyncView(props: {
                     workspace.transferMutation.mutate({ operation, mode });
                 }}
             />
-        </DetailCard>
+        </BrowserViewCard>
     );
 }

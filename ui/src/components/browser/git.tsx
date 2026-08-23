@@ -10,7 +10,7 @@ import {
 import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Checkbox } from "#ui/components/checkbox";
-import { DetailCard } from "#ui/components/detail-card";
+import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
 import { gitDiffQueryOptions, gitStatusQueryOptions } from "#ui/queries";
 import { getErrorMessage } from "#ui/components/browser/utils";
@@ -170,7 +170,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
     ].filter((part): part is string => part !== null);
 
     return (
-        <DetailCard>
+        <BrowserViewCard>
             <GitHeader
                 agent={props.agent}
                 title={status.path.split("/").filter(Boolean).pop() ?? "/"}
@@ -229,7 +229,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                     </p>
                 ) : null}
             </div>
-        </DetailCard>
+        </BrowserViewCard>
     );
 }
 
@@ -275,7 +275,7 @@ export function GitFileView(props: {
             ? props.context.repository_root
             : null;
     return (
-        <DetailCard>
+        <BrowserViewCard>
             <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-800 px-3 py-1.5 sm:px-4">
                 <div className="flex min-w-0 items-center gap-2 text-sm text-slate-300">
                     <GitBranch
@@ -341,6 +341,6 @@ export function GitFileView(props: {
                     <GitDiffResultView result={diffQuery.data.result} />
                 )}
             </section>
-        </DetailCard>
+        </BrowserViewCard>
     );
 }
