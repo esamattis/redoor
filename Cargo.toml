@@ -48,6 +48,7 @@ async-compression = { version = "0.4.43", features = ["tokio", "gzip"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 similar = "3.1.2"
 ignore = "0.4.33"
+gix = { version = "0.87.0", default-features = false, features = ["status", "parallel", "sha1"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 mountpoints = "0.2.1"
