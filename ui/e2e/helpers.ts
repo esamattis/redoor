@@ -111,6 +111,29 @@ export async function minimizeBottomDrawer(page: Page): Promise<void> {
     await expand.blur();
 }
 
+/** Confirms the selected-item transfer dialog opened by Copy or Move. */
+export async function confirmSelectedTransfer(
+    page: Page,
+    operation: "Copy" | "Move",
+): Promise<void> {
+    const dialog = page.getByRole("dialog", {
+        name: new RegExp(`^${operation} selected items?\\?$`),
+    });
+    await expect(dialog).toBeVisible();
+    await dialog
+        .getByRole("button", {
+            name: `${operation} selected item`,
+            exact: true,
+        })
+        .or(
+            dialog.getByRole("button", {
+                name: `${operation} selected items`,
+                exact: true,
+            }),
+        )
+        .click();
+}
+
 /** Fires the same visibility/focus events the listing and editor listen for. */
 export async function simulateTabRefocus(page: Page): Promise<void> {
     await page.evaluate(() => {

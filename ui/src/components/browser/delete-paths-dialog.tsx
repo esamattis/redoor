@@ -5,6 +5,7 @@ import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { getErrorMessage } from "#ui/components/browser/utils";
+import { TextField } from "#ui/components/text-field";
 
 export type DeletePathTarget = {
     agent: Agent | null;
@@ -19,6 +20,7 @@ export function DeletePathsDialog(props: {
     targets: DeletePathTarget[];
     trashConfirmLabel: string;
     permanentConfirmLabel: string;
+    requiredConfirmationText?: string;
     children?: React.ReactNode;
     onClose: () => void;
     onDeleted: (targets: DeletePathTarget[]) => void | Promise<void>;
@@ -27,6 +29,7 @@ export function DeletePathsDialog(props: {
         (target) => target.agent?.supportsMoveToTrash === true,
     );
     const [deletePermanently, setDeletePermanently] = React.useState(!canTrash);
+    const [confirmationText, setConfirmationText] = React.useState("");
     const mutation = useMutation({
         mutationFn: async (targets: DeletePathTarget[]) => {
             const results = await Promise.allSettled(
@@ -71,6 +74,7 @@ export function DeletePathsDialog(props: {
     React.useEffect(() => {
         if (!props.isOpen) return;
         setDeletePermanently(!canTrash);
+        setConfirmationText("");
         mutation.reset();
     }, [props.isOpen, canTrash]);
 
@@ -96,6 +100,10 @@ export function DeletePathsDialog(props: {
             }
             busyLabel={`${operationLabel}...`}
             isBusy={mutation.isPending}
+            confirmDisabled={
+                props.requiredConfirmationText !== undefined &&
+                confirmationText !== props.requiredConfirmationText
+            }
             errorMessage={
                 mutation.isError
                     ? getErrorMessage(
@@ -110,6 +118,19 @@ export function DeletePathsDialog(props: {
             onConfirm={() => mutation.mutate(props.targets)}
         >
             {props.children}
+            {props.requiredConfirmationText !== undefined ? (
+                <TextField
+                    label={`Type ${props.requiredConfirmationText} to confirm`}
+                    value={confirmationText}
+                    placeholder={props.requiredConfirmationText}
+                    description="This confirmation is case-sensitive."
+                    required
+                    autoComplete="off"
+                    disabled={mutation.isPending}
+                    onChange={setConfirmationText}
+                    className="mt-4"
+                />
+            ) : null}
             <Checkbox
                 checked={deletePermanently}
                 role="checkbox"

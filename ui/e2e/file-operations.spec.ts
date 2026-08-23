@@ -958,18 +958,33 @@ test.describe.serial("File Operations", () => {
 
         // The confirmation must appear before the destructive selected-items request can run.
         await expect(deleteSelectedItemsDialog).toBeVisible();
+        // The user must see the exact selected path before confirming deletion.
+        await expect(deleteSelectedItemsDialog).toContainText(
+            deletableFilePath,
+        );
+        const deleteConfirmation = deleteSelectedItemsDialog.getByRole(
+            "textbox",
+            { name: "Type DELETE to confirm" },
+        );
+        const confirmDeleteButton = deleteSelectedItemsDialog.getByRole(
+            "button",
+            {
+                name: supportsMoveToTrash
+                    ? "Move selected item to trash"
+                    : "Delete selected item",
+            },
+        );
+        // Destructive confirmation is exact and case-sensitive.
+        await deleteConfirmation.fill("delete");
+        await expect(confirmDeleteButton).toBeDisabled();
+        await deleteConfirmation.fill("DELETE");
+        await expect(confirmDeleteButton).toBeEnabled();
         if (!supportsMoveToTrash) {
             await deleteSelectedItemsDialog
                 .getByRole("checkbox", { name: "Delete permanently" })
                 .click();
         }
-        await deleteSelectedItemsDialog
-            .getByRole("button", {
-                name: supportsMoveToTrash
-                    ? "Move selected item to trash"
-                    : "Delete selected item",
-            })
-            .click();
+        await confirmDeleteButton.click();
 
         // The file name is rendered in both the listing and the selected-items panel, so wait on disk state first.
         await expect

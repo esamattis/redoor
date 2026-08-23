@@ -7,3 +7,4 @@
 - 2026-08-23: `file-edit-vim.spec.ts` failed to restore editor focus after returning from the terminal with Alt+e; the full `pnpm run playwright` rerun passed.
 - 2026-08-23: `file-detail.spec.ts` timed out creating a one-time shareable link during `pn test`; the full `pnpm run playwright` rerun passed.
 - 2026-08-23: `file-detail.spec.ts` timed out displaying the existing file-size details during `pn test`; a targeted rerun passed.
+- 2026-08-23: `file-detail.spec.ts` timed out navigating to a nested file detail view during `pn test`; the subsequent Playwright run cleared that failure.

@@ -14,6 +14,7 @@ export function ConfirmationDialog(props: {
     confirmLabel: string;
     busyLabel?: string;
     isBusy?: boolean;
+    confirmDisabled?: boolean;
     errorMessage?: string | null;
     children?: React.ReactNode;
     onClose: () => void;
@@ -48,6 +49,7 @@ export function ConfirmationDialog(props: {
                     type="button"
                     variant="danger"
                     onClick={props.onConfirm}
+                    disabled={props.confirmDisabled}
                     isLoading={props.isBusy}
                     className="rounded-md border-red-500/40 bg-red-500/15 font-semibold text-red-200 hover:border-red-500/60 hover:bg-red-500/25"
                 >

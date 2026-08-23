@@ -39,6 +39,7 @@ import {
 } from "#ui/components/browser/selected-files-transfer-dialog";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
+import { AffectedPathsList } from "#ui/components/browser/affected-paths-list";
 
 type TransferSelectedFilesState =
     | { type: "idle" }
@@ -526,6 +527,12 @@ export function SelectedFilesCard(props: {
         path: file.path,
     }));
 
+    React.useEffect(() => {
+        if (isDeleteDialogOpen && !hasSelection) {
+            setIsDeleteDialogOpen(false);
+        }
+    }, [hasSelection, isDeleteDialogOpen]);
+
     return (
         <>
             <TransferSelectedFilesAction
@@ -626,6 +633,7 @@ export function SelectedFilesCard(props: {
                         ? "Delete selected item"
                         : `Delete ${selectedFiles.length} selected items`
                 }
+                requiredConfirmationText="DELETE"
                 onClose={() => setIsDeleteDialogOpen(false)}
                 onDeleted={async (targets) => {
                     targets.forEach((target) => {
@@ -643,7 +651,14 @@ export function SelectedFilesCard(props: {
                     });
                     await router.invalidate();
                 }}
-            />
+            >
+                <AffectedPathsList
+                    paths={selectedFiles}
+                    onDeselect={(path) =>
+                        unselectFile({ agentId: path.agentId, path: path.path })
+                    }
+                />
+            </DeletePathsDialog>
         </>
     );
 }

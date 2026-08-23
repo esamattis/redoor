@@ -4,6 +4,7 @@ import path from "node:path";
 import {
     setupTestDir,
     teardownTestDir,
+    confirmSelectedTransfer,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -138,6 +139,15 @@ test.describe.serial("Move Operations", () => {
                 name: "Move selected items to this directory",
             })
             .click();
+        const confirmation = page.getByRole("dialog", {
+            name: "Move selected items?",
+        });
+        // The confirmation lists every source before either move request starts.
+        await expect(confirmation).toContainText(firstName);
+        await expect(confirmation).toContainText(secondName);
+        await confirmation
+            .getByRole("button", { name: "Move selected items" })
+            .click();
         await expect.poll(() => moveResponses.length).toBe(2);
         // Both accepted responses prove each selected source started its own move.
         expect(moveResponses).toEqual([true, true]);
@@ -203,6 +213,7 @@ test.describe.serial("Move Operations", () => {
                 name: "Move selected items to this directory",
             })
             .click();
+        await confirmSelectedTransfer(page, "Move");
         await expect.poll(() => moveResponses.length).toBe(1);
         // One accepted start proves the directory move left the listing action.
         expect(moveResponses).toEqual([true]);

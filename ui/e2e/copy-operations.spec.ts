@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    confirmSelectedTransfer,
     minimizeBottomDrawer,
     WEB_BASE_URL,
     type TestContext,
@@ -232,6 +233,7 @@ test.describe.serial("Copy Operations", () => {
                 response.request().method() === "POST",
         );
         await actionsDialog.getByRole("button", { name: "Copy" }).click();
+        await confirmSelectedTransfer(page, "Copy");
         const copyResponse = await copyResponsePromise;
         // Choosing Copy from the compact menu must start the same transfer as the desktop button.
         expect(copyResponse.ok()).toBe(true);
@@ -250,6 +252,11 @@ test.describe.serial("Copy Operations", () => {
             "subdir1",
             copyTargetDirName,
         );
+        const excludedName = `deselect-before-copy-${Date.now()}.txt`;
+        await fs.writeFile(
+            path.join(ctx.testDirPath, excludedName),
+            "must not be copied",
+        );
         await fs.rm(copyTargetDirPath, { force: true, recursive: true });
 
         await page.goto(
@@ -265,9 +272,12 @@ test.describe.serial("Copy Operations", () => {
         await page
             .getByRole("checkbox", { name: "Select file file2.txt" })
             .click();
-        // The summary proves both source rows entered the persistent selection.
+        await page
+            .getByRole("checkbox", { name: `Select file ${excludedName}` })
+            .click();
+        // The summary proves all source rows entered the persistent selection.
         await expect(
-            page.getByText("2 files, 0 directories selected"),
+            page.getByText("3 files, 0 directories selected"),
         ).toBeVisible();
 
         await page.getByRole("link", { name: "subdir1", exact: true }).click();
@@ -301,6 +311,20 @@ test.describe.serial("Copy Operations", () => {
                 name: "Copy selected items to this directory",
             })
             .click();
+        const confirmation = page.getByRole("dialog", {
+            name: "Copy selected items?",
+        });
+        // Every selected source must be visible before the batch starts.
+        await expect(confirmation).toContainText("file1.txt");
+        await expect(confirmation).toContainText("file2.txt");
+        await confirmation
+            .getByRole("button", { name: `Deselect ${excludedName}` })
+            .click();
+        // Removing an affected item from the dialog must update the pending operation.
+        await expect(confirmation).not.toContainText(excludedName);
+        await confirmation
+            .getByRole("button", { name: "Copy selected items" })
+            .click();
         await expect.poll(() => copyResponses.length).toBe(2);
         // Both accepted responses prove each selected source started its own copy.
         expect(copyResponses).toEqual([true, true]);
@@ -322,6 +346,9 @@ test.describe.serial("Copy Operations", () => {
         await expect(
             fs.readFile(path.join(copyTargetDirPath, "file2.txt"), "utf8"),
         ).resolves.toBe("content2");
+        await expect(
+            fs.stat(path.join(copyTargetDirPath, excludedName)),
+        ).rejects.toThrow();
     });
 
     test("should keep an existing file when resolving a copy conflict", async ({
@@ -709,6 +736,7 @@ test.describe.serial("Copy Operations", () => {
             }
         });
         await copyButton.click();
+        await confirmSelectedTransfer(page, "Copy");
 
         await expect.poll(() => copyResponses.length).toBe(2);
         // One rejection must not prevent the independent valid request from being accepted.
@@ -850,6 +878,7 @@ test.describe.serial("Copy Operations", () => {
                 response.request().method() === "POST",
         );
         await copyButton.click();
+        await confirmSelectedTransfer(page, "Copy");
         const copyResponse = await copyResponsePromise;
 
         // An accepted API response proves the click reached the intended copy route.
@@ -916,6 +945,7 @@ test.describe.serial("Copy Operations", () => {
         await expect(copyButton).toBeEnabled();
 
         await copyButton.click();
+        await confirmSelectedTransfer(page, "Copy");
 
         // Cross-agent copies use the same terminal transfer state before clearing selection.
         await expect(
