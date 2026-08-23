@@ -1,14 +1,7 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import {
-    Download,
-    Maximize2,
-    Minimize2,
-    MoreHorizontal,
-    RefreshCw,
-    Save,
-} from "lucide-react";
+import { Download, MoreHorizontal, RefreshCw, Save } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
@@ -20,7 +13,7 @@ import {
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
-import { IconButton } from "#ui/components/icon-button";
+import { FullWindowToggle } from "#ui/components/full-window-toggle";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
@@ -164,32 +157,6 @@ function EditorOptionsMenu(props: {
                 </>
             )}
         </ActionMenu>
-    );
-}
-
-/** Keeps the full-window toggle accessible while its icon changes with the layout. */
-function EditorSizeToggle(props: {
-    isFullWindow: boolean;
-    onToggle: () => void;
-}) {
-    return (
-        <IconButton
-            type="button"
-            label={
-                props.isFullWindow
-                    ? "Restore editor size"
-                    : "Expand editor to full window"
-            }
-            aria-pressed={props.isFullWindow}
-            onClick={props.onToggle}
-            className="h-8 w-8 rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
-        >
-            {props.isFullWindow ? (
-                <Minimize2 className="h-4 w-4" aria-hidden="true" />
-            ) : (
-                <Maximize2 className="h-4 w-4" aria-hidden="true" />
-            )}
-        </IconButton>
     );
 }
 
@@ -343,7 +310,8 @@ export function FileEditView(props: {
                             />
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
-                            <EditorSizeToggle
+                            <FullWindowToggle
+                                targetName="editor"
                                 isFullWindow={isFullWindow}
                                 onToggle={() =>
                                     setIsFullWindow((current) => !current)
