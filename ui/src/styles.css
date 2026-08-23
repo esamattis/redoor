@@ -314,6 +314,64 @@ code {
     white-space: pre;
 }
 
+/* Highlight tokens inherit diff row backgrounds while adapting to app theme. */
+.file-diff-html .hljs-keyword,
+.file-diff-html .hljs-type,
+.file-diff-html .hljs-doctag,
+.file-diff-html .hljs-template-tag,
+.file-diff-html .hljs-template-variable,
+.file-diff-html .hljs-variable.language_ {
+    color: light-dark(#cf222e, #ff7b72);
+}
+
+.file-diff-html .hljs-title,
+.file-diff-html .hljs-title.class_,
+.file-diff-html .hljs-title.function_ {
+    color: light-dark(#8250df, #d2a8ff);
+}
+
+.file-diff-html .hljs-attr,
+.file-diff-html .hljs-attribute,
+.file-diff-html .hljs-literal,
+.file-diff-html .hljs-meta,
+.file-diff-html .hljs-number,
+.file-diff-html .hljs-operator,
+.file-diff-html .hljs-variable,
+.file-diff-html .hljs-selector-attr,
+.file-diff-html .hljs-selector-class,
+.file-diff-html .hljs-selector-id {
+    color: light-dark(#0550ae, #79c0ff);
+}
+
+.file-diff-html .hljs-regexp,
+.file-diff-html .hljs-string,
+.file-diff-html .hljs-meta .hljs-string {
+    color: light-dark(#0a3069, #a5d6ff);
+}
+
+.file-diff-html .hljs-built_in,
+.file-diff-html .hljs-symbol {
+    color: light-dark(#953800, #ffa657);
+}
+
+.file-diff-html .hljs-comment,
+.file-diff-html .hljs-code,
+.file-diff-html .hljs-formula {
+    color: light-dark(#6e7781, #8b949e);
+}
+
+.file-diff-html .hljs-name,
+.file-diff-html .hljs-quote,
+.file-diff-html .hljs-selector-tag,
+.file-diff-html .hljs-selector-pseudo {
+    color: light-dark(#116329, #7ee787);
+}
+
+.file-diff-html .hljs-section,
+.file-diff-html .hljs-bullet {
+    color: light-dark(#0550ae, #f2cc60);
+}
+
 .git-file-diff .d2h-file-wrapper {
     margin-bottom: 0;
     border: 0;

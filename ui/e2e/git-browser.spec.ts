@@ -26,7 +26,7 @@ test.describe.serial("Git browser", () => {
     test.beforeAll(async () => {
         ctx = await setupTestDir("git-browser");
         repositoryPath = path.join(ctx.testDirPath, "repository");
-        trackedPath = path.join(repositoryPath, "tracked.txt");
+        trackedPath = path.join(repositoryPath, "tracked.ts");
         untrackedPath = path.join(repositoryPath, "untracked.txt");
         ignoredPath = path.join(repositoryPath, "ignored.txt");
         binaryPath = path.join(repositoryPath, "binary.dat");
@@ -42,7 +42,10 @@ test.describe.serial("Git browser", () => {
             path.join(repositoryPath, ".gitignore"),
             "ignored.txt\n",
         );
-        await fs.writeFile(trackedPath, "committed version\n");
+        await fs.writeFile(
+            trackedPath,
+            'const version = "committed version";\n',
+        );
         await fs.writeFile(binaryPath, "plain baseline\n");
         await fs.writeFile(largePath, "small baseline\n");
         await fs.writeFile(deletedPath, "deleted baseline\n");
@@ -56,9 +59,12 @@ test.describe.serial("Git browser", () => {
         await $`git -C ${repositoryPath} add .`;
         await $`git -C ${repositoryPath} commit -m baseline`;
 
-        await fs.writeFile(trackedPath, "staged version\n");
-        await $`git -C ${repositoryPath} add tracked.txt`;
-        await fs.writeFile(trackedPath, "worktree version\n");
+        await fs.writeFile(trackedPath, 'const version = "staged version";\n');
+        await $`git -C ${repositoryPath} add tracked.ts`;
+        await fs.writeFile(
+            trackedPath,
+            'const version = "worktree version";\n',
+        );
         await fs.writeFile(untrackedPath, "untracked content\n");
         await fs.writeFile(ignoredPath, "ignored content\n");
         await fs.writeFile(binaryPath, Buffer.from([0, 1, 2, 3]));
@@ -77,6 +83,7 @@ test.describe.serial("Git browser", () => {
     }) => {
         const repositoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(repositoryPath)}`;
         await page.setViewportSize({ width: 360, height: 844 });
+        await page.emulateMedia({ colorScheme: "light" });
         await page.goto(`${repositoryUrl}?view=git`);
 
         const directoryView = page.getByLabel("Directory view");
@@ -146,12 +153,25 @@ test.describe.serial("Git browser", () => {
         await expect(untrackedSection).toBeInViewport();
 
         await page
-            .getByRole("link", { name: "tracked.txt", exact: true })
+            .getByRole("link", { name: "tracked.ts", exact: true })
             .first()
             .click();
         const fullDiff = page.getByRole("region", { name: "Full Git diff" });
         // The default comparison must show current worktree content.
         await expect(fullDiff).toContainText("worktree version");
+        // Source diffs use the same filename-based language support as the editor.
+        await expect(fullDiff.locator(".hljs-keyword").first()).toHaveText(
+            "const",
+        );
+        // Diff backgrounds must follow the resolved app theme rather than a fixed dark palette.
+        await expect(fullDiff.locator(".d2h-wrapper")).toHaveClass(
+            /d2h-light-color-scheme/,
+        );
+        await page.emulateMedia({ colorScheme: "dark" });
+        // An already rendered diff redraws when system mode resolves to a new theme.
+        await expect(fullDiff.locator(".d2h-wrapper")).toHaveClass(
+            /d2h-dark-color-scheme/,
+        );
         const fullDiffBox = await fullDiff.boundingBox();
         // The diff should use nearly all phone width instead of retaining desktop card padding.
         expect(fullDiffBox?.width).toBeGreaterThan(330);
@@ -188,7 +208,10 @@ test.describe.serial("Git browser", () => {
 
         await stagedOnly.click();
         await expect(stagedOnly).toHaveAttribute("aria-pressed", "false");
-        await fs.writeFile(trackedPath, "refreshed worktree version\n");
+        await fs.writeFile(
+            trackedPath,
+            'const version = "refreshed worktree version";\n',
+        );
         await simulateTabRefocus(page);
         // Focus refresh must invalidate the Git cache independently of the unchanged listing.
         await expect(

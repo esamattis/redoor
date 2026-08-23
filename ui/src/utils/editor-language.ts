@@ -20,6 +20,28 @@ import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import type { Extension } from "@codemirror/state";
 
+export type SupportedSyntaxLanguage =
+    | "cpp"
+    | "csharp"
+    | "css"
+    | "go"
+    | "html"
+    | "java"
+    | "javascript"
+    | "json"
+    | "lua"
+    | "markdown"
+    | "perl"
+    | "properties"
+    | "python"
+    | "ruby"
+    | "rust"
+    | "shell"
+    | "toml"
+    | "typescript"
+    | "xml"
+    | "yaml";
+
 /**
  * Dotfiles that should highlight as shell even when they have no `.sh` extension.
  * Agents usually report these as text/plain, so filename is the only reliable signal.
@@ -50,19 +72,74 @@ export function languageFromFileName(
     fileName: string,
     content = "",
 ): Extension | undefined {
+    const language = syntaxLanguageFromFileName(fileName, content);
+
+    switch (language) {
+        case "rust":
+            return rust();
+        case "javascript":
+            return javascript();
+        case "typescript":
+            return javascript({ typescript: true });
+        case "go":
+            return go();
+        case "html":
+            return html();
+        case "yaml":
+            return yaml();
+        case "toml":
+            return StreamLanguage.define(toml);
+        case "json":
+            return json();
+        case "lua":
+            return StreamLanguage.define(lua);
+        case "xml":
+            return xml();
+        case "css":
+            return css();
+        case "markdown":
+            return markdown({
+                base: markdownLanguage,
+                codeLanguages: languages,
+            });
+        case "java":
+            return java();
+        case "shell":
+            return StreamLanguage.define(shell);
+        case "python":
+            return python();
+        case "ruby":
+            return StreamLanguage.define(ruby);
+        case "perl":
+            return StreamLanguage.define(perl);
+        case "properties":
+            return StreamLanguage.define(properties);
+        case "cpp":
+        case "csharp":
+            return cpp();
+        case undefined:
+            return undefined;
+    }
+}
+
+/** Identifies syntax once so editors and rendered diffs support the same files. */
+export function syntaxLanguageFromFileName(
+    fileName: string,
+    content = "",
+): SupportedSyntaxLanguage | undefined {
     const baseName = fileName.split("/").pop() ?? fileName;
     const lowerName = baseName.toLowerCase();
 
     if (SHELL_BASENAMES.has(lowerName) || lowerName.startsWith(".env.")) {
-        return StreamLanguage.define(shell);
+        return "shell";
     }
 
     if (lowerName === "gemfile" || lowerName === "rakefile") {
-        return StreamLanguage.define(ruby);
+        return "ruby";
     }
 
     if (lowerName === ".editorconfig") {
-        return StreamLanguage.define(properties);
+        return "properties";
     }
 
     const lastDot = lowerName.lastIndexOf(".");
@@ -72,71 +149,67 @@ export function languageFromFileName(
 
     switch (lowerName.slice(lastDot + 1)) {
         case "rs":
-            return rust();
+            return "rust";
         case "js":
         case "mjs":
         case "cjs":
         case "jsx":
-            return javascript();
+            return "javascript";
         case "ts":
         case "mts":
         case "cts":
         case "tsx":
-            return javascript({ typescript: true });
+            return "typescript";
         case "go":
-            return go();
+            return "go";
         case "html":
         case "htm":
-            return html();
+            return "html";
         case "yml":
         case "yaml":
-            return yaml();
+            return "yaml";
         case "toml":
-            return StreamLanguage.define(toml);
+            return "toml";
         case "json":
-            return json();
+            return "json";
         case "jsonc":
         case "json5":
             // Strict JSON highlighting rejects comments and JSON5 syntax.
-            return javascript();
+            return "javascript";
         case "lua":
-            return StreamLanguage.define(lua);
+            return "lua";
         case "xml":
         case "xsl":
         case "xsd":
         case "svg":
         case "plist":
-            return xml();
+            return "xml";
         case "css":
-            return css();
+            return "css";
         case "md":
         case "markdown":
-            // Nested parsers highlight fenced blocks from the language tag.
-            return markdown({
-                base: markdownLanguage,
-                codeLanguages: languages,
-            });
+            return "markdown";
         case "java":
-            return java();
+            return "java";
         case "sh":
         case "bash":
         case "zsh":
         case "ksh":
-            return StreamLanguage.define(shell);
+            return "shell";
         case "py":
         case "pyi":
-            return python();
+            return "python";
         case "rb":
         case "rake":
-            return StreamLanguage.define(ruby);
+            return "ruby";
         case "pl":
         case "pm":
         case "t":
-            return StreamLanguage.define(perl);
+            return "perl";
         case "ini":
         case "cfg":
         case "conf":
-            return StreamLanguage.define(properties);
+            return "properties";
         case "c":
         case "h":
         case "cpp":
@@ -145,15 +218,18 @@ export function languageFromFileName(
         case "hpp":
         case "hh":
         case "hxx":
+            return "cpp";
         case "cs":
-            return cpp();
+            return "csharp";
         default:
             return undefined;
     }
 }
 
 /** Uses an extensionless script's interpreter as the syntax-highlighting fallback. */
-function languageFromHashBang(content: string): Extension | undefined {
+function languageFromHashBang(
+    content: string,
+): SupportedSyntaxLanguage | undefined {
     const firstLineEnd = content.indexOf("\n");
     const firstLine = content.slice(
         0,
@@ -183,25 +259,25 @@ function languageFromHashBang(content: string): Extension | undefined {
         return undefined;
     }
     if (["sh", "bash", "zsh", "ksh", "dash", "ash"].includes(interpreter)) {
-        return StreamLanguage.define(shell);
+        return "shell";
     }
     if (interpreter.startsWith("python")) {
-        return python();
+        return "python";
     }
     if (interpreter === "ruby") {
-        return StreamLanguage.define(ruby);
+        return "ruby";
     }
     if (interpreter === "perl") {
-        return StreamLanguage.define(perl);
+        return "perl";
     }
     if (interpreter === "lua") {
-        return StreamLanguage.define(lua);
+        return "lua";
     }
     if (["ts-node", "tsx"].includes(interpreter)) {
-        return javascript({ typescript: true });
+        return "typescript";
     }
     if (["node", "nodejs", "deno", "bun"].includes(interpreter)) {
-        return javascript();
+        return "javascript";
     }
     return undefined;
 }
