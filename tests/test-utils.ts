@@ -80,6 +80,7 @@ export async function createToxiproxyAgent(options: {
             binary: options.agent.binary,
             supports_self_exec: options.agent.supportsSelfExec,
             supports_native_open: options.agent.supportsNativeOpen,
+            supports_trash: options.agent.supportsTrash,
         },
         {
             getSessionCookie: () =>
@@ -437,6 +438,7 @@ export async function startServerAndAgent(options: {
     agentName: string;
     agentCwd: string;
     agentExecutablePath?: string;
+    agentEnv?: NodeJS.ProcessEnv;
 }): Promise<{
     serverPort: number;
     serverPid: number;
@@ -476,6 +478,7 @@ export async function startServerAndAgent(options: {
         cwd: options.agentCwd,
         home: options.agentCwd,
         executablePath: options.agentExecutablePath,
+        env: options.agentEnv,
     });
 
     await Promise.all([waitForAgentPromise, waitForTransferPromise]);

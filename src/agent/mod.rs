@@ -9,6 +9,7 @@ pub(crate) mod state;
 mod terminal;
 mod transfer;
 mod transfers;
+mod trash;
 mod ws;
 
 use std::path::PathBuf;
@@ -174,6 +175,9 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let notification_delay = resolved
         .notification_delay_seconds
         .map(tokio::time::Duration::from_secs);
+    let trash = trash::TrashService::initialize(resolved.trash_directory.map(PathBuf::from))
+        .await
+        .map_err(|error| format!("Failed to initialize trash: {error}"))?;
     let loaded_config_path = match resolved.loaded_config_path {
         Some(path) => match tokio::fs::canonicalize(&path).await {
             Ok(canonical) => Some(canonical),
@@ -220,6 +224,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         connection,
         default_directory,
         token,
+        trash,
         notification_delay,
     );
 
@@ -271,6 +276,8 @@ struct ResolvedAgentSettings {
     name: String,
     token: String,
     home: Option<String>,
+    /// Optional exact root used instead of platform trash-location discovery.
+    trash_directory: Option<String>,
     log: Option<String>,
     /// Non-negative delay selected on the command line, or `None` when explicitly disabled.
     notification_delay_seconds: Option<u64>,
@@ -367,6 +374,7 @@ fn resolve_agent_settings_from_sources(
         std::env::var("REDOOR_AGENT_DIR").ok(),
         agent_section.home,
     ]);
+    let trash_directory = first_non_empty([args.trash_directory]);
     let notification_delay_seconds =
         match args.notification.unwrap_or(NotificationDelay::Seconds(5)) {
             NotificationDelay::Off => None,
@@ -384,6 +392,7 @@ fn resolve_agent_settings_from_sources(
         name,
         token,
         home,
+        trash_directory,
         log,
         notification_delay_seconds,
         loaded_config_path,

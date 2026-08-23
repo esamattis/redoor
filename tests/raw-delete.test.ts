@@ -48,6 +48,17 @@ describe("Raw Delete API", () => {
         await expect(fs.access(deletedFilePath)).rejects.toThrow();
     });
 
+    it("should permanently delete when trash is explicitly false", async () => {
+        const deletedFilePath = tempFiles.create("delete permanently", {
+            suffix: ".txt",
+        });
+
+        await testAgent.deleteFile(deletedFilePath, { trash: false });
+
+        // Explicit false must preserve the endpoint's permanent-delete compatibility contract.
+        await expect(fs.access(deletedFilePath)).rejects.toThrow();
+    });
+
     it("should return error for deleting non-existent file", async () => {
         const deletedFilePath = tempFiles.tempFile({ suffix: ".txt" });
 

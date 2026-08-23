@@ -17,6 +17,7 @@ mod routes;
 pub(crate) mod state;
 mod terminals;
 mod transfers;
+mod trash;
 mod ui;
 mod user_state;
 mod watchdog;

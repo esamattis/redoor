@@ -40,6 +40,8 @@ struct CommandMessageContext {
     file_search_cancel: Option<watch::Receiver<bool>>,
     /// Control-generation cancellation used by temp-owning local operations.
     command_cancel: Option<watch::Receiver<bool>>,
+    /// Immutable platform trash service resolved at process startup.
+    trash: super::trash::TrashService,
 }
 
 /// Executes one owned command task with the connection resources it may use.
@@ -55,6 +57,7 @@ async fn handle_command_message(
         active_downloads,
         file_search_cancel,
         command_cancel,
+        trash,
     } = context;
     match command {
         Command::RawDownload {
@@ -198,6 +201,42 @@ async fn handle_command_message(
                 request_id,
                 result.summary()
             );
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
+        Command::Trash { path } => {
+            let result = match trash.trash(std::path::PathBuf::from(path)).await {
+                Ok(()) => CommandResult::Trash,
+                Err(error) => CommandResult::error(error.kind.clone(), error.to_string()),
+            };
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
+        Command::ListTrash => {
+            let result = match trash.list().await {
+                Ok(list) => CommandResult::TrashList(list),
+                Err(error) => CommandResult::error(error.kind.clone(), error.to_string()),
+            };
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
+        Command::RestoreTrash {
+            location_id,
+            item_id,
+        } => {
+            let result = match trash.restore(&location_id, &item_id).await {
+                Ok(path) => match path.into_os_string().into_string() {
+                    Ok(path) => CommandResult::RestoreTrash { path },
+                    Err(_) => CommandResult::error(
+                        CommandErrorKind::InvalidInput,
+                        "Restored path is not valid UTF-8",
+                    ),
+                },
+                Err(error) => CommandResult::error(error.kind.clone(), error.to_string()),
+            };
             AgentActor
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
@@ -377,12 +416,15 @@ impl AgentActor {
                         let write_text = write_text.clone();
                         let agent_id = state.agent_id.clone();
                         let active_downloads = state.active_downloads.clone();
+                        let trash = state.trash.clone();
                         command_tasks.spawn(async move {
                             let handles_cancellation = matches!(
                                 command,
                                 Command::LocalCopyFile { .. }
                                     | Command::LocalCopyDirectory { .. }
                                     | Command::LocalMove { .. }
+                                    | Command::Trash { .. }
+                                    | Command::RestoreTrash { .. }
                             );
                             if handles_cancellation {
                                 handle_command_message(
@@ -395,6 +437,7 @@ impl AgentActor {
                                         active_downloads,
                                         file_search_cancel,
                                         command_cancel: Some(command_cancel),
+                                        trash,
                                     },
                                 )
                                 .await;
@@ -411,6 +454,7 @@ impl AgentActor {
                                             active_downloads,
                                             file_search_cancel,
                                             command_cancel: None,
+                                            trash,
                                         },
                                     ) => {}
                                     _ = command_cancel.changed() => {}

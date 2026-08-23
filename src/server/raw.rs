@@ -644,6 +644,7 @@ mod tests {
                 binary: current_binary_identity(),
                 supports_self_exec: true,
                 supports_native_open: true,
+                supports_trash: true,
                 watchdog: None,
             }))
             .await

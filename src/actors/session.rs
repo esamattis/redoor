@@ -84,6 +84,7 @@ impl SessionRuntime {
                 binary,
                 supports_self_exec,
                 supports_native_open,
+                supports_trash,
             } => {
                 // Reject impostors before name takeover: an unauthenticated client
                 // that only knows an agent name must not replace a live connection.
@@ -155,6 +156,7 @@ impl SessionRuntime {
                         binary,
                         supports_self_exec,
                         supports_native_open,
+                        supports_trash,
                         watchdog: self.watchdog.clone(),
                     }));
                 self.agent_id = Some(agent_id);

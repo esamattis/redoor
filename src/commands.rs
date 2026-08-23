@@ -198,6 +198,17 @@ pub enum Command {
     RawDelete {
         path: String,
     },
+    /// Moves one filesystem entry into the platform trash without copy/delete fallback.
+    Trash {
+        path: String,
+    },
+    /// Returns the platform-neutral inventory discovered by the agent at command time.
+    ListTrash,
+    /// Restores one opaque inventory item to the original path recorded by its provider.
+    RestoreTrash {
+        location_id: String,
+        item_id: String,
+    },
     CreateDirectory {
         path: String,
     },
@@ -306,6 +317,12 @@ impl Command {
                 "LocalMove source={source_path} dest={dest_path} directory={source_is_directory} on_existing={on_existing:?}"
             ),
             Self::RawDelete { path } => format!("RawDelete path={path}"),
+            Self::Trash { path } => format!("Trash path={path}"),
+            Self::ListTrash => "ListTrash".to_string(),
+            Self::RestoreTrash {
+                location_id,
+                item_id,
+            } => format!("RestoreTrash location={location_id} item={item_id}"),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
             Self::RenamePath { dir, old, new } => {
                 format!("RenamePath dir={dir} old={old} new={new}")
@@ -509,6 +526,11 @@ pub enum CommandResult {
         atomic: bool,
     },
     RawDelete,
+    Trash,
+    TrashList(TrashListResponse),
+    RestoreTrash {
+        path: String,
+    },
     CreateDirectory,
     RenamePath,
     Metadata(MetadataResponse),
@@ -689,6 +711,7 @@ pub struct AgentInfoResponse {
     pub supports_self_exec: bool,
     /// Whether the latest agent session can launch paths in a graphical desktop.
     pub supports_native_open: bool,
+    pub supports_trash: bool,
 }
 
 /// Confirms that a managed supervisor accepted an idempotent start request.
@@ -851,6 +874,47 @@ pub struct RawUploadResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RawDeleteResponse {
+    pub path: String,
+}
+
+/// Groups currently discoverable trash entries by their provider-selected storage location.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrashListResponse {
+    pub locations: Vec<TrashLocation>,
+}
+
+/// Identifies one trash storage root without exposing it as a filesystem command argument.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrashLocation {
+    pub id: String,
+    pub path: String,
+    pub items: Vec<TrashItem>,
+}
+
+/// Describes one restorable payload while tolerating unavailable original-path metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrashItem {
+    pub id: String,
+    pub name: String,
+    pub original_path: Option<String>,
+    pub deleted_at: UnixTimestampSeconds,
+}
+
+/// Selects one item only through opaque identifiers returned by a fresh listing.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreTrashItemRequest {
+    pub location_id: String,
+    pub item_id: String,
+}
+
+/// Returns the original destination after a successful atomic restore.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreTrashItemResponse {
     pub path: String,
 }
 
@@ -1031,6 +1095,9 @@ impl CommandResult {
             Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),
             Self::LocalMove { atomic } => format!("ok LocalMove atomic={atomic}"),
             Self::RawDelete => "ok RawDelete".to_string(),
+            Self::Trash => "ok Trash".to_string(),
+            Self::TrashList(result) => format!("ok TrashList locations={}", result.locations.len()),
+            Self::RestoreTrash { path } => format!("ok RestoreTrash path={path}"),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),

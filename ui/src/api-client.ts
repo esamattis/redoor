@@ -15,6 +15,9 @@ import type { TransferProgressListResponse } from "#bindings/TransferProgressLis
 import type { TransferProgressState } from "#bindings/TransferProgressState";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
+import type { TrashListResponse } from "#bindings/TrashListResponse";
+import type { RestoreTrashItemRequest } from "#bindings/RestoreTrashItemRequest";
+import type { RestoreTrashItemResponse } from "#bindings/RestoreTrashItemResponse";
 import type { CreateDirectoryResponse } from "#bindings/CreateDirectoryResponse";
 import type { CopyFileRequest } from "#bindings/CopyFileRequest";
 import type { CopyFileResponse } from "#bindings/CopyFileResponse";
@@ -67,6 +70,9 @@ export type {
 };
 export type {
     RawDeleteResponse,
+    TrashListResponse,
+    RestoreTrashItemRequest,
+    RestoreTrashItemResponse,
     CreateDirectoryResponse,
     TransferDirection,
     TransferProgressEntry,
@@ -295,6 +301,11 @@ export class Agent {
     /** Indicates whether this managed entry is backed by editable SSH TOML fields. */
     get configurationEditable(): boolean {
         return this.info.configuration_editable;
+    }
+
+    /** Indicates whether this connection implements move-to-trash, listing, and restore. */
+    get supportsTrash(): boolean {
+        return this.info.supports_trash;
     }
 
     /** Returns the configured SSH destination for inventory labels. */
@@ -583,13 +594,44 @@ export class Agent {
         return response;
     }
 
-    async deleteFile(path: string): Promise<RawDeleteResponse> {
+    async deleteFile(
+        path: string,
+        options?: { trash?: boolean },
+    ): Promise<RawDeleteResponse> {
+        const url = new URL(this.getRawUrl(path), this.baseUrl);
+        if (options?.trash !== undefined) {
+            url.searchParams.set("trash", String(options.trash));
+        }
         const response = await fetch(
-            this.getRawUrl(path),
+            url,
             withAuthentication({ method: "DELETE" }, this.requestContext),
         );
         await requireSuccessfulResponse(response, this.requestContext);
         return response.json();
+    }
+
+    /** Lists trash locations and items discovered by the agent at request time. */
+    async listTrash(): Promise<TrashListResponse> {
+        return apiRequest<TrashListResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/trash`,
+            { method: "GET" },
+            this.requestContext,
+        );
+    }
+
+    /** Restores one item selected from the opaque identifiers returned by `listTrash`. */
+    async restoreTrashItem(
+        request: RestoreTrashItemRequest,
+    ): Promise<RestoreTrashItemResponse> {
+        return apiRequest<RestoreTrashItemResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/trash/restore`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
     }
 
     async createDirectory(path: string): Promise<CreateDirectoryResponse> {

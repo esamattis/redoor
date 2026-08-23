@@ -56,6 +56,8 @@ pub struct AgentConnection {
     pub supports_self_exec: bool,
     /// Whether this connection can launch paths in a graphical desktop.
     pub supports_native_open: bool,
+    /// Whether this connection implements trash commands.
+    pub supports_trash: bool,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -91,6 +93,8 @@ pub struct KnownAgent {
     pub supports_self_exec: bool,
     /// Last advertised access to a graphical desktop path launcher.
     pub supports_native_open: bool,
+    /// Last advertised platform trash support.
+    pub supports_trash: bool,
 }
 
 #[derive(Default)]

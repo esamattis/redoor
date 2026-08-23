@@ -381,6 +381,7 @@ mod tests {
                 binary: crate::commands::current_binary_identity(),
                 supports_self_exec: true,
                 supports_native_open: true,
+                supports_trash: true,
                 watchdog: None,
             }))
             .expect("agent registered");
@@ -544,6 +545,7 @@ mod tests {
                 binary: Some(crate::commands::current_binary_identity()),
                 supports_self_exec: true,
                 supports_native_open: true,
+                supports_trash: true,
             }]
         );
 

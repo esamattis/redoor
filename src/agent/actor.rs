@@ -43,11 +43,19 @@ impl AgentRuntime {
         connection: AgentConnection,
         default_directory: String,
         token: String,
+        trash: super::trash::TrashService,
         startup_notification_delay: Option<tokio::time::Duration>,
     ) -> Self {
         let (command_cancel, _) = tokio::sync::watch::channel(false);
         Self {
-            state: AgentState::new(agent_id, agent_name, connection, default_directory, token),
+            state: AgentState::new(
+                agent_id,
+                agent_name,
+                connection,
+                default_directory,
+                token,
+                trash,
+            ),
             command_tasks: tokio::task::JoinSet::new(),
             command_cancel,
             desktop_environment: crate::desktop::detect_desktop_environment(),
@@ -463,6 +471,8 @@ impl AgentRuntime {
                     supports_self_exec: true,
                     // Reuse startup GUI detection so headless agents never advertise the action.
                     supports_native_open: self.desktop_environment.is_some(),
+                    // Prevents newer servers from dispatching unknown commands to unsupported agents.
+                    supports_trash: self.state.trash.supported(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {
@@ -557,6 +567,7 @@ mod tests {
             AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             "/tmp".to_string(),
             "test-token".to_string(),
+            crate::agent::trash::TrashService::for_tests(),
             None,
         );
         let stale_generation = runtime.state.advance_connection_generation();
@@ -596,6 +607,7 @@ mod tests {
             AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             "/tmp".to_string(),
             "test-token".to_string(),
+            crate::agent::trash::TrashService::for_tests(),
             None,
         );
         runtime.state.advance_connection_generation();
@@ -661,6 +673,7 @@ mod tests {
             AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             "/tmp".to_string(),
             "test-token".to_string(),
+            crate::agent::trash::TrashService::for_tests(),
             None,
         );
         let mut cancel = runtime.command_cancel.subscribe();

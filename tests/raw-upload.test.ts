@@ -369,7 +369,8 @@ describe("Raw Upload API", () => {
                 provisioning_status: [],
                 binary: null,
                 supports_self_exec: false,
-                supports_native_open: false,
+            supports_native_open: false,
+            supports_trash: false,
             },
             {
                 getSessionCookie: () =>

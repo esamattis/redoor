@@ -41,6 +41,8 @@ pub struct RegisterAgentRequest {
     pub supports_self_exec: bool,
     /// Advertises access to a graphical desktop and platform path launcher.
     pub supports_native_open: bool,
+    /// Advertises platform trash support for REST capability gating.
+    pub supports_trash: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
@@ -78,6 +80,8 @@ pub struct AgentListEntry {
     pub supports_self_exec: bool,
     /// Latest registration's access to a graphical desktop path launcher.
     pub supports_native_open: bool,
+    /// Latest registration's platform trash support.
+    pub supports_trash: bool,
 }
 
 /// Registers a configured entry before any process can be started.

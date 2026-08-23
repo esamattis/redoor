@@ -79,6 +79,12 @@ impl CommandHandler {
                 "LocalMove is handled by the agent runtime",
             ),
             Command::RawDelete { path } => self.raw_delete(path).await,
+            Command::Trash { .. } | Command::ListTrash | Command::RestoreTrash { .. } => {
+                CommandResult::error(
+                    CommandErrorKind::InvalidInput,
+                    "Trash commands are handled by the agent runtime",
+                )
+            }
             Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,

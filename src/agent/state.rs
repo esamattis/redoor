@@ -55,6 +55,9 @@ pub(crate) struct AgentArgs {
     /// Overrides `REDOOR_AGENT_HOME` and `[agent].home`.
     #[arg(long, env = "REDOOR_AGENT_HOME", alias = "dir", short_alias = 'd')]
     pub(crate) home: Option<String>,
+    /// Overrides platform mount discovery with one exact same-device trash root.
+    #[arg(long, env = "REDOOR_AGENT_TRASH_DIRECTORY")]
+    pub(crate) trash_directory: Option<String>,
     /// Seconds to wait after connecting before notifying the desktop, or `off` to disable it.
     #[arg(
         long,
@@ -333,6 +336,8 @@ pub(crate) struct AgentState {
     pub(crate) default_directory: String,
     /// Shared secret presented during registration so the server can reject impostors.
     pub(crate) token: String,
+    /// Immutable provider configuration cloned into bounded command workers.
+    pub(crate) trash: super::trash::TrashService,
     /// Current control writer used for commands, responses, cancellation, and lifecycle traffic.
     pub(crate) ws_control_tx: Option<mpsc::Sender<WsMessage>>,
     /// Stops both halves of the current control socket when liveness checks discard it.
@@ -362,6 +367,7 @@ impl AgentState {
         connection: super::connection::AgentConnection,
         default_directory: String,
         token: String,
+        trash: super::trash::TrashService,
     ) -> Self {
         Self {
             agent_id,
@@ -369,6 +375,7 @@ impl AgentState {
             connection,
             default_directory,
             token,
+            trash,
             ws_control_tx: None,
             control_shutdown: None,
             ws_transfer_tx: None,
@@ -464,6 +471,7 @@ mod tests {
             .unwrap(),
             "/tmp".to_string(),
             "token".to_string(),
+            super::super::trash::TrashService::for_tests(),
         );
         let first = state.begin_file_search();
 

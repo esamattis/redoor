@@ -7,6 +7,7 @@ use super::destination::{
     destination_entry_exists, remove_existing_path,
 };
 use crate::agent::{AgentActor, AgentCommandError};
+use redoor::atomic_rename::{AtomicRenameOutcome, rename_exchange, rename_no_replace};
 use redoor::commands::{CommandResult, CopyExistingMode, MoveSourceIdentity};
 use redoor::{Level, log};
 use std::path::{Path, PathBuf};
@@ -256,139 +257,45 @@ async fn restore_after_hide_failure(source: &Path, dest: &Path) {
     }
 }
 
-#[cfg(target_os = "linux")]
-/// Uses `renameat2` to either reserve a missing name or atomically exchange an override target.
+/// Uses the shared one-shot primitives while retaining smart-move race and fallback policy here.
 async fn rename_atomically(
     source: PathBuf,
     dest: PathBuf,
     mut destination_exists: bool,
     allow_replacement: bool,
 ) -> std::io::Result<AtomicRenameResult> {
-    tokio::task::spawn_blocking(move || {
-        use std::{ffi::CString, os::unix::ffi::OsStrExt};
-
-        let source = CString::new(source.as_os_str().as_bytes())
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        let dest = CString::new(dest.as_os_str().as_bytes())
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        for _ in 0..16 {
-            // musl does not export glibc's `renameat2` wrapper, so the Linux syscall is used
-            // directly to keep static musl binaries linkable.
-            // SAFETY: both pointers come from live NUL-terminated CStrings, the directory
-            // descriptors and flag are valid renameat2 values, and the syscall retains neither.
-            let result = unsafe {
-                libc::syscall(
-                    libc::SYS_renameat2,
-                    libc::AT_FDCWD,
-                    source.as_ptr(),
-                    libc::AT_FDCWD,
-                    dest.as_ptr(),
-                    if destination_exists {
-                        libc::RENAME_EXCHANGE
-                    } else {
-                        libc::RENAME_NOREPLACE
-                    },
-                )
-            };
-            if result == 0 {
+    for _ in 0..16 {
+        let outcome = if destination_exists {
+            rename_exchange(&source, &dest).await?
+        } else {
+            rename_no_replace(&source, &dest).await?
+        };
+        match outcome {
+            AtomicRenameOutcome::Renamed => {
                 return Ok(if destination_exists {
                     AtomicRenameResult::Exchanged
                 } else {
                     AtomicRenameResult::Renamed
                 });
             }
-            let error = std::io::Error::last_os_error();
-            match error.raw_os_error() {
-                Some(libc::EEXIST) if allow_replacement && !destination_exists => {
-                    destination_exists = true;
-                }
-                Some(libc::ENOENT) if allow_replacement && destination_exists => {
-                    destination_exists = false;
-                }
-                Some(libc::EEXIST) | Some(libc::EXDEV) | Some(libc::ENOSYS)
-                | Some(libc::EINVAL) | Some(libc::ENOENT) => {
-                    return Ok(AtomicRenameResult::FallbackRequired);
-                }
-                _ => return Err(error),
+            AtomicRenameOutcome::DestinationExists if allow_replacement && !destination_exists => {
+                destination_exists = true;
+            }
+            AtomicRenameOutcome::Missing if allow_replacement && destination_exists => {
+                destination_exists = false;
+            }
+            AtomicRenameOutcome::DestinationExists
+            | AtomicRenameOutcome::Missing
+            | AtomicRenameOutcome::CrossDevice
+            | AtomicRenameOutcome::Unsupported => {
+                return Ok(AtomicRenameResult::FallbackRequired);
             }
         }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "destination changed too frequently to complete an atomic move",
-        ))
-    })
-    .await
-    .map_err(std::io::Error::other)?
-}
-
-#[cfg(target_os = "macos")]
-/// Uses Darwin's exclusive and swap renames to provide the same atomic conflict semantics.
-async fn rename_atomically(
-    source: PathBuf,
-    dest: PathBuf,
-    mut destination_exists: bool,
-    allow_replacement: bool,
-) -> std::io::Result<AtomicRenameResult> {
-    tokio::task::spawn_blocking(move || {
-        use std::{ffi::CString, os::unix::ffi::OsStrExt};
-
-        let source = CString::new(source.as_os_str().as_bytes())
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        let dest = CString::new(dest.as_os_str().as_bytes())
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        for _ in 0..16 {
-            // SAFETY: both pointers are live NUL-terminated CStrings and renamex_np retains neither.
-            let result = unsafe {
-                libc::renamex_np(
-                    source.as_ptr(),
-                    dest.as_ptr(),
-                    if destination_exists {
-                        libc::RENAME_SWAP
-                    } else {
-                        libc::RENAME_EXCL
-                    },
-                )
-            };
-            if result == 0 {
-                return Ok(if destination_exists {
-                    AtomicRenameResult::Exchanged
-                } else {
-                    AtomicRenameResult::Renamed
-                });
-            }
-            let error = std::io::Error::last_os_error();
-            match error.raw_os_error() {
-                Some(libc::EEXIST) if allow_replacement && !destination_exists => {
-                    destination_exists = true;
-                }
-                Some(libc::ENOENT) if allow_replacement && destination_exists => {
-                    destination_exists = false;
-                }
-                Some(libc::EEXIST) | Some(libc::EXDEV) | Some(libc::ENOTSUP)
-                | Some(libc::EINVAL) | Some(libc::ENOENT) => {
-                    return Ok(AtomicRenameResult::FallbackRequired);
-                }
-                _ => return Err(error),
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "destination changed too frequently to complete an atomic move",
-        ))
-    })
-    .await
-    .map_err(std::io::Error::other)?
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-/// Conservatively falls back where atomic exclusive and exchange renames are unavailable.
-async fn rename_atomically(
-    _source: PathBuf,
-    _dest: PathBuf,
-    _destination_exists: bool,
-    _allow_replacement: bool,
-) -> std::io::Result<AtomicRenameResult> {
-    Ok(AtomicRenameResult::FallbackRequired)
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "destination changed too frequently to complete an atomic move",
+    ))
 }
 
 /// Selects atomic rename for new names and for overrides that may exchange any entry types.

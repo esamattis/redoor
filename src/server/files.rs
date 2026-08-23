@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State as AxumState},
+    extract::{Path, Query, State as AxumState},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -12,36 +12,58 @@ use redoor::{
     },
     types::AgentId,
 };
+use serde::Deserialize;
 use std::path::Path as FilePath;
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
     responses::command_error_status,
     state::ServerState,
+    trash::require_trash_support,
 };
+
+/// Selects permanent deletion by default so existing callers remain destructive.
+#[derive(Deserialize)]
+pub(crate) struct RawDeleteQuery {
+    #[serde(default)]
+    trash: bool,
+}
 
 /// Route: `DELETE /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_delete_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    Query(query): Query<RawDeleteQuery>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
     let resolved_path = absolute_path_from_url(path.unwrap_or_default());
+    if query.trash
+        && let Err(response) = require_trash_support(&state, &agent_id).await
+    {
+        return response;
+    }
+    let command = if query.trash {
+        Command::Trash {
+            path: resolved_path.clone(),
+        }
+    } else {
+        Command::RawDelete {
+            path: resolved_path.clone(),
+        }
+    };
 
     match state
         .router_ref
         .request(30000, |reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
-                command: Command::RawDelete {
-                    path: resolved_path.clone(),
-                },
+                command,
                 reply,
             })
         })
         .await
     {
-        Ok(CommandResult::RawDelete) => (
+        Ok(CommandResult::RawDelete | CommandResult::Trash) => (
             StatusCode::OK,
             Json(RawDeleteResponse {
                 path: resolved_path,
