@@ -496,7 +496,7 @@ describe("Agents API", () => {
         });
     });
 
-    it("should search hidden directories only when requested", async () => {
+    it("should search hidden directories only when requested and always skip .git", async () => {
         const testAgent = await getConnectedTestAgent();
         const searchRoot = tempFiles.tempDirectory({
             suffix: "-hidden-directory-search",
@@ -506,8 +506,15 @@ describe("Agents API", () => {
             ".cache",
             "hidden-target.txt",
         );
+        const gitTarget = path.join(
+            searchRoot,
+            ".git",
+            "hidden-target.txt",
+        );
         await fs.mkdir(path.dirname(hiddenTarget));
+        await fs.mkdir(path.dirname(gitTarget));
         await fs.writeFile(hiddenTarget, "hidden", "utf-8");
+        await fs.writeFile(gitTarget, "git internals", "utf-8");
 
         const defaultResult = await searchAgentFiles(testAgent, searchRoot, {
             query: "hiddentarget",
@@ -517,8 +524,9 @@ describe("Agents API", () => {
         const includedResult = await searchAgentFiles(testAgent, searchRoot, {
             query: "hiddentarget",
             includeHidden: true,
+            respectGitignore: false,
         });
-        // Explicit opt-in proves the REST option reaches agent traversal.
+        // Hidden opt-in reaches ordinary dot-directories while `.git` remains excluded unconditionally.
         expect(includedResult.results.map((entry) => entry.path)).toEqual([
             hiddenTarget,
         ]);

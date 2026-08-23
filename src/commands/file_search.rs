@@ -575,6 +575,10 @@ async fn collect_matches(
         };
         let entry_path = entry.path();
         let entry_name = entry.file_name();
+        if entry_name == ".git" {
+            // Repository internals are never useful browser results and can make searches enormous.
+            continue;
+        }
         let is_hidden = entry_name.to_string_lossy().starts_with('.');
         let relative_path = entry_path
             .strip_prefix(root)
