@@ -6,7 +6,19 @@ Agents connect directly to the server via HTTP/WebSocket, or the server can prov
 
 The server provides an unified Web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
 
+### Screenshots
 
+<table>
+  <tr>
+    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/cf863914-9347-4ba6-995a-810d2e045702" /></td>
+    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/c866c68f-20b4-4b62-aa47-4498976c02a6" /></td>
+    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/9bc00663-d730-443b-bedc-0c91e6bee7f3" /></td>
+  </tr>
+</table>
+
+
+
+### Architecture
 
 ```mermaid
 graph TD
@@ -19,13 +31,6 @@ graph TD
     Termux["Termux on Android\n$ redoor agent"] -->|http/ws| Server
 ```
 
-<table>
-  <tr>
-    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/cf863914-9347-4ba6-995a-810d2e045702" /></td>
-    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/c866c68f-20b4-4b62-aa47-4498976c02a6" /></td>
-    <td><img height="500" alt="image" src="https://github.com/user-attachments/assets/9bc00663-d730-443b-bedc-0c91e6bee7f3" /></td>
-  </tr>
-</table>
 
 
 ## Install
