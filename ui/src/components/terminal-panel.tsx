@@ -892,8 +892,9 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
             return;
         }
         // A late ready/connected must not keep the shell if Alt+e already restored the editor.
-        const editor =
-            document.querySelector<HTMLElement>("[data-file-editor]");
+        const editor = document.querySelector<HTMLElement>(
+            '[role="textbox"][data-file-editor]',
+        );
         if (
             editor &&
             document.activeElement?.closest("[data-terminal-input]")

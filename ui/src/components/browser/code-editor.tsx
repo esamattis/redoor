@@ -149,6 +149,7 @@ export function CodeEditor(props: {
         if (view === null) {
             return;
         }
+        let focusCorrectionTimer: number | undefined;
 
         /** Returns from a focused shell without typing e into the session. */
         const handleFocusEditorShortcut = (event: KeyboardEvent) => {
@@ -160,15 +161,24 @@ export function CodeEditor(props: {
             }
             event.preventDefault();
             view.focus();
+            window.clearTimeout(focusCorrectionTimer);
+            focusCorrectionTimer = window.setTimeout(() => {
+                // Ghostty retries focus asynchronously, so reclaim it only if that retry won.
+                if (isTerminalInputTarget(document.activeElement)) {
+                    view.focus();
+                }
+            }, 0);
         };
 
         window.addEventListener("keydown", handleFocusEditorShortcut, true);
-        return () =>
+        return () => {
+            window.clearTimeout(focusCorrectionTimer);
             window.removeEventListener(
                 "keydown",
                 handleFocusEditorShortcut,
                 true,
             );
+        };
     }, [view]);
 
     return (
