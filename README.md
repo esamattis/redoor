@@ -41,7 +41,7 @@ For Linux, macOS, and Termux on Android.
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"
 ```
 
-This just puts the `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). The binary is the same for the server and the agent. Or just manually download static pre-build binary from [releases](https://github.com/esamattis/redoor/releases).
+This just puts the unified server/ui/agent/relay `redoor` binary in `~/.local/bin` (or `/usr/local/bin` as root). Or just manually download it from [releases](https://github.com/esamattis/redoor/releases).
 
 Start with
 
