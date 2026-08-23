@@ -313,10 +313,23 @@ impl CommandHandler {
 
     /// Removes files or directory trees according to the target metadata.
     async fn raw_delete(&self, path: String) -> CommandResult {
+        const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
         match tokio::fs::metadata(&path).await {
             Ok(metadata) => {
                 let delete_result = if metadata.is_dir() {
-                    crate::safe_fs::safe_rm_all(&path).await
+                    match tokio::time::timeout(DELETE_TIMEOUT, crate::safe_fs::safe_rm_all(&path))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!(
+                                "recursive deletion exceeded {} seconds and may be partial",
+                                DELETE_TIMEOUT.as_secs()
+                            ),
+                        )),
+                    }
                 } else {
                     tokio::fs::remove_file(&path).await
                 };
