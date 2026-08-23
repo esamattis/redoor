@@ -188,11 +188,6 @@ function FilesystemMetadataSections(props: {
                     />
                     <MetadataItem label="UID" value={props.metadata.uid} mono />
                     <MetadataItem label="GID" value={props.metadata.gid} mono />
-                    <MetadataItem
-                        label="Permissions"
-                        value={`${symbolicPermissions} · ${octalPermissions}`}
-                        mono
-                    />
                 </dl>
             </section>
 
