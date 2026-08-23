@@ -7,6 +7,7 @@
 
 # Architecture
 
+- Supported platforms are Linux, macOS, and Android Termux
 - REST API and Websocket server
 - redoor agents connects to the server via Websockets
 - The server exposes REST API which can be used to execute commands in the agents using the websocket connection
