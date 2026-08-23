@@ -192,6 +192,7 @@ export function SelectedFilesTransferTrigger(props: {
             })}
             <Dialog
                 isOpen={isOpen}
+                size="wide"
                 title={
                     hasConflicts
                         ? "Destination items already exist"

@@ -19,6 +19,7 @@ export function Dialog(props: {
     isBusy?: boolean;
     errorMessage?: string | null;
     role?: "dialog" | "alertdialog";
+    size?: "default" | "wide";
     children: React.ReactNode;
     onClose: () => void;
     /**
@@ -128,7 +129,7 @@ export function Dialog(props: {
         // Anchored menus escape overflow containers such as collapsed bottom panels.
         return createPortal(
             <div
-                className="fixed inset-0 z-50"
+                className="fixed inset-0 z-[70]"
                 role={props.role ?? "dialog"}
                 aria-modal="true"
                 aria-labelledby={titleId}
@@ -152,7 +153,7 @@ export function Dialog(props: {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
-            className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60"
+            className={`m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "wide" ? "max-w-4xl" : "max-w-md"}`}
             onCancel={(event) => {
                 event.preventDefault();
                 if (!props.isBusy) {

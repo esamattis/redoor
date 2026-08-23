@@ -43,6 +43,7 @@ export function CodeEditor(props: {
     onFocus: () => void;
     onSave: () => void;
     onSelectionChange: (selection: EditorSelection | null) => void;
+    searchHandleRef: React.RefObject<EditorSearchHandle | null>;
 }) {
     const resolvedTheme = useResolvedTheme();
     const onSaveRef = React.useRef(props.onSave);
@@ -54,7 +55,6 @@ export function CodeEditor(props: {
     };
     vimWriteRef.current = saveFromEditor;
     const editorRef = React.useRef<ReactCodeMirrorRef>(null);
-    const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const onFocusRef = React.useRef(props.onFocus);
     onFocusRef.current = props.onFocus;
     const hasReceivedFocusRef = React.useRef(false);
@@ -120,37 +120,48 @@ export function CodeEditor(props: {
                     {
                         key: "Mod-f",
                         run: () => {
-                            searchHandleRef.current?.open();
+                            props.searchHandleRef.current?.open();
                             return true;
                         },
                     },
                     {
                         key: "Mod-g",
-                        run: () => searchHandleRef.current?.findNext() ?? false,
+                        run: () =>
+                            props.searchHandleRef.current?.findNext() ?? false,
                     },
                     {
                         key: "Shift-Mod-g",
                         run: () =>
-                            searchHandleRef.current?.findPrevious() ?? false,
+                            props.searchHandleRef.current?.findPrevious() ??
+                            false,
                     },
                     {
                         key: "F3",
-                        run: () => searchHandleRef.current?.findNext() ?? false,
+                        run: () =>
+                            props.searchHandleRef.current?.findNext() ?? false,
                     },
                     {
                         key: "Shift-F3",
                         run: () =>
-                            searchHandleRef.current?.findPrevious() ?? false,
+                            props.searchHandleRef.current?.findPrevious() ??
+                            false,
                     },
                     {
                         key: "Escape",
-                        run: () => searchHandleRef.current?.close() ?? false,
+                        run: () =>
+                            props.searchHandleRef.current?.close() ?? false,
                     },
                 ]),
             ),
             ...(language === undefined ? [] : [language]),
         ];
-    }, [languageContent, props.fileName, props.vimMode, props.wrapLines]);
+    }, [
+        languageContent,
+        props.fileName,
+        props.searchHandleRef,
+        props.vimMode,
+        props.wrapLines,
+    ]);
 
     React.useEffect(() => {
         if (view === null) {
@@ -194,7 +205,7 @@ export function CodeEditor(props: {
                 view={view}
                 editable={props.editable}
                 documentRevision={documentRevision}
-                handleRef={searchHandleRef}
+                handleRef={props.searchHandleRef}
             />
             <div
                 data-file-editor=""

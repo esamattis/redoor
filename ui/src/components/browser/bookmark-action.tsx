@@ -32,14 +32,14 @@ export function BookmarkButton(props: { bookmark: BookmarkEntry }) {
                         ),
                     }));
                 }}
-                className="rounded-md px-3.5 font-semibold"
+                className="h-9 w-9 rounded-md p-0 font-semibold sm:w-auto sm:px-3.5"
             >
                 {isBookmarked ? (
                     <BookmarkCheck className="h-4 w-4" aria-hidden="true" />
                 ) : (
                     <Bookmark className="h-4 w-4" aria-hidden="true" />
                 )}
-                {label}
+                <span className="hidden sm:inline">{label}</span>
             </Button>
         </Tooltip>
     );

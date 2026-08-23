@@ -8,6 +8,7 @@ import {
     MoreHorizontal,
     RefreshCw,
     Save,
+    Search,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
@@ -18,6 +19,7 @@ import {
     CodeEditor,
     type EditorSelection,
 } from "#ui/components/browser/code-editor";
+import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import {
     PersistentPathActions,
     SelectPathMenuButton,
@@ -26,6 +28,7 @@ import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
+import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
@@ -72,10 +75,12 @@ ${props.selection.text}
                     disabled={!props.canEdit || !props.isDirty}
                     isLoading={props.isSaving}
                     size="sm"
-                    className="rounded-md px-3.5 font-semibold shadow-sm shadow-blue-950/30"
+                    className="h-9 w-9 rounded-md p-0 font-semibold shadow-sm shadow-blue-950/30 sm:w-auto sm:px-3.5"
                 >
                     <Save className="h-4 w-4" aria-hidden="true" />
-                    {props.isSaving ? "Saving..." : "Save"}
+                    <span className="hidden sm:inline">
+                        {props.isSaving ? "Saving..." : "Save"}
+                    </span>
                 </Button>
             </Tooltip>
             <BookmarkButton bookmark={props.bookmark} />
@@ -88,10 +93,10 @@ ${props.selection.text}
                     disabled={props.selection === null}
                     isLoading={copyMutation.isPending}
                     onClick={() => copyMutation.mutate()}
-                    className="rounded-md px-3.5 font-semibold"
+                    className="h-9 w-9 rounded-md p-0 font-semibold sm:w-auto sm:px-3.5"
                 >
                     <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-                    Copy reference
+                    <span className="hidden sm:inline">Copy reference</span>
                 </Button>
             </Tooltip>
             {props.statusMessage ? (
@@ -263,6 +268,7 @@ export function FileEditView(props: {
     const [reloadConfirmationOpen, setReloadConfirmationOpen] =
         React.useState(false);
     const [isFullWindow, setIsFullWindow] = React.useState(false);
+    const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
     const saveMutation = useMutation({
         mutationFn: (nextContent: string) =>
@@ -372,6 +378,21 @@ export function FileEditView(props: {
                             />
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                            <IconButton
+                                type="button"
+                                label="Toggle search and replace"
+                                onClick={() => {
+                                    if (!searchHandleRef.current?.close()) {
+                                        searchHandleRef.current?.open();
+                                    }
+                                }}
+                                className="h-8 w-8 shrink-0 rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 sm:hidden"
+                            >
+                                <Search
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                            </IconButton>
                             <FullWindowToggle
                                 targetName="editor"
                                 isFullWindow={isFullWindow}
@@ -425,6 +446,7 @@ export function FileEditView(props: {
                             }}
                             onSave={handleSave}
                             onSelectionChange={setSelection}
+                            searchHandleRef={searchHandleRef}
                         />
                     )}
                 </div>

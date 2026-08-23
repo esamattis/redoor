@@ -147,7 +147,9 @@ export function EditorSearch(props: {
     };
 
     return (
-        <div className="shrink-0 px-3 pt-3 pb-3">
+        <div
+            className={`shrink-0 px-3 pt-3 pb-3 ${open ? "" : "hidden sm:block"}`}
+        >
             <FoldingSection
                 title="Search & Replace"
                 open={open}
