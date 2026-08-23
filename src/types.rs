@@ -238,6 +238,9 @@ pub enum Message {
         /// Whether this agent implements the platform-neutral trash command contract.
         #[serde(default)]
         supports_trash: bool,
+        /// Whether this agent can move filesystem entries to its platform trash.
+        #[serde(default)]
+        supports_move_to_trash: bool,
     },
 
     /// Instructs the authoritative control session to establish its persistent

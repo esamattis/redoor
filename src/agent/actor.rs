@@ -472,7 +472,9 @@ impl AgentRuntime {
                     // Reuse startup GUI detection so headless agents never advertise the action.
                     supports_native_open: self.desktop_environment.is_some(),
                     // Prevents newer servers from dispatching unknown commands to unsupported agents.
-                    supports_trash: self.state.trash.supported(),
+                    supports_trash: self.state.trash.supports_inventory(),
+                    // macOS supports the native move without Redoor inventory or restore support.
+                    supports_move_to_trash: self.state.trash.supports_move(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {

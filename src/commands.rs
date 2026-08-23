@@ -885,6 +885,9 @@ pub struct AgentInfoResponse {
     pub supports_self_exec: bool,
     /// Whether the latest agent session can launch paths in a graphical desktop.
     pub supports_native_open: bool,
+    /// Whether the latest agent session can move entries to its platform trash.
+    pub supports_move_to_trash: bool,
+    /// Whether the latest agent session can also list and restore trash entries.
     pub supports_trash: bool,
 }
 

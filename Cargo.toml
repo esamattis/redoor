@@ -58,6 +58,10 @@ mountpoints = "0.2.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.9.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "FoundationErrors", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
+
 [dev-dependencies]
 rcgen = "0.14.5"
 tokio-rustls = "0.26.4"

@@ -58,6 +58,8 @@ pub struct AgentConnection {
     pub supports_native_open: bool,
     /// Whether this connection implements trash commands.
     pub supports_trash: bool,
+    /// Whether this connection can move entries to platform trash.
+    pub supports_move_to_trash: bool,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -95,6 +97,8 @@ pub struct KnownAgent {
     pub supports_native_open: bool,
     /// Last advertised platform trash support.
     pub supports_trash: bool,
+    /// Last advertised support for moving entries to platform trash.
+    pub supports_move_to_trash: bool,
 }
 
 #[derive(Default)]

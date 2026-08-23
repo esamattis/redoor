@@ -15,7 +15,7 @@ use redoor::{
 use super::{agents::list_agent_snapshots, responses::command_error_status, state::ServerState};
 
 /// Rejects unsupported or disconnected agents before sending commands they cannot understand.
-pub(crate) async fn require_trash_support(
+pub(crate) async fn require_trash_inventory_support(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<(), Response> {
@@ -47,13 +47,46 @@ pub(crate) async fn require_trash_support(
     Ok(())
 }
 
+/// Allows move-only providers without exposing inventory and restore commands to them.
+pub(crate) async fn require_move_to_trash_support(
+    state: &ServerState,
+    agent_id: &AgentId,
+) -> Result<(), Response> {
+    let agents = list_agent_snapshots(state).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error }),
+        )
+            .into_response()
+    })?;
+    let Some(agent) = agents.into_iter().find(|agent| &agent.id == agent_id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Agent not found".to_string(),
+            }),
+        )
+            .into_response());
+    };
+    if !agent.supports_move_to_trash {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Agent does not support moving entries to trash".to_string(),
+            }),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
 /// Route: `GET /api/v1/agents/{agent}/trash` lists freshly discovered trash inventory.
 pub(crate) async fn list_trash_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
 ) -> Response {
     let agent_id = AgentId::from(agent);
-    if let Err(response) = require_trash_support(&state, &agent_id).await {
+    if let Err(response) = require_trash_inventory_support(&state, &agent_id).await {
         return response;
     }
     match state
@@ -97,7 +130,7 @@ pub(crate) async fn restore_trash_handler(
             .into_response();
     }
     let agent_id = AgentId::from(agent);
-    if let Err(response) = require_trash_support(&state, &agent_id).await {
+    if let Err(response) = require_trash_inventory_support(&state, &agent_id).await {
         return response;
     }
     match state

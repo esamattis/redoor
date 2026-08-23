@@ -382,6 +382,7 @@ mod tests {
                 supports_self_exec: true,
                 supports_native_open: true,
                 supports_trash: true,
+                supports_move_to_trash: true,
                 watchdog: None,
             }))
             .expect("agent registered");
@@ -546,6 +547,7 @@ mod tests {
                 supports_self_exec: true,
                 supports_native_open: true,
                 supports_trash: true,
+                supports_move_to_trash: true,
             }]
         );
 

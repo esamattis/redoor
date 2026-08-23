@@ -19,7 +19,7 @@ use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
     responses::command_error_status,
     state::ServerState,
-    trash::require_trash_support,
+    trash::require_move_to_trash_support,
 };
 
 /// Selects permanent deletion by default so existing callers remain destructive.
@@ -38,7 +38,7 @@ pub(crate) async fn raw_agent_delete_handler(
     let agent_id = AgentId::from(agent.clone());
     let resolved_path = absolute_path_from_url(path.unwrap_or_default());
     if query.trash
-        && let Err(response) = require_trash_support(&state, &agent_id).await
+        && let Err(response) = require_move_to_trash_support(&state, &agent_id).await
     {
         return response;
     }

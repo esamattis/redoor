@@ -2940,6 +2940,8 @@ dependencies = [
  "mountpoints",
  "nix",
  "nucleo-matcher",
+ "objc2",
+ "objc2-foundation",
  "pty-process",
  "rand_core 0.6.4",
  "rcgen",

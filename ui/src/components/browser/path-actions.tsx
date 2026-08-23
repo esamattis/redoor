@@ -571,8 +571,9 @@ export function PersistentPathActions(props: {
                         <span className="mx-1 font-medium text-slate-100">
                             {props.currentName}
                         </span>
-                        to the agent trash. You can restore it later from the
-                        Trash tab.
+                        {props.agent.supportsTrash
+                            ? "to the agent trash. You can restore it later from the Trash tab."
+                            : "to the native agent Trash."}
                     </>
                 }
                 targets={[{ agent: props.agent, path: props.path }]}

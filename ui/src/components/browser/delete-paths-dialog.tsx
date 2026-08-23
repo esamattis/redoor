@@ -23,7 +23,10 @@ export function DeletePathsDialog(props: {
     onClose: () => void;
     onDeleted: (targets: DeletePathTarget[]) => void | Promise<void>;
 }) {
-    const [deletePermanently, setDeletePermanently] = React.useState(false);
+    const canTrash = props.targets.every(
+        (target) => target.agent?.supportsMoveToTrash === true,
+    );
+    const [deletePermanently, setDeletePermanently] = React.useState(!canTrash);
     const mutation = useMutation({
         mutationFn: async (targets: DeletePathTarget[]) => {
             const results = await Promise.allSettled(
@@ -67,9 +70,9 @@ export function DeletePathsDialog(props: {
 
     React.useEffect(() => {
         if (!props.isOpen) return;
-        setDeletePermanently(false);
+        setDeletePermanently(!canTrash);
         mutation.reset();
-    }, [props.isOpen]);
+    }, [props.isOpen, canTrash]);
 
     /** Keeps an in-flight filesystem operation attached to its visible status. */
     const close = () => {
@@ -81,7 +84,11 @@ export function DeletePathsDialog(props: {
         <ConfirmationDialog
             isOpen={props.isOpen}
             title={props.title}
-            description={props.description}
+            description={
+                canTrash
+                    ? props.description
+                    : "Trash is unavailable for one or more selected agents. This action will delete permanently."
+            }
             confirmLabel={
                 deletePermanently
                     ? props.permanentConfirmLabel
@@ -107,7 +114,7 @@ export function DeletePathsDialog(props: {
                 checked={deletePermanently}
                 role="checkbox"
                 label="Delete permanently"
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || !canTrash}
                 className="mt-4"
                 onCheckedChange={(checked) => {
                     setDeletePermanently(checked);

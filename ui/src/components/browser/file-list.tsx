@@ -889,7 +889,11 @@ function FileEntryActions(props: {
             <DeletePathsDialog
                 isOpen={isDeleteDialogOpen}
                 title={`Delete this ${entryType}?`}
-                description={`Move ${props.entryName} to the agent trash. You can restore it later from the Trash tab.`}
+                description={
+                    props.agent.supportsTrash
+                        ? `Move ${props.entryName} to the agent trash. You can restore it later from the Trash tab.`
+                        : `Move ${props.entryName} to the native agent Trash.`
+                }
                 targets={[{ agent: props.agent, path: props.fullPath }]}
                 trashConfirmLabel="Move to trash"
                 permanentConfirmLabel={`Delete ${entryType}`}

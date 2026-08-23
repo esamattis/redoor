@@ -316,6 +316,11 @@ export class Agent {
         return this.info.supports_trash;
     }
 
+    /** Indicates whether this connection can move entries to its platform trash. */
+    get supportsMoveToTrash(): boolean {
+        return this.info.supports_move_to_trash || this.info.supports_trash;
+    }
+
     /** Returns the configured SSH destination for inventory labels. */
     get sshTarget(): string | null {
         return this.info.ssh_target;

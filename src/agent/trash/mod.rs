@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use redoor::commands::{CommandErrorKind, TrashListResponse};
 use std::path::PathBuf;
@@ -30,7 +32,7 @@ impl TrashError {
     }
 
     /// Adds operation context while preserving the OS error's stable category.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn io(context: &str, error: std::io::Error) -> Self {
         Self::new(
             CommandErrorKind::from_io_error(&error),
@@ -55,15 +57,20 @@ impl TrashService {
             if forced_root.is_some() {
                 return Err(TrashError::new(
                     CommandErrorKind::InvalidInput,
-                    "Trash directory cannot be configured on an unsupported platform",
+                    "Trash directory overrides are supported only on Linux",
                 ));
             }
             Ok(Self {})
         }
     }
 
-    /// Advertises the service only on targets with a complete provider.
-    pub(crate) const fn supported(&self) -> bool {
+    /// Advertises providers that can move entries to platform trash.
+    pub(crate) const fn supports_move(&self) -> bool {
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    }
+
+    /// Advertises providers that implement Redoor trash inventory and restore.
+    pub(crate) const fn supports_inventory(&self) -> bool {
         cfg!(target_os = "linux")
     }
 
@@ -80,7 +87,9 @@ impl TrashService {
     pub(crate) async fn trash(&self, _path: PathBuf) -> Result<(), TrashError> {
         #[cfg(target_os = "linux")]
         return linux::trash(self, _path).await;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        return macos::trash(_path).await;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(TrashError::new(
             CommandErrorKind::InvalidInput,
             "Trash is unsupported on this platform",

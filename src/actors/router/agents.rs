@@ -36,6 +36,7 @@ impl AgentConnection {
             supports_self_exec: request.supports_self_exec,
             supports_native_open: request.supports_native_open,
             supports_trash: request.supports_trash,
+            supports_move_to_trash: request.supports_move_to_trash,
         }
     }
 
@@ -143,6 +144,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let supports_self_exec = connection.supports_self_exec;
     let supports_native_open = connection.supports_native_open;
     let supports_trash = connection.supports_trash;
+    let supports_move_to_trash = connection.supports_move_to_trash;
     let transfer_token = connection.transfer_token.clone();
     let transfer_open_sender = connection.outgoing_priority.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
@@ -167,6 +169,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             supports_self_exec: false,
             supports_native_open: false,
             supports_trash: false,
+            supports_move_to_trash: false,
         });
     known.name = name;
     known.default_directory = Some(default_directory);
@@ -186,6 +189,7 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.supports_self_exec = supports_self_exec;
     known.supports_native_open = supports_native_open;
     known.supports_trash = supports_trash;
+    known.supports_move_to_trash = supports_move_to_trash;
     ui::notify_agents_changed(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
@@ -451,6 +455,7 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             supports_self_exec: false,
             supports_native_open: false,
             supports_trash: false,
+            supports_move_to_trash: false,
         },
     );
     ui::notify_agents_changed(state);
@@ -569,6 +574,7 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             supports_self_exec: info.supports_self_exec,
             supports_native_open: info.supports_native_open,
             supports_trash: info.supports_trash,
+            supports_move_to_trash: info.supports_move_to_trash,
         })
         .collect()
 }
@@ -693,6 +699,7 @@ mod tests {
             supports_self_exec: true,
             supports_native_open: true,
             supports_trash: true,
+            supports_move_to_trash: true,
             watchdog: None,
         };
         commit_registration(state, request);
@@ -968,6 +975,7 @@ mod tests {
                 supports_self_exec: true,
                 supports_native_open: true,
                 supports_trash: true,
+                supports_move_to_trash: true,
                 watchdog: None,
             },
         );

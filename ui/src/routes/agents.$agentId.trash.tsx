@@ -154,11 +154,12 @@ function TrashPage() {
                         aria-hidden="true"
                     />
                     <h1 className="mt-4 text-xl font-semibold text-slate-100">
-                        Trash view is not implemented
+                        Trash inventory is not available
                     </h1>
                     <p className="mt-2 text-sm text-slate-400">
-                        Trash support is not available on {os}. Permanent
-                        deletion remains available from file delete dialogs.
+                        {agent.supportsMoveToTrash
+                            ? `Items can be moved to the native ${os} Trash from file delete dialogs, but Redoor cannot list or restore them here.`
+                            : `Trash operations are not available on ${os}. Permanent deletion remains available from file delete dialogs.`}
                     </p>
                 </section>
             </main>

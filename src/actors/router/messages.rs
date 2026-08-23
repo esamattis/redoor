@@ -43,6 +43,8 @@ pub struct RegisterAgentRequest {
     pub supports_native_open: bool,
     /// Advertises platform trash support for REST capability gating.
     pub supports_trash: bool,
+    /// Advertises move-to-trash support independently of inventory and restore.
+    pub supports_move_to_trash: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
 }
@@ -82,6 +84,8 @@ pub struct AgentListEntry {
     pub supports_native_open: bool,
     /// Latest registration's platform trash support.
     pub supports_trash: bool,
+    /// Latest registration's support for moving entries to platform trash.
+    pub supports_move_to_trash: bool,
 }
 
 /// Registers a configured entry before any process can be started.

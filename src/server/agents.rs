@@ -87,6 +87,7 @@ pub(super) async fn list_agent_snapshots(
             binary: agent.binary,
             supports_self_exec: agent.supports_self_exec,
             supports_native_open: agent.supports_native_open,
+            supports_move_to_trash: agent.supports_move_to_trash,
             supports_trash: agent.supports_trash,
         })
         .collect::<Vec<_>>();
