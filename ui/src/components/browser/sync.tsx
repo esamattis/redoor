@@ -1,8 +1,6 @@
 import React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { html as renderDiffHtml } from "diff2html";
-import { ColorSchemeType } from "diff2html/lib/types";
 import {
     ChevronDown,
     Copy,
@@ -18,13 +16,13 @@ import { InputControl } from "#ui/components/input-control";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { Tooltip } from "#ui/components/tooltip";
 import { DestinationConflictDialog } from "#ui/components/browser/selected-files-transfer-dialog";
+import { UnifiedDiff } from "#ui/components/browser/unified-diff";
 import {
     getErrorMessage,
     getPathLoadError,
 } from "#ui/components/browser/utils";
 import { transfersQueryOptions } from "#ui/queries";
 import { formatSize } from "#ui/utils/path";
-import "diff2html/bundles/css/diff2html.min.css";
 
 /** Reuses the agent and path controls for cross-agent file operations. */
 export function AgentPathFields(props: {
@@ -163,33 +161,6 @@ async function destinationExists(agent: Agent, path: string): Promise<boolean> {
         }
         throw error;
     }
-}
-
-/** Turns the unified-diff payload into a table that can grow wider than the viewport. */
-function FileDiffResult(props: { unifiedDiff: string }) {
-    const rendered = React.useMemo(
-        () =>
-            renderDiffHtml(props.unifiedDiff, {
-                drawFileList: false,
-                matching: "lines",
-                outputFormat: "line-by-line",
-                colorScheme: ColorSchemeType.AUTO,
-            }),
-        [props.unifiedDiff],
-    );
-
-    if (props.unifiedDiff === "") {
-        return (
-            <p className="text-sm text-slate-400">The files are identical.</p>
-        );
-    }
-
-    return (
-        <div
-            className="file-diff-html min-w-max"
-            dangerouslySetInnerHTML={{ __html: rendered }}
-        />
-    );
 }
 
 /** Owns the stable current endpoint and editable peer endpoint before direction reorders them. */
@@ -817,7 +788,7 @@ function SyncDiffSection(props: { workspace: SyncWorkspace }) {
             aria-label="File diff"
             className="file-diff-host w-full min-w-0 overflow-x-auto border-t border-slate-800 p-4 md:p-6"
         >
-            <FileDiffResult
+            <UnifiedDiff
                 unifiedDiff={workspace.diffMutation.data.unified_diff}
             />
         </section>

@@ -97,12 +97,12 @@ test.describe("Agent view navigation", () => {
             `${WEB_BASE_URL}/agents/${context.agentId}/browser/${encodeFilesystemPath(`${context.testDirPath}/file1.txt`)}`,
         );
         const fileView = page.getByLabel("File view");
-        // File representations collapse Diff into Sync, so the last tab is the transfer workspace.
-        await expect(fileView.getByRole("link").last()).toHaveText("Sync");
+        // Workspace fixtures are inside the repository, so Git follows the unified Sync workspace.
+        await expect(fileView.getByRole("link").last()).toHaveText("Git");
         await expect(
             fileView.getByRole("link", { name: "Diff", exact: true }),
         ).toHaveCount(0);
-        // The remaining tabs must stay visible on a phone-width viewport without a fourth tab.
+        // All route-backed representations must remain reachable on a phone-width viewport.
         await expect(
             fileView.getByRole("link", { name: "Edit", exact: true }),
         ).toBeVisible();
@@ -111,6 +111,9 @@ test.describe("Agent view navigation", () => {
         ).toBeVisible();
         await expect(
             fileView.getByRole("link", { name: "Sync", exact: true }),
+        ).toBeVisible();
+        await expect(
+            fileView.getByRole("link", { name: "Git", exact: true }),
         ).toBeVisible();
         await browserAgentView
             .getByRole("link", { name: context.agentName, exact: true })

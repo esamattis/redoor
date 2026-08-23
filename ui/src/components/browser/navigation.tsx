@@ -10,6 +10,7 @@ import {
     Info,
     Pencil,
     RefreshCw,
+    GitBranch,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
@@ -68,9 +69,10 @@ export function ViewToggle(props: {
     agent: Agent;
     path: string;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "sync";
+    activeView: "files" | "details" | "view" | "sync" | "git";
     /** Names the content tab Edit only after the agent marks the file writable. */
     editable?: boolean;
+    gitAvailable: boolean;
 }) {
     const pathTarget = getBrowserPathHref(props.agent, props.path);
     if (props.entryType === "directory") {
@@ -96,6 +98,17 @@ export function ViewToggle(props: {
                     icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                     active={props.activeView === "sync"}
                 />
+                {props.gitAvailable ? (
+                    <ViewToggleLink
+                        to={pathTarget}
+                        search={{ view: "git" }}
+                        label="Git"
+                        icon={
+                            <GitBranch className="h-4 w-4" aria-hidden="true" />
+                        }
+                        active={props.activeView === "git"}
+                    />
+                ) : null}
             </ViewSwitch>
         );
     }
@@ -130,6 +143,15 @@ export function ViewToggle(props: {
                 icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                 active={props.activeView === "sync"}
             />
+            {props.gitAvailable ? (
+                <ViewToggleLink
+                    to={pathTarget}
+                    search={{ view: "git" }}
+                    label="Git"
+                    icon={<GitBranch className="h-4 w-4" aria-hidden="true" />}
+                    active={props.activeView === "git"}
+                />
+            ) : null}
         </ViewSwitch>
     );
 }
@@ -198,9 +220,10 @@ export function BrowserHeader(props: {
     path: string;
     parentPath: string | null;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "sync";
+    activeView: "files" | "details" | "view" | "sync" | "git";
     /** Forwards the content-tab label so file chrome matches the editable gate. */
     editable?: boolean;
+    gitAvailable: boolean;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
 }) {
@@ -278,6 +301,7 @@ export function BrowserHeader(props: {
                         entryType={props.entryType}
                         activeView={props.activeView}
                         editable={props.editable}
+                        gitAvailable={props.gitAvailable}
                     />
                 )
             }

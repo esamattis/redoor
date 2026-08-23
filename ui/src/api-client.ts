@@ -60,6 +60,10 @@ import type { UpdateLocalAgentResponse } from "#bindings/UpdateLocalAgentRespons
 import type { DeleteManagedAgentResponse } from "#bindings/DeleteManagedAgentResponse";
 import type { UpdateUserStateRequest } from "#bindings/UpdateUserStateRequest";
 import type { UserStateResponse } from "#bindings/UserStateResponse";
+import type { GitContextResponse } from "#bindings/GitContextResponse";
+import type { GitStatusResponse } from "#bindings/GitStatusResponse";
+import type { GitDiffResponse } from "#bindings/GitDiffResponse";
+import type { GitDiffMode } from "#bindings/GitDiffMode";
 import { z } from "zod";
 
 export type {
@@ -117,6 +121,10 @@ export type {
     DeleteManagedAgentResponse,
     UpdateUserStateRequest,
     UserStateResponse,
+    GitContextResponse,
+    GitStatusResponse,
+    GitDiffResponse,
+    GitDiffMode,
 };
 
 type TransferProgressEntryJson = Omit<
@@ -446,6 +454,46 @@ export class Agent {
                 `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls`,
                 path,
             )}`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Discovers repository availability and classifies one browser path. */
+    async gitContext(path: string): Promise<GitContextResponse> {
+        return apiRequest<GitContextResponse>(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/context`,
+                path,
+            )}`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Returns bounded repository status below one literal directory path. */
+    async gitStatus(path: string): Promise<GitStatusResponse> {
+        return apiRequest<GitStatusResponse>(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/status`,
+                path,
+            )}`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Compares one file with HEAD using either worktree or index contents. */
+    async gitDiff(path: string, mode: GitDiffMode): Promise<GitDiffResponse> {
+        const url = new URL(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/diff`,
+                path,
+            )}`,
+        );
+        url.searchParams.set("mode", mode);
+        return apiRequest<GitDiffResponse>(
+            url.toString(),
             undefined,
             this.requestContext,
         );

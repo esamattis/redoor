@@ -1,5 +1,6 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import type { Agent, ApiClient } from "#ui/api-client";
+import type { GitDiffMode } from "#bindings/GitDiffMode";
 
 /** Centralizes cache keys so loaders, components, and mutations share server state. */
 export const queryKeys = {
@@ -16,6 +17,13 @@ export const queryKeys = {
         [...queryKeys.all, "file-content", agentId, path] as const,
     browserListing: (agentId: string, path: string) =>
         [...queryKeys.all, "agents", agentId, "browser-listing", path] as const,
+    git: () => [...queryKeys.all, "git"] as const,
+    gitContext: (agentId: string, path: string) =>
+        [...queryKeys.git(), agentId, "context", path] as const,
+    gitStatus: (agentId: string, path: string) =>
+        [...queryKeys.git(), agentId, "status", path] as const,
+    gitDiff: (agentId: string, path: string, mode: GitDiffMode) =>
+        [...queryKeys.git(), agentId, "diff", path, mode] as const,
     trash: (agentId: string) =>
         [...queryKeys.all, "agents", agentId, "trash"] as const,
     fileSearch: (
@@ -88,6 +96,37 @@ export function browserListingQueryOptions(agent: Agent, path: string) {
     return queryOptions({
         queryKey: queryKeys.browserListing(agent.id, path),
         queryFn: () => agent.ls(path),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares repository discovery between the loader and conditional browser tabs. */
+export function gitContextQueryOptions(agent: Agent, path: string) {
+    return queryOptions({
+        queryKey: queryKeys.gitContext(agent.id, path),
+        queryFn: () => agent.gitContext(path),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares one bounded directory status result with route preloading. */
+export function gitStatusQueryOptions(agent: Agent, path: string) {
+    return queryOptions({
+        queryKey: queryKeys.gitStatus(agent.id, path),
+        queryFn: () => agent.gitStatus(path),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Keeps full and staged file comparisons in distinct cache entries. */
+export function gitDiffQueryOptions(
+    agent: Agent,
+    path: string,
+    mode: GitDiffMode,
+) {
+    return queryOptions({
+        queryKey: queryKeys.gitDiff(agent.id, path, mode),
+        queryFn: () => agent.gitDiff(path, mode),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

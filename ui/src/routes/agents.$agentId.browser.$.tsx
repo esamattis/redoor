@@ -25,6 +25,7 @@ import {
     FileDetailView,
 } from "#ui/components/browser/metadata";
 import { SyncView } from "#ui/components/browser/sync";
+import { GitDirectoryView, GitFileView } from "#ui/components/browser/git";
 import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
 import {
     getImmediateParentPath,
@@ -34,6 +35,9 @@ import {
 import {
     browserListingQueryOptions,
     fileContentQueryOptions,
+    gitContextQueryOptions,
+    gitDiffQueryOptions,
+    gitStatusQueryOptions,
     queryKeys,
 } from "#ui/queries";
 import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
@@ -41,7 +45,7 @@ import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
 
 type BrowserSearch = {
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "edit" | "diff" | "sync" | "git";
 };
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
@@ -50,7 +54,8 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             search.view === "details" ||
             search.view === "edit" ||
             search.view === "diff" ||
-            search.view === "sync"
+            search.view === "sync" ||
+            search.view === "git"
                 ? search.view
                 : undefined,
     }),
@@ -82,13 +87,30 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         const path = `/${params._splat ?? ""}`;
 
+        const gitContextPromise = context.queryClient.fetchQuery({
+            ...gitContextQueryOptions(agent, path),
+            staleTime: 0,
+        });
+        const listingPromise = context.queryClient.fetchQuery({
+            ...browserListingQueryOptions(agent, path),
+            // Route invalidation is an explicit refresh even if the mounted listing is retained.
+            staleTime: 0,
+        });
+
         // Missing paths still resolve the route so breadcrumbs stay available for correction.
         try {
-            const lsResult: LsResponse = await context.queryClient.fetchQuery({
-                ...browserListingQueryOptions(agent, path),
-                // Route invalidation is an explicit refresh even if the mounted listing is retained.
-                staleTime: 0,
-            });
+            const [gitContext, lsResult]: [
+                Awaited<ReturnType<Agent["gitContext"]>>,
+                LsResponse,
+            ] = await Promise.all([gitContextPromise, listingPromise]);
+            if (deps.view === "git" && !gitContext.inside_worktree) {
+                throw redirect({
+                    to: "/agents/$agentId/browser/$",
+                    params,
+                    search: {},
+                    replace: true,
+                });
+            }
             // Canonicalize the cache identity so aliases refresh the listing the route actually displays.
             context.queryClient.setQueryData(
                 queryKeys.browserListing(agent.id, lsResult.path),
@@ -111,6 +133,19 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     );
                 }
             }
+            if (deps.view === "git" && gitContext.inside_worktree) {
+                if (isLsDirectoryResponse(lsResult)) {
+                    await context.queryClient.fetchQuery({
+                        ...gitStatusQueryOptions(agent, lsResult.path),
+                        staleTime: 0,
+                    });
+                } else {
+                    await context.queryClient.fetchQuery({
+                        ...gitDiffQueryOptions(agent, lsResult.path, "full"),
+                        staleTime: 0,
+                    });
+                }
+            }
 
             return {
                 agent,
@@ -123,11 +158,45 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 agents: agentLoaderData.agents,
                 mountPoints: agentLoaderData.details.mount_points,
                 pathError: null,
+                gitContext,
             };
         } catch (error) {
             const pathError = getPathLoadError(error);
             if (!pathError) {
                 throw error;
+            }
+            const gitContext = await gitContextPromise;
+            if (
+                deps.view === "git" &&
+                gitContext.inside_worktree &&
+                gitContext.entry_type === "missing" &&
+                gitContext.tracking_state === "deleted"
+            ) {
+                await context.queryClient.fetchQuery({
+                    ...gitDiffQueryOptions(agent, path, "full"),
+                    staleTime: 0,
+                });
+                return {
+                    agent,
+                    agentId: agent.id,
+                    agentName: agent.name,
+                    path,
+                    lsResult: null,
+                    downloadUrl: undefined,
+                    metadata: null,
+                    agents: agentLoaderData.agents,
+                    mountPoints: agentLoaderData.details.mount_points,
+                    pathError,
+                    gitContext,
+                };
+            }
+            if (deps.view === "git" && !gitContext.inside_worktree) {
+                throw redirect({
+                    to: "/agents/$agentId/browser/$",
+                    params,
+                    search: {},
+                    replace: true,
+                });
             }
             return {
                 agent,
@@ -140,6 +209,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 agents: agentLoaderData.agents,
                 mountPoints: agentLoaderData.details.mount_points,
                 pathError,
+                gitContext,
             };
         }
     },
@@ -154,7 +224,8 @@ function BrowserRouteShell(props: {
     path: string;
     parentPath: string | null;
     entryType: "directory" | "file";
-    activeView: "files" | "details" | "view" | "sync";
+    activeView: "files" | "details" | "view" | "sync" | "git";
+    gitAvailable: boolean;
     editable?: boolean;
     constrainContent?: boolean;
     /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
@@ -179,6 +250,7 @@ function BrowserRouteShell(props: {
                 entryType={props.entryType}
                 activeView={props.activeView}
                 editable={props.editable}
+                gitAvailable={props.gitAvailable}
                 pathUnavailable={props.pathUnavailable}
                 startEditingPath={props.startEditingPath}
             />
@@ -206,6 +278,33 @@ function FileBrowser() {
 
     const parentPath = getImmediateParentPath(path);
 
+    if (
+        pathError?.type === "missing" &&
+        search.view === "git" &&
+        data.gitContext.inside_worktree &&
+        data.gitContext.entry_type === "missing" &&
+        data.gitContext.tracking_state === "deleted"
+    ) {
+        return (
+            <BrowserRouteShell
+                agent={agent}
+                agentId={agentId}
+                path={path}
+                parentPath={parentPath}
+                entryType="file"
+                activeView="git"
+                gitAvailable
+                constrainContent
+            >
+                <GitFileView
+                    agent={agent}
+                    path={path}
+                    context={data.gitContext}
+                />
+            </BrowserRouteShell>
+        );
+    }
+
     if (pathError) {
         return (
             <BrowserRouteShell
@@ -215,6 +314,7 @@ function FileBrowser() {
                 parentPath={parentPath}
                 entryType="directory"
                 activeView="files"
+                gitAvailable={data.gitContext.inside_worktree}
                 constrainContent
                 pathUnavailable
                 startEditingPath={pathError.type !== "missing"}
@@ -250,6 +350,7 @@ function FileBrowser() {
                 lsResult={lsResult}
                 mountPoints={data.mountPoints}
                 view={search.view}
+                gitAvailable={data.gitContext.inside_worktree}
             />
         );
     }
@@ -265,14 +366,22 @@ function FileBrowser() {
         const viewableImage = data.metadata?.viewable_image === true;
 
         const activeView =
-            search.view === "sync"
-                ? "sync"
-                : search.view === "details"
-                  ? "details"
-                  : "view";
+            search.view === "git"
+                ? "git"
+                : search.view === "sync"
+                  ? "sync"
+                  : search.view === "details"
+                    ? "details"
+                    : "view";
         const isEditView = activeView === "view" && editable;
         const content =
-            activeView === "sync" ? (
+            activeView === "git" ? (
+                <GitFileView
+                    agent={agent}
+                    path={lsResult.path}
+                    context={data.gitContext}
+                />
+            ) : activeView === "sync" ? (
                 <SyncView
                     key={`${agentId}:${lsResult.path}`}
                     api={api}
@@ -319,6 +428,7 @@ function FileBrowser() {
                 entryType="file"
                 activeView={activeView}
                 editable={editable}
+                gitAvailable={data.gitContext.inside_worktree}
                 constrainContent={!isEditView}
                 fillAvailableHeight={isEditView}
             >
@@ -341,7 +451,8 @@ function DirectoryBrowserPage(props: {
     parentPath: string | null;
     lsResult: LsDirectoryResponse;
     mountPoints: MountPoint[];
-    view?: "details" | "edit" | "diff" | "sync";
+    view?: "details" | "edit" | "diff" | "sync" | "git";
+    gitAvailable: boolean;
 }) {
     const [userState, setUserState] = useUserState();
     const listingQuery = useQuery(
@@ -362,11 +473,13 @@ function DirectoryBrowserPage(props: {
         visibleFiles.filter((file) => file.type === "file"),
     );
     const activeView =
-        props.view === "details"
-            ? "details"
-            : props.view === "sync"
-              ? "sync"
-              : "files";
+        props.view === "git"
+            ? "git"
+            : props.view === "details"
+              ? "details"
+              : props.view === "sync"
+                ? "sync"
+                : "files";
 
     return (
         <BrowserRouteShell
@@ -376,9 +489,12 @@ function DirectoryBrowserPage(props: {
             parentPath={props.parentPath}
             entryType="directory"
             activeView={activeView}
+            gitAvailable={props.gitAvailable}
             constrainContent={activeView !== "files"}
         >
-            {activeView === "details" ? (
+            {activeView === "git" ? (
+                <GitDirectoryView agent={props.agent} path={lsResult.path} />
+            ) : activeView === "details" ? (
                 <DirectoryDetailView
                     agent={props.agent}
                     path={props.path}
