@@ -1,11 +1,11 @@
 use super::{
-    AgentActor, AgentHandle, AgentMsg, AgentRuntime, AgentState,
+    AgentActor, AgentHandle, AgentLifecycleMsg, AgentMsg, AgentRuntime, AgentState,
     connection::AgentConnection,
     notification,
     transfer::{begin_transfer_connection, schedule_transfer_reconnect},
-    ws::{spawn_read_task, spawn_stdin_task},
+    ws::{spawn_read_task, spawn_stdin_task, spawn_write_task},
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use redoor::{
     Level, log,
     types::{AgentId, Message},
@@ -62,6 +62,7 @@ impl AgentRuntime {
     pub(crate) async fn run(
         mut self,
         mut receiver: Receiver<AgentMsg>,
+        mut lifecycle_receiver: mpsc::UnboundedReceiver<AgentLifecycleMsg>,
         handle: AgentHandle,
         exit_on_stdin_eof: bool,
     ) {
@@ -75,13 +76,25 @@ impl AgentRuntime {
             self.state.agent_name
         );
 
-        while let Some(message) = receiver.recv().await {
-            if !self.handle_message(handle.clone(), message).await {
-                break;
+        loop {
+            tokio::select! {
+                biased;
+                lifecycle = lifecycle_receiver.recv() => match lifecycle {
+                    Some(message) => self.handle_lifecycle_message(handle.clone(), message).await,
+                    None => break,
+                },
+                message = receiver.recv() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    if !self.handle_message(handle.clone(), message).await {
+                        break;
+                    }
+                },
             }
         }
 
-        self.state.ws_control_tx = None;
+        self.state.clear_control_connection();
         self.state.clear_transfer_connection();
         self.state.active_uploads.clear();
         self.state.active_downloads.clear();
@@ -106,9 +119,6 @@ impl AgentRuntime {
                 if self.state.ws_control_tx.is_none() {
                     self.connect(handle).await;
                 }
-            }
-            AgentMsg::ScheduleReconnect { error } => {
-                self.schedule_reconnect(handle, &format!("Connection failed: {error}"));
             }
             AgentMsg::WebSocketMessage {
                 connection_generation,
@@ -212,37 +222,6 @@ impl AgentRuntime {
                     transfer_generation,
                 );
             }
-            AgentMsg::ConnectionLost {
-                connection_generation,
-                reason,
-            } => {
-                if connection_generation != self.state.connection_generation {
-                    log!(
-                        Level::Debug,
-                        "Ignoring stale connection loss from generation {}: {}",
-                        connection_generation,
-                        reason
-                    );
-                    return true;
-                }
-                if self.state.ws_control_tx.is_none() {
-                    log!(
-                        Level::Debug,
-                        "Ignoring duplicate connection loss: {}",
-                        reason
-                    );
-                    return true;
-                }
-                self.state.ws_control_tx = None;
-                self.state.clear_transfer_connection();
-                self.state.active_uploads.clear();
-                self.state.active_downloads.clear();
-                self.state.active_terminals.clear();
-                self.state.active_log_streams.clear();
-                self.state.cancel_file_search();
-                self.stop_command_tasks().await;
-                self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
-            }
             AgentMsg::SendWebSocketMessage { msg } => {
                 if let Some(tx) = &self.state.ws_control_tx
                     && tx.send(msg).await.is_err()
@@ -267,6 +246,43 @@ impl AgentRuntime {
         }
 
         true
+    }
+
+    /// Applies transport lifecycle ahead of bounded application traffic.
+    async fn handle_lifecycle_message(&mut self, handle: AgentHandle, message: AgentLifecycleMsg) {
+        match message {
+            AgentLifecycleMsg::ConnectionLost {
+                connection_generation,
+                reason,
+            } => {
+                if connection_generation != self.state.connection_generation {
+                    log!(
+                        Level::Debug,
+                        "Ignoring stale connection loss from generation {}: {}",
+                        connection_generation,
+                        reason
+                    );
+                    return;
+                }
+                if self.state.ws_control_tx.is_none() {
+                    log!(
+                        Level::Debug,
+                        "Ignoring duplicate connection loss: {}",
+                        reason
+                    );
+                    return;
+                }
+                self.state.clear_control_connection();
+                self.state.clear_transfer_connection();
+                self.state.active_uploads.clear();
+                self.state.active_downloads.clear();
+                self.state.active_terminals.clear();
+                self.state.active_log_streams.clear();
+                self.state.cancel_file_search();
+                self.stop_command_tasks().await;
+                self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
+            }
+        }
     }
 
     /// Cancels and joins every command from the discarded control generation.
@@ -298,7 +314,7 @@ impl AgentRuntime {
         );
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = handle.try_send(AgentMsg::Connect);
+            enqueue_reconnect(handle).await;
         });
     }
 
@@ -371,13 +387,15 @@ impl AgentRuntime {
             self.state.agent_name
         );
 
-        match self
-            .state
-            .connection
-            .connect(self.state.connection.server_url())
-            .await
-        {
-            Ok((ws_stream, _response)) => {
+        let connection_result = tokio::time::timeout(
+            redoor::websocket::timeouts().stale_timeout,
+            self.state
+                .connection
+                .connect(self.state.connection.server_url()),
+        )
+        .await;
+        match connection_result {
+            Ok(Ok((ws_stream, _response))) => {
                 self.reconnect_attempts = 0;
                 log!(
                     Level::Info,
@@ -393,10 +411,12 @@ impl AgentRuntime {
                 );
 
                 let (write, read) = ws_stream.split();
-                let (control_tx, mut control_rx) = mpsc::channel::<WsMessage>(32);
+                let (control_tx, control_rx) = mpsc::channel::<WsMessage>(32);
+                let (control_shutdown, control_shutdown_rx) = tokio::sync::watch::channel(false);
                 let connection_generation = self.state.advance_connection_generation();
 
                 self.state.ws_control_tx = Some(control_tx.clone());
+                self.state.control_shutdown = Some(control_shutdown.clone());
 
                 if let Err(error) = crate::systemd_notify::ready().await {
                     log!(
@@ -405,49 +425,23 @@ impl AgentRuntime {
                     );
                 }
 
-                spawn_read_task(read, handle.clone(), connection_generation).await;
-
-                let writer_handle = handle.clone();
-                tokio::spawn(async move {
-                    let mut write = write;
-                    while let Some(message) = control_rx.recv().await {
-                        let reexec_path = match &message {
-                            WsMessage::Text(text) => serde_json::from_str::<Message>(text)
-                                .ok()
-                                .and_then(|message| match message {
-                                    Message::CommandResponse {
-                                        result: redoor::commands::CommandResult::Restart,
-                                        ..
-                                    } => Some(None),
-                                    Message::CommandResponse {
-                                        result: redoor::commands::CommandResult::SelfExec { path },
-                                        ..
-                                    } => Some(Some(path)),
-                                    _ => None,
-                                }),
-                            _ => None,
-                        };
-                        if write.send(message).await.is_err() {
-                            log!(Level::Warning, "Failed to send WebSocket message");
-                            let _ = writer_handle
-                                .send(AgentMsg::ConnectionLost {
-                                    connection_generation,
-                                    reason: "Failed to write to server connection".to_string(),
-                                })
-                                .await;
-                            break;
-                        }
-                        if let Some(path) = reexec_path {
-                            // The response is on the socket before exec interrupts this connection.
-                            match path {
-                                Some(path) => {
-                                    redoor::process::reexec_process(std::path::Path::new(&path))
-                                }
-                                None => redoor::process::reexec_current_process(),
-                            }
-                        }
-                    }
-                });
+                spawn_read_task(
+                    read,
+                    handle.clone(),
+                    connection_generation,
+                    control_tx.clone(),
+                    control_shutdown.clone(),
+                    control_shutdown_rx.clone(),
+                )
+                .await;
+                spawn_write_task(
+                    write,
+                    control_rx,
+                    control_shutdown,
+                    control_shutdown_rx,
+                    handle.clone(),
+                    connection_generation,
+                );
 
                 let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
                 let os = std::env::consts::OS.to_string();
@@ -484,19 +478,43 @@ impl AgentRuntime {
                     }
                 }
             }
-            Err(error) => {
-                let _ = handle.try_send(AgentMsg::ScheduleReconnect {
-                    error: format!("{error:#}"),
-                });
+            Ok(Err(error)) => {
+                self.schedule_reconnect(handle, &format!("Connection failed: {error:#}"));
+            }
+            Err(_) => {
+                let timeout = redoor::websocket::timeouts().stale_timeout;
+                self.schedule_reconnect(
+                    handle,
+                    &format!("Connection failed: WebSocket connection attempt timed out after {timeout:?}"),
+                );
             }
         }
     }
+}
+
+/// Awaits bounded mailbox capacity so a due reconnect cannot be silently discarded.
+async fn enqueue_reconnect(handle: AgentHandle) {
+    let _ = handle.send(AgentMsg::Connect).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use redoor::types::AgentId;
+
+    /// Creates a handle and lifecycle receiver for direct runtime tests.
+    fn test_handle(
+        sender: mpsc::Sender<AgentMsg>,
+    ) -> (AgentHandle, mpsc::UnboundedReceiver<AgentLifecycleMsg>) {
+        let (lifecycle_sender, lifecycle_receiver) = mpsc::unbounded_channel();
+        (
+            AgentHandle {
+                sender,
+                lifecycle_sender,
+            },
+            lifecycle_receiver,
+        )
+    }
 
     /// Verifies the first ten reconnect attempts retain the quick jitter window.
     #[test]
@@ -548,20 +566,19 @@ mod tests {
         runtime.state.ws_control_tx = Some(control_tx);
         runtime.state.ws_transfer_tx = Some(transfer_tx);
         let (sender, _receiver) = mpsc::channel(1);
-        let handle = AgentHandle { sender };
+        let (handle, _lifecycle_receiver) = test_handle(sender);
 
-        let keep_running = runtime
-            .handle_message(
+        runtime
+            .handle_lifecycle_message(
                 handle,
-                AgentMsg::ConnectionLost {
+                AgentLifecycleMsg::ConnectionLost {
                     connection_generation: stale_generation,
                     reason: "old writer failed".to_string(),
                 },
             )
             .await;
 
-        // The stale event must not stop the actor or detach the current writer lanes.
-        assert!(keep_running);
+        // A delayed lifecycle event must leave the replacement generation authoritative.
         assert_eq!(runtime.state.connection_generation, current_generation);
         // The current control sender must survive a delayed loss from the old generation.
         assert!(runtime.state.ws_control_tx.is_some());
@@ -590,7 +607,7 @@ mod tests {
         runtime.state.ws_control_tx = Some(control_tx);
         runtime.state.ws_transfer_tx = Some(transfer_tx);
         let (sender, _receiver) = mpsc::channel(1);
-        let handle = AgentHandle { sender };
+        let (handle, _lifecycle_receiver) = test_handle(sender);
 
         let keep_running = runtime
             .handle_message(
@@ -609,6 +626,30 @@ mod tests {
         assert_eq!(runtime.state.transfer_generation, current_generation);
         // The replacement payload sender must remain installed and usable.
         assert!(runtime.state.ws_transfer_tx.is_some());
+    }
+
+    /// Verifies a reconnect timer waits for bounded capacity instead of dropping the only retry.
+    #[tokio::test]
+    async fn reconnect_survives_saturated_actor_mailbox() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (handle, _lifecycle_receiver) = test_handle(sender);
+        handle
+            .try_send(AgentMsg::ExitWithError)
+            .expect("mailbox saturation setup should fill its only slot");
+        let reconnect = enqueue_reconnect(handle);
+        tokio::pin!(reconnect);
+
+        // Pending while full proves a due reconnect waits instead of using a lossy try-send.
+        assert!(futures_util::poll!(&mut reconnect).is_pending());
+
+        // The existing item must remain first because reconnect scheduling may not evict traffic.
+        assert!(matches!(
+            receiver.recv().await,
+            Some(AgentMsg::ExitWithError)
+        ));
+        reconnect.await;
+        // Freeing capacity must release the awaited timer send and preserve the reconnect attempt.
+        assert!(matches!(receiver.recv().await, Some(AgentMsg::Connect)));
     }
 
     /// Verifies graceful teardown publishes cancellation and waits for command workers to exit.

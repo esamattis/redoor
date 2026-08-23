@@ -405,7 +405,7 @@ pub async fn handle_websocket(
                             watchdog.key(),
                             socket_id
                         );
-                        watchdog.signal_stale();
+                        watchdog.signal_stale(socket_id.clone());
                     } else {
                         log!(
                             Level::Warning,

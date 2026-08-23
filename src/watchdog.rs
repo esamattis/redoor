@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{AgentConnectionStatus, ProvisioningStatusMessage};
 use crate::log;
@@ -122,7 +122,7 @@ impl WatchdogSnapshot {
 /// Callback used by server wiring to project lifecycle changes into the router.
 pub type SnapshotCallback = Arc<dyn Fn(WatchdogSnapshot) + Send + Sync>;
 
-/// Commands are independent from the stale signal so shutdown remains selectable everywhere.
+/// Events serialize lifecycle changes so socket generations are checked by the supervisor.
 enum SupervisorCommand {
     Start,
     Remove,
@@ -131,6 +131,7 @@ enum SupervisorCommand {
     },
     Connected(SocketId),
     Disconnected(SocketId),
+    Stale(SocketId),
 }
 
 /// Cloneable control handle for one configured supervisor.
@@ -138,7 +139,6 @@ enum SupervisorCommand {
 pub struct WatchdogHandle {
     key: String,
     commands: mpsc::UnboundedSender<SupervisorCommand>,
-    stale_signal: Arc<Notify>,
     snapshot: Arc<Mutex<WatchdogSnapshot>>,
     callback: SnapshotCallback,
 }
@@ -229,9 +229,9 @@ impl WatchdogHandle {
             .clone()
     }
 
-    /// Requests restart of a subprocess whose WebSocket stopped responding.
-    pub fn signal_stale(&self) {
-        self.stale_signal.notify_one();
+    /// Requests restart only if the stale WebSocket is still the current generation.
+    pub fn signal_stale(&self, socket_id: SocketId) {
+        let _ = self.commands.send(SupervisorCommand::Stale(socket_id));
     }
 
     /// Mutates the live snapshot under one lock so progress reports cannot drop sibling fields.
@@ -334,7 +334,6 @@ impl WatchdogRegistry {
         let handle = WatchdogHandle {
             key: key.clone(),
             commands,
-            stale_signal: Arc::new(Notify::new()),
             snapshot: Arc::new(Mutex::new(WatchdogSnapshot::stopped())),
             callback,
         };
@@ -376,7 +375,9 @@ async fn wait_until_running(
                 publish_stopped(watchdog);
                 let _ = reply.send(Ok(()));
             }
-            SupervisorCommand::Connected(_) | SupervisorCommand::Disconnected(_) => {}
+            SupervisorCommand::Connected(_)
+            | SupervisorCommand::Disconnected(_)
+            | SupervisorCommand::Stale(_) => {}
         }
     }
     IdleWait::Exit
@@ -510,14 +511,14 @@ async fn handle_pre_spawn_command(
             publish_stopped(watchdog);
             CommandAction::Exit
         }
-        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Disconnected(_)) => {
-            CommandAction::Continue
-        }
+        Some(SupervisorCommand::Start)
+        | Some(SupervisorCommand::Disconnected(_))
+        | Some(SupervisorCommand::Stale(_)) => CommandAction::Continue,
         None => CommandAction::Exit,
     }
 }
 
-/// Watches child exit, registration timeout, stale signal, and controls concurrently.
+/// Watches child exit, registration timeout, and serialized lifecycle controls concurrently.
 async fn wait_for_child(
     mut child: Child,
     watchdog: &WatchdogHandle,
@@ -540,19 +541,16 @@ async fn wait_for_child(
                 publish_issue(watchdog, issue);
                 return CycleResult { action: CommandAction::Continue, was_connected: connected };
             }
-            _ = watchdog.stale_signal.notified() => {
-                kill_and_reap(&mut child).await;
-                publish_issue(watchdog, "Agent connection went stale".to_string());
-                return CycleResult { action: CommandAction::Continue, was_connected: connected };
-            }
             _ = &mut startup_timeout, if !connected && !timeout_reported => {
                 timeout_reported = true;
                 publish_issue(watchdog, "Agent process started but has not connected within 15 seconds".to_string());
             }
             command = commands.recv() => {
                 match handle_running_command(watchdog, command, &mut child, &mut connected).await {
-                    CommandAction::Continue => {}
-                    action => return CycleResult { action, was_connected: connected },
+                    RunningCommandAction::Continue => {}
+                    RunningCommandAction::Finish(action) => {
+                        return CycleResult { action, was_connected: connected };
+                    }
                 }
             }
         }
@@ -565,18 +563,18 @@ async fn handle_running_command(
     command: Option<SupervisorCommand>,
     child: &mut Child,
     connected: &mut bool,
-) -> CommandAction {
+) -> RunningCommandAction {
     match command {
         Some(SupervisorCommand::Shutdown { reply }) => {
             kill_and_reap(child).await;
             publish_stopped(watchdog);
             let _ = reply.send(Ok(()));
-            CommandAction::Stop
+            RunningCommandAction::Finish(CommandAction::Stop)
         }
         Some(SupervisorCommand::Connected(socket_id)) => {
             *connected = true;
             publish_connected(watchdog, socket_id);
-            CommandAction::Continue
+            RunningCommandAction::Continue
         }
         Some(SupervisorCommand::Disconnected(socket_id)) => {
             if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
@@ -587,17 +585,26 @@ async fn handle_running_command(
                     snapshot.socket_id = None;
                 });
             }
-            CommandAction::Continue
+            RunningCommandAction::Continue
+        }
+        Some(SupervisorCommand::Stale(socket_id)) => {
+            if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
+                kill_and_reap(child).await;
+                publish_issue(watchdog, "Agent connection went stale".to_string());
+                RunningCommandAction::Finish(CommandAction::Continue)
+            } else {
+                RunningCommandAction::Continue
+            }
         }
         Some(SupervisorCommand::Remove) => {
             kill_and_reap(child).await;
             publish_stopped(watchdog);
-            CommandAction::Exit
+            RunningCommandAction::Finish(CommandAction::Exit)
         }
-        Some(SupervisorCommand::Start) => CommandAction::Continue,
+        Some(SupervisorCommand::Start) => RunningCommandAction::Continue,
         None => {
             kill_and_reap(child).await;
-            CommandAction::Exit
+            RunningCommandAction::Finish(CommandAction::Exit)
         }
     }
 }
@@ -642,9 +649,9 @@ fn apply_restart_command(
             publish_connected(watchdog, socket_id);
             CommandAction::Continue
         }
-        Some(SupervisorCommand::Disconnected(_)) | Some(SupervisorCommand::Start) => {
-            CommandAction::Continue
-        }
+        Some(SupervisorCommand::Disconnected(_))
+        | Some(SupervisorCommand::Stale(_))
+        | Some(SupervisorCommand::Start) => CommandAction::Continue,
         None => CommandAction::Exit,
     }
 }
@@ -656,6 +663,14 @@ enum CommandAction {
     Stop,
     /// Configuration replacement must end the task, not just return it to idle.
     Exit,
+}
+
+/// Separates commands that keep watching a child from those that finish its cycle.
+enum RunningCommandAction {
+    /// The current child remains authoritative and should keep running.
+    Continue,
+    /// The child cycle ended and the supervisor should apply this lifecycle action.
+    Finish(CommandAction),
 }
 
 /// Settles intentional shutdown before acknowledging the management request.
@@ -1039,6 +1054,70 @@ mod tests {
         drop(snapshots);
         // Successful registration removes an earlier lifecycle diagnostic.
         assert_eq!(handle.snapshot().connection_issue, None);
+        handle.shutdown().await.expect("shutdown acknowledged");
+    }
+
+    #[tokio::test]
+    async fn stale_signal_restarts_only_the_current_socket_generation() {
+        crate::logging::init(None).await.unwrap();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let observed_spawns = spawn_count.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "stale-generation".into(),
+                SpawnFn::new(move |_status| {
+                    let observed_spawns = observed_spawns.clone();
+                    async move {
+                        observed_spawns.fetch_add(1, Ordering::SeqCst);
+                        Command::new("sh")
+                            .arg("-c")
+                            .arg("cat")
+                            .kill_on_drop(true)
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .map_err(|error| error.to_string())
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("stale-generation").expect("managed handle");
+        handle.start().expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+        let old_socket = SocketId::new();
+        let replacement_socket = SocketId::new();
+        let fence_socket = SocketId::new();
+        // Managed registrations must be accepted while the supervisor is desired-running.
+        assert!(handle.mark_connected(old_socket.clone()));
+        // A replacement registration must supersede the old socket generation.
+        assert!(handle.mark_connected(replacement_socket.clone()));
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&replacement_socket)).await;
+
+        handle.signal_stale(old_socket);
+        // This connection acts as a queue fence after the stale event without pre-checking state.
+        assert!(handle.mark_connected(fence_socket.clone()));
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&fence_socket)).await;
+
+        // The replaced socket's late stale event must not terminate the healthy child.
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        // Ignoring an old generation must not publish a misleading lifecycle issue.
+        assert_eq!(handle.snapshot().connection_issue, None);
+
+        handle.signal_stale(fence_socket);
+        wait_until(|| {
+            handle.snapshot().connection_issue.as_deref() == Some("Agent connection went stale")
+        })
+        .await;
+        // A stale event for the authoritative socket must promptly end the current child cycle.
+        assert_eq!(
+            handle.snapshot().connection_issue.as_deref(),
+            Some("Agent connection went stale")
+        );
         handle.shutdown().await.expect("shutdown acknowledged");
     }
 

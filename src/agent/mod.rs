@@ -21,7 +21,7 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) use messages::AgentMsg;
+pub(crate) use messages::{AgentLifecycleMsg, AgentMsg};
 pub(crate) use state::{
     ActiveDownloads, ActiveUploads, AgentArgs, AgentState, DownloadSessionHandle,
     LogStreamSessionHandle, NotificationDelay, TerminalSessionHandle, UploadSessionHandle,
@@ -76,6 +76,7 @@ impl From<AgentCommandError> for redoor::commands::CommandResult {
 #[derive(Clone)]
 pub(crate) struct AgentHandle {
     sender: mpsc::Sender<AgentMsg>,
+    lifecycle_sender: mpsc::UnboundedSender<AgentLifecycleMsg>,
 }
 
 impl AgentHandle {
@@ -97,6 +98,16 @@ impl AgentHandle {
         message: AgentMsg,
     ) -> Result<(), mpsc::error::TrySendError<AgentMsg>> {
         self.sender.try_send(message)
+    }
+
+    /// Reports transport lifecycle without competing with bounded application traffic.
+    pub(crate) fn report_connection_lost(&self, connection_generation: u64, reason: String) {
+        let _ = self
+            .lifecycle_sender
+            .send(AgentLifecycleMsg::ConnectionLost {
+                connection_generation,
+                reason,
+            });
     }
 }
 
@@ -198,7 +209,11 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     );
 
     let (sender, receiver) = mpsc::channel::<AgentMsg>(256);
-    let handle = AgentHandle { sender };
+    let (lifecycle_sender, lifecycle_receiver) = mpsc::unbounded_channel();
+    let handle = AgentHandle {
+        sender,
+        lifecycle_sender,
+    };
     let runtime = AgentRuntime::new(
         agent_id,
         agent_name,
@@ -208,7 +223,9 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
         notification_delay,
     );
 
-    runtime.run(receiver, handle, exit_on_stdin_eof).await;
+    runtime
+        .run(receiver, lifecycle_receiver, handle, exit_on_stdin_eof)
+        .await;
 
     Ok(())
 }
@@ -386,12 +403,21 @@ mod tests {
     use super::{AgentHandle, AgentMsg};
     use tokio::sync::mpsc;
 
+    /// Creates a handle whose lifecycle lane stays open for bounded-mailbox tests.
+    fn test_handle(sender: mpsc::Sender<AgentMsg>) -> AgentHandle {
+        let (lifecycle_sender, _lifecycle_receiver) = mpsc::unbounded_channel();
+        AgentHandle {
+            sender,
+            lifecycle_sender,
+        }
+    }
+
     /// Verifies awaited sends stay pending while the bounded mailbox is full so
     /// websocket ingress can propagate upload backpressure instead of dropping frames.
     #[tokio::test]
     async fn send_waits_for_channel_capacity() {
         let (sender, mut receiver) = mpsc::channel(1);
-        let handle = AgentHandle { sender };
+        let handle = test_handle(sender);
 
         handle
             .try_send(AgentMsg::Connect)
@@ -420,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn try_send_fails_fast_when_channel_is_full() {
         let (sender, _receiver) = mpsc::channel(1);
-        let handle = AgentHandle { sender };
+        let handle = test_handle(sender);
 
         handle
             .try_send(AgentMsg::Connect)

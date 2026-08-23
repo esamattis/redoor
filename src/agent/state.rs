@@ -335,6 +335,8 @@ pub(crate) struct AgentState {
     pub(crate) token: String,
     /// Current control writer used for commands, responses, cancellation, and lifecycle traffic.
     pub(crate) ws_control_tx: Option<mpsc::Sender<WsMessage>>,
+    /// Stops both halves of the current control socket when liveness checks discard it.
+    pub(crate) control_shutdown: Option<watch::Sender<bool>>,
     /// Current payload writer used exclusively for binary stream chunks.
     pub(crate) ws_transfer_tx: Option<mpsc::Sender<WsMessage>>,
     /// Session-scoped secret issued by the current authoritative server control connection.
@@ -368,6 +370,7 @@ impl AgentState {
             default_directory,
             token,
             ws_control_tx: None,
+            control_shutdown: None,
             ws_transfer_tx: None,
             transfer_token: None,
             transfer_shutdown: None,
@@ -407,6 +410,14 @@ impl AgentState {
     pub(crate) fn advance_transfer_generation(&mut self) -> u64 {
         self.transfer_generation = self.transfer_generation.wrapping_add(1);
         self.transfer_generation
+    }
+
+    /// Stops the current control transport before reconnecting so blackholed tasks cannot linger.
+    pub(crate) fn clear_control_connection(&mut self) {
+        if let Some(shutdown) = self.control_shutdown.take() {
+            let _ = shutdown.send(true);
+        }
+        self.ws_control_tx = None;
     }
 
     /// Invalidates and stops payload transport when the authoritative control session changes.

@@ -5,9 +5,6 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 /// Internal events consumed by the single agent runtime actor.
 pub(crate) enum AgentMsg {
     Connect,
-    ScheduleReconnect {
-        error: String,
-    },
     WebSocketMessage {
         connection_generation: u64,
         text: String,
@@ -37,10 +34,6 @@ pub(crate) enum AgentMsg {
         connection_generation: u64,
         transfer_generation: u64,
     },
-    ConnectionLost {
-        connection_generation: u64,
-        reason: String,
-    },
     SendWebSocketMessage {
         msg: WsMessage,
     },
@@ -53,4 +46,13 @@ pub(crate) enum AgentMsg {
     /// Stops the runtime cleanly when its owning transport has ended.
     Shutdown,
     ExitWithError,
+}
+
+/// Lifecycle events bypass ordinary message backpressure so transport recovery cannot be starved.
+pub(crate) enum AgentLifecycleMsg {
+    /// Discards a failed control transport only while its generation remains authoritative.
+    ConnectionLost {
+        connection_generation: u64,
+        reason: String,
+    },
 }
