@@ -2,9 +2,10 @@
 use super::MountPoint;
 use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, Command, CommandErrorKind, CommandResult,
-    EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult, MoveMetadataResult,
-    MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity,
-    current_exe_path, external_ip, file_search, git, metadata,
+    DirectorySizeError, DirectorySizeResponse, EchoRequest, EchoResult, LsDirectoryResult, LsEntry,
+    LsFileResult, MoveMetadataResult, MoveSourceIdentity, UnixTimestampSeconds,
+    agent_loaded_config_path, current_binary_identity, current_exe_path, external_ip, file_search,
+    git, metadata,
 };
 use crate::atomic_rename::AtomicRenameOutcome;
 use crate::logging::Level;
@@ -97,6 +98,10 @@ impl CommandHandler {
             Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,
+            Command::DirectorySize {
+                path,
+                timeout_seconds,
+            } => self.directory_size(path, timeout_seconds).await,
             Command::GitContext { path } => git::context(path).await,
             Command::GitStatus { path } => git::status(path).await,
             Command::GitDiff { files, mode } => git::diff(files, mode).await,
@@ -123,6 +128,62 @@ impl CommandHandler {
                     )
                 }
             }
+        }
+    }
+
+    /// Bounds recursive metadata traversal so one very large tree cannot occupy a command slot indefinitely.
+    async fn directory_size(&self, path: String, timeout_seconds: u64) -> CommandResult {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return CommandResult::error(
+                    CommandErrorKind::NotADirectory,
+                    format!("Path is not a directory: {path}"),
+                );
+            }
+            Err(error) => {
+                return CommandResult::io_error(
+                    &format!("Failed to read directory metadata for path {path:?}"),
+                    error,
+                );
+            }
+        }
+
+        let cancel = tokio::sync::watch::channel(false).1;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_seconds),
+            crate::directory_measurement::measure_directory(
+                std::path::Path::new(&path),
+                false,
+                &cancel,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(Some(measurement))) => CommandResult::DirectorySize(DirectorySizeResponse {
+                path,
+                size: measurement.content_bytes,
+                errors: measurement
+                    .errors
+                    .into_iter()
+                    .map(|error| DirectorySizeError {
+                        path: error.path,
+                        error: error.error,
+                    })
+                    .collect(),
+            }),
+            Ok(Ok(None)) => CommandResult::error(
+                CommandErrorKind::ServiceUnavailable,
+                "Directory size calculation was canceled",
+            ),
+            Ok(Err(error)) => CommandResult::error(
+                CommandErrorKind::Internal,
+                format!("Failed to calculate directory size for {path:?}: {error}"),
+            ),
+            Err(_) => CommandResult::error(
+                CommandErrorKind::ServiceUnavailable,
+                format!("Directory size calculation timed out after {timeout_seconds} seconds"),
+            ),
         }
     }
 

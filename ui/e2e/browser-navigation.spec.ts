@@ -724,6 +724,17 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions", exact: true }),
         ).toBeVisible();
+        const calculateSize = page.getByRole("button", {
+            name: "Calculate size",
+            exact: true,
+        });
+        // Recursive traversal remains opt-in so opening details is fast for large trees.
+        await expect(calculateSize).toBeVisible();
+        await calculateSize.click();
+        // The fixture has 37 bytes across files at multiple directory depths.
+        await expect(page.getByLabel("Directory size value")).toHaveText(
+            "37 B",
+        );
         // Details reuses the same current-path chrome as the Files toolbar.
         await expect(
             page.getByRole("link", { name: "Download", exact: true }),
@@ -779,6 +790,42 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("textbox", { name: "File path" }),
         ).not.toBeVisible();
+    });
+
+    test("should warn when directory size skips entries", async ({ page }) => {
+        await page.route(
+            "**/api/v1/agents/*/directory-size/**",
+            async (route) => {
+                await route.fulfill({
+                    json: {
+                        path: ctx.testDirPath,
+                        size: 37,
+                        errors: [
+                            {
+                                path: `${ctx.testDirPath}/linked.txt`,
+                                error: "Unsupported filesystem entry type",
+                            },
+                        ],
+                    },
+                });
+            },
+        );
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}?view=details`,
+        );
+
+        await page
+            .getByRole("button", { name: "Calculate size", exact: true })
+            .click();
+
+        // Partial results remain useful even when one entry could not be measured.
+        await expect(page.getByLabel("Directory size value")).toHaveText(
+            "37 B",
+        );
+        // The warning summarizes skipped entries without replacing the successful result.
+        await expect(page.getByRole("alert")).toHaveText(
+            "Could not read the size of 1 entry.",
+        );
     });
 
     test("should sync a directory with the selected existing policy", async ({

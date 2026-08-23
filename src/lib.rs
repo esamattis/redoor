@@ -1,6 +1,7 @@
 pub mod actors;
 pub mod atomic_rename;
 pub mod commands;
+pub mod directory_measurement;
 pub mod log_protocol;
 pub mod log_registry;
 pub mod logging;

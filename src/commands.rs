@@ -222,6 +222,12 @@ pub enum Command {
     Metadata {
         path: String,
     },
+    /// Calculates recursive regular-file bytes without delaying directory navigation.
+    DirectorySize {
+        path: String,
+        /// Keeps expensive walks bounded on the agent even if the REST request disconnects.
+        timeout_seconds: u64,
+    },
     /// Discovers repository membership and classification for one browser path.
     GitContext {
         path: String,
@@ -346,6 +352,10 @@ impl Command {
                 format!("RenamePath dir={dir} old={old} new={new}")
             }
             Self::Metadata { path } => format!("Metadata path={path}"),
+            Self::DirectorySize {
+                path,
+                timeout_seconds,
+            } => format!("DirectorySize path={path} timeout={timeout_seconds}s"),
             Self::GitContext { path } => format!("GitContext path={path}"),
             Self::GitStatus { path } => format!("GitStatus path={path}"),
             Self::GitDiff { files, mode } => {
@@ -423,6 +433,24 @@ pub struct MetadataResponse {
     pub viewable_image: bool,
     /// Outstanding process-local download tokens for this exact agent and path.
     pub one_time_tokens: Vec<String>,
+}
+
+/// Returns the recursive regular-file bytes stored below one directory.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DirectorySizeResponse {
+    pub path: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    pub errors: Vec<DirectorySizeError>,
+}
+
+/// Describes one filesystem entry omitted from a partial directory-size result.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DirectorySizeError {
+    pub path: String,
+    pub error: String,
 }
 
 /// Distinguishes filesystem shapes without exposing platform metadata details.
@@ -727,6 +755,7 @@ pub enum CommandResult {
     CreateDirectory,
     RenamePath,
     Metadata(MetadataResponse),
+    DirectorySize(DirectorySizeResponse),
     GitContext(GitContextResponse),
     GitStatus(GitStatusResponse),
     GitDiff(GitDiffResponse),
@@ -1301,6 +1330,7 @@ impl CommandResult {
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
+            Self::DirectorySize(result) => format!("ok DirectorySize size={}", result.size),
             Self::GitContext(GitContextResponse::OutsideWorktree) => {
                 "ok GitContext status=outside_worktree".to_string()
             }

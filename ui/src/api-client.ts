@@ -65,6 +65,7 @@ import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";
 import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
+import type { DirectorySizeResponse } from "#bindings/DirectorySizeResponse";
 import { z } from "zod";
 
 export type {
@@ -72,6 +73,7 @@ export type {
     LsFileResponse,
     MetadataResponse,
     CreateOneTimeTokenResponse,
+    DirectorySizeResponse,
 };
 export type {
     RawDeleteResponse,
@@ -571,6 +573,18 @@ export class Agent {
                 path,
             )}`,
             undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Calculates recursive regular-file bytes only when directory details request it. */
+    async calculateDirectorySize(path: string): Promise<DirectorySizeResponse> {
+        return apiRequest<DirectorySizeResponse>(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/directory-size`,
+                path,
+            )}`,
+            { method: "POST" },
             this.requestContext,
         );
     }

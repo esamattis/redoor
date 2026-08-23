@@ -13,6 +13,8 @@ import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
+import { Tooltip } from "#ui/components/tooltip";
+import { Toast } from "#ui/components/toast";
 
 /** Converts permission bits to the compact notation people expect from Unix tools. */
 function formatSymbolicPermissions(permissions: number): string {
@@ -138,6 +140,8 @@ type FilesystemMetadata = {
 function FilesystemMetadataSections(props: {
     metadata: FilesystemMetadata;
     size?: number;
+    sizeLabel?: string;
+    sizeAction?: React.ReactNode;
     entryCount?: number;
     headingPrefix: string;
 }) {
@@ -164,11 +168,16 @@ function FilesystemMetadataSections(props: {
                     </p>
                 </div>
                 <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {props.size === undefined ? null : (
+                    {props.size === undefined &&
+                    props.sizeAction === undefined ? null : (
                         <MetadataItem
                             label="Size"
-                            value={formatSize(props.size)}
-                            valueLabel="File size value"
+                            value={
+                                props.size === undefined
+                                    ? props.sizeAction
+                                    : formatSize(props.size)
+                            }
+                            valueLabel={props.sizeLabel ?? "File size value"}
                         />
                     )}
                     {props.entryCount === undefined ? null : (
@@ -299,6 +308,20 @@ export function DirectoryDetailView(props: {
     lsResult: LsDirectoryResponse;
 }) {
     const archiveName = `${props.directoryName === "/" ? "archive" : props.directoryName}.tar.gz`;
+    const [sizeWarningDismissed, setSizeWarningDismissed] =
+        React.useState(false);
+    const directorySizeMutation = useMutation({
+        mutationFn: () =>
+            props.agent.calculateDirectorySize(props.lsResult.path),
+        onSuccess: () => setSizeWarningDismissed(false),
+    });
+
+    React.useEffect(() => {
+        directorySizeMutation.reset();
+        setSizeWarningDismissed(false);
+    }, [props.lsResult.path]);
+
+    const skippedEntryCount = directorySizeMutation.data?.errors.length ?? 0;
 
     return (
         <BrowserViewCard>
@@ -324,9 +347,45 @@ export function DirectoryDetailView(props: {
 
             <FilesystemMetadataSections
                 metadata={props.lsResult}
+                size={directorySizeMutation.data?.size}
+                sizeLabel="Directory size value"
+                sizeAction={
+                    <Tooltip content="Recursively totals the contents of regular files in this directory.">
+                        <Button
+                            type="button"
+                            variant="subtle"
+                            isLoading={directorySizeMutation.isPending}
+                            onClick={() => directorySizeMutation.mutate()}
+                        >
+                            {directorySizeMutation.isPending
+                                ? "Calculating..."
+                                : "Calculate size"}
+                        </Button>
+                    </Tooltip>
+                }
                 entryCount={props.lsResult.files.length}
                 headingPrefix="directory"
             />
+            {directorySizeMutation.isError ? (
+                <Toast
+                    tone="error"
+                    onDismiss={() => directorySizeMutation.reset()}
+                >
+                    {getErrorMessage(
+                        directorySizeMutation.error,
+                        "Could not calculate directory size",
+                    )}
+                </Toast>
+            ) : null}
+            {skippedEntryCount > 0 && !sizeWarningDismissed ? (
+                <Toast
+                    tone="error"
+                    onDismiss={() => setSizeWarningDismissed(true)}
+                >
+                    Could not read the size of {skippedEntryCount}{" "}
+                    {skippedEntryCount === 1 ? "entry" : "entries"}.
+                </Toast>
+            ) : null}
         </BrowserViewCard>
     );
 }
