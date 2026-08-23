@@ -146,6 +146,13 @@ async function stopChildren(children: Child[]): Promise<void> {
 /** Fails fast when any shared process exits instead of letting later specs hit a dead server. */
 async function supervise(): Promise<void> {
     const port = await prepareFixtures();
+    const agent1Environment: NodeJS.ProcessEnv = {
+        REDOOR_APP_NAME: "redoor-playwright-agent1",
+    };
+    if (process.platform === "linux") {
+        agent1Environment.REDOOR_AGENT_TRASH_DIRECTORY =
+            AGENT1_TRASH_DIRECTORY;
+    }
     const children = [
         startChild(
             "server",
@@ -174,10 +181,7 @@ async function supervise(): Promise<void> {
                 "--log",
                 "log/playwright-agent1_src.log",
             ],
-            {
-                REDOOR_APP_NAME: "redoor-playwright-agent1",
-                REDOOR_AGENT_TRASH_DIRECTORY: AGENT1_TRASH_DIRECTORY,
-            },
+            agent1Environment,
         ),
         startChild(
             "agent2_custom",

@@ -74,6 +74,11 @@ test.describe.serial("File Detail View", () => {
         await page
             .getByRole("link", { name: "file1.txt", exact: true })
             .click();
+        await expect(page).toHaveURL(
+            new RegExp(
+                `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}$`,
+            ),
+        );
         await page.getByRole("link", { name: "Details", exact: true }).click();
 
         await expect(

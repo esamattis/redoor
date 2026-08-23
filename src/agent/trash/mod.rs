@@ -8,6 +8,7 @@ use thiserror::Error;
 /// Immutable startup configuration used by every trash command worker.
 #[derive(Clone)]
 pub(crate) struct TrashService {
+    #[cfg(target_os = "linux")]
     forced_root: Option<PathBuf>,
 }
 
@@ -29,6 +30,7 @@ impl TrashError {
     }
 
     /// Adds operation context while preserving the OS error's stable category.
+    #[cfg(target_os = "linux")]
     pub(crate) fn io(context: &str, error: std::io::Error) -> Self {
         Self::new(
             CommandErrorKind::from_io_error(&error),
@@ -56,7 +58,7 @@ impl TrashService {
                     "Trash directory cannot be configured on an unsupported platform",
                 ));
             }
-            Ok(Self { forced_root: None })
+            Ok(Self {})
         }
     }
 
@@ -68,13 +70,16 @@ impl TrashService {
     /// Supplies inert configuration to tests that do not execute trash commands.
     #[cfg(test)]
     pub(crate) const fn for_tests() -> Self {
-        Self { forced_root: None }
+        Self {
+            #[cfg(target_os = "linux")]
+            forced_root: None,
+        }
     }
 
     /// Moves one entry to the provider-selected same-device trash location.
-    pub(crate) async fn trash(&self, path: PathBuf) -> Result<(), TrashError> {
+    pub(crate) async fn trash(&self, _path: PathBuf) -> Result<(), TrashError> {
         #[cfg(target_os = "linux")]
-        return linux::trash(self, path).await;
+        return linux::trash(self, _path).await;
         #[cfg(not(target_os = "linux"))]
         Err(TrashError::new(
             CommandErrorKind::InvalidInput,
@@ -96,12 +101,12 @@ impl TrashService {
     /// Resolves opaque identifiers before restoring one payload to an explicit destination.
     pub(crate) async fn restore(
         &self,
-        location_id: &str,
-        item_id: &str,
-        destination: PathBuf,
+        _location_id: &str,
+        _item_id: &str,
+        _destination: PathBuf,
     ) -> Result<PathBuf, TrashError> {
         #[cfg(target_os = "linux")]
-        return linux::restore(self, location_id, item_id, destination).await;
+        return linux::restore(self, _location_id, _item_id, _destination).await;
         #[cfg(not(target_os = "linux"))]
         Err(TrashError::new(
             CommandErrorKind::InvalidInput,
@@ -110,6 +115,7 @@ impl TrashService {
     }
 
     /// Exposes the immutable override only inside the platform provider.
+    #[cfg(target_os = "linux")]
     fn forced_root(&self) -> Option<&std::path::Path> {
         self.forced_root.as_deref()
     }

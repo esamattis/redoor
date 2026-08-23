@@ -17,7 +17,7 @@ import {
 
 const AGENT_NAME = "trash-test-agent";
 
-describe("Trash API", () => {
+describe.skipIf(process.platform !== "linux")("Trash API", () => {
     const processManager = new ProcessManager();
     const tempFiles = new TempFileManager();
     let testAgent: Agent;

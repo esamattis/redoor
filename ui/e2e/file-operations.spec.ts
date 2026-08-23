@@ -725,9 +725,21 @@ test.describe.serial("File Operations", () => {
         await page
             .getByRole("button", { name: "Delete file", exact: true })
             .click();
-        await page
-            .getByRole("dialog", { name: "Delete this file?" })
-            .getByRole("button", { name: "Move to trash" })
+        const confirmDialog = page.getByRole("dialog", {
+            name: "Delete this file?",
+        });
+        if (process.platform !== "linux") {
+            await confirmDialog
+                .getByRole("checkbox", { name: "Delete permanently" })
+                .click();
+        }
+        await confirmDialog
+            .getByRole("button", {
+                name:
+                    process.platform === "linux"
+                        ? "Move to trash"
+                        : "Delete file",
+            })
             .click();
 
         // Redirecting back to the parent directory confirms the delete request completed successfully.
@@ -805,7 +817,19 @@ test.describe.serial("File Operations", () => {
         });
         // The directory action must retain the same explicit destructive confirmation as file deletion.
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("button", { name: "Move to trash" }).click();
+        if (process.platform !== "linux") {
+            await dialog
+                .getByRole("checkbox", { name: "Delete permanently" })
+                .click();
+        }
+        await dialog
+            .getByRole("button", {
+                name:
+                    process.platform === "linux"
+                        ? "Move to trash"
+                        : "Delete directory",
+            })
+            .click();
 
         // Completing the action must leave the now-missing directory instead of keeping the busy dialog open.
         await expect(page).toHaveURL(parentDirectoryUrl);
@@ -912,8 +936,18 @@ test.describe.serial("File Operations", () => {
 
         // The confirmation must appear before the destructive selected-items request can run.
         await expect(deleteSelectedItemsDialog).toBeVisible();
+        if (process.platform !== "linux") {
+            await deleteSelectedItemsDialog
+                .getByRole("checkbox", { name: "Delete permanently" })
+                .click();
+        }
         await deleteSelectedItemsDialog
-            .getByRole("button", { name: "Move selected item to trash" })
+            .getByRole("button", {
+                name:
+                    process.platform === "linux"
+                        ? "Move selected item to trash"
+                        : "Delete selected item",
+            })
             .click();
 
         // The file name is rendered in both the listing and the selected-items panel, so wait on disk state first.
@@ -953,6 +987,10 @@ test.describe.serial("File Operations", () => {
     test("should list trashed files newest first and restore to an editable path", async ({
         page,
     }) => {
+        test.skip(
+            process.platform !== "linux",
+            "Trash operations are supported only on Linux",
+        );
         const directoryPath = path.join(ctx.testDirPath, "subdir3");
         const firstName = `trash-first-${Date.now()}.txt`;
         const secondName = `trash-second-${Date.now()}.txt`;

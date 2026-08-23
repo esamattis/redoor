@@ -316,11 +316,13 @@ describe("Git browser REST API", () => {
 
         const many = join(repo, "many");
         await mkdir(many);
-        const invalidUtf8Path = Buffer.concat([
-            Buffer.from(`${many}/invalid-`),
-            Buffer.from([0xff]),
-        ]);
-        await writeFile(invalidUtf8Path, "not utf8\n");
+        if (process.platform === "linux") {
+            const invalidUtf8Path = Buffer.concat([
+                Buffer.from(`${many}/invalid-`),
+                Buffer.from([0xff]),
+            ]);
+            await writeFile(invalidUtf8Path, "not utf8\n");
+        }
         await Promise.all(
             Array.from({ length: 5_001 }, (_, index) =>
                 writeFile(
@@ -345,10 +347,12 @@ describe("Git browser REST API", () => {
         expect(boundedStatus.entries).toHaveLength(5_000);
         // Additional matching entries are represented explicitly rather than silently dropped.
         expect(boundedStatus.truncated).toBe(true);
-        // Invalid UTF-8 paths are counted instead of being linked through lossy conversion.
-        expect(Number(boundedStatus.omitted_non_utf8_entries)).toBeGreaterThan(
-            0,
-        );
+        if (process.platform === "linux") {
+            // Invalid UTF-8 paths are counted instead of being linked through lossy conversion.
+            expect(
+                Number(boundedStatus.omitted_non_utf8_entries),
+            ).toBeGreaterThan(0);
+        }
         // The echoed payload also confirms the concurrent command was routed successfully.
         expect(echo.message).toBe("control-lane");
         const paths = boundedStatus.entries.map((entry) =>
