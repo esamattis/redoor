@@ -102,6 +102,7 @@ fn refuse_protected_path(path: &Path, home: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
 
     /// Proves lexical root aliases are rejected by validation without calling a remover on root.
     #[test]
@@ -138,10 +139,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn refuses_a_symlink_alias_of_home_without_deleting() {
-        let fixture = std::env::temp_dir().join(format!(
-            "redoor-safe-rm-all-symlink-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir = TempDir::create();
+        let fixture = temp_dir.path().join("symlink-fixture");
         let home = fixture.join("fake-home");
         let alias = fixture.join("home-alias");
         tokio::fs::create_dir_all(&home)
@@ -179,8 +178,8 @@ mod tests {
     /// Proves the public utility still removes ordinary trees after completing its safety checks.
     #[tokio::test]
     async fn removes_an_ordinary_directory_tree() {
-        let directory =
-            std::env::temp_dir().join(format!("redoor-safe-rm-all-test-{}", uuid::Uuid::new_v4()));
+        let temp_dir = TempDir::create();
+        let directory = temp_dir.path().join("ordinary-tree");
         tokio::fs::create_dir_all(directory.join("nested"))
             .await
             .expect("test tree should be created");

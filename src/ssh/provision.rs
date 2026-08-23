@@ -653,16 +653,13 @@ mod tests {
     /// remote `sha1sum` comparisons cannot drift from a buggy hasher.
     #[tokio::test]
     async fn file_sha1sum_matches_known_digest() {
-        let dir = std::env::temp_dir().join(format!("redoor-sha1-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        let path = dir.join("payload.bin");
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("payload.bin");
         tokio::fs::write(&path, b"redoor").await.unwrap();
 
         // echo -n redoor | sha1sum
         let digest = file_sha1sum(&path).await.unwrap();
         assert_eq!(digest, "5cd57297d6ccaa26976cb250ba018adbc98d5907");
-
-        let _ = redoor::safe_fs::safe_rm_all(&dir).await;
     }
 
     /// Streams the generated probe to a POSIX shell just as SSH does, proving

@@ -12,6 +12,8 @@ mod service_management;
 mod ssh;
 mod systemd;
 mod systemd_notify;
+#[cfg(test)]
+mod test_support;
 
 use std::{path::PathBuf, sync::Arc};
 

@@ -20,9 +20,6 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-
 /// Keeps local-copy failures typed so the HTTP layer never has to infer them from text.
 #[derive(Debug, Error)]
 pub(crate) enum LocalCopyError {
@@ -711,26 +708,22 @@ fn temp_local_copy_path_for_destination(dest_path: &Path) -> Result<PathBuf, Loc
 }
 
 #[cfg(test)]
-fn unique_test_path(prefix: &str) -> PathBuf {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    std::env::temp_dir().join(format!(
-        "redoor-{prefix}-{}-{}",
-        std::process::id(),
-        NEXT_ID.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::AgentActor;
+    use crate::test_support::TempDir;
 
     use redoor::commands::{CommandErrorKind, CommandResult};
 
     #[tokio::test]
     async fn local_copy_file_fails_when_progress_channel_is_closed() {
-        let source_path = unique_test_path("local-copy-source");
-        let dest_path = unique_test_path("local-copy-dest");
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("local-copy");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("local copy test root should be created");
+        let source_path = root.join("source");
+        let dest_path = root.join("dest");
         let source_contents = b"copy me";
         tokio::fs::write(&source_path, source_contents)
             .await
@@ -761,14 +754,11 @@ mod tests {
             "the destination should stay absent when the router text lane has already closed"
         );
 
-        let parent = dest_path
-            .parent()
-            .expect("temp test file should have a parent");
         let file_name = dest_path
             .file_name()
             .and_then(|name| name.to_str())
             .expect("temp test file name should stay utf-8");
-        let mut entries = tokio::fs::read_dir(parent)
+        let mut entries = tokio::fs::read_dir(&root)
             .await
             .expect("temp test parent should stay readable");
         while let Some(entry) = entries
@@ -782,8 +772,6 @@ mod tests {
                 "failed local copies should remove their temp file instead of leaking hidden copy output"
             );
         }
-
-        let _ = tokio::fs::remove_file(&source_path).await;
     }
 
     #[tokio::test]
@@ -828,7 +816,8 @@ mod tests {
     /// Verifies generation cancellation removes an in-progress hidden copy before returning.
     #[tokio::test]
     async fn local_copy_cancellation_awaits_temp_file_cleanup() {
-        let root = unique_test_path("local-copy-cancel-root");
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("local-copy-cancel-root");
         tokio::fs::create_dir(&root)
             .await
             .expect("copy cancellation test root should be created");
@@ -898,8 +887,5 @@ mod tests {
                 .await
                 .expect("destination lookup")
         );
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("copy cancellation test root should be cleaned up");
     }
 }

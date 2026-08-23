@@ -731,6 +731,13 @@ fn aliased_table_string(
 mod tests {
     use super::*;
 
+    /// Creates an owned directory and places the config fixture beneath it.
+    fn test_config_path() -> (crate::test_support::TempDir, PathBuf) {
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("config.toml");
+        (directory, path)
+    }
+
     /// Ensures login names stay inside the same allowlist used for on-disk account directories.
     #[test]
     fn parse_server_username_allows_portable_path_components() {
@@ -786,13 +793,7 @@ mod tests {
     /// can apply host-specific configuration for a minimal target-only entry.
     #[tokio::test]
     async fn test_parse_config_file_minimal_entry() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(
             &temp,
             r#"[[agents]]
@@ -802,7 +803,6 @@ target = "user@example.com"
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(
             config.agents.len(),
@@ -830,13 +830,7 @@ target = "user@example.com"
     /// operators can override the defaults per agent.
     #[tokio::test]
     async fn test_parse_config_file_full_entry() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-full-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 target = "prod-db"
@@ -853,7 +847,6 @@ target = "web-1"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(config.agents.len(), 2, "both entries should be parsed");
         let first = match &config.agents[0] {
@@ -880,17 +873,10 @@ target = "web-1"
     /// Verifies that credentials-only configuration can run without managed agents.
     #[tokio::test]
     async fn test_parse_config_file_accepts_missing_agents_key() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-no-key-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(&temp, "port = 3000\n").unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             config.agents.is_empty(),
@@ -903,13 +889,7 @@ target = "web-1"
     /// nothing to connect to.
     #[tokio::test]
     async fn test_parse_config_file_rejects_entry_without_target() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-no-target-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(
             &temp,
             r#"[[agents]]
@@ -919,7 +899,6 @@ name = "no-target"
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             result.is_err(),
@@ -932,13 +911,7 @@ name = "no-target"
     /// surfaced as an explicit operator error.
     #[tokio::test]
     async fn test_parse_config_file_rejects_non_integer_ssh_port() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-bad-type-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"[[agents]]
@@ -949,7 +922,6 @@ ssh_port = "not-a-port"
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(result.is_err(), "a non-integer ssh_port should be rejected");
     }
@@ -958,13 +930,7 @@ ssh_port = "not-a-port"
     /// silently truncating, so the operator gets a clear error for a typo.
     #[tokio::test]
     async fn test_parse_config_file_rejects_out_of_range_port() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-bad-port-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(
             &temp,
             r#"[[agents]]
@@ -975,7 +941,6 @@ ssh_port = 99999
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             result.is_err(),
@@ -989,13 +954,7 @@ ssh_port = 99999
     /// inherited stdio).
     #[tokio::test]
     async fn test_parse_config_file_minimal_local_entry() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-local-min-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(
             &temp,
             r#"[[agents]]
@@ -1005,7 +964,6 @@ local = true
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(
             config.agents.len(),
@@ -1028,13 +986,7 @@ local = true
     /// so operators can override the defaults per agent.
     #[tokio::test]
     async fn test_parse_config_file_full_local_entry() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-local-full-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 local = true
@@ -1045,7 +997,6 @@ log = "/var/log/my-local.log"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(
             config.agents.len(),
@@ -1066,13 +1017,7 @@ log = "/var/log/my-local.log"
     /// remote hosts and a local agent from the same file.
     #[tokio::test]
     async fn test_parse_config_file_mixed_entries() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-mixed-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 target = "remote-1"
@@ -1088,7 +1033,6 @@ name = "web-agent"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(config.agents.len(), 3, "all three entries should be parsed");
 
@@ -1117,13 +1061,7 @@ name = "web-agent"
     /// agent that the dispatcher would then ignore the `target` for.
     #[tokio::test]
     async fn test_parse_config_file_rejects_local_with_target() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-local-target-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         write_test_config(
             &temp,
             r#"[[agents]]
@@ -1134,7 +1072,6 @@ target = "host"
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         let error = result.expect_err("local + target should be rejected");
         // The error should mention both fields so the operator immediately
@@ -1153,14 +1090,7 @@ target = "host"
     #[tokio::test]
     async fn test_parse_config_file_rejects_local_with_ssh_fields() {
         for field in ["username", "ssh_port", "remote_bin", "password"] {
-            let temp = std::env::temp_dir().join(format!(
-                "redoor-agents-test-local-ssh-{}-{}.toml",
-                field,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let (_directory, temp) = test_config_path();
             write_test_config(
                 &temp,
                 format!(
@@ -1173,7 +1103,6 @@ local = true
             .unwrap();
 
             let result = parse_config_file(temp.to_str().unwrap()).await;
-            std::fs::remove_file(&temp).ok();
 
             let error = result.expect_err(&format!("local + {} should be rejected", field));
             assert!(
@@ -1188,13 +1117,7 @@ local = true
     /// Keeps existing managed-agent configs working after the home rename.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_dir() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-ssh-dir-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 target = "prod-db"
@@ -1203,7 +1126,6 @@ dir = "/var/www/app"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(
             config.agents.len(),
@@ -1226,13 +1148,7 @@ dir = "/var/www/app"
     /// forwarded stdout/stderr into a local log file.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_log() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-ssh-log-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 target = "prod-db"
@@ -1241,7 +1157,6 @@ log = "log/prod-db.log"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert_eq!(config.agents.len(), 1);
         let agent = match &config.agents[0] {
@@ -1258,13 +1173,7 @@ log = "log/prod-db.log"
     /// Stores the SSH password as written so OpenSSH askpass can replay it later.
     #[tokio::test]
     async fn test_parse_config_file_ssh_entry_with_password() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-ssh-password-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [[agents]]
 target = "prod-db"
@@ -1273,7 +1182,6 @@ password = "  keep spaces  "
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         let agent = match &config.agents[0] {
             AgentConfig::SshBacked(config) => config,
@@ -1289,13 +1197,7 @@ password = "  keep spaces  "
     /// Verifies agent-only configs may omit `[server]` while still requiring the top-level token.
     #[tokio::test]
     async fn test_parse_config_file_allows_missing_server_section() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-no-server-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1307,7 +1209,6 @@ server = "http://127.0.0.1:3000"
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             config.server.is_none(),
@@ -1326,13 +1227,7 @@ server = "http://127.0.0.1:3000"
     /// Verifies omitting the shared top-level token fails for every process role.
     #[tokio::test]
     async fn test_parse_config_file_rejects_missing_agent_token() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-no-token-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"[server]
@@ -1343,7 +1238,6 @@ password = "test-password"
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(result.is_err(), "top-level agent_token must be required");
     }
@@ -1352,13 +1246,7 @@ password = "test-password"
     /// operators can pin the whole server surface from one config file.
     #[tokio::test]
     async fn test_parse_config_file_reads_server_section() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-server-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [server]
 port = 4000
@@ -1371,7 +1259,6 @@ target = "host"
         write_test_config(&temp, content).unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         let server = config.server.expect("[server] should be present");
         assert_eq!(server.port, Some(4000));
@@ -1384,13 +1271,7 @@ target = "host"
     /// at startup instead of silently being ignored.
     #[tokio::test]
     async fn test_parse_config_file_rejects_unknown_server_key() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-bad-server-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [server]
 post = 3000
@@ -1401,7 +1282,6 @@ target = "host"
         write_test_config(&temp, content).unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             result.is_err(),
@@ -1415,13 +1295,7 @@ target = "host"
     /// ssh_port range test.
     #[tokio::test]
     async fn test_parse_config_file_rejects_out_of_range_server_port() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-bad-server-port-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         let content = r#"
 [server]
 port = 99999
@@ -1432,7 +1306,6 @@ target = "host"
         write_test_config(&temp, content).unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         assert!(
             result.is_err(),
@@ -1443,14 +1316,8 @@ target = "host"
     /// Verifies first startup creates a minimal, parseable demo config and later startups preserve it.
     #[tokio::test]
     async fn test_create_default_config_if_missing() {
-        let directory = std::env::temp_dir().join(format!(
-            "redoor-default-config-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = directory.join("nested/config.toml");
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("nested/config.toml");
 
         let created = create_default_config_if_missing(&path).await.unwrap();
         let content = tokio::fs::read_to_string(&path).await.unwrap();
@@ -1556,26 +1423,17 @@ target = "host"
             unchanged, content,
             "checking an existing config must leave every byte unchanged"
         );
-
-        redoor::safe_fs::safe_rm_all(directory).await.ok();
     }
 
     /// Verifies nested agent_token under [server] fails with a migration hint.
     #[tokio::test]
     async fn test_parse_config_file_rejects_server_agent_token() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-agent-token-legacy-test-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, path) = test_config_path();
         tokio::fs::write(&path, "[server]\nagent_token = \"legacy-token\"\n")
             .await
             .unwrap();
 
         let result = parse_config_file(path.to_str().unwrap()).await;
-        tokio::fs::remove_file(&path).await.ok();
 
         let error = result
             .expect_err("legacy server.agent_token must be rejected")
@@ -1589,13 +1447,7 @@ target = "host"
     /// Verifies the shared parser reads a complete [agent] table.
     #[tokio::test]
     async fn test_parse_config_file_reads_agent_section() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-agent-section-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1610,7 +1462,6 @@ log = "log/agent.log"
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         let agent = config.agent.expect("[agent] should be present");
         assert_eq!(agent.server.as_deref(), Some("https://example.com"));
@@ -1622,13 +1473,7 @@ log = "log/agent.log"
     /// Keeps existing agent configs working after the `server` rename.
     #[tokio::test]
     async fn test_parse_config_file_accepts_legacy_ws_address() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-legacy-ws-address-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1640,7 +1485,6 @@ ws_address = "wss://example.com/ws"
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         let agent = config.agent.as_ref().expect("[agent] should be present");
         // Legacy key maps into the same field so resolve/start paths stay single-keyed.
@@ -1654,13 +1498,7 @@ ws_address = "wss://example.com/ws"
     /// Prevents ambiguous configs that set both the new and legacy server keys.
     #[tokio::test]
     async fn test_parse_config_file_rejects_server_and_ws_address() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-both-server-keys-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1673,7 +1511,6 @@ ws_address = "wss://example.com/ws"
         .unwrap();
 
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
 
         let error = result
             .expect_err("both server keys must be rejected")
@@ -1688,13 +1525,7 @@ ws_address = "wss://example.com/ws"
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_parse_config_file_allows_missing_credentials_on_linux() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-pam-creds-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1705,7 +1536,6 @@ ws_address = "wss://example.com/ws"
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
 
         let server = config.server.expect("[server] should be present");
         assert!(
@@ -1730,16 +1560,9 @@ username = "only-user"
 password = "only-password"
 "#,
         ] {
-            let temp = std::env::temp_dir().join(format!(
-                "redoor-agents-test-partial-creds-{}.toml",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let (_directory, temp) = test_config_path();
             std::fs::write(&temp, content).unwrap();
             let result = parse_config_file(temp.to_str().unwrap()).await;
-            std::fs::remove_file(&temp).ok();
             assert!(
                 result.is_err(),
                 "username and password must be provided together"
@@ -1750,13 +1573,7 @@ password = "only-password"
     /// Rejects login names that would escape `users/<username>/` before the server starts.
     #[tokio::test]
     async fn test_parse_config_file_rejects_unsafe_username() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-agents-test-unsafe-username-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1768,7 +1585,6 @@ password = "test-password"
         )
         .unwrap();
         let result = parse_config_file(temp.to_str().unwrap()).await;
-        std::fs::remove_file(&temp).ok();
         assert!(
             result.is_err(),
             "a path-escaping server.username must not parse"
@@ -1783,13 +1599,7 @@ password = "test-password"
     /// Reads the complete named-relay schema into the shared SSH transport model.
     #[tokio::test]
     async fn test_parse_config_file_reads_named_relays() {
-        let temp = std::env::temp_dir().join(format!(
-            "redoor-relays-test-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
             r#"agent_token = "test-agent-token"
@@ -1812,7 +1622,6 @@ insecure = true
         .unwrap();
 
         let config = parse_config_file(temp.to_str().unwrap()).await.unwrap();
-        std::fs::remove_file(&temp).ok();
         let relay = require_relay(&config, "production").unwrap();
         // Identity and connection fields prove lifecycle and transport settings stay associated.
         assert_eq!(relay.id, "production");
@@ -1850,16 +1659,9 @@ target = "two.example.com"
 server = "http://redoor.example.com"
 "#,
         ] {
-            let temp = std::env::temp_dir().join(format!(
-                "redoor-invalid-relays-test-{}.toml",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let (_directory, temp) = test_config_path();
             std::fs::write(&temp, content).unwrap();
             let result = parse_config_file(temp.to_str().unwrap()).await;
-            std::fs::remove_file(&temp).ok();
             // Invalid identities must fail before any process or PID file is created.
             assert!(result.is_err());
         }

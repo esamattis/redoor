@@ -556,16 +556,7 @@ impl AgentActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    fn unique_test_path(prefix: &str) -> PathBuf {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        std::env::temp_dir().join(format!(
-            "redoor-{prefix}-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
+    use crate::test_support::TempDir;
 
     async fn write_tree(root: &Path) {
         tokio::fs::create_dir_all(root.join("nested").join("deeper"))
@@ -590,7 +581,8 @@ mod tests {
 
     #[tokio::test]
     async fn predicted_tar_size_matches_builder_stream() {
-        let source_root = unique_test_path("tar-size-tree");
+        let temp_dir = TempDir::create();
+        let source_root = temp_dir.path().join("tar-size-tree");
         write_tree(&source_root).await;
 
         for include_root in [true, false] {
@@ -608,7 +600,7 @@ mod tests {
             );
         }
 
-        let empty_root = unique_test_path("tar-size-empty");
+        let empty_root = temp_dir.path().join("tar-size-empty");
         tokio::fs::create_dir_all(&empty_root)
             .await
             .expect("empty directory should be created");
@@ -624,14 +616,12 @@ mod tests {
             encoded_empty.len() as u64,
             "empty directories still have a root header plus two end blocks"
         );
-
-        let _ = redoor::safe_fs::safe_rm_all(&source_root).await;
-        let _ = redoor::safe_fs::safe_rm_all(&empty_root).await;
     }
 
     #[tokio::test]
     async fn canceled_size_walk_returns_none() {
-        let source_root = unique_test_path("tar-size-canceled");
+        let temp_dir = TempDir::create();
+        let source_root = temp_dir.path().join("tar-size-canceled");
         tokio::fs::create_dir_all(&source_root)
             .await
             .expect("directory should be created");
@@ -644,7 +634,5 @@ mod tests {
             measured, None,
             "cancel must stop the walk before it publishes a stale total"
         );
-
-        let _ = redoor::safe_fs::safe_rm_all(&source_root).await;
     }
 }

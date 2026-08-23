@@ -652,6 +652,7 @@ async fn finalize_tar_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -659,11 +660,8 @@ mod tests {
 
     #[tokio::test]
     async fn full_unpacker_queue_keeps_cancellation_async_and_joins_before_cleanup() {
-        let temp_path = std::env::temp_dir().join(format!(
-            "redoor-tar-upload-cancel-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp_dir = TempDir::create();
+        let temp_path = temp_dir.path().join("tar-upload-cancel");
         tokio::fs::create_dir(&temp_path)
             .await
             .expect("tar upload temp directory should be created");

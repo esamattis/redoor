@@ -183,17 +183,10 @@ pub(super) async fn execute_with_cancellation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
     use std::os::unix::fs::PermissionsExt;
     #[cfg(not(target_os = "macos"))]
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
-
-    /// Creates an isolated path without requiring a shared fixture or an additional test dependency.
-    fn test_root(suffix: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "redoor-file-search-{}-{suffix}",
-            uuid::Uuid::new_v4()
-        ))
-    }
 
     /// Verifies superseded searches still return a terminal response to their original caller.
     #[tokio::test]
@@ -226,7 +219,8 @@ mod tests {
     /// Verifies one inaccessible subtree does not prevent traversal of its readable siblings.
     #[tokio::test]
     async fn unreadable_directory_is_skipped() {
-        let root = test_root("unreadable-directory");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
         let unreadable = root.join("unreadable");
         let target = root.join("readable").join("visible-target.txt");
         tokio::fs::create_dir_all(&unreadable)
@@ -254,9 +248,6 @@ mod tests {
         tokio::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700))
             .await
             .expect("test directory permissions should be restored");
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("test tree should be removed");
         let CommandResult::FileSearch(response) = result else {
             panic!("an unreadable child should not fail the search");
         };
@@ -273,7 +264,8 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[tokio::test]
     async fn non_utf8_path_is_searchable() {
-        let root = test_root("non-utf8-path");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
         let unusual_directory = root.join(OsString::from_vec(b"unusual-\xff-directory".to_vec()));
         let target = unusual_directory.join("searchable-target.txt");
         tokio::fs::create_dir_all(&unusual_directory)
@@ -292,9 +284,6 @@ mod tests {
         )
         .await;
 
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("test tree should be removed");
         let CommandResult::FileSearch(response) = result else {
             panic!("a non-UTF-8 child path should not fail the search");
         };
@@ -309,8 +298,9 @@ mod tests {
     /// Verifies Termux-style storage links are traversed without looping through backlinks.
     #[tokio::test]
     async fn symlinked_directory_is_searchable_without_cycles() {
-        let root = test_root("symlink-root");
-        let external = test_root("symlink-target");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
+        let external = temp.path().join("symlink-target");
         let storage = root.join("storage");
         let linked_storage = storage.join("shared");
         let alternate_storage = storage.join("alternate");
@@ -343,12 +333,6 @@ mod tests {
         )
         .await;
 
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("search root should be removed");
-        crate::safe_fs::safe_rm_all(&external)
-            .await
-            .expect("external target should be removed");
         let CommandResult::FileSearch(response) = result else {
             panic!("a linked storage directory should not fail the search");
         };
@@ -377,7 +361,8 @@ mod tests {
     /// Verifies unquoted minus terms exclude paths while quoted minus terms remain searchable.
     #[tokio::test]
     async fn exclusion_terms_prune_directories_and_quoted_terms_match() {
-        let root = test_root("excluded-paths");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
         let included = root.join("src").join("test-target.txt");
         let excluded = root.join("node_modules").join("test-target.txt");
         let quoted = root.join("contains-node_modules.txt");
@@ -414,9 +399,6 @@ mod tests {
         )
         .await;
 
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("test tree should be removed");
         let CommandResult::FileSearch(excluded_response) = excluded_result else {
             panic!("an exclusion search should succeed");
         };
@@ -438,7 +420,8 @@ mod tests {
     /// Verifies hidden directories are opt-in without hiding dotfiles in visible directories.
     #[tokio::test]
     async fn hidden_directories_are_skipped_by_default() {
-        let root = test_root("hidden-directories");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
         let hidden_target = root.join(".cache").join("hidden-target.txt");
         let dotfile = root.join(".hidden-target.txt");
         tokio::fs::create_dir_all(hidden_target.parent().expect("hidden target has a parent"))
@@ -468,9 +451,6 @@ mod tests {
         )
         .await;
 
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("test tree should be removed");
         let CommandResult::FileSearch(default_response) = default_result else {
             panic!("a default hidden-directory search should succeed");
         };
@@ -493,7 +473,8 @@ mod tests {
     /// Verifies rules are loaded at every depth and can be disabled explicitly.
     #[tokio::test]
     async fn nested_gitignore_rules_are_respected_by_default() {
-        let root = test_root("nested-gitignore");
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
         let nested = root.join("nested");
         let root_ignored = root.join("root-target.log");
         let nested_ignored = nested.join("ignored-target.txt");
@@ -533,9 +514,6 @@ mod tests {
         )
         .await;
 
-        crate::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("test tree should be removed");
         let CommandResult::FileSearch(respected_response) = respected else {
             panic!("a gitignore-aware search should succeed");
         };

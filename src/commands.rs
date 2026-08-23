@@ -1068,6 +1068,7 @@ impl CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
 
     #[tokio::test]
     async fn test_ls_command() {
@@ -1205,13 +1206,8 @@ mod tests {
     #[tokio::test]
     async fn test_raw_delete_command() {
         let handler = CommandHandler::new();
-        let temp_path = std::env::temp_dir().join(format!(
-            "redoor-delete-test-{}.txt",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after Unix epoch")
-                .as_nanos()
-        ));
+        let temp = TempDir::create();
+        let temp_path = temp.path().join("delete-test.txt");
 
         tokio::fs::write(&temp_path, "delete me")
             .await
@@ -1239,13 +1235,8 @@ mod tests {
     #[tokio::test]
     async fn test_raw_delete_command_removes_directory_recursively() {
         let handler = CommandHandler::new();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "redoor-delete-dir-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after Unix epoch")
-                .as_nanos()
-        ));
+        let temp = TempDir::create();
+        let temp_dir = temp.path().join("delete-dir-test");
         let nested_dir = temp_dir.join("nested");
         let nested_file = nested_dir.join("file.txt");
 
@@ -1298,14 +1289,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_directory_command() {
         let handler = CommandHandler::new();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "redoor-create-dir-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after Unix epoch")
-                .as_nanos()
-        ));
-        let nested_dir = temp_dir.join("nested").join("child");
+        let temp = TempDir::create();
+        let nested_dir = temp.path().join("nested").join("child");
 
         let result = handler
             .execute(Command::CreateDirectory {
@@ -1324,34 +1309,21 @@ mod tests {
             }
             _ => panic!("Expected CreateDirectory"),
         }
-
-        crate::safe_fs::safe_rm_all(&temp_dir)
-            .await
-            .expect("temporary directory should be removable");
     }
 
     #[tokio::test]
     async fn test_rename_path_command() {
         let handler = CommandHandler::new();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "redoor-rename-path-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after Unix epoch")
-                .as_nanos()
-        ));
-        let source_path = temp_dir.join("before.txt");
-        let dest_path = temp_dir.join("after.txt");
-        tokio::fs::create_dir_all(&temp_dir)
-            .await
-            .expect("temporary directory should be created");
+        let temp = TempDir::create();
+        let source_path = temp.path().join("before.txt");
+        let dest_path = temp.path().join("after.txt");
         tokio::fs::write(&source_path, "rename me")
             .await
             .expect("source file should be created");
 
         let result = handler
             .execute(Command::RenamePath {
-                dir: temp_dir.to_string_lossy().to_string(),
+                dir: temp.path().to_string_lossy().to_string(),
                 old: "before.txt".to_string(),
                 new: "after.txt".to_string(),
             })
@@ -1375,10 +1347,6 @@ mod tests {
             }
             _ => panic!("Expected RenamePath"),
         }
-
-        crate::safe_fs::safe_rm_all(&temp_dir)
-            .await
-            .expect("temporary directory should be removable");
     }
 
     #[tokio::test]

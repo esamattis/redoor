@@ -9,6 +9,8 @@ pub mod safe_fs;
 pub mod streaming;
 pub mod terminal_protocol;
 pub mod terminal_registry;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod transfer_protocol;
 pub mod types;
 pub mod watchdog;

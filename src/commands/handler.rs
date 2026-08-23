@@ -481,6 +481,7 @@ fn is_filename(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
 
     #[tokio::test]
     async fn transfer_commands_remain_runtime_markers() {
@@ -526,11 +527,8 @@ mod tests {
 
     #[tokio::test]
     async fn move_source_deletion_refuses_a_replacement_path() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-move-identity-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp = TempDir::create();
+        let path = temp.path().join("move-identity");
         tokio::fs::write(&path, "original")
             .await
             .expect("original source should be created");
@@ -571,7 +569,5 @@ mod tests {
             "replacement",
             "identity mismatch must preserve the replacement source"
         );
-        let _ = tokio::fs::remove_file(path).await;
-        let _ = tokio::fs::remove_file(original_path).await;
     }
 }

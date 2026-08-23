@@ -416,6 +416,7 @@ fn metadata_on_same_mount(_source: &std::fs::Metadata, _dest_parent: &std::fs::M
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
 
     #[test]
     fn atomic_move_requires_same_mount_and_a_rename_compatible_policy() {
@@ -440,10 +441,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_moves_missing_directory() {
-        let root = std::env::temp_dir().join(format!(
-            "redoor-rename-noreplace-dir-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("rename-noreplace-dir");
         tokio::fs::create_dir_all(&root)
             .await
             .expect("rename test root should be created");
@@ -474,17 +473,13 @@ mod tests {
             "moved",
             "destination must contain the renamed source tree"
         );
-
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("rename test root should be cleaned up");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_moves_missing_destination() {
-        let root =
-            std::env::temp_dir().join(format!("redoor-rename-noreplace-{}", uuid::Uuid::new_v4()));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("rename-noreplace");
         tokio::fs::create_dir_all(&root)
             .await
             .expect("rename test root should be created");
@@ -512,17 +507,13 @@ mod tests {
             "moved",
             "destination must contain the renamed source contents"
         );
-
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("rename test root should be cleaned up");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_without_replacement_refuses_existing_destination() {
-        let root =
-            std::env::temp_dir().join(format!("redoor-rename-exists-{}", uuid::Uuid::new_v4()));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("rename-exists");
         tokio::fs::create_dir_all(&root)
             .await
             .expect("rename test root should be created");
@@ -556,17 +547,13 @@ mod tests {
             "keep",
             "existing destination contents must be preserved"
         );
-
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("rename test root should be cleaned up");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_exchanges_different_entry_types() {
-        let root =
-            std::env::temp_dir().join(format!("redoor-rename-exchange-{}", uuid::Uuid::new_v4()));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("rename-exchange");
         tokio::fs::create_dir_all(&root)
             .await
             .expect("rename test root should be created");
@@ -604,19 +591,13 @@ mod tests {
             "displaced",
             "the old destination must be available for cleanup at the source name"
         );
-
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("rename test root should be cleaned up");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_exchanges_directories() {
-        let root = std::env::temp_dir().join(format!(
-            "redoor-rename-exchange-dirs-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("rename-exchange-dirs");
         tokio::fs::create_dir_all(&root)
             .await
             .expect("rename test root should be created");
@@ -657,9 +638,5 @@ mod tests {
             "displaced",
             "the old destination must be available for cleanup at the source name"
         );
-
-        redoor::safe_fs::safe_rm_all(&root)
-            .await
-            .expect("rename test root should be cleaned up");
     }
 }

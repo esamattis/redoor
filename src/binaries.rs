@@ -311,6 +311,7 @@ async fn make_executable(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
     use axum::{Router, body::Body, extract::State, routing::get};
     use std::sync::{
         Arc,
@@ -480,11 +481,8 @@ mod tests {
     /// Provisioning uses a versioned platform cache and avoids the downloader on a hit.
     #[tokio::test]
     async fn ensure_binary_selects_existing_versioned_cache_file() {
-        let root = std::env::temp_dir().join(format!(
-            "redoor-binary-cache-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("binary-cache");
         let dir = root.join("1.2.3/linux/x86_64");
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let expected = dir.join("redoor");
@@ -494,18 +492,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(selected, expected);
-        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Concurrent misses share one provision and only observe the atomically published file.
     #[tokio::test]
     async fn concurrent_cache_misses_download_once() {
         crate::logging::init(None).await.unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "redoor-binary-cache-concurrent-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("binary-cache-concurrent");
         tokio::fs::create_dir_all(&root).await.unwrap();
         let archive = create_test_archive(&root).await;
         let (url, requests, server) = start_test_archive_server(archive).await;
@@ -528,18 +522,14 @@ mod tests {
         );
 
         server.abort();
-        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Failed extraction leaves neither a final executable nor temporary provisioning state.
     #[tokio::test]
     async fn failed_provisioning_cleans_temporary_state() {
         crate::logging::init(None).await.unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "redoor-binary-cache-failure-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("binary-cache-failure");
         tokio::fs::create_dir_all(&root).await.unwrap();
         let invalid_archive = root.join("invalid.tar.gz");
         tokio::fs::write(&invalid_archive, b"not an archive")
@@ -559,18 +549,14 @@ mod tests {
         assert!(entries.next_entry().await.unwrap().is_none());
 
         server.abort();
-        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 
     /// Canceling a streaming download must not strand its unique provisioning directory.
     #[tokio::test]
     async fn canceled_provisioning_cleans_temporary_state() {
         crate::logging::init(None).await.unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "redoor-binary-cache-canceled-{}-{}",
-            std::process::id(),
-            fastrand::u64(..)
-        ));
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("binary-cache-canceled");
         let cache = root.join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
         let (url, started, server) = start_hanging_archive_server().await;
@@ -606,6 +592,5 @@ mod tests {
         );
 
         server.abort();
-        let _ = redoor::safe_fs::safe_rm_all(root).await;
     }
 }

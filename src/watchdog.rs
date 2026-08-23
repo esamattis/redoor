@@ -776,6 +776,7 @@ async fn kill_and_reap(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
     use std::process::Stdio;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
@@ -950,10 +951,8 @@ mod tests {
 
     #[tokio::test]
     async fn exit_issue_includes_output_from_the_latest_attempt() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-watchdog-exit-diagnostic-{}.log",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir = TempDir::create();
+        let path = temp_dir.path().join("exit-diagnostic.log");
         tokio::fs::write(&path, "output from an earlier attempt\n")
             .await
             .expect("seed diagnostic log");
@@ -978,9 +977,6 @@ mod tests {
         assert!(issue.contains("invalid configured directory: /missing"));
         // Output from an old retry must not be presented as part of the latest failure.
         assert!(!issue.contains("output from an earlier attempt"));
-        tokio::fs::remove_file(path)
-            .await
-            .expect("remove diagnostic log");
     }
 
     #[tokio::test]

@@ -634,10 +634,8 @@ mod tests {
     /// Protects a named relay while preserving its JSON runtime identity.
     #[tokio::test]
     async fn relay_rejects_a_second_pid_claim() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-relay-double-start-{}.pid",
-            std::process::id()
-        ));
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("relay.pid");
         let metadata = RelayPidMetadata {
             pid: std::process::id(),
             id: "production".to_string(),
@@ -782,17 +780,9 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
     /// Spawns this test binary under `sh` so SIGKILL of the shell is a real parent death.
     fn spawn_parent_death_child(mode: &str, detached: bool) -> ParentDeathChild {
-        let dir = std::env::temp_dir().join(format!(
-            "redoor-parent-death-{}-{}-{mode}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("create parent-death temp dir");
-        let ready = dir.join("ready");
-        let survived = dir.join("survived");
+        let directory = crate::test_support::TempDir::create();
+        let ready = directory.path().join("ready");
+        let survived = directory.path().join("survived");
         let exe = std::env::current_exe().expect("test executable");
         let command = format!(
             "'{}' process_control::tests::parent_death_child_dispatch_entry --exact --nocapture; true",
@@ -823,7 +813,7 @@ mod tests {
         ParentDeathChild {
             parent,
             child_pid,
-            dir: Some(dir),
+            _directory: directory,
             survived,
         }
     }
@@ -833,20 +823,8 @@ mod tests {
     struct ParentDeathChild {
         parent: std::process::Child,
         child_pid: i32,
-        dir: Option<PathBuf>,
+        _directory: crate::test_support::TempDir,
         survived: PathBuf,
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
-    impl ParentDeathChild {
-        /// Awaits recursive cleanup so successful tests cannot leave process-lifetime fixtures behind.
-        async fn cleanup(mut self) {
-            if let Some(dir) = self.dir.take() {
-                redoor::safe_fs::safe_rm_all(dir)
-                    .await
-                    .expect("parent-death temp directory should be removable");
-            }
-        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
@@ -856,13 +834,6 @@ mod tests {
             let _ = self.parent.kill();
             let _ = self.parent.wait();
             let _ = kill(Pid::from_raw(self.child_pid), Signal::SIGKILL);
-            if let Some(dir) = self.dir.take()
-                && let Ok(runtime) = tokio::runtime::Handle::try_current()
-            {
-                runtime.spawn(async move {
-                    let _ = redoor::safe_fs::safe_rm_all(dir).await;
-                });
-            }
         }
     }
 
@@ -886,7 +857,6 @@ mod tests {
             "foreground child {} should exit after parent SIGKILL",
             child.child_pid
         );
-        child.cleanup().await;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
@@ -904,7 +874,6 @@ mod tests {
             );
             std::thread::yield_now();
         }
-        child.cleanup().await;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
@@ -918,6 +887,5 @@ mod tests {
             !child.survived.exists(),
             "already-orphaned child should exit inside bind_to_parent_lifetime"
         );
-        child.cleanup().await;
     }
 }

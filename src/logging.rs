@@ -375,13 +375,13 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         sync::broadcast::error::TryRecvError,
     };
-    use uuid::Uuid;
 
     use super::*;
+    use crate::test_support::TempDir;
 
-    /// Creates an isolated file name so parallel logger tests cannot alter each other's history.
-    fn temporary_log_path() -> PathBuf {
-        std::env::temp_dir().join(format!("redoor-logger-test-{}.log", Uuid::new_v4()))
+    /// Places logger history beneath the root owned by the current test.
+    fn temporary_log_path(temp_dir: &TempDir) -> PathBuf {
+        temp_dir.path().join("server.log")
     }
 
     /// Writes deterministic physical records without involving the process-global logger.
@@ -413,9 +413,8 @@ mod tests {
     /// Verifies missing parent directories are created so first-boot log paths work.
     #[tokio::test]
     async fn creates_missing_log_directory() {
-        let directory =
-            std::env::temp_dir().join(format!("redoor-logger-mkdir-test-{}", Uuid::new_v4()));
-        let path = directory.join("nested/agent.log");
+        let temp_dir = TempDir::create();
+        let path = temp_dir.path().join("nested/agent.log");
         let logger = Logger::new(Some(path.clone()))
             .await
             .expect("logger should create nested parents");
@@ -424,9 +423,6 @@ mod tests {
             tokio::fs::try_exists(&path).await.expect("exists check"),
             "opening the logger must create the log file after creating parents"
         );
-        crate::safe_fs::safe_rm_all(directory)
-            .await
-            .expect("test directory should be removable");
     }
 
     /// Requests a subscription as a deterministic barrier for every command queued before it.
@@ -494,7 +490,8 @@ mod tests {
     /// Proves subscription control drains a fixed backlog rather than waiting behind later records.
     #[tokio::test]
     async fn subscription_control_is_not_starved_by_record_backlog() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let mut logger = Logger::new(Some(path.clone()))
             .await
             .expect("test logger should open");
@@ -526,15 +523,13 @@ mod tests {
 
         drop(handle);
         task.await.expect("test logger task should stop cleanly");
-        tokio::fs::remove_file(path)
-            .await
-            .expect("test history file should be removable");
     }
 
     /// Protects complete chronological snapshots when no eviction is necessary.
     #[tokio::test]
     async fn history_returns_all_entries_in_original_order_below_limit() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let expected = vec![
             "first".to_string(),
             "second".to_string(),
@@ -550,15 +545,13 @@ mod tests {
             .expect("history should be readable");
         // Histories below the cap must retain every complete entry in source order.
         assert_eq!(actual, expected);
-        tokio::fs::remove_file(path)
-            .await
-            .expect("history should be removable");
     }
 
     /// Protects the memory cap while retaining the newest chronological records.
     #[tokio::test]
     async fn history_retains_only_latest_five_hundred_entries() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let entries = (1..=510)
             .map(|index| format!("line-{index:03}"))
             .collect::<Vec<_>>();
@@ -576,15 +569,13 @@ mod tests {
         assert_eq!(actual.first().map(String::as_str), Some("line-011"));
         // The newest record must remain last after bounded scanning.
         assert_eq!(actual.last().map(String::as_str), Some("line-510"));
-        tokio::fs::remove_file(path)
-            .await
-            .expect("history should be removable");
     }
 
     /// Protects the exact subscription cutoff from later appends.
     #[tokio::test]
     async fn history_cutoff_excludes_later_appends() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         write_history(&path, &["before cutoff".to_string()], true).await;
         let cutoff = tokio::fs::metadata(&path)
             .await
@@ -604,15 +595,13 @@ mod tests {
             .expect("history should be readable");
         // Only records accepted before the stable byte boundary belong in the snapshot.
         assert_eq!(actual, vec!["before cutoff"]);
-        tokio::fs::remove_file(path)
-            .await
-            .expect("history should be removable");
     }
 
     /// Protects empty persistent history as a valid snapshot.
     #[tokio::test]
     async fn history_empty_file_returns_empty_snapshot() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         tokio::fs::write(&path, b"")
             .await
             .expect("empty history should be writable");
@@ -621,15 +610,13 @@ mod tests {
             .expect("empty history should be readable");
         // An empty active file must not invent placeholder records.
         assert!(actual.is_empty());
-        tokio::fs::remove_file(path)
-            .await
-            .expect("history should be removable");
     }
 
     /// Protects an unterminated final physical line from being discarded.
     #[tokio::test]
     async fn history_retains_final_entry_without_newline() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let expected = vec!["complete line".to_string(), "final line".to_string()];
         write_history(&path, &expected, false).await;
         let cutoff = tokio::fs::metadata(&path)
@@ -641,15 +628,13 @@ mod tests {
             .expect("history should be readable");
         // A final physical line is still one complete display entry without a delimiter.
         assert_eq!(actual, expected);
-        tokio::fs::remove_file(path)
-            .await
-            .expect("history should be removable");
     }
 
     /// Protects the queue-position boundary that prevents snapshot/live gaps and duplicates.
     #[tokio::test]
     async fn subscription_separates_history_from_later_live_entries() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let (commands, task) = start_logger(Some(path.clone())).await;
         send_log(&commands, Level::Info, "first history entry");
         send_log(&commands, Level::Warning, "second history entry");
@@ -683,15 +668,13 @@ mod tests {
 
         drop(commands);
         task.await.expect("test logger task should stop cleanly");
-        tokio::fs::remove_file(path)
-            .await
-            .expect("test history file should be removable");
     }
 
     /// Protects filtering from leaking rejected records into either output destination.
     #[tokio::test]
     async fn filtered_entries_reach_neither_history_nor_live_delivery() {
-        let path = temporary_log_path();
+        let temp_dir = TempDir::create();
+        let path = temporary_log_path(&temp_dir);
         let (commands, task) = start_logger(Some(path.clone())).await;
         let mut subscription = request_subscription(&commands).await;
         send_log(&commands, Level::Debug, "filtered entry");
@@ -715,9 +698,6 @@ mod tests {
 
         drop(commands);
         task.await.expect("test logger task should stop cleanly");
-        tokio::fs::remove_file(path)
-            .await
-            .expect("test history file should be removable");
     }
 
     /// Protects live viewing as a useful fallback when persistent logging is unavailable.

@@ -185,6 +185,7 @@ fn detect_mime_type(content: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
 
     #[tokio::test]
     async fn content_detection_reads_only_prefix() {
@@ -208,16 +209,13 @@ mod tests {
 
     #[tokio::test]
     async fn utf8_text_is_editable() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-metadata-editable-{}.bin",
-            std::process::id()
-        ));
+        let temp = TempDir::create();
+        let path = temp.path().join("editable.bin");
         tokio::fs::write(&path, "hello plain text")
             .await
             .expect("write text");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -231,14 +229,13 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_utf8_is_not_editable() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-binary-{}.txt", std::process::id()));
+        let temp = TempDir::create();
+        let path = temp.path().join("binary.txt");
         tokio::fs::write(&path, [0xff, 0xfe, 0xfd])
             .await
             .expect("write binary");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -251,13 +248,12 @@ mod tests {
 
     #[tokio::test]
     async fn large_utf8_is_not_editable() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-large-{}.txt", std::process::id()));
+        let temp = TempDir::create();
+        let path = temp.path().join("large.txt");
         let large = vec![b'a'; (MAX_EDITABLE_FILE_BYTES as usize) + 1];
         tokio::fs::write(&path, large).await.expect("write large");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -271,13 +267,13 @@ mod tests {
 
     #[tokio::test]
     async fn png_magic_is_viewable_image_without_extension() {
-        let path = std::env::temp_dir().join(format!("redoor-metadata-png-{}", std::process::id()));
+        let temp = TempDir::create();
+        let path = temp.path().join("png");
         tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
             .await
             .expect("write png");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -291,14 +287,13 @@ mod tests {
 
     #[tokio::test]
     async fn png_magic_is_viewable_image_with_text_extension() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-png-{}.txt", std::process::id()));
+        let temp = TempDir::create();
+        let path = temp.path().join("png.txt");
         tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
             .await
             .expect("write png");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -311,16 +306,13 @@ mod tests {
 
     #[tokio::test]
     async fn binary_without_image_magic_is_not_viewable() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-metadata-not-image-{}.png",
-            std::process::id()
-        ));
+        let temp = TempDir::create();
+        let path = temp.path().join("not-image.png");
         tokio::fs::write(&path, [0x00, 0x01, 0x02, 0x03])
             .await
             .expect("write binary");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {
@@ -333,8 +325,8 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_image_is_not_viewable() {
-        let path =
-            std::env::temp_dir().join(format!("redoor-metadata-large-png-{}", std::process::id()));
+        let temp = TempDir::create();
+        let path = temp.path().join("large-png");
         let mut large = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         large.resize((MAX_VIEWABLE_IMAGE_BYTES as usize) + 1, 0);
         tokio::fs::write(&path, large)
@@ -342,7 +334,6 @@ mod tests {
             .expect("write large png");
 
         let result = execute(path.to_string_lossy().into_owned()).await;
-        let _ = tokio::fs::remove_file(&path).await;
 
         match result {
             CommandResult::Metadata(metadata) => {

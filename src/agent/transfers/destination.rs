@@ -353,27 +353,17 @@ async fn merge_directory_tree(
 }
 
 #[cfg(test)]
-fn unique_test_path(prefix: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    std::env::temp_dir().join(format!(
-        "redoor-dest-{prefix}-{}-{}",
-        std::process::id(),
-        NEXT_ID.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempDir;
     use redoor::commands::CommandErrorKind;
 
     #[tokio::test]
     async fn merge_rejects_symlink_destination_root() {
-        let external = unique_test_path("merge-symlink-root-external");
-        let dest_link = unique_test_path("merge-symlink-root-dest");
-        let temp_root = unique_test_path("merge-symlink-root-temp");
+        let temp_dir = TempDir::create();
+        let external = temp_dir.path().join("external");
+        let dest_link = temp_dir.path().join("dest-link");
+        let temp_root = temp_dir.path().join("temp-root");
 
         tokio::fs::create_dir_all(&external)
             .await
@@ -419,17 +409,14 @@ mod tests {
                 .expect("external path should stay inspectable"),
             "source files must not appear outside the requested destination"
         );
-
-        let _ = tokio::fs::remove_file(&dest_link).await;
-        let _ = redoor::safe_fs::safe_rm_all(&external).await;
-        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
     async fn merge_replaces_nested_destination_symlink_instead_of_following_it() {
-        let external = unique_test_path("merge-nested-symlink-external");
-        let dest_root = unique_test_path("merge-nested-symlink-dest");
-        let temp_root = unique_test_path("merge-nested-symlink-temp");
+        let temp_dir = TempDir::create();
+        let external = temp_dir.path().join("external");
+        let dest_root = temp_dir.path().join("dest-root");
+        let temp_root = temp_dir.path().join("temp-root");
 
         tokio::fs::create_dir_all(&external)
             .await
@@ -493,17 +480,14 @@ mod tests {
                 .expect("external path should stay inspectable"),
             "source files must not escape into the old symlink target"
         );
-
-        let _ = redoor::safe_fs::safe_rm_all(&dest_root).await;
-        let _ = redoor::safe_fs::safe_rm_all(&external).await;
-        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
     async fn merge_replaces_nested_file_symlink_instead_of_writing_through_it() {
-        let external_file = unique_test_path("merge-file-symlink-external");
-        let dest_root = unique_test_path("merge-file-symlink-dest");
-        let temp_root = unique_test_path("merge-file-symlink-temp");
+        let temp_dir = TempDir::create();
+        let external_file = temp_dir.path().join("external-file");
+        let dest_root = temp_dir.path().join("dest-root");
+        let temp_root = temp_dir.path().join("temp-root");
 
         tokio::fs::write(&external_file, "external-secret")
             .await
@@ -546,16 +530,17 @@ mod tests {
             "external-secret",
             "merge must not truncate or overwrite the old symlink target"
         );
-
-        let _ = redoor::safe_fs::safe_rm_all(&dest_root).await;
-        let _ = tokio::fs::remove_file(&external_file).await;
-        let _ = redoor::safe_fs::safe_rm_all(&temp_root).await;
     }
 
     #[tokio::test]
     async fn override_restores_destination_when_publish_fails() {
-        let dest = unique_test_path("override-restore-dest");
-        let missing_temp = unique_test_path("override-restore-missing-temp");
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("override-restore");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("override test root should be created");
+        let dest = root.join("dest");
+        let missing_temp = root.join("missing-temp");
 
         tokio::fs::write(&dest, "original-contents")
             .await
@@ -578,14 +563,11 @@ mod tests {
             "failed override must restore the previous destination from its backup"
         );
 
-        let parent = dest
-            .parent()
-            .expect("temp destination should have a parent");
         let file_name = dest
             .file_name()
             .and_then(|name| name.to_str())
             .expect("temp destination name should stay utf-8");
-        let mut entries = tokio::fs::read_dir(parent)
+        let mut entries = tokio::fs::read_dir(&root)
             .await
             .expect("temp parent should stay readable");
         while let Some(entry) = entries
@@ -599,14 +581,17 @@ mod tests {
                 "successful restore should not leave override backup siblings behind"
             );
         }
-
-        let _ = tokio::fs::remove_file(&dest).await;
     }
 
     #[tokio::test]
     async fn override_replaces_destination_and_removes_backup() {
-        let dest = unique_test_path("override-success-dest");
-        let temp = unique_test_path("override-success-temp");
+        let temp_dir = TempDir::create();
+        let root = temp_dir.path().join("override-success");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("override test root should be created");
+        let dest = root.join("dest");
+        let temp = root.join("temp");
 
         tokio::fs::write(&dest, "old-contents")
             .await
@@ -626,14 +611,11 @@ mod tests {
             "new-contents"
         );
 
-        let parent = dest
-            .parent()
-            .expect("temp destination should have a parent");
         let file_name = dest
             .file_name()
             .and_then(|name| name.to_str())
             .expect("temp destination name should stay utf-8");
-        let mut entries = tokio::fs::read_dir(parent)
+        let mut entries = tokio::fs::read_dir(&root)
             .await
             .expect("temp parent should stay readable");
         while let Some(entry) = entries
@@ -647,14 +629,13 @@ mod tests {
                 "successful override should delete the temporary backup sibling"
             );
         }
-
-        let _ = tokio::fs::remove_file(&dest).await;
     }
 
     #[tokio::test]
     async fn check_existing_destination_rejects_merge_onto_symlink() {
-        let external = unique_test_path("check-merge-symlink-external");
-        let dest_link = unique_test_path("check-merge-symlink-dest");
+        let temp_dir = TempDir::create();
+        let external = temp_dir.path().join("external");
+        let dest_link = temp_dir.path().join("dest-link");
 
         tokio::fs::create_dir_all(&external)
             .await
@@ -671,8 +652,5 @@ mod tests {
             matches!(error, DestinationPlaceError::SymlinkDestination(_)),
             "preflight should use the symlink-destination error"
         );
-
-        let _ = tokio::fs::remove_file(&dest_link).await;
-        let _ = redoor::safe_fs::safe_rm_all(&external).await;
     }
 }

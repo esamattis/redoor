@@ -107,14 +107,8 @@ mod tests {
     /// Verifies the pasted TOML is preserved exactly and the prompt identifies the absolute destination.
     #[tokio::test]
     async fn imports_pasted_config_after_eof() {
-        let directory = std::env::temp_dir().join(format!(
-            "redoor-import-config-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = directory.join("nested/config.toml");
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("nested/config.toml");
         let content = br#"agent_token = "shared-token"
 
 [agent]
@@ -149,20 +143,13 @@ server = "https://example.test"
             0o600,
             "the imported config contains secrets and must be owner-readable only"
         );
-
-        redoor::safe_fs::safe_rm_all(directory).await.ok();
     }
 
     /// Verifies imports never overwrite a config that appears before the final create.
     #[tokio::test]
     async fn refuses_to_overwrite_an_existing_config() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-import-existing-config-test-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("config.toml");
         tokio::fs::write(&path, "existing").await.unwrap();
         let mut input = std::io::Cursor::new(b"replacement");
         let mut output = Vec::new();
@@ -175,20 +162,13 @@ server = "https://example.test"
             "existing",
             "a raced or existing config must remain unchanged"
         );
-        tokio::fs::remove_file(path).await.ok();
     }
 
     /// Verifies interrupted stdin leaves no destination because only EOF confirms the paste.
     #[tokio::test]
     async fn interrupted_input_does_not_create_a_config() {
-        let directory = std::env::temp_dir().join(format!(
-            "redoor-import-cancelled-config-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = directory.join("config.toml");
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("config.toml");
         let mut input = InterruptedInput;
         let mut output = Vec::new();
 

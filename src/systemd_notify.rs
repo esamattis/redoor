@@ -61,10 +61,8 @@ mod tests {
     /// Verifies readiness reaches the filesystem sockets used by some systemd configurations.
     #[tokio::test]
     async fn sends_ready_to_filesystem_socket() {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-notify-{}.sock",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let directory = crate::test_support::TempDir::create();
+        let path = directory.path().join("notify.sock");
         let receiver = tokio::net::UnixDatagram::bind(&path).unwrap();
 
         notify_ready_at(path.as_os_str()).await.unwrap();
@@ -76,8 +74,6 @@ mod tests {
             b"READY=1",
             "systemd must receive the exact readiness assignment"
         );
-
-        tokio::fs::remove_file(path).await.unwrap();
     }
 
     /// Verifies the leading-at syntax reaches systemd's usual abstract notification socket.
