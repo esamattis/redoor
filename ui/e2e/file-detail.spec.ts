@@ -11,6 +11,16 @@ import {
     type TestContext,
 } from "./helpers";
 
+/** Waits for file navigation to replace the previous directory view before opening details. */
+async function openFileDetails(
+    page: import("@playwright/test").Page,
+    fileName: string,
+) {
+    await page.getByRole("link", { name: fileName, exact: true }).click();
+    await expect(page.getByLabel("File editor")).toBeVisible();
+    await page.getByRole("link", { name: "Details", exact: true }).click();
+}
+
 test.describe.serial("File Detail View", () => {
     let ctx: TestContext;
     let homeSyncFilename: string | null = null;
@@ -64,22 +74,15 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate to file detail view", async ({ page }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await openFileDetails(page, "file1.txt");
         await expect(page).toHaveURL(
             new RegExp(
-                `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}$`,
+                `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}\\?view=details$`,
             ),
         );
-        await page.getByRole("link", { name: "Details", exact: true }).click();
 
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -121,17 +124,9 @@ test.describe.serial("File Detail View", () => {
     test("should display correct file size on detail view", async ({
         page,
     }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}?view=details`,
+        );
 
         const sizeText = await page.getByLabel("File size value").textContent();
 
@@ -627,17 +622,10 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate back from file detail view", async ({ page }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await openFileDetails(page, "file1.txt");
 
         const backButton = page.getByRole("link", {
             name: "Go to the parent directory",
@@ -677,17 +665,10 @@ test.describe.serial("File Detail View", () => {
     test("should navigate back to agent from file detail view", async ({
         page,
     }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
+        );
+        await openFileDetails(page, "file1.txt");
 
         const backToAgentButton = page.getByRole("link", {
             name: ctx.agentName,
@@ -699,18 +680,11 @@ test.describe.serial("File Detail View", () => {
     });
 
     test("should navigate to nested file detail view", async ({ page }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "subdir1"))}`,
+        );
 
-        await page
-            .getByRole("link", { name: "nested1.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        await openFileDetails(page, "nested1.txt");
 
         await expect(
             page.getByRole("heading", { name: "File name" }),
@@ -737,16 +711,12 @@ test.describe.serial("File Detail View", () => {
         page,
         playwright,
     }) => {
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-        await page
-            .getByRole("link", { name: "file1.txt", exact: true })
-            .click();
-        await page.getByRole("link", { name: "Details", exact: true }).click();
+        const fileName = `shareable-${crypto.randomUUID()}.txt`;
+        const filePath = path.join(ctx.testDirPath, fileName);
+        await fs.writeFile(filePath, "shareable content");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=details`,
+        );
 
         const shareableLinks = page.getByRole("region", {
             name: "Shareable links",
@@ -754,6 +724,7 @@ test.describe.serial("File Detail View", () => {
         const createLinkButton = shareableLinks.getByRole("button", {
             name: "Create shareable link",
         });
+        await expect(createLinkButton).toBeVisible();
 
         // Metadata loading must only return existing tokens and must not create one as a side effect.
         await expect(
@@ -810,11 +781,9 @@ test.describe.serial("File Detail View", () => {
         const firstUse = await anonymous.get(firstUrl);
 
         // Anonymous clients can retrieve the exact file contents on the token's first use.
-        expect(await firstUse.text()).toBe("content1");
+        expect(await firstUse.text()).toBe("shareable content");
         // Content-Disposition allows browsers and command-line clients to retain the source filename.
-        expect(firstUse.headers()["content-disposition"]).toContain(
-            "file1.txt",
-        );
+        expect(firstUse.headers()["content-disposition"]).toContain(fileName);
 
         const secondUse = await anonymous.get(firstUrl);
         // Reusing the consumed credential must be rejected rather than downloading the file again.

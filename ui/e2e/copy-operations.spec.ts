@@ -258,6 +258,7 @@ test.describe.serial("Copy Operations", () => {
             "must not be copied",
         );
         await fs.rm(copyTargetDirPath, { force: true, recursive: true });
+        await fs.mkdir(copyTargetDirPath);
 
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
@@ -281,21 +282,9 @@ test.describe.serial("Copy Operations", () => {
         ).toBeVisible();
 
         await page.getByRole("link", { name: "subdir1", exact: true }).click();
-        await page.getByRole("button", { name: "New", exact: true }).click();
         await page
-            .getByRole("button", { name: "New directory", exact: true })
+            .getByRole("link", { name: copyTargetDirName, exact: true })
             .click();
-        await page
-            .getByRole("textbox", { name: "Directory name" })
-            .fill(copyTargetDirName);
-        await page
-            .getByRole("dialog", { name: "Create directory" })
-            .getByRole("button", { name: "Create directory", exact: true })
-            .click();
-
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
-        );
         const copyResponses: boolean[] = [];
         page.on("response", (response) => {
             if (
@@ -777,57 +766,19 @@ test.describe.serial("Copy Operations", () => {
         const copiedFilePath = path.join(copyTargetDirPath, "file1.txt");
 
         await fs.rm(copyTargetDirPath, { force: true, recursive: true });
+        // Directory creation is setup for this copy test and has separate UI coverage.
+        await fs.mkdir(copyTargetDirPath);
 
-        await page.goto(ctx.agentBrowserUrl);
-        await page
-            .locator(
-                `a[href="/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}"]`,
-            )
-            .click();
-
-        // Wait for the nested listing to render so the create action receives the test directory path.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
-        );
-        await expect(
-            page.getByRole("checkbox", { name: "Select file file1.txt" }),
-        ).toBeVisible();
-
-        // Create a new directory that will serve as the copy destination.
-        await page.getByRole("button", { name: "New", exact: true }).click();
-        await page
-            .getByRole("button", { name: "New directory", exact: true })
-            .click();
-        await expect(
-            page.getByRole("dialog", { name: "Create directory" }),
-        ).toBeVisible();
-        await page
-            .getByRole("textbox", { name: "Directory name" })
-            .fill(copyTargetDirName);
-        await page
-            .getByRole("dialog", { name: "Create directory" })
-            .getByRole("button", { name: "Create directory", exact: true })
-            .click();
-        // Creation navigates directly into the destination so it is ready for immediate use.
-        await expect(page).toHaveURL(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(copyTargetDirPath)}`,
-        );
-
-        // Prefer an explicit parent navigation over history back: bfcache can restore a
-        // listing that still omits the directory that was just created.
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
 
-        // Returning to the parent makes the source file and new directory available.
+        // Wait for the source listing before changing persistent selection state.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
         );
         await expect(
             page.getByRole("checkbox", { name: "Select file file1.txt" }),
-        ).toBeVisible();
-        await expect(
-            page.getByRole("link", { name: copyTargetDirName, exact: true }),
         ).toBeVisible();
 
         // Clear any leftover selection from earlier serial tests in this worker.
