@@ -226,8 +226,16 @@ async fn handle_command_message(
         Command::RestoreTrash {
             location_id,
             item_id,
+            destination_path,
         } => {
-            let result = match trash.restore(&location_id, &item_id).await {
+            let result = match trash
+                .restore(
+                    &location_id,
+                    &item_id,
+                    std::path::PathBuf::from(destination_path),
+                )
+                .await
+            {
                 Ok(path) => match path.into_os_string().into_string() {
                     Ok(path) => CommandResult::RestoreTrash { path },
                     Err(_) => CommandResult::error(

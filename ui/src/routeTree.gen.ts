@@ -20,6 +20,7 @@ import { Route as TransfersIndexRouteImport } from './routes/transfers.index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents.$agentId.index'
 import { Route as AgentsAgentIdEditRouteImport } from './routes/agents.$agentId.edit'
 import { Route as AgentsAgentIdLogsRouteImport } from './routes/agents.$agentId.logs'
+import { Route as AgentsAgentIdTrashRouteImport } from './routes/agents.$agentId.trash'
 import { Route as AgentsAgentIdBrowserSplatRouteImport } from './routes/agents.$agentId.browser.$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -77,6 +78,11 @@ const AgentsAgentIdLogsRoute = AgentsAgentIdLogsRouteImport.update({
   path: '/logs',
   getParentRoute: () => AgentsAgentIdRoute,
 } as any)
+const AgentsAgentIdTrashRoute = AgentsAgentIdTrashRouteImport.update({
+  id: '/trash',
+  path: '/trash',
+  getParentRoute: () => AgentsAgentIdRoute,
+} as any)
 const AgentsAgentIdBrowserSplatRoute =
   AgentsAgentIdBrowserSplatRouteImport.update({
     id: '/browser/$',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
+  '/agents/$agentId/trash': typeof AgentsAgentIdTrashRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -108,6 +115,7 @@ export interface FileRoutesByTo {
   '/transfers': typeof TransfersIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
+  '/agents/$agentId/trash': typeof AgentsAgentIdTrashRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -123,6 +131,7 @@ export interface FileRoutesById {
   '/transfers/': typeof TransfersIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/logs': typeof AgentsAgentIdLogsRoute
+  '/agents/$agentId/trash': typeof AgentsAgentIdTrashRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/agents/$agentId/browser/$': typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -139,6 +148,7 @@ export interface FileRouteTypes {
     | '/transfers/'
     | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
+    | '/agents/$agentId/trash'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
   fileRoutesByTo: FileRoutesByTo
@@ -152,6 +162,7 @@ export interface FileRouteTypes {
     | '/transfers'
     | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
+    | '/agents/$agentId/trash'
     | '/agents/$agentId'
     | '/agents/$agentId/browser/$'
   id:
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/transfers/'
     | '/agents/$agentId/edit'
     | '/agents/$agentId/logs'
+    | '/agents/$agentId/trash'
     | '/agents/$agentId/'
     | '/agents/$agentId/browser/$'
   fileRoutesById: FileRoutesById
@@ -260,6 +272,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsAgentIdLogsRouteImport
       parentRoute: typeof AgentsAgentIdRoute
     }
+    '/agents/$agentId/trash': {
+      id: '/agents/$agentId/trash'
+      path: '/trash'
+      fullPath: '/agents/$agentId/trash'
+      preLoaderRoute: typeof AgentsAgentIdTrashRouteImport
+      parentRoute: typeof AgentsAgentIdRoute
+    }
     '/agents/$agentId/browser/$': {
       id: '/agents/$agentId/browser/$'
       path: '/browser/$'
@@ -273,6 +292,7 @@ declare module '@tanstack/react-router' {
 interface AgentsAgentIdRouteChildren {
   AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
   AgentsAgentIdLogsRoute: typeof AgentsAgentIdLogsRoute
+  AgentsAgentIdTrashRoute: typeof AgentsAgentIdTrashRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   AgentsAgentIdBrowserSplatRoute: typeof AgentsAgentIdBrowserSplatRoute
 }
@@ -280,6 +300,7 @@ interface AgentsAgentIdRouteChildren {
 const AgentsAgentIdRouteChildren: AgentsAgentIdRouteChildren = {
   AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
   AgentsAgentIdLogsRoute: AgentsAgentIdLogsRoute,
+  AgentsAgentIdTrashRoute: AgentsAgentIdTrashRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   AgentsAgentIdBrowserSplatRoute: AgentsAgentIdBrowserSplatRoute,
 }

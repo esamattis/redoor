@@ -16,6 +16,8 @@ export const queryKeys = {
         [...queryKeys.all, "file-content", agentId, path] as const,
     browserListing: (agentId: string, path: string) =>
         [...queryKeys.all, "agents", agentId, "browser-listing", path] as const,
+    trash: (agentId: string) =>
+        [...queryKeys.all, "agents", agentId, "trash"] as const,
     fileSearch: (
         agentId: string,
         path: string,
@@ -87,6 +89,14 @@ export function browserListingQueryOptions(agent: Agent, path: string) {
         queryKey: queryKeys.browserListing(agent.id, path),
         queryFn: () => agent.ls(path),
         staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares fresh trash inventory between route navigation and restore mutations. */
+export function trashQueryOptions(agent: Agent) {
+    return queryOptions({
+        queryKey: queryKeys.trash(agent.id),
+        queryFn: () => agent.listTrash(),
     });
 }
 

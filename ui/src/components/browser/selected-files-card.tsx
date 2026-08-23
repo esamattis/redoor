@@ -13,7 +13,10 @@ import {
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
-import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import {
+    DeletePathsDialog,
+    type DeletePathTarget,
+} from "#ui/components/browser/delete-paths-dialog";
 import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
@@ -509,73 +512,19 @@ export function SelectedFilesCard(props: {
         (file) => file.entryType === "file",
     ).length;
     const directoryCount = selectedFiles.length - fileCount;
-    const deleteMutation = useMutation({
-        mutationFn: async (files: SelectedPath[]) => {
-            const agentsById = new Map(
-                props.agents.map((agent) => [agent.id, agent]),
-            );
-            const results = await Promise.allSettled(
-                files.map((file) => {
-                    const agent = agentsById.get(file.agentId);
-                    if (!agent) {
-                        return Promise.reject(
-                            new Error(
-                                `Agent unavailable for selected item: ${file.agentId}`,
-                            ),
-                        );
-                    }
-                    return agent.deleteFile(file.path);
-                }),
-            );
-            const successfulDeletes = files.filter(
-                (_file, index) => results[index]?.status === "fulfilled",
-            );
-            const failedDeletes = results.filter(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected",
-            );
-
-            if (successfulDeletes.length > 0) {
-                successfulDeletes.forEach((file) => {
-                    unselectFile({ agentId: file.agentId, path: file.path });
-                });
-                await router.invalidate();
-            }
-
-            if (failedDeletes.length > 0) {
-                const firstFailure = failedDeletes[0];
-                const failureMessage = getErrorMessage(
-                    firstFailure ? firstFailure.reason : undefined,
-                    "Delete failed",
-                );
-                throw new Error(
-                    successfulDeletes.length > 0
-                        ? `Deleted ${successfulDeletes.length} of ${files.length} items. ${failureMessage}`
-                        : failureMessage,
-                );
-            }
-        },
-        onSuccess: () => setIsDeleteDialogOpen(false),
-    });
-
-    /** Prevents the confirmation from closing while deletion is in progress. */
-    const closeDeleteDialog = () => {
-        if (deleteMutation.isPending) {
-            return;
-        }
-        setIsDeleteDialogOpen(false);
-        deleteMutation.reset();
-    };
-
     const isMobile = useIsBelowBreakpoint("sm");
     const hasSelection = selectedFiles.length > 0;
-    const canDelete = hasSelection && !deleteMutation.isPending;
+    const canDelete = hasSelection;
     const selectionSummary = `${fileCount} ${fileCount === 1 ? "file" : "files"}, ${directoryCount} ${directoryCount === 1 ? "directory" : "directories"} selected`;
     /** Opens confirm from both the desktop Delete button and the mobile Actions menu. */
     const openDeleteDialog = () => {
-        deleteMutation.reset();
         setIsDeleteDialogOpen(true);
     };
+    const agentsById = new Map(props.agents.map((agent) => [agent.id, agent]));
+    const deleteTargets: DeletePathTarget[] = selectedFiles.map((file) => ({
+        agent: agentsById.get(file.agentId) ?? null,
+        path: file.path,
+    }));
 
     return (
         <>
@@ -662,24 +611,38 @@ export function SelectedFilesCard(props: {
                     </TransferSelectedFilesAction>
                 )}
             </TransferSelectedFilesAction>
-            <ConfirmationDialog
+            <DeletePathsDialog
                 isOpen={isDeleteDialogOpen}
                 title={`Delete ${selectedFiles.length === 1 ? "this selected item" : "these selected items"}?`}
-                description={`This permanently deletes ${fileCount} ${fileCount === 1 ? "file" : "files"} and ${directoryCount} ${directoryCount === 1 ? "directory" : "directories"} from the agent filesystem.`}
-                confirmLabel={
+                description={`Move ${fileCount} ${fileCount === 1 ? "file" : "files"} and ${directoryCount} ${directoryCount === 1 ? "directory" : "directories"} to trash.`}
+                targets={deleteTargets}
+                trashConfirmLabel={
+                    selectedFiles.length === 1
+                        ? "Move selected item to trash"
+                        : `Move ${selectedFiles.length} selected items to trash`
+                }
+                permanentConfirmLabel={
                     selectedFiles.length === 1
                         ? "Delete selected item"
                         : `Delete ${selectedFiles.length} selected items`
                 }
-                busyLabel="Deleting..."
-                isBusy={deleteMutation.isPending}
-                errorMessage={
-                    deleteMutation.isError
-                        ? getErrorMessage(deleteMutation.error, "Delete failed")
-                        : null
-                }
-                onClose={closeDeleteDialog}
-                onConfirm={() => deleteMutation.mutate([...selectedFiles])}
+                onClose={() => setIsDeleteDialogOpen(false)}
+                onDeleted={async (targets) => {
+                    targets.forEach((target) => {
+                        const selected = selectedFiles.find(
+                            (file) =>
+                                file.path === target.path &&
+                                file.agentId === target.agent?.id,
+                        );
+                        if (selected) {
+                            unselectFile({
+                                agentId: selected.agentId,
+                                path: selected.path,
+                            });
+                        }
+                    });
+                    await router.invalidate();
+                }}
             />
         </>
     );

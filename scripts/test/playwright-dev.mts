@@ -16,6 +16,7 @@ import { z } from "zod";
 const PROJECT_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const HOME_DIRECTORY = join(PROJECT_ROOT, ".test-playwright-home");
 const STAGED_BINARY = join(HOME_DIRECTORY, "redoor-test-binary");
+const AGENT1_TRASH_DIRECTORY = join(HOME_DIRECTORY, "agent1-trash");
 const portsSchema = z.object({ playwright: z.number().int().positive() });
 
 type Child = { name: string; process: ProcessPromise };
@@ -173,7 +174,10 @@ async function supervise(): Promise<void> {
                 "--log",
                 "log/playwright-agent1_src.log",
             ],
-            { REDOOR_APP_NAME: "redoor-playwright-agent1" },
+            {
+                REDOOR_APP_NAME: "redoor-playwright-agent1",
+                REDOOR_AGENT_TRASH_DIRECTORY: AGENT1_TRASH_DIRECTORY,
+            },
         ),
         startChild(
             "agent2_custom",

@@ -28,7 +28,6 @@ struct InventoryItem {
     public: TrashItem,
     payload: PathBuf,
     info: PathBuf,
-    original: Option<PathBuf>,
 }
 
 /// Creates a forced or private per-user root without accepting symlinked directories.
@@ -205,14 +204,21 @@ pub(super) async fn list(service: &TrashService) -> Result<TrashListResponse, Tr
     })
 }
 
-/// Restores a freshly resolved item without replacing an occupied original destination.
+/// Restores a freshly resolved item without replacing an occupied selected destination.
 pub(super) async fn restore(
     service: &TrashService,
     location_id: &str,
     item_id: &str,
+    destination: PathBuf,
 ) -> Result<PathBuf, TrashError> {
     validate_identifier(location_id)?;
     validate_identifier(item_id)?;
+    if !destination.is_absolute() || destination == Path::new("/") {
+        return Err(TrashError::new(
+            CommandErrorKind::InvalidInput,
+            "Trash restore destination must be an absolute non-root path",
+        ));
+    }
     let locations = discover_locations(service).await?;
     let location = locations
         .into_iter()
@@ -224,16 +230,10 @@ pub(super) async fn restore(
         .into_iter()
         .find(|item| item.public.id == item_id)
         .ok_or_else(|| TrashError::new(CommandErrorKind::NotFound, "Trash item not found"))?;
-    let original = item.original.ok_or_else(|| {
+    let parent = destination.parent().ok_or_else(|| {
         TrashError::new(
             CommandErrorKind::InvalidInput,
-            "Trash item has no safe original path",
-        )
-    })?;
-    let parent = original.parent().ok_or_else(|| {
-        TrashError::new(
-            CommandErrorKind::InvalidInput,
-            "Trash original path has no parent",
+            "Trash restore destination has no parent",
         )
     })?;
     let parent_directory = tokio::fs::OpenOptions::new()
@@ -264,10 +264,10 @@ pub(super) async fn restore(
             "Trash payload and restore destination are on different devices",
         ));
     }
-    let destination_name = original.file_name().ok_or_else(|| {
+    let destination_name = destination.file_name().ok_or_else(|| {
         TrashError::new(
             CommandErrorKind::InvalidInput,
-            "Trash original path has no filename",
+            "Trash restore destination has no filename",
         )
     })?;
     match rename_no_replace_at(
@@ -310,7 +310,7 @@ pub(super) async fn restore(
             error,
         ));
     }
-    Ok(original)
+    Ok(destination)
 }
 
 /// Selects the forced root, home trash, or a secure per-mount user trash.
@@ -413,13 +413,12 @@ async fn inventory_for_location(location: &Location) -> Result<Vec<InventoryItem
             },
             payload: entry.path(),
             info,
-            original,
         });
     }
     Ok(items)
 }
 
-/// Parses only the freedesktop fields needed for ordering and safe restoration.
+/// Parses only the freedesktop fields needed for ordering and a safe suggested path.
 fn parse_trashinfo(contents: &str, mount_top: Option<&Path>) -> Option<(i64, Option<PathBuf>)> {
     let mut path = None;
     let mut deletion_date = None;

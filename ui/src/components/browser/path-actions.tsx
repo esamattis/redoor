@@ -16,7 +16,7 @@ import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
-import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { DeletePathsDialog } from "#ui/components/browser/delete-paths-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { InputControl } from "#ui/components/input-control";
@@ -527,32 +527,6 @@ export function PersistentPathActions(props: {
     const navigate = useNavigate();
     const parentPath = getImmediateParentPath(props.path);
     const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
-    const deleteMutation = useMutation({
-        mutationFn: () => props.agent.deleteFile(props.path),
-        onSuccess: async () => {
-            if (parentPath === null) {
-                return;
-            }
-            setIsConfirmDeleteOpen(false);
-            await navigate({ to: props.agent.getBrowserUrl(parentPath) });
-        },
-    });
-
-    const closeDeleteDialog = () => {
-        if (deleteMutation.isPending) {
-            return;
-        }
-        setIsConfirmDeleteOpen(false);
-        deleteMutation.reset();
-    };
-
-    const handleDelete = async () => {
-        if (parentPath === null) {
-            return;
-        }
-        deleteMutation.mutate();
-    };
-
     const downloadLink = (
         <a
             href={props.downloadUrl}
@@ -585,39 +559,38 @@ export function PersistentPathActions(props: {
                     view={props.view}
                     showOpenNatively={true}
                     showSelect={true}
-                    onDelete={() => {
-                        deleteMutation.reset();
-                        setIsConfirmDeleteOpen(true);
-                    }}
+                    onDelete={() => setIsConfirmDeleteOpen(true)}
                 />
             </div>
-            <ConfirmationDialog
+            <DeletePathsDialog
                 isOpen={isConfirmDeleteOpen}
                 title={`Delete this ${props.entryType}?`}
                 description={
                     <>
-                        This permanently deletes
+                        Move
                         <span className="mx-1 font-medium text-slate-100">
                             {props.currentName}
                         </span>
-                        from the agent filesystem.
+                        to the agent trash. You can restore it later from the
+                        Trash tab.
                     </>
                 }
-                confirmLabel={`Delete ${props.entryType}`}
-                busyLabel="Deleting..."
-                isBusy={deleteMutation.isPending}
-                errorMessage={
-                    deleteMutation.isError
-                        ? getErrorMessage(deleteMutation.error, "Delete failed")
-                        : null
-                }
-                onClose={closeDeleteDialog}
-                onConfirm={handleDelete}
+                targets={[{ agent: props.agent, path: props.path }]}
+                trashConfirmLabel="Move to trash"
+                permanentConfirmLabel={`Delete ${props.entryType}`}
+                onClose={() => setIsConfirmDeleteOpen(false)}
+                onDeleted={async () => {
+                    if (parentPath !== null) {
+                        await navigate({
+                            to: props.agent.getBrowserUrl(parentPath),
+                        });
+                    }
+                }}
             >
                 <p className="overflow-x-auto whitespace-nowrap rounded-md border border-slate-800 bg-[#0b0d12] px-3 py-2.5 font-mono text-sm text-slate-300">
                     {props.path}
                 </p>
-            </ConfirmationDialog>
+            </DeletePathsDialog>
         </>
     );
 }

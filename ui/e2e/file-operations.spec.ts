@@ -671,6 +671,13 @@ test.describe.serial("File Operations", () => {
         });
         // Row deletion retains an explicit destructive confirmation step.
         await expect(dialog).toBeVisible();
+        // Permanent deletion remains an explicit opt-in instead of the default action.
+        await expect(
+            dialog.getByRole("checkbox", { name: "Delete permanently" }),
+        ).not.toBeChecked();
+        await dialog
+            .getByRole("checkbox", { name: "Delete permanently" })
+            .click();
         await dialog
             .getByRole("button", { name: "Delete file", exact: true })
             .click();
@@ -720,7 +727,7 @@ test.describe.serial("File Operations", () => {
             .click();
         await page
             .getByRole("dialog", { name: "Delete this file?" })
-            .getByRole("button", { name: "Delete file" })
+            .getByRole("button", { name: "Move to trash" })
             .click();
 
         // Redirecting back to the parent directory confirms the delete request completed successfully.
@@ -733,6 +740,45 @@ test.describe.serial("File Operations", () => {
         await expect(
             page.getByRole("link", { name: "delete-me.txt", exact: true }),
         ).toHaveCount(0);
+    });
+
+    test("should keep the delete dialog open when moving to trash fails", async ({
+        page,
+    }) => {
+        const fileName = `trash-error-${Date.now()}.txt`;
+        const filePath = path.join(ctx.testDirPath, "subdir3", fileName);
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
+        await fs.writeFile(filePath, "must remain after failure");
+        await page.route("**/raw/**?trash=true", async (route) => {
+            await route.fulfill({
+                status: 500,
+                contentType: "application/json",
+                body: JSON.stringify({ error: "Test trash failure" }),
+            });
+        });
+        await page.goto(directoryUrl);
+        await page
+            .getByRole("button", {
+                name: `Actions for file ${fileName}`,
+                exact: true,
+            })
+            .click();
+        await page
+            .getByRole("dialog", { name: `Actions for file ${fileName}` })
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
+        const dialog = page.getByRole("dialog", {
+            name: "Delete this file?",
+        });
+        await dialog.getByRole("button", { name: "Move to trash" }).click();
+
+        // Keeping the API message in the modal lets the user retry or choose permanent deletion.
+        await expect(dialog.getByText("Test trash failure")).toBeVisible();
+        // The intercepted failure must not optimistically remove the filesystem entry.
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(
+            "must remain after failure",
+        );
+        await page.unroute("**/raw/**?trash=true");
     });
 
     test("should delete the open directory from the more menu", async ({
@@ -759,7 +805,7 @@ test.describe.serial("File Operations", () => {
         });
         // The directory action must retain the same explicit destructive confirmation as file deletion.
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("button", { name: "Delete directory" }).click();
+        await dialog.getByRole("button", { name: "Move to trash" }).click();
 
         // Completing the action must leave the now-missing directory instead of keeping the busy dialog open.
         await expect(page).toHaveURL(parentDirectoryUrl);
@@ -867,7 +913,7 @@ test.describe.serial("File Operations", () => {
         // The confirmation must appear before the destructive selected-items request can run.
         await expect(deleteSelectedItemsDialog).toBeVisible();
         await deleteSelectedItemsDialog
-            .getByRole("button", { name: "Delete selected item" })
+            .getByRole("button", { name: "Move selected item to trash" })
             .click();
 
         // The file name is rendered in both the listing and the selected-items panel, so wait on disk state first.
@@ -902,5 +948,90 @@ test.describe.serial("File Operations", () => {
                 name: "Unselect file delete-selected.txt",
             }),
         ).toHaveCount(0);
+    });
+
+    test("should list trashed files newest first and restore to an editable path", async ({
+        page,
+    }) => {
+        const directoryPath = path.join(ctx.testDirPath, "subdir3");
+        const firstName = `trash-first-${Date.now()}.txt`;
+        const secondName = `trash-second-${Date.now()}.txt`;
+        const firstPath = path.join(directoryPath, firstName);
+        const secondPath = path.join(directoryPath, secondName);
+        const restoredPath = path.join(directoryPath, `restored-${secondName}`);
+        await fs.writeFile(firstPath, "first trash item");
+        await fs.writeFile(secondPath, "second trash item");
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        await page.goto(directoryUrl);
+
+        for (const [index, name] of [firstName, secondName].entries()) {
+            await page
+                .getByRole("button", {
+                    name: `Actions for file ${name}`,
+                    exact: true,
+                })
+                .click();
+            await page
+                .getByRole("dialog", { name: `Actions for file ${name}` })
+                .getByRole("button", { name: "Delete file", exact: true })
+                .click();
+            await page
+                .getByRole("dialog", { name: "Delete this file?" })
+                .getByRole("button", { name: "Move to trash" })
+                .click();
+            await expect(
+                page.getByRole("link", { name, exact: true }),
+            ).toHaveCount(0);
+            if (index === 0) {
+                const firstDeletionSecond = Math.floor(Date.now() / 1000);
+                // Polling the clock avoids a sleep while giving the second item a newer provider timestamp.
+                await expect
+                    .poll(() => Math.floor(Date.now() / 1000))
+                    .toBeGreaterThan(firstDeletionSecond);
+            }
+        }
+
+        await page
+            .getByLabel("Agent view")
+            .getByRole("link", { name: "Trash", exact: true })
+            .click();
+        const trashedRows = page.getByRole("article");
+        // The most recently trashed file must lead the globally sorted inventory.
+        await expect(trashedRows.first()).toContainText(secondName);
+        const secondRow = page.getByRole("article", {
+            name: `Trashed item ${secondName}`,
+        });
+        const expectedTrashPayload = path.resolve(
+            ".test-playwright-home/agent1-trash/files",
+            secondName,
+        );
+        // The item name links to the payload inside the isolated Playwright trash root.
+        await expect(
+            secondRow.getByRole("link", { name: secondName, exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(expectedTrashPayload)}`,
+        );
+        await secondRow.getByRole("button", { name: "Restore" }).click();
+        const restoreDialog = page.getByRole("dialog", {
+            name: "Restore trashed item",
+        });
+        const restorePathInput = restoreDialog.getByRole("textbox", {
+            name: "Restore path",
+        });
+        // Metadata supplies the safe default while leaving the destination editable.
+        await expect(restorePathInput).toHaveValue(secondPath);
+        await restorePathInput.fill(restoredPath);
+        await restoreDialog
+            .getByRole("button", { name: "Restore", exact: true })
+            .click();
+
+        // Removing the row confirms the trash query refreshed after restore.
+        await expect(secondRow).toHaveCount(0);
+        // Disk contents prove the custom destination reached the agent protocol.
+        await expect(fs.readFile(restoredPath, "utf8")).resolves.toBe(
+            "second trash item",
+        );
+        await expect(fs.access(secondPath)).rejects.toThrow();
     });
 });

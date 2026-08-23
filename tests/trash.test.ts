@@ -135,6 +135,7 @@ describe("Trash API", () => {
         const response = await testAgent.restoreTrashItem({
             location_id: location.id,
             item_id: item.id,
+            destination_path: source,
         });
 
         // Returning the destination confirms restore used the metadata-selected original path.
@@ -168,6 +169,7 @@ describe("Trash API", () => {
         const restore = testAgent.restoreTrashItem({
             location_id: location.id,
             item_id: item.id,
+            destination_path: source,
         });
 
         // HTTP conflict communicates that no replacement was performed.
@@ -233,8 +235,41 @@ DeletionDate=2020-01-01T00:00:00
             testAgent.restoreTrashItem({
                 location_id: "../trash",
                 item_id: "../payload",
+                destination_path: missing,
             }),
         ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it("restores to an explicit destination instead of the metadata path", async () => {
+        const source = path.join(root, "restore-to-custom-source.txt");
+        const destination = path.join(root, "restore-to-custom-target.txt");
+        await fs.writeFile(source, "custom destination contents");
+        await testAgent.deleteFile(source, { trash: true });
+        const listing = await testAgent.listTrash();
+        const location = listing.locations.find((entry) =>
+            entry.items.some((item) => item.original_path === source),
+        );
+        const item = location?.items.find(
+            (entry) => entry.original_path === source,
+        );
+        if (!location || !item) {
+            throw new Error("Custom-destination item was not listed");
+        }
+
+        const response = await testAgent.restoreTrashItem({
+            location_id: location.id,
+            item_id: item.id,
+            destination_path: destination,
+        });
+
+        // The response proves the agent honored the submitted path rather than metadata.
+        expect(response.path).toBe(destination);
+        // Reading only the selected destination proves the payload was published there.
+        await expect(fs.readFile(destination, "utf8")).resolves.toBe(
+            "custom destination contents",
+        );
+        // The original path must stay absent after choosing a different restore location.
+        await expect(fs.access(source)).rejects.toThrow();
     });
 
     it("rejects a forced trash root on another device without copying", async () => {

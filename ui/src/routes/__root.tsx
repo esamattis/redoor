@@ -191,6 +191,12 @@ function useAgentViewContext(
                 agent: activeAgent,
             } satisfies AgentViewContext;
         }
+        if (pathname === `${agentPath}/trash`) {
+            return {
+                kind: "trash",
+                agent: activeAgent,
+            } satisfies AgentViewContext;
+        }
     }
     return null;
 }

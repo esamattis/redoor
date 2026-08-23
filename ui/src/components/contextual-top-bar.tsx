@@ -6,6 +6,7 @@ import {
     PanelRightOpen,
     ScrollText,
     Settings,
+    Trash2,
 } from "lucide-react";
 import type * as React from "react";
 
@@ -22,6 +23,7 @@ export type AgentViewContext =
     | { kind: "agent"; agent: Agent }
     | { kind: "logs"; agent: Agent }
     | { kind: "configuration"; agent: Agent }
+    | { kind: "trash"; agent: Agent }
     | { kind: "directory"; agent: Agent; path: string }
     | { kind: "file"; agent: Agent; path: string }
     | null;
@@ -90,6 +92,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
     const agentTarget = `/agents/${encodeURIComponent(agent.id)}`;
     const logsTarget = `${agentTarget}/logs`;
     const configurationTarget = `${agentTarget}/edit`;
+    const trashTarget = `${agentTarget}/trash`;
     const isFilesystemContext =
         props.context.kind === "directory" || props.context.kind === "file";
     const canBrowse = agent.status === "connected" && agent.cwd !== null;
@@ -113,6 +116,14 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                         label="Files"
                         icon={<Files className="h-4 w-4" aria-hidden="true" />}
                         active={false}
+                    />
+                ) : null}
+                {canBrowse ? (
+                    <ViewLink
+                        to={trashTarget}
+                        label="Trash"
+                        icon={<Trash2 className="h-4 w-4" aria-hidden="true" />}
+                        active={props.context.kind === "trash"}
                     />
                 ) : null}
                 {agent.configurationEditable ? (
@@ -155,6 +166,12 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                 label="Files"
                 icon={<Files className="h-4 w-4" aria-hidden="true" />}
                 active={true}
+            />
+            <ViewLink
+                to={trashTarget}
+                label="Trash"
+                icon={<Trash2 className="h-4 w-4" aria-hidden="true" />}
+                active={false}
             />
             {agent.configurationEditable ? (
                 <ViewLink

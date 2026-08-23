@@ -84,11 +84,14 @@ pub(crate) async fn restore_trash_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<RestoreTrashItemRequest>,
 ) -> Response {
-    if request.location_id.is_empty() || request.item_id.is_empty() {
+    if request.location_id.is_empty()
+        || request.item_id.is_empty()
+        || request.destination_path.is_empty()
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Trash location and item identifiers are required".to_string(),
+                error: "Trash location, item, and restore destination are required".to_string(),
             }),
         )
             .into_response();
@@ -105,6 +108,7 @@ pub(crate) async fn restore_trash_handler(
                 command: Command::RestoreTrash {
                     location_id: request.location_id,
                     item_id: request.item_id,
+                    destination_path: request.destination_path,
                 },
                 reply,
             })

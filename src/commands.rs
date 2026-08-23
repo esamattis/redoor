@@ -204,10 +204,11 @@ pub enum Command {
     },
     /// Returns the platform-neutral inventory discovered by the agent at command time.
     ListTrash,
-    /// Restores one opaque inventory item to the original path recorded by its provider.
+    /// Restores one opaque inventory item to an explicit user-selected destination.
     RestoreTrash {
         location_id: String,
         item_id: String,
+        destination_path: String,
     },
     CreateDirectory {
         path: String,
@@ -322,7 +323,10 @@ impl Command {
             Self::RestoreTrash {
                 location_id,
                 item_id,
-            } => format!("RestoreTrash location={location_id} item={item_id}"),
+                destination_path,
+            } => format!(
+                "RestoreTrash location={location_id} item={item_id} destination={destination_path}"
+            ),
             Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
             Self::RenamePath { dir, old, new } => {
                 format!("RenamePath dir={dir} old={old} new={new}")
@@ -903,15 +907,16 @@ pub struct TrashItem {
     pub deleted_at: UnixTimestampSeconds,
 }
 
-/// Selects one item only through opaque identifiers returned by a fresh listing.
+/// Selects one item through opaque identifiers and supplies its restore destination.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RestoreTrashItemRequest {
     pub location_id: String,
     pub item_id: String,
+    pub destination_path: String,
 }
 
-/// Returns the original destination after a successful atomic restore.
+/// Returns the selected destination after a successful atomic restore.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RestoreTrashItemResponse {

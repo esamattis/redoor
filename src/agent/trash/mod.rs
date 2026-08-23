@@ -93,14 +93,15 @@ impl TrashService {
         ))
     }
 
-    /// Resolves opaque identifiers against fresh inventory before restoring one payload.
+    /// Resolves opaque identifiers before restoring one payload to an explicit destination.
     pub(crate) async fn restore(
         &self,
         location_id: &str,
         item_id: &str,
+        destination: PathBuf,
     ) -> Result<PathBuf, TrashError> {
         #[cfg(target_os = "linux")]
-        return linux::restore(self, location_id, item_id).await;
+        return linux::restore(self, location_id, item_id, destination).await;
         #[cfg(not(target_os = "linux"))]
         Err(TrashError::new(
             CommandErrorKind::InvalidInput,
