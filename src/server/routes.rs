@@ -21,6 +21,7 @@ use super::{
     auth::{login_handler, logout_handler, require_authentication},
     diffs::diff_files_handler,
     files::{create_directory_handler, raw_agent_delete_handler, rename_path_handler},
+    git::{git_context_handler, git_diff_handler, git_status_handler},
     logs::server_logs_websocket_handler,
     moves::move_file_handler,
     raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
@@ -131,6 +132,24 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/metadata/{*path}",
             get(metadata_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/git/context",
+            get(git_context_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/git/context/{*path}",
+            get(git_context_handler),
+        )
+        .route("/api/v1/agents/{agent}/git/status", get(git_status_handler))
+        .route(
+            "/api/v1/agents/{agent}/git/status/{*path}",
+            get(git_status_handler),
+        )
+        .route("/api/v1/agents/{agent}/git/diff", get(git_diff_handler))
+        .route(
+            "/api/v1/agents/{agent}/git/diff/{*path}",
+            get(git_diff_handler),
         )
         .route(
             "/api/v1/agents/{agent}/one-time-token",

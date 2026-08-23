@@ -4,7 +4,7 @@ use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, Command, CommandErrorKind, CommandResult,
     EchoRequest, EchoResult, LsDirectoryResult, LsEntry, LsFileResult, MoveMetadataResult,
     MoveSourceIdentity, UnixTimestampSeconds, agent_loaded_config_path, current_binary_identity,
-    current_exe_path, external_ip, file_search, metadata,
+    current_exe_path, external_ip, file_search, git, metadata,
 };
 use tokio::sync::watch;
 
@@ -88,6 +88,9 @@ impl CommandHandler {
             Command::CreateDirectory { path } => self.create_directory(path).await,
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,
+            Command::GitContext { path } => git::context(path).await,
+            Command::GitStatus { path } => git::status(path).await,
+            Command::GitDiff { path, mode } => git::diff(path, mode).await,
             Command::MoveMetadata { path } => self.move_metadata(path).await,
             Command::DeleteMoveSource {
                 path,

@@ -1,4 +1,5 @@
 mod file_search;
+mod git;
 mod handler;
 mod identity;
 mod metadata;
@@ -221,6 +222,19 @@ pub enum Command {
     Metadata {
         path: String,
     },
+    /// Discovers repository membership and classification for one browser path.
+    GitContext {
+        path: String,
+    },
+    /// Lists bounded repository changes below one browser directory.
+    GitStatus {
+        path: String,
+    },
+    /// Compares one file with HEAD using the selected Git source.
+    GitDiff {
+        path: String,
+        mode: GitDiffMode,
+    },
     /// Reads the stable filesystem identity needed to delete only the source that was copied.
     MoveMetadata {
         path: String,
@@ -332,6 +346,9 @@ impl Command {
                 format!("RenamePath dir={dir} old={old} new={new}")
             }
             Self::Metadata { path } => format!("Metadata path={path}"),
+            Self::GitContext { path } => format!("GitContext path={path}"),
+            Self::GitStatus { path } => format!("GitStatus path={path}"),
+            Self::GitDiff { path, mode } => format!("GitDiff path={path} mode={mode:?}"),
             Self::MoveMetadata { path } => format!("MoveMetadata path={path}"),
             Self::DeleteMoveSource { path, .. } => format!("DeleteMoveSource path={path}"),
             Self::OpenPath { path } => format!("OpenPath path={path}"),
@@ -404,6 +421,156 @@ pub struct MetadataResponse {
     pub viewable_image: bool,
     /// Outstanding process-local download tokens for this exact agent and path.
     pub one_time_tokens: Vec<String>,
+}
+
+/// Distinguishes filesystem shapes without exposing platform metadata details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitEntryType {
+    File,
+    Directory,
+    Symlink,
+    Missing,
+    Other,
+}
+
+/// Describes whether a browser file participates in repository tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitTrackingState {
+    Tracked,
+    Untracked,
+    Ignored,
+    Deleted,
+}
+
+/// Provides the inexpensive Git-tab availability and file classification contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitContextResponse {
+    pub inside_worktree: bool,
+    pub entry_type: GitEntryType,
+    pub tracking_state: Option<GitTrackingState>,
+    pub repository_root: Option<String>,
+    pub repository_relative_path: Option<String>,
+}
+
+/// Normalizes index and worktree status into a stable public vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitChangeState {
+    Unmodified,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+}
+
+/// Identifies entries that cannot be represented by ordinary staged/unstaged states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitConflictState {
+    Conflicted,
+}
+
+/// Identifies the Git object kind without leaking gix mode values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitStatusEntryKind {
+    File,
+    Symlink,
+    Submodule,
+    Other,
+}
+
+/// Describes one changed path from the merged HEAD/index/worktree view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitStatusEntry {
+    pub path: String,
+    pub repository_relative_path: String,
+    pub original_path: Option<String>,
+    pub index_state: GitChangeState,
+    pub worktree_state: GitChangeState,
+    pub conflict_state: Option<GitConflictState>,
+    pub entry_kind: GitStatusEntryKind,
+}
+
+/// Returns bounded, deterministic status for one literal directory prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitStatusResponse {
+    pub path: String,
+    pub repository_root: String,
+    pub branch_name: Option<String>,
+    pub detached_head_id: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    pub entries: Vec<GitStatusEntry>,
+    pub truncated: bool,
+    pub omitted_non_utf8_entries: usize,
+}
+
+/// Selects the source on the right side of a comparison with HEAD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitDiffMode {
+    Full,
+    Staged,
+}
+
+/// Represents every bounded single-file diff outcome explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
+pub enum GitDiffResult {
+    Text { unified_diff: String },
+    NoChanges,
+    Untracked,
+    Ignored,
+    Binary,
+    TooLarge,
+    UnsupportedEntry,
+}
+
+impl GitDiffResult {
+    /// Produces a payload-free label so command logs never contain file content.
+    fn summary(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "text",
+            Self::NoChanges => "no_changes",
+            Self::Untracked => "untracked",
+            Self::Ignored => "ignored",
+            Self::Binary => "binary",
+            Self::TooLarge => "too_large",
+            Self::UnsupportedEntry => "unsupported_entry",
+        }
+    }
+}
+
+/// Returns a single-file Git comparison without repository-wide patch payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitDiffResponse {
+    pub mode: GitDiffMode,
+    pub path: String,
+    pub result: GitDiffResult,
 }
 
 /// Identifies one filesystem object strongly enough to refuse deletion after path replacement.
@@ -538,6 +705,9 @@ pub enum CommandResult {
     CreateDirectory,
     RenamePath,
     Metadata(MetadataResponse),
+    GitContext(GitContextResponse),
+    GitStatus(GitStatusResponse),
+    GitDiff(GitDiffResponse),
     MoveMetadata(MoveMetadataResult),
     OpenPath,
     Echo(EchoResult),
@@ -1106,6 +1276,22 @@ impl CommandResult {
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
             Self::Metadata(_) => "ok Metadata".to_string(),
+            Self::GitContext(result) => format!(
+                "ok GitContext inside_worktree={} tracking={:?}",
+                result.inside_worktree, result.tracking_state
+            ),
+            Self::GitStatus(result) => format!(
+                "ok GitStatus entries={} truncated={} omitted_non_utf8={}",
+                result.entries.len(),
+                result.truncated,
+                result.omitted_non_utf8_entries
+            ),
+            // Patch bodies must never enter logs because they may be large or sensitive.
+            Self::GitDiff(result) => format!(
+                "ok GitDiff mode={:?} result={}",
+                result.mode,
+                result.result.summary()
+            ),
             Self::MoveMetadata(_) => "ok MoveMetadata".to_string(),
             Self::OpenPath => "ok OpenPath".to_string(),
             Self::Echo(_) => "ok Echo".to_string(),

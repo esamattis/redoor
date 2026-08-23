@@ -2931,6 +2931,7 @@ dependencies = [
  "fastrand",
  "futures-util",
  "gix",
+ "gix-dir",
  "headers",
  "ignore",
  "libc",

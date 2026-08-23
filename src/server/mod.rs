@@ -6,6 +6,7 @@ mod agents;
 mod auth;
 mod diffs;
 mod files;
+mod git;
 mod logs;
 mod moves;
 #[cfg(target_os = "linux")]
