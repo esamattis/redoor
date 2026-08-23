@@ -23,6 +23,21 @@ pub async fn rename_no_replace(
     .await
 }
 
+#[cfg(target_os = "linux")]
+/// Uses a held destination directory so path replacement cannot redirect publication.
+pub async fn rename_no_replace_at(
+    source: impl AsRef<Path>,
+    destination_directory: std::fs::File,
+    destination_name: std::ffi::OsString,
+) -> std::io::Result<AtomicRenameOutcome> {
+    let source = source.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        rename_no_replace_at_blocking(source, destination_directory, destination_name)
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 /// Atomically swaps two existing entries so callers can implement replacement cleanup safely.
 pub async fn rename_exchange(
     source: impl AsRef<Path>,
@@ -80,6 +95,37 @@ fn rename_with_mode_blocking(
                 RenameMode::NoReplace => libc::RENAME_NOREPLACE,
                 RenameMode::Exchange => libc::RENAME_EXCHANGE,
             },
+        )
+    };
+    classify_result(result)
+}
+
+#[cfg(target_os = "linux")]
+/// Calls renameat2 relative to an already-open destination directory descriptor.
+fn rename_no_replace_at_blocking(
+    source: PathBuf,
+    destination_directory: std::fs::File,
+    destination_name: std::ffi::OsString,
+) -> std::io::Result<AtomicRenameOutcome> {
+    use std::{
+        ffi::CString,
+        os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    };
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let destination_name = CString::new(destination_name.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    // SAFETY: both path pointers are live NUL-terminated CStrings, the directory descriptor stays
+    // open for the call, and renameat2 retains none of these arguments.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            destination_directory.as_raw_fd(),
+            destination_name.as_ptr(),
+            libc::RENAME_NOREPLACE,
         )
     };
     classify_result(result)
@@ -189,6 +235,53 @@ mod tests {
         assert_eq!(
             tokio::fs::read_to_string(source).await.unwrap(),
             "destination"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn held_destination_directory_prevents_path_redirection() {
+        let temp_dir = TempDir::create();
+        let source = temp_dir.path().join("source");
+        let destination_parent = temp_dir.path().join("destination-parent");
+        let moved_parent = temp_dir.path().join("moved-parent");
+        let redirect_target = temp_dir.path().join("redirect-target");
+        tokio::fs::write(&source, "source").await.unwrap();
+        tokio::fs::create_dir(&destination_parent).await.unwrap();
+        tokio::fs::create_dir(&redirect_target).await.unwrap();
+        let directory = tokio::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&destination_parent)
+            .await
+            .unwrap()
+            .into_std()
+            .await;
+        tokio::fs::rename(&destination_parent, &moved_parent)
+            .await
+            .unwrap();
+        tokio::fs::symlink(&redirect_target, &destination_parent)
+            .await
+            .unwrap();
+
+        let outcome =
+            rename_no_replace_at(&source, directory, std::ffi::OsString::from("restored"))
+                .await
+                .unwrap();
+
+        // Publishing through the descriptor must target the directory that was actually opened.
+        assert_eq!(outcome, AtomicRenameOutcome::Renamed);
+        assert_eq!(
+            tokio::fs::read_to_string(moved_parent.join("restored"))
+                .await
+                .unwrap(),
+            "source"
+        );
+        // Replacing the pathname with a symlink must not redirect the restored payload.
+        assert!(
+            !tokio::fs::try_exists(redirect_target.join("restored"))
+                .await
+                .unwrap()
         );
     }
 }

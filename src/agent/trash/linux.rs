@@ -1,8 +1,8 @@
 use super::{TrashError, TrashService};
-use chrono::{NaiveDateTime, Utc};
+use chrono::{Local, NaiveDateTime, TimeZone};
 use redoor::{
     Level,
-    atomic_rename::{AtomicRenameOutcome, rename_no_replace},
+    atomic_rename::{AtomicRenameOutcome, rename_no_replace, rename_no_replace_at},
     commands::{CommandErrorKind, TrashItem, TrashListResponse, TrashLocation},
     log,
     types::UnixTimestampSeconds,
@@ -107,7 +107,7 @@ pub(super) async fn trash(service: &TrashService, path: PathBuf) -> Result<(), T
         ));
     }
     let metadata_path = metadata_original_path(&source, location.mount_top.as_deref())?;
-    let deletion_date = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let deletion_date = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     for attempt in 0..1024_u32 {
         let name = collision_name(basename, attempt);
         let payload = location.root.join("files").join(&name);
@@ -236,15 +236,25 @@ pub(super) async fn restore(
             "Trash original path has no parent",
         )
     })?;
-    let parent_metadata = tokio::fs::symlink_metadata(parent)
+    let parent_directory = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .await
+        .map_err(|error| {
+            if matches!(error.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) {
+                TrashError::new(
+                    CommandErrorKind::NotADirectory,
+                    "Trash restore parent must be an existing real directory",
+                )
+            } else {
+                TrashError::io("Failed to open restore parent", error)
+            }
+        })?;
+    let parent_metadata = parent_directory
+        .metadata()
         .await
         .map_err(|error| TrashError::io("Failed to inspect restore parent", error))?;
-    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
-        return Err(TrashError::new(
-            CommandErrorKind::NotADirectory,
-            "Trash restore parent must be an existing real directory",
-        ));
-    }
     let payload_metadata = tokio::fs::symlink_metadata(&item.payload)
         .await
         .map_err(|error| TrashError::io("Failed to inspect trash payload", error))?;
@@ -254,7 +264,19 @@ pub(super) async fn restore(
             "Trash payload and restore destination are on different devices",
         ));
     }
-    match rename_no_replace(&item.payload, &original).await {
+    let destination_name = original.file_name().ok_or_else(|| {
+        TrashError::new(
+            CommandErrorKind::InvalidInput,
+            "Trash original path has no filename",
+        )
+    })?;
+    match rename_no_replace_at(
+        &item.payload,
+        parent_directory.into_std().await,
+        destination_name.to_os_string(),
+    )
+    .await
+    {
         Ok(AtomicRenameOutcome::Renamed) => {}
         Ok(AtomicRenameOutcome::DestinationExists) => {
             return Err(TrashError::new(
@@ -300,12 +322,10 @@ async fn select_location(
     if let Some(root) = service.forced_root() {
         return location(root.to_path_buf(), None);
     }
-    let home = home_directory()?;
-    let home_metadata = tokio::fs::metadata(&home)
-        .await
-        .map_err(|error| TrashError::io("Failed to inspect home directory", error))?;
-    if source_metadata.dev() == home_metadata.dev() {
-        let root = home_trash_root(&home);
+    let home_root = home_trash_root(&home_directory()?);
+    let home_trash_device = nearest_existing_ancestor_device(&home_root).await?;
+    if source_metadata.dev() == home_trash_device {
+        let root = home_root;
         prepare_private_root(&root).await?;
         return location(root, None);
     }
@@ -409,7 +429,8 @@ fn parse_trashinfo(contents: &str, mount_top: Option<&Path>) -> Option<(i64, Opt
         } else if let Some(value) = line.strip_prefix("DeletionDate=") {
             deletion_date = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
                 .ok()
-                .map(|date| date.and_utc().timestamp());
+                .and_then(|date| Local.from_local_datetime(&date).earliest())
+                .map(|date| date.timestamp());
         }
     }
     let deleted_at = deletion_date?;
@@ -605,6 +626,30 @@ fn home_trash_root(home: &Path) -> PathBuf {
         .join("Trash")
 }
 
+/// Finds the device that will contain a potentially not-yet-created trash root.
+async fn nearest_existing_ancestor_device(path: &Path) -> Result<u64, TrashError> {
+    let mut candidate = path;
+    loop {
+        match tokio::fs::metadata(candidate).await {
+            Ok(metadata) => return Ok(metadata.dev()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                candidate = candidate.parent().ok_or_else(|| {
+                    TrashError::new(
+                        CommandErrorKind::InvalidInput,
+                        "Trash directory has no existing filesystem ancestor",
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(TrashError::io(
+                    "Failed to inspect trash directory ancestor",
+                    error,
+                ));
+            }
+        }
+    }
+}
+
 /// Selects the shared sticky trash only when secure, otherwise the private fallback.
 async fn mount_trash_root(mount_top: &Path) -> Result<PathBuf, TrashError> {
     let uid = nix::unistd::Uid::effective().as_raw();
@@ -743,6 +788,25 @@ mod tests {
         assert!(validate_identifier("../files/item").is_err());
     }
 
+    #[test]
+    fn deletion_dates_are_interpreted_in_local_time() {
+        let naive =
+            NaiveDateTime::parse_from_str("2020-01-01T00:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+        let expected = Local.from_local_datetime(&naive).earliest().unwrap();
+
+        let parsed = parse_trashinfo(
+            "[Trash Info]
+Path=/tmp/file
+DeletionDate=2020-01-01T00:00:00
+",
+            None,
+        )
+        .unwrap();
+
+        // Freedesktop metadata omits an offset, so parsing must use the host's local timezone.
+        assert_eq!(parsed.0, expected.timestamp());
+    }
+
     #[tokio::test]
     async fn private_root_creation_refuses_symlinked_components() {
         let temp_dir = TempDir::create();
@@ -760,6 +824,22 @@ mod tests {
         assert!(
             !tokio::fs::try_exists(real.join("Trash")).await.unwrap(),
             "refusing the symlink must leave its target untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn home_trash_device_uses_the_nearest_existing_ancestor() {
+        let temp_dir = TempDir::create();
+        let missing_root = temp_dir.path().join("data/missing/Trash");
+        let expected_device = tokio::fs::metadata(temp_dir.path()).await.unwrap().dev();
+
+        let device = nearest_existing_ancestor_device(&missing_root)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            device, expected_device,
+            "a missing XDG trash root must inherit the filesystem of its existing ancestor"
         );
     }
 }
