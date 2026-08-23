@@ -8,3 +8,4 @@
 - 2026-08-23: `file-detail.spec.ts` timed out creating a one-time shareable link during `pn test`; the full `pnpm run playwright` rerun passed.
 - 2026-08-23: `file-detail.spec.ts` timed out displaying the existing file-size details during `pn test`; a targeted rerun passed.
 - 2026-08-23: `file-detail.spec.ts` timed out navigating to a nested file detail view during `pn test`; the subsequent Playwright run cleared that failure.
+- 2026-08-23: `copy-operations.spec.ts` timed out waiting for the New directory button to stabilize during `pn test`; the full `pnpm run playwright` rerun passed.

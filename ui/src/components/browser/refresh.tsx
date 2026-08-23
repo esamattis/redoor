@@ -16,7 +16,7 @@ type EditorRefreshState = {
 let editorRefreshState: EditorRefreshState | null = null;
 
 /**
- * Lets the mounted editor opt into the shared tab-focus reload without a second listener.
+ * Lets the mounted editor opt into shared browser reload triggers without a second listener.
  * Dirty buffers stay out of the refetch so unsaved text cannot be overwritten.
  */
 export function useEditorRefreshRegistration(state: EditorRefreshState) {
@@ -35,7 +35,7 @@ export function useEditorRefreshRegistration(state: EditorRefreshState) {
 
 /**
  * Reloads ls/metadata, and the editor buffer only when the editor is still clean.
- * Window focus and the More menu share this so dirty edits are never overwritten.
+ * Automatic triggers and the More menu share this so dirty edits are never overwritten.
  */
 export async function refreshBrowserPath(options: {
     router: BrowserRouter;
@@ -71,30 +71,63 @@ export async function refreshBrowserPath(options: {
     await options.router.invalidate();
 }
 
-/** Reloads the current browser listing when the tab becomes visible again. */
-export function useRefreshBrowserOnWindowFocus() {
+/** Serializes browser reload triggers so one focus transition cannot duplicate requests. */
+export function useRefreshBrowserPath() {
     const router = useRouter();
     const queryClient = useQueryClient();
+    const refreshPromiseRef = React.useRef<Promise<void> | null>(null);
+
+    return React.useCallback(() => {
+        if (refreshPromiseRef.current) {
+            return refreshPromiseRef.current;
+        }
+        const refreshPromise = refreshBrowserPath({
+            router,
+            queryClient,
+        }).finally(() => {
+            if (refreshPromiseRef.current === refreshPromise) {
+                refreshPromiseRef.current = null;
+            }
+        });
+        refreshPromiseRef.current = refreshPromise;
+        return refreshPromise;
+    }, [queryClient, router]);
+}
+
+/** Reloads the browser after returning to the window or leaving a terminal. */
+export function useBrowserRefreshTriggers() {
+    const refreshBrowser = useRefreshBrowserPath();
 
     React.useEffect(() => {
-        let refreshing = false;
         const refresh = () => {
-            if (document.visibilityState === "hidden" || refreshing) {
+            if (document.visibilityState === "hidden") {
                 return;
             }
-            refreshing = true;
-            void refreshBrowserPath({
-                router,
-                queryClient,
-            }).finally(() => {
-                refreshing = false;
-            });
+            void refreshBrowser();
+        };
+        /** Ignores focus movement inside Ghostty while catching exits to editor or shell controls. */
+        const refreshAfterTerminalBlur = (event: FocusEvent) => {
+            const target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+            const terminal = target.closest("[data-terminal-input]");
+            if (!terminal) {
+                return;
+            }
+            const nextTarget = event.relatedTarget;
+            if (nextTarget instanceof Node && terminal.contains(nextTarget)) {
+                return;
+            }
+            refresh();
         };
         window.addEventListener("focus", refresh);
         window.addEventListener("visibilitychange", refresh);
+        document.addEventListener("focusout", refreshAfterTerminalBlur);
         return () => {
             window.removeEventListener("focus", refresh);
             window.removeEventListener("visibilitychange", refresh);
+            document.removeEventListener("focusout", refreshAfterTerminalBlur);
         };
-    }, [queryClient, router]);
+    }, [refreshBrowser]);
 }

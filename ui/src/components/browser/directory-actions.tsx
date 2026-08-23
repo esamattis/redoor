@@ -1,7 +1,7 @@
 import React from "react";
 import { useSetAtom } from "jotai";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import {
     ClipboardPaste,
     Eye,
@@ -26,7 +26,7 @@ import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
 import { enqueueUploadBatchAtom } from "#ui/upload-queue";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
-import { refreshBrowserPath } from "#ui/components/browser/refresh";
+import { useRefreshBrowserPath } from "#ui/components/browser/refresh";
 
 /** Sends file and directory selections through the same bounded global queue. */
 function UploadFilesAction(props: { agent: Agent; directoryPath: string }) {
@@ -463,8 +463,7 @@ export function DirectoryFilesActions(props: {
     showHiddenFiles: boolean;
     onToggleHiddenFiles: () => void;
 }) {
-    const router = useRouter();
-    const queryClient = useQueryClient();
+    const refreshBrowser = useRefreshBrowserPath();
     const [isReloading, setIsReloading] = React.useState(false);
     const directoryName =
         props.directoryPath.split("/").filter(Boolean).pop() ?? "/";
@@ -477,10 +476,7 @@ export function DirectoryFilesActions(props: {
         }
         setIsReloading(true);
         try {
-            await refreshBrowserPath({
-                router,
-                queryClient,
-            });
+            await refreshBrowser();
         } finally {
             setIsReloading(false);
         }

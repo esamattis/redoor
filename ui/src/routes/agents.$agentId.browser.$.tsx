@@ -44,7 +44,7 @@ import {
     gitStatusQueryOptions,
     queryKeys,
 } from "#ui/queries";
-import { useRefreshBrowserOnWindowFocus } from "#ui/components/browser/refresh";
+import { useBrowserRefreshTriggers } from "#ui/components/browser/refresh";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
 
@@ -297,7 +297,7 @@ function FileBrowser() {
     const { api } = Route.useRouteContext();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
-    useRefreshBrowserOnWindowFocus();
+    useBrowserRefreshTriggers();
 
     const parentPath = getImmediateParentPath(path);
     const gitAvailable = data.gitContext.status === "inside_worktree";
