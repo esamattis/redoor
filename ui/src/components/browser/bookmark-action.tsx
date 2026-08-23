@@ -1,12 +1,49 @@
 import { Bookmark, BookmarkCheck } from "lucide-react";
 
 import { ActionMenuButton } from "#ui/components/action-menu";
+import { Button } from "#ui/components/button";
+import { Tooltip } from "#ui/components/tooltip";
 import {
     isPathBookmarked,
     toggleBookmark,
     useUserState,
     type Bookmark as BookmarkEntry,
 } from "#ui/user-state";
+
+/** Keeps direct bookmark controls consistent with bookmark actions in menus. */
+export function BookmarkButton(props: { bookmark: BookmarkEntry }) {
+    const [userState, setUserState] = useUserState();
+    const isBookmarked = isPathBookmarked(userState.bookmarks, props.bookmark);
+    const label = isBookmarked ? "Remove bookmark" : "Bookmark";
+
+    return (
+        <Tooltip content={label}>
+            <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                aria-label={label}
+                onClick={() => {
+                    setUserState((current) => ({
+                        ...current,
+                        bookmarks: toggleBookmark(
+                            current.bookmarks,
+                            props.bookmark,
+                        ),
+                    }));
+                }}
+                className="rounded-md px-3.5 font-semibold"
+            >
+                {isBookmarked ? (
+                    <BookmarkCheck className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                    <Bookmark className="h-4 w-4" aria-hidden="true" />
+                )}
+                {label}
+            </Button>
+        </Tooltip>
+    );
+}
 
 /** Lets every path menu persist the same bookmark document through user state. */
 export function BookmarkMenuButton(props: {

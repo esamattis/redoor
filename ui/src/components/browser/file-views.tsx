@@ -1,10 +1,17 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import { Download, MoreHorizontal, RefreshCw, Save } from "lucide-react";
+import {
+    Download,
+    LoaderCircle,
+    MoreHorizontal,
+    RefreshCw,
+    Save,
+} from "lucide-react";
 import type { Agent } from "#ui/api-client";
-import { ActionMenu } from "#ui/components/action-menu";
+import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
+import { BookmarkButton } from "#ui/components/browser/bookmark-action";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import {
     PersistentPathActions,
@@ -27,11 +34,13 @@ function FileEditActions(props: {
     isSaved: boolean;
     canEdit: boolean;
     isDirty: boolean;
-    isReloading: boolean;
     isSaving: boolean;
-    downloadUrl: string;
-    fileName: string;
-    onReload: () => void;
+    bookmark: {
+        agentId: string;
+        path: string;
+        name: string;
+        entryType: "file";
+    };
     onSave: () => void;
 }) {
     return (
@@ -50,35 +59,7 @@ function FileEditActions(props: {
                     {props.isSaving ? "Saving..." : "Save"}
                 </Button>
             </Tooltip>
-            <Tooltip content="Reload file contents from the agent">
-                <Button
-                    type="button"
-                    variant="secondary"
-                    aria-label="Reload file contents"
-                    onClick={props.onReload}
-                    disabled={!props.canEdit || props.isSaving}
-                    isLoading={props.isReloading}
-                    size="sm"
-                    className="rounded-md bg-slate-800/80 px-3.5 font-semibold hover:bg-slate-700"
-                >
-                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                    {props.isReloading ? "Reloading..." : "Reload"}
-                </Button>
-            </Tooltip>
-            <Tooltip content="Download file">
-                <Button
-                    as="a"
-                    href={props.downloadUrl}
-                    download={props.fileName}
-                    aria-label="Download file"
-                    variant="secondary"
-                    size="sm"
-                    className="rounded-md bg-slate-800/80 px-3.5 font-semibold hover:bg-slate-700"
-                >
-                    <Download className="h-4 w-4" aria-hidden="true" />
-                    Download
-                </Button>
-            </Tooltip>
+            <BookmarkButton bookmark={props.bookmark} />
             {props.statusMessage ? (
                 <span
                     role="status"
@@ -104,6 +85,11 @@ function EditorOptionsMenu(props: {
     agent: Agent;
     path: string;
     fileName: string;
+    canEdit: boolean;
+    isReloading: boolean;
+    isSaving: boolean;
+    downloadUrl: string;
+    onReload: () => void;
 }) {
     const [userState, setUserState] = useUserState();
 
@@ -118,6 +104,31 @@ function EditorOptionsMenu(props: {
         >
             {(close) => (
                 <>
+                    <ActionMenuButton
+                        disabled={!props.canEdit || props.isSaving}
+                        onClick={() => {
+                            close();
+                            props.onReload();
+                        }}
+                    >
+                        {props.isReloading ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
+                        ) : (
+                            <RefreshCw className="h-4 w-4 text-slate-400" />
+                        )}
+                        {props.isReloading ? "Reloading..." : "Reload"}
+                    </ActionMenuButton>
+                    <ActionMenuButton asChild>
+                        <a
+                            href={props.downloadUrl}
+                            download={props.fileName}
+                            onClick={close}
+                        >
+                            <Download className="h-4 w-4 text-slate-400" />
+                            Download
+                        </a>
+                    </ActionMenuButton>
+                    <div className="my-1 border-t border-slate-800" />
                     <SelectPathMenuButton
                         agent={props.agent}
                         path={props.path}
@@ -301,11 +312,13 @@ export function FileEditView(props: {
                                 isSaved={saveMutation.isSuccess}
                                 canEdit={canEdit}
                                 isDirty={isDirty}
-                                isReloading={contentQuery.isFetching}
                                 isSaving={saveMutation.isPending}
-                                downloadUrl={props.downloadUrl}
-                                fileName={props.fileName}
-                                onReload={handleReload}
+                                bookmark={{
+                                    agentId: props.agent.id,
+                                    path: props.filePath,
+                                    name: props.fileName,
+                                    entryType: "file",
+                                }}
                                 onSave={handleSave}
                             />
                         </div>
@@ -321,6 +334,11 @@ export function FileEditView(props: {
                                 agent={props.agent}
                                 path={props.filePath}
                                 fileName={props.fileName}
+                                canEdit={canEdit}
+                                isReloading={contentQuery.isFetching}
+                                isSaving={saveMutation.isPending}
+                                downloadUrl={props.downloadUrl}
+                                onReload={handleReload}
                             />
                         </div>
                     </div>

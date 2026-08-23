@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -20,6 +20,12 @@ async function expectEditorText(editor: Locator, text: string) {
 async function fillEditor(editor: Locator, text: string) {
     await editor.click();
     await editor.fill(text);
+}
+
+/** Opens the editor overflow so secondary actions can be exercised by accessible name. */
+async function openEditorOptions(page: Page) {
+    await page.getByRole("button", { name: "Editor options" }).click();
+    return page.getByRole("dialog", { name: "Editor options" });
 }
 
 test.describe.serial("File Edit View", () => {
@@ -59,11 +65,25 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toBeDisabled();
+        const saveBox = await page
+            .getByRole("button", { name: "Save file" })
+            .boundingBox();
+        const bookmarkBox = await page
+            .getByRole("button", { name: "Bookmark", exact: true })
+            .boundingBox();
+        expect(saveBox).not.toBeNull();
+        expect(bookmarkBox).not.toBeNull();
+        if (saveBox === null || bookmarkBox === null) {
+            throw new Error("expected editor action measurements");
+        }
+        // Bookmark is the next persistent toolbar action after Save.
+        expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
+        const editorOptions = await openEditorOptions(page);
         await expect(
-            page.getByRole("button", { name: "Reload file contents" }),
+            editorOptions.getByRole("button", { name: "Reload", exact: true }),
         ).toBeEnabled();
         await expect(
-            page.getByRole("link", { name: "Download file" }),
+            editorOptions.getByRole("link", { name: "Download", exact: true }),
         ).toHaveAttribute("href", /[?&]download=1$/);
     });
 
@@ -239,9 +259,12 @@ test.describe.serial("File Edit View", () => {
         await expect(
             editorPanel.getByRole("button", { name: "Save file" }),
         ).toBeVisible();
+        const editorOptions = await openEditorOptions(page);
         await expect(
-            editorPanel.getByRole("button", { name: "Reload file contents" }),
+            editorOptions.getByRole("button", { name: "Reload", exact: true }),
         ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(editorOptions).toBeHidden();
 
         await page.getByLabel("File editor").press("ControlOrMeta+f");
         // Search remains inside the expanded panel rather than behind the overlay.
@@ -376,7 +399,7 @@ test.describe.serial("File Edit View", () => {
         expect(downloadsAfterOpen).toBeGreaterThan(0);
         expect(downloadsAfterOpen).toBeLessThanOrEqual(2);
         await page
-            .getByRole("button", { name: "Reload file contents" })
+            .getByRole("button", { name: "Bookmark", exact: true })
             .focus();
         await fs.writeFile(filePath, "changed before refocus");
         await editor.focus();
@@ -406,8 +429,9 @@ test.describe.serial("File Edit View", () => {
         await fillEditor(editor, "temporary unsaved text");
         await expectEditorText(editor, "temporary unsaved text");
         // Reload must not discard the draft before the existing confirmation is accepted.
-        await page
-            .getByRole("button", { name: "Reload file contents" })
+        let editorOptions = await openEditorOptions(page);
+        await editorOptions
+            .getByRole("button", { name: "Reload", exact: true })
             .click();
         const confirmDialog = page.getByRole("dialog", {
             name: "Discard unsaved changes?",
@@ -416,8 +440,9 @@ test.describe.serial("File Edit View", () => {
         await confirmDialog.getByRole("button", { name: "Cancel" }).click();
         await expectEditorText(editor, "temporary unsaved text");
 
-        await page
-            .getByRole("button", { name: "Reload file contents" })
+        editorOptions = await openEditorOptions(page);
+        await editorOptions
+            .getByRole("button", { name: "Reload", exact: true })
             .click();
         await confirmDialog
             .getByRole("button", { name: "Discard changes" })
@@ -435,8 +460,9 @@ test.describe.serial("File Edit View", () => {
         await expectEditorText(editor, "original buffer");
 
         await fs.writeFile(filePath, "manually reloaded");
-        await page
-            .getByRole("button", { name: "Reload file contents" })
+        const editorOptions = await openEditorOptions(page);
+        await editorOptions
+            .getByRole("button", { name: "Reload", exact: true })
             .click();
 
         // Reload remains available for clean editors and replaces cached content.
@@ -742,8 +768,9 @@ test.describe.serial("File Edit View", () => {
 
         const editor = page.getByLabel("File editor");
         await fillEditor(editor, "temporary draft");
-        await page
-            .getByRole("button", { name: "Reload file contents" })
+        const editorOptions = await openEditorOptions(page);
+        await editorOptions
+            .getByRole("button", { name: "Reload", exact: true })
             .click();
         await page
             .getByRole("dialog", { name: "Discard unsaved changes?" })
@@ -792,8 +819,9 @@ test.describe.serial("File Edit View", () => {
         expect(dirtyReloadBlocked).toBe(true);
         await expectEditorText(editor, "do not lose this");
 
-        await page
-            .getByRole("button", { name: "Reload file contents" })
+        const editorOptions = await openEditorOptions(page);
+        await editorOptions
+            .getByRole("button", { name: "Reload", exact: true })
             .click();
         await page
             .getByRole("dialog", { name: "Discard unsaved changes?" })
