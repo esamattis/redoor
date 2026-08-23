@@ -28,6 +28,45 @@ Vim.defineEx("write", "w", () => {
     vimWriteRef.current();
 });
 
+/** Reclaims editor focus from an active shell when the global Alt-e shortcut is used. */
+function useFocusEditorShortcut(view: EditorView | null) {
+    React.useEffect(() => {
+        if (view === null) {
+            return;
+        }
+        let focusCorrectionTimer: number | undefined;
+
+        /** Returns from a focused shell without typing e into the session. */
+        const handleFocusEditorShortcut = (event: KeyboardEvent) => {
+            if (
+                !isUnmodifiedAltKey(event, "e") ||
+                !isTerminalInputTarget(event.target)
+            ) {
+                return;
+            }
+            event.preventDefault();
+            view.focus();
+            window.clearTimeout(focusCorrectionTimer);
+            focusCorrectionTimer = window.setTimeout(() => {
+                // Ghostty retries focus asynchronously, so reclaim it only if that retry won.
+                if (isTerminalInputTarget(document.activeElement)) {
+                    view.focus();
+                }
+            }, 0);
+        };
+
+        window.addEventListener("keydown", handleFocusEditorShortcut, true);
+        return () => {
+            window.clearTimeout(focusCorrectionTimer);
+            window.removeEventListener(
+                "keydown",
+                handleFocusEditorShortcut,
+                true,
+            );
+        };
+    }, [view]);
+}
+
 /**
  * Presentational CodeMirror surface so FileEditView can keep query/draft ownership.
  * A bounded height lets CodeMirror virtualize the viewport instead of growing the page.
@@ -163,41 +202,7 @@ export function CodeEditor(props: {
         props.wrapLines,
     ]);
 
-    React.useEffect(() => {
-        if (view === null) {
-            return;
-        }
-        let focusCorrectionTimer: number | undefined;
-
-        /** Returns from a focused shell without typing e into the session. */
-        const handleFocusEditorShortcut = (event: KeyboardEvent) => {
-            if (
-                !isUnmodifiedAltKey(event, "e") ||
-                !isTerminalInputTarget(event.target)
-            ) {
-                return;
-            }
-            event.preventDefault();
-            view.focus();
-            window.clearTimeout(focusCorrectionTimer);
-            focusCorrectionTimer = window.setTimeout(() => {
-                // Ghostty retries focus asynchronously, so reclaim it only if that retry won.
-                if (isTerminalInputTarget(document.activeElement)) {
-                    view.focus();
-                }
-            }, 0);
-        };
-
-        window.addEventListener("keydown", handleFocusEditorShortcut, true);
-        return () => {
-            window.clearTimeout(focusCorrectionTimer);
-            window.removeEventListener(
-                "keydown",
-                handleFocusEditorShortcut,
-                true,
-            );
-        };
-    }, [view]);
+    useFocusEditorShortcut(view);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

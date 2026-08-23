@@ -249,6 +249,68 @@ function useFileSaveShortcut(onSave: () => void) {
     }, [onSave]);
 }
 
+/** Selects the editor body without coupling its loading states to draft ownership. */
+function FileEditorSurface(props: {
+    isPending: boolean;
+    error?: Error;
+    content: string;
+    fileName: string;
+    editable: boolean;
+    vimMode: boolean;
+    wrapLines: boolean;
+    searchHandleRef: React.RefObject<EditorSearchHandle | null>;
+    onChange: (content: string) => void;
+    onFocus: () => void;
+    onSave: () => void;
+    onSelectionChange: (selection: EditorSelection | null) => void;
+}) {
+    if (props.isPending) {
+        return <p className="p-4 text-sm text-slate-400">Loading file...</p>;
+    }
+    if (props.error !== undefined) {
+        return (
+            <p className="p-4 text-sm text-red-300">
+                {getErrorMessage(props.error, "Failed to load file")}
+            </p>
+        );
+    }
+    return (
+        <CodeEditor
+            value={props.content}
+            fileName={props.fileName}
+            editable={props.editable}
+            vimMode={props.vimMode}
+            wrapLines={props.wrapLines}
+            onChange={props.onChange}
+            onFocus={props.onFocus}
+            onSave={props.onSave}
+            onSelectionChange={props.onSelectionChange}
+            searchHandleRef={props.searchHandleRef}
+        />
+    );
+}
+
+/** Chooses the single editor status announced beside file actions. */
+function getFileEditorStatus(props: {
+    isLoading: boolean;
+    loadError?: Error;
+    isSaving: boolean;
+    isSaved: boolean;
+    saveError?: Error;
+    isDirty: boolean;
+}): string | null {
+    if (props.isLoading) return "Loading file...";
+    if (props.loadError) {
+        return getErrorMessage(props.loadError, "Failed to load file");
+    }
+    if (props.isSaving) return "Saving...";
+    if (props.isSaved) return "Saved";
+    if (props.saveError) {
+        return getErrorMessage(props.saveError, "Failed to save file");
+    }
+    return props.isDirty ? "Unsaved changes" : null;
+}
+
 /** Edits file contents in a viewport-bounded CodeMirror with explicit save/reload. */
 export function FileEditView(props: {
     agent: Agent;
@@ -328,19 +390,14 @@ export function FileEditView(props: {
 
     useFileSaveShortcut(handleSave);
 
-    const statusMessage = contentQuery.isPending
-        ? "Loading file..."
-        : contentQuery.isError
-          ? getErrorMessage(contentQuery.error, "Failed to load file")
-          : saveMutation.isPending
-            ? "Saving..."
-            : saveMutation.isSuccess
-              ? "Saved"
-              : saveMutation.isError
-                ? getErrorMessage(saveMutation.error, "Failed to save file")
-                : isDirty
-                  ? "Unsaved changes"
-                  : null;
+    const statusMessage = getFileEditorStatus({
+        isLoading: contentQuery.isPending,
+        loadError: contentQuery.isError ? contentQuery.error : undefined,
+        isSaving: saveMutation.isPending,
+        isSaved: saveMutation.isSuccess,
+        saveError: saveMutation.isError ? saveMutation.error : undefined,
+        isDirty,
+    });
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
@@ -415,40 +472,29 @@ export function FileEditView(props: {
                 </header>
 
                 <div className="flex min-h-0 flex-1 flex-col">
-                    {contentQuery.isPending ? (
-                        <p className="p-4 text-sm text-slate-400">
-                            Loading file...
-                        </p>
-                    ) : contentQuery.isError ? (
-                        <p className="p-4 text-sm text-red-300">
-                            {getErrorMessage(
-                                contentQuery.error,
-                                "Failed to load file",
-                            )}
-                        </p>
-                    ) : (
-                        <CodeEditor
-                            value={content}
-                            fileName={props.fileName}
-                            editable={canEdit}
-                            vimMode={userState.vimMode}
-                            wrapLines={userState.wrapEditorLines}
-                            onChange={(nextContent) => {
-                                setDraft(nextContent);
-                                if (saveMutation.isSuccess) {
-                                    saveMutation.reset();
-                                }
-                            }}
-                            onFocus={() => {
-                                if (!isDirty) {
-                                    reloadFile();
-                                }
-                            }}
-                            onSave={handleSave}
-                            onSelectionChange={setSelection}
-                            searchHandleRef={searchHandleRef}
-                        />
-                    )}
+                    <FileEditorSurface
+                        isPending={contentQuery.isPending}
+                        error={
+                            contentQuery.isError
+                                ? contentQuery.error
+                                : undefined
+                        }
+                        content={content}
+                        fileName={props.fileName}
+                        editable={canEdit}
+                        vimMode={userState.vimMode}
+                        wrapLines={userState.wrapEditorLines}
+                        onChange={(nextContent) => {
+                            setDraft(nextContent);
+                            if (saveMutation.isSuccess) saveMutation.reset();
+                        }}
+                        onFocus={() => {
+                            if (!isDirty) reloadFile();
+                        }}
+                        onSave={handleSave}
+                        onSelectionChange={setSelection}
+                        searchHandleRef={searchHandleRef}
+                    />
                 </div>
             </article>
             <ConfirmationDialog
@@ -467,12 +513,8 @@ export function FileEditView(props: {
                 title="Discard unsaved changes?"
                 description="Your edits have not been saved. Leaving this page will lose them."
                 confirmLabel="Discard changes"
-                onClose={() => {
-                    navigationBlocker.reset?.();
-                }}
-                onConfirm={() => {
-                    navigationBlocker.proceed?.();
-                }}
+                onClose={() => navigationBlocker.reset?.()}
+                onConfirm={() => navigationBlocker.proceed?.()}
             />
         </div>
     );
