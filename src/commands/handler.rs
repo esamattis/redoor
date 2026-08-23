@@ -99,7 +99,7 @@ impl CommandHandler {
             Command::Metadata { path } => metadata::execute(path).await,
             Command::GitContext { path } => git::context(path).await,
             Command::GitStatus { path } => git::status(path).await,
-            Command::GitDiff { path, mode } => git::diff(path, mode).await,
+            Command::GitDiff { files, mode } => git::diff(files, mode).await,
             Command::MoveMetadata { path } => self.move_metadata(path).await,
             Command::DeleteMoveSource {
                 path,

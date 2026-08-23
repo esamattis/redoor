@@ -25,7 +25,11 @@ import {
     FileDetailView,
 } from "#ui/components/browser/metadata";
 import { SyncView } from "#ui/components/browser/sync";
-import { GitDirectoryView, GitFileView } from "#ui/components/browser/git";
+import {
+    GitDirectoryView,
+    GitFileView,
+    groupGitStatusEntries,
+} from "#ui/components/browser/git";
 import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
 import {
     getImmediateParentPath,
@@ -46,6 +50,7 @@ import type { MountPoint } from "#bindings/MountPoint";
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync" | "git";
+    diff?: boolean;
 };
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
@@ -58,8 +63,9 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             search.view === "git"
                 ? search.view
                 : undefined,
+        diff: search.diff === true || search.diff === "true" ? true : undefined,
     }),
-    loaderDeps: ({ search }) => ({ view: search.view }),
+    loaderDeps: ({ search }) => ({ view: search.view, diff: search.diff }),
     loader: async ({ context, deps, params, parentMatchPromise }) => {
         const agentMatch = await parentMatchPromise;
         const agentLoaderData = agentMatch.loaderData;
@@ -141,13 +147,24 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 gitContext.status === "inside_worktree"
             ) {
                 if (isLsDirectoryResponse(lsResult)) {
-                    await context.queryClient.fetchQuery({
+                    const status = await context.queryClient.fetchQuery({
                         ...gitStatusQueryOptions(agent, lsResult.path),
                         staleTime: 0,
                     });
+                    if (deps.diff === true) {
+                        const files = groupGitStatusEntries(
+                            status.entries,
+                        ).diffEntries.map((entry) => entry.path);
+                        if (files.length > 0) {
+                            await context.queryClient.fetchQuery({
+                                ...gitDiffQueryOptions(agent, files, "full"),
+                                staleTime: 0,
+                            });
+                        }
+                    }
                 } else {
                     await context.queryClient.fetchQuery({
-                        ...gitDiffQueryOptions(agent, lsResult.path, "full"),
+                        ...gitDiffQueryOptions(agent, [lsResult.path], "full"),
                         staleTime: 0,
                     });
                 }
@@ -179,7 +196,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 gitContext.tracking_state === "deleted"
             ) {
                 await context.queryClient.fetchQuery({
-                    ...gitDiffQueryOptions(agent, path, "full"),
+                    ...gitDiffQueryOptions(agent, [path], "full"),
                     staleTime: 0,
                 });
                 return {
@@ -355,6 +372,7 @@ function FileBrowser() {
                 lsResult={lsResult}
                 mountPoints={data.mountPoints}
                 view={search.view}
+                showDiffs={search.diff === true}
                 gitAvailable={gitAvailable}
             />
         );
@@ -456,6 +474,7 @@ function DirectoryBrowserPage(props: {
     lsResult: LsDirectoryResponse;
     mountPoints: MountPoint[];
     view?: "details" | "edit" | "diff" | "sync" | "git";
+    showDiffs: boolean;
     gitAvailable: boolean;
 }) {
     const [userState, setUserState] = useUserState();
@@ -496,7 +515,11 @@ function DirectoryBrowserPage(props: {
             gitAvailable={props.gitAvailable}
         >
             {activeView === "git" ? (
-                <GitDirectoryView agent={props.agent} path={lsResult.path} />
+                <GitDirectoryView
+                    agent={props.agent}
+                    path={lsResult.path}
+                    showDiffs={props.showDiffs}
+                />
             ) : activeView === "details" ? (
                 <DirectoryDetailView
                     agent={props.agent}

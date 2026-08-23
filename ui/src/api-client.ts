@@ -63,6 +63,7 @@ import type { UserStateResponse } from "#bindings/UserStateResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";
+import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import { z } from "zod";
 
@@ -488,18 +489,19 @@ export class Agent {
         );
     }
 
-    /** Compares one file with HEAD using either worktree or index contents. */
-    async gitDiff(path: string, mode: GitDiffMode): Promise<GitDiffResponse> {
-        const url = new URL(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/diff`,
-                path,
-            )}`,
-        );
-        url.searchParams.set("mode", mode);
+    /** Compares ordered files with HEAD using either worktree or index contents. */
+    async gitDiff(
+        files: string[],
+        mode: GitDiffMode,
+    ): Promise<GitDiffResponse> {
+        const request: GitDiffRequest = { files, mode };
         return apiRequest<GitDiffResponse>(
-            url.toString(),
-            undefined,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/git/diff`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
             this.requestContext,
         );
     }

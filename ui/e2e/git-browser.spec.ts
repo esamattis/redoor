@@ -112,6 +112,39 @@ test.describe.serial("Git browser", () => {
             page.getByRole("link", { name: "ignored.txt", exact: true }),
         ).toHaveCount(0);
 
+        await page.getByRole("link", { name: "Load all diffs" }).click();
+        // The directory action remains a normal link whose search flag drives loader prefetching.
+        await expect(page).toHaveURL(/\bview=git\b.*\bdiff=true\b/);
+        const directoryDiffs = page.getByRole("region", {
+            name: /Git diff for/,
+        });
+        await expect(directoryDiffs).toHaveCount(5);
+        // Patches follow first appearance in the grouped status rows, with duplicate rows de-duplicated.
+        expect(
+            await directoryDiffs.evaluateAll((regions) =>
+                regions.map((region) => region.getAttribute("aria-label")),
+            ),
+        ).toEqual([
+            `Git diff for ${trackedPath}`,
+            `Git diff for ${binaryPath}`,
+            `Git diff for ${deletedPath}`,
+            `Git diff for ${largePath}`,
+            `Git diff for ${untrackedPath}`,
+        ]);
+        const untrackedSection = page.getByRole("region", {
+            name: `Git diff for ${untrackedPath}`,
+        });
+        // Untracked content is a real empty-to-worktree patch and uses the shared diff table.
+        await expect(untrackedSection).toContainText("untracked content");
+        await page
+            .getByRole("heading", { name: /Untracked files/ })
+            .locator("..")
+            .getByRole("link", { name: "Diff" })
+            .click();
+        // File-list anchors target the matching rendered patch without another navigation.
+        await expect(page).toHaveURL(/#git-diff-4$/);
+        await expect(untrackedSection).toBeInViewport();
+
         await page
             .getByRole("link", { name: "tracked.txt", exact: true })
             .first()
@@ -165,8 +198,10 @@ test.describe.serial("Git browser", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(untrackedPath)}?view=git`,
         );
-        // Direct untracked files explain why no synthetic patch exists.
-        await expect(page.getByText(/This file is untracked/)).toBeVisible();
+        // Direct untracked files use the same pure-addition rendering as directory batches.
+        await expect(
+            page.getByRole("region", { name: "Full Git diff" }),
+        ).toContainText("untracked content");
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(ignoredPath)}?view=git`,
         );

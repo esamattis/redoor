@@ -22,8 +22,8 @@ export const queryKeys = {
         [...queryKeys.git(), agentId, "context", path] as const,
     gitStatus: (agentId: string, path: string) =>
         [...queryKeys.git(), agentId, "status", path] as const,
-    gitDiff: (agentId: string, path: string, mode: GitDiffMode) =>
-        [...queryKeys.git(), agentId, "diff", path, mode] as const,
+    gitDiff: (agentId: string, files: string[], mode: GitDiffMode) =>
+        [...queryKeys.git(), agentId, "diff", files, mode] as const,
     trash: (agentId: string) =>
         [...queryKeys.all, "agents", agentId, "trash"] as const,
     fileSearch: (
@@ -118,15 +118,15 @@ export function gitStatusQueryOptions(agent: Agent, path: string) {
     });
 }
 
-/** Keeps full and staged file comparisons in distinct cache entries. */
+/** Keeps ordered full and staged file comparisons in distinct cache entries. */
 export function gitDiffQueryOptions(
     agent: Agent,
-    path: string,
+    files: string[],
     mode: GitDiffMode,
 ) {
     return queryOptions({
-        queryKey: queryKeys.gitDiff(agent.id, path, mode),
-        queryFn: () => agent.gitDiff(path, mode),
+        queryKey: queryKeys.gitDiff(agent.id, files, mode),
+        queryFn: () => agent.gitDiff(files, mode),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

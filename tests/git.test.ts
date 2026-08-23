@@ -6,6 +6,8 @@ import { Agent } from "#ui/api-client";
 import type { ErrorResponse } from "#bindings/ErrorResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";
+import type { GitFileDiff } from "#bindings/GitFileDiff";
+import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import {
     ProcessManager,
@@ -68,9 +70,25 @@ describe("Git browser REST API", () => {
         return gitRequest<GitStatusResponse>("status", path);
     }
 
-    /** Fetches a typed diff while keeping production API-client changes out of backend scope. */
-    async function gitDiff(path: string, query = ""): Promise<GitDiffResponse> {
-        return gitRequest<GitDiffResponse>("diff", path, query);
+    /** Posts ordered files through the production client to cover the body-based diff API. */
+    async function gitDiffFiles(
+        files: string[],
+        mode: GitDiffMode = "full",
+    ): Promise<GitDiffResponse> {
+        return testAgent.gitDiff(files, mode);
+    }
+
+    /** Keeps single-file assertions concise while the API remains batch-oriented. */
+    async function gitDiff(path: string, query = ""): Promise<GitFileDiff> {
+        const response = await gitDiffFiles(
+            [path],
+            query === "?mode=staged" ? "staged" : "full",
+        );
+        const diff = response.diffs[0];
+        if (diff === undefined) {
+            throw new Error("Git diff response omitted the requested file");
+        }
+        return diff;
     }
 
     /** Initializes deterministic local identity without relying on the host Git configuration. */
@@ -115,8 +133,11 @@ describe("Git browser REST API", () => {
         // Ignored files have an explicit result instead of exposing their worktree content.
         expect(ignoredDiff.result.type).toBe("ignored");
         const untrackedDiff = await gitDiff(untracked);
-        // Untracked files likewise avoid synthesizing a misleading HEAD comparison.
-        expect(untrackedDiff.result.type).toBe("untracked");
+        // Full-mode untracked files compare an empty source with their worktree content.
+        expect(untrackedDiff.result).toMatchObject({
+            type: "text",
+            unified_diff: expect.stringContaining("+untracked"),
+        });
 
         await rm(tracked);
         const deletedContext = await gitContext(tracked);
@@ -241,6 +262,18 @@ describe("Git browser REST API", () => {
         expect(stagedPatch).not.toContain("worktree");
         // Git-compatible labels retain Unicode and spaces without invoking external diff tools.
         expect(fullPatch).toContain("+++ b/nested/file with ünicode.txt");
+
+        const ordered = await gitDiffFiles([join(nested, "new.txt"), file]);
+        // Batch responses must preserve caller order so UI status rows and patches stay aligned.
+        expect(ordered.diffs.map((diff) => diff.path)).toEqual([
+            join(nested, "new.txt"),
+            file,
+        ]);
+        // Untracked entries in a batch are rendered as pure additions rather than status messages.
+        expect(ordered.diffs[0]?.result).toMatchObject({
+            type: "text",
+            unified_diff: expect.stringContaining("+new"),
+        });
     });
 
     it("handles unborn and detached HEAD plus bounded diff outcomes", async () => {
@@ -285,9 +318,22 @@ describe("Git browser REST API", () => {
     it("rejects invalid modes and bare repository status", async () => {
         const repo = tempFiles.tempDirectory({ suffix: "-git-invalid" });
         await initRepository(repo);
-        await expect(
-            gitDiff(join(repo, "file.txt"), "?mode=unknown"),
-        ).rejects.toThrow(/400.*full.*staged/i);
+        const invalidModeResponse = await fetch(
+            `http://127.0.0.1:${serverPort}/api/v1/agents/${encodeURIComponent(testAgent.id)}/git/diff`,
+            {
+                method: "POST",
+                headers: {
+                    ...testAgent.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    files: [join(repo, "file.txt")],
+                    mode: "unknown",
+                }),
+            },
+        );
+        // Axum rejects values outside the generated mode enum before dispatching an agent command.
+        expect(invalidModeResponse.status).toBe(422);
 
         const bare = tempFiles.tempDirectory({ suffix: "-git-bare" });
         // Reinitialize the empty fixture as bare to exercise worktree rejection.

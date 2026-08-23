@@ -1,27 +1,20 @@
 use axum::{
     Json,
-    extract::{Path, Query, State as AxumState},
+    extract::{Path, State as AxumState},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use redoor::{
     actors,
-    commands::{Command, CommandResult, ErrorResponse, GitDiffMode},
+    commands::{Command, CommandResult, ErrorResponse, GitDiffRequest},
     types::AgentId,
 };
-use serde::Deserialize;
 
 use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
     responses::command_error_status,
     state::ServerState,
 };
-
-/// Holds raw query text so invalid modes can use the standard JSON error shape.
-#[derive(Default, Deserialize)]
-pub(crate) struct GitDiffQuery {
-    mode: Option<String>,
-}
 
 /// Route: `GET /api/v1/agents/{agent}/git/context[/{*path}]`.
 pub(crate) async fn git_context_handler(
@@ -67,33 +60,19 @@ pub(crate) async fn git_status_handler(
     .await
 }
 
-/// Route: `GET /api/v1/agents/{agent}/git/diff[/{*path}]?mode=full|staged`.
+/// Route: `POST /api/v1/agents/{agent}/git/diff`.
 pub(crate) async fn git_diff_handler(
-    Path(params): Path<AgentFilePath>,
-    Query(query): Query<GitDiffQuery>,
+    Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
+    Json(request): Json<GitDiffRequest>,
 ) -> Response {
-    let path = match route_path(params.path) {
-        Ok(path) => path,
-        Err(response) => return *response,
-    };
-    let mode = match query.mode.as_deref().unwrap_or("full") {
-        "full" => GitDiffMode::Full,
-        "staged" => GitDiffMode::Staged,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Git diff mode must be 'full' or 'staged'".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
     execute_git_command(
         &state,
-        AgentId::from(params.agent),
-        Command::GitDiff { path, mode },
+        AgentId::from(agent),
+        Command::GitDiff {
+            files: request.files,
+            mode: request.mode,
+        },
         |result| match result {
             CommandResult::GitDiff(response) => Some(Json(response).into_response()),
             _ => None,

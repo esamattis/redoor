@@ -13,8 +13,8 @@ use gix::bstr::ByteSlice;
 
 use super::{
     CommandErrorKind, CommandResult, GitChangeState, GitConflictState, GitContextResponse,
-    GitDiffMode, GitDiffResponse, GitDiffResult, GitEntryType, GitStatusEntry, GitStatusEntryKind,
-    GitStatusResponse, GitTrackingState,
+    GitDiffMode, GitDiffResponse, GitDiffResult, GitEntryType, GitFileDiff, GitStatusEntry,
+    GitStatusEntryKind, GitStatusResponse, GitTrackingState,
 };
 
 /// Matches the editor's existing per-file safety policy for both sides of a diff.
@@ -138,9 +138,9 @@ pub(crate) async fn status(path: String) -> CommandResult {
     run_blocking(move |interrupt| status_blocking(path, interrupt)).await
 }
 
-/// Runs object reads, worktree reads, and text diffing away from Tokio workers.
-pub(crate) async fn diff(path: String, mode: GitDiffMode) -> CommandResult {
-    run_blocking(move |interrupt| diff_blocking(path, mode, interrupt)).await
+/// Runs ordered object reads, worktree reads, and text diffing away from Tokio workers.
+pub(crate) async fn diff(files: Vec<String>, mode: GitDiffMode) -> CommandResult {
+    run_blocking(move |interrupt| diff_blocking(files, mode, interrupt)).await
 }
 
 /// Joins one complete gix operation and preserves panics as structured internal errors.
@@ -297,12 +297,25 @@ fn status_blocking(path: String, interrupt: Arc<AtomicBool>) -> Result<CommandRe
     }))
 }
 
-/// Produces a bounded HEAD-to-worktree or HEAD-to-index single-file comparison.
+/// Produces bounded comparisons in request order so directory views remain stable.
 fn diff_blocking(
-    path: String,
+    files: Vec<String>,
     mode: GitDiffMode,
     interrupt: Arc<AtomicBool>,
 ) -> Result<CommandResult, GitFailure> {
+    let diffs = files
+        .into_iter()
+        .map(|path| diff_file_blocking(path, mode, interrupt.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CommandResult::GitDiff(GitDiffResponse { diffs }))
+}
+
+/// Compares one requested path while retaining explicit non-text outcomes per file.
+fn diff_file_blocking(
+    path: String,
+    mode: GitDiffMode,
+    interrupt: Arc<AtomicBool>,
+) -> Result<GitFileDiff, GitFailure> {
     let requested = validate_absolute_path(&path)?;
     let repository = discover_repository(requested.clone())?.ok_or_else(|| {
         GitFailure::new(
@@ -318,44 +331,41 @@ fn diff_blocking(
         ));
     }
     if relative.chars().any(char::is_control) {
-        return Ok(CommandResult::GitDiff(GitDiffResponse {
-            mode,
+        return Ok(GitFileDiff {
             path,
             result: GitDiffResult::UnsupportedEntry,
-        }));
+        });
     }
     let tracking = classify_tracking(&repository, relative.as_bytes(), interrupt)?;
     let early_result = match tracking {
-        GitTrackingState::Untracked => Some(GitDiffResult::Untracked),
+        GitTrackingState::Untracked if mode == GitDiffMode::Staged => {
+            Some(GitDiffResult::NoChanges)
+        }
+        GitTrackingState::Untracked => None,
         GitTrackingState::Ignored => Some(GitDiffResult::Ignored),
         GitTrackingState::Tracked | GitTrackingState::Deleted => None,
     };
     if let Some(result) = early_result {
-        return Ok(CommandResult::GitDiff(GitDiffResponse {
-            mode,
-            path,
-            result,
-        }));
+        return Ok(GitFileDiff { path, result });
     }
     if path_declared_binary(&repository.repo, &repository.relative)? {
-        return Ok(CommandResult::GitDiff(GitDiffResponse {
-            mode,
+        return Ok(GitFileDiff {
             path,
             result: GitDiffResult::Binary,
-        }));
+        });
     }
 
-    let head_source = head_blob(&repository.repo, &repository.relative)?;
+    let head_source = if tracking == GitTrackingState::Untracked {
+        DiffSource::Missing
+    } else {
+        head_blob(&repository.repo, &repository.relative)?
+    };
     let right_source = match mode {
         GitDiffMode::Full => worktree_blob(&requested)?,
         GitDiffMode::Staged => index_blob(&repository.repo, relative.as_bytes())?,
     };
     let result = compare_sources(head_source, right_source, &relative)?;
-    Ok(CommandResult::GitDiff(GitDiffResponse {
-        mode,
-        path,
-        result,
-    }))
+    Ok(GitFileDiff { path, result })
 }
 
 /// Validates and lexically normalizes absolute paths at the command trust boundary.

@@ -230,9 +230,9 @@ pub enum Command {
     GitStatus {
         path: String,
     },
-    /// Compares one file with HEAD using the selected Git source.
+    /// Compares ordered files with HEAD using the selected Git source.
     GitDiff {
-        path: String,
+        files: Vec<String>,
         mode: GitDiffMode,
     },
     /// Reads the stable filesystem identity needed to delete only the source that was copied.
@@ -348,7 +348,9 @@ impl Command {
             Self::Metadata { path } => format!("Metadata path={path}"),
             Self::GitContext { path } => format!("GitContext path={path}"),
             Self::GitStatus { path } => format!("GitStatus path={path}"),
-            Self::GitDiff { path, mode } => format!("GitDiff path={path} mode={mode:?}"),
+            Self::GitDiff { files, mode } => {
+                format!("GitDiff files={} mode={mode:?}", files.len())
+            }
             Self::MoveMetadata { path } => format!("MoveMetadata path={path}"),
             Self::DeleteMoveSource { path, .. } => format!("DeleteMoveSource path={path}"),
             Self::OpenPath { path } => format!("OpenPath path={path}"),
@@ -540,6 +542,14 @@ pub enum GitDiffMode {
     Staged,
 }
 
+/// Selects ordered files and the source compared with HEAD without exposing paths in the URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitDiffRequest {
+    pub files: Vec<String>,
+    pub mode: GitDiffMode,
+}
+
 /// Represents every bounded single-file diff outcome explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -570,13 +580,19 @@ impl GitDiffResult {
     }
 }
 
-/// Returns a single-file Git comparison without repository-wide patch payloads.
+/// Carries one file's bounded comparison in the same order as the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitFileDiff {
+    pub path: String,
+    pub result: GitDiffResult,
+}
+
+/// Returns ordered per-file Git comparisons without merging their patch payloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct GitDiffResponse {
-    pub mode: GitDiffMode,
-    pub path: String,
-    pub result: GitDiffResult,
+    pub diffs: Vec<GitFileDiff>,
 }
 
 /// Identifies one filesystem object strongly enough to refuse deletion after path replacement.
@@ -1299,9 +1315,14 @@ impl CommandResult {
             ),
             // Patch bodies must never enter logs because they may be large or sensitive.
             Self::GitDiff(result) => format!(
-                "ok GitDiff mode={:?} result={}",
-                result.mode,
-                result.result.summary()
+                "ok GitDiff files={} results={}",
+                result.diffs.len(),
+                result
+                    .diffs
+                    .iter()
+                    .map(|diff| diff.result.summary())
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
             Self::MoveMetadata(_) => "ok MoveMetadata".to_string(),
             Self::OpenPath => "ok OpenPath".to_string(),

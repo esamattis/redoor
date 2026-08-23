@@ -20,6 +20,49 @@ import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitDiffResult } from "#bindings/GitDiffResult";
 import type { GitStatusEntry } from "#bindings/GitStatusEntry";
 
+type GitStatusItem = {
+    entry: GitStatusEntry;
+    state: GitChangeState | "conflicted" | "untracked";
+};
+
+/** Derives status sections and one de-duplicated diff order from the rendered rows. */
+export function groupGitStatusEntries(entries: GitStatusEntry[]) {
+    const ordinaryEntries = entries.filter(
+        (entry) => entry.conflict_state === null,
+    );
+    const conflicts: GitStatusItem[] = entries
+        .filter((entry) => entry.conflict_state !== null)
+        .map((entry) => ({ entry, state: "conflicted" }));
+    const untracked: GitStatusItem[] = ordinaryEntries
+        .filter(
+            (entry) =>
+                entry.index_state === "unmodified" &&
+                entry.worktree_state === "added",
+        )
+        .map((entry) => ({ entry, state: "untracked" }));
+    const staged: GitStatusItem[] = ordinaryEntries
+        .filter((entry) => entry.index_state !== "unmodified")
+        .map((entry) => ({ entry, state: entry.index_state }));
+    const unstaged: GitStatusItem[] = ordinaryEntries
+        .filter(
+            (entry) =>
+                entry.worktree_state !== "unmodified" &&
+                !untracked.some((item) => item.entry.path === entry.path),
+        )
+        .map((entry) => ({ entry, state: entry.worktree_state }));
+    const seenPaths = new Set<string>();
+    const diffEntries = [...conflicts, ...staged, ...unstaged, ...untracked]
+        .map((item) => item.entry)
+        .filter((entry) => {
+            if (seenPaths.has(entry.path)) {
+                return false;
+            }
+            seenPaths.add(entry.path);
+            return true;
+        });
+    return { conflicts, staged, unstaged, untracked, diffEntries };
+}
+
 /** Presents repository identity consistently above status and file comparisons. */
 function GitHeader(props: {
     agent: Agent;
@@ -62,10 +105,8 @@ function formatChangeState(
 function GitStatusSection(props: {
     agent: Agent;
     title: string;
-    entries: Array<{
-        entry: GitStatusEntry;
-        state: GitChangeState | "conflicted" | "untracked";
-    }>;
+    entries: GitStatusItem[];
+    diffAnchorByPath: Map<string, string> | null;
 }) {
     if (props.entries.length === 0) {
         return null;
@@ -101,8 +142,18 @@ function GitStatusSection(props: {
                                 </span>
                             ) : null}
                         </span>
-                        <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-xs capitalize text-slate-400">
-                            {formatChangeState(item.state)}
+                        <span className="flex shrink-0 items-center gap-2">
+                            {props.diffAnchorByPath === null ? null : (
+                                <a
+                                    href={`#${props.diffAnchorByPath.get(item.entry.path)}`}
+                                    className="text-xs text-blue-300 hover:underline"
+                                >
+                                    Diff
+                                </a>
+                            )}
+                            <span className="rounded-full border border-slate-700 px-2 py-0.5 text-xs capitalize text-slate-400">
+                                {formatChangeState(item.state)}
+                            </span>
                         </span>
                     </li>
                 ))}
@@ -112,10 +163,23 @@ function GitStatusSection(props: {
 }
 
 /** Groups directory status into the same concepts users see in a normal Git workflow. */
-export function GitDirectoryView(props: { agent: Agent; path: string }) {
+export function GitDirectoryView(props: {
+    agent: Agent;
+    path: string;
+    showDiffs: boolean;
+}) {
     const statusQuery = useQuery(
         gitStatusQueryOptions(props.agent, props.path),
     );
+    const groups = groupGitStatusEntries(statusQuery.data?.entries ?? []);
+    const diffQuery = useQuery({
+        ...gitDiffQueryOptions(
+            props.agent,
+            groups.diffEntries.map((entry) => entry.path),
+            "full",
+        ),
+        enabled: props.showDiffs && groups.diffEntries.length > 0,
+    });
     if (statusQuery.isPending) {
         return (
             <p role="status" className="text-sm text-slate-400">
@@ -135,29 +199,15 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
     }
 
     const status = statusQuery.data;
-    const ordinaryEntries = status.entries.filter(
-        (entry) => entry.conflict_state === null,
-    );
-    const conflicts = status.entries
-        .filter((entry) => entry.conflict_state !== null)
-        .map((entry) => ({ entry, state: "conflicted" as const }));
-    const untracked = ordinaryEntries
-        .filter(
-            (entry) =>
-                entry.index_state === "unmodified" &&
-                entry.worktree_state === "added",
-        )
-        .map((entry) => ({ entry, state: "untracked" as const }));
-    const staged = ordinaryEntries
-        .filter((entry) => entry.index_state !== "unmodified")
-        .map((entry) => ({ entry, state: entry.index_state }));
-    const unstaged = ordinaryEntries
-        .filter(
-            (entry) =>
-                entry.worktree_state !== "unmodified" &&
-                !untracked.some((item) => item.entry.path === entry.path),
-        )
-        .map((entry) => ({ entry, state: entry.worktree_state }));
+    const { conflicts, staged, unstaged, untracked, diffEntries } = groups;
+    const diffAnchorByPath = props.showDiffs
+        ? new Map(
+              diffEntries.map((entry, index) => [
+                  entry.path,
+                  `git-diff-${index}`,
+              ]),
+          )
+        : null;
     const reference = status.branch_name
         ? `Branch ${status.branch_name}`
         : status.detached_head_id
@@ -196,22 +246,35 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                     agent={props.agent}
                     title="Conflicts"
                     entries={conflicts}
+                    diffAnchorByPath={diffAnchorByPath}
                 />
                 <GitStatusSection
                     agent={props.agent}
                     title="Staged changes"
                     entries={staged}
+                    diffAnchorByPath={diffAnchorByPath}
                 />
                 <GitStatusSection
                     agent={props.agent}
                     title="Unstaged changes"
                     entries={unstaged}
+                    diffAnchorByPath={diffAnchorByPath}
                 />
                 <GitStatusSection
                     agent={props.agent}
                     title="Untracked files"
                     entries={untracked}
+                    diffAnchorByPath={diffAnchorByPath}
                 />
+                {status.entries.length > 0 && !props.showDiffs ? (
+                    <Link
+                        to={props.agent.getBrowserUrl(props.path)}
+                        search={{ view: "git", diff: true }}
+                        className="w-fit rounded-md border border-blue-400/40 bg-blue-500/15 px-3 py-2 text-sm font-semibold text-blue-200 transition-colors hover:border-blue-300/60 hover:bg-blue-500/25"
+                    >
+                        Load all diffs
+                    </Link>
+                ) : null}
                 {status.truncated ? (
                     <p
                         role="status"
@@ -227,6 +290,42 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                         {status.omitted_non_utf8_entries} non-UTF-8 path entries
                         were omitted.
                     </p>
+                ) : null}
+                {props.showDiffs && diffEntries.length > 0 ? (
+                    <div className="grid gap-4">
+                        {diffQuery.isPending ? (
+                            <p role="status" className="text-sm text-slate-400">
+                                Loading all Git diffs...
+                            </p>
+                        ) : diffQuery.isError ? (
+                            <p role="alert" className="text-sm text-red-300">
+                                {getErrorMessage(
+                                    diffQuery.error,
+                                    "Failed to load Git diffs",
+                                )}
+                            </p>
+                        ) : (
+                            diffQuery.data.diffs.map((diff, index) => (
+                                <section
+                                    key={`${diff.path}:${index}`}
+                                    id={`git-diff-${index}`}
+                                    aria-label={`Git diff for ${diff.path}`}
+                                    className="scroll-mt-4 overflow-hidden rounded-md border border-slate-800 bg-slate-950/30"
+                                >
+                                    <h2 className="break-all border-b border-slate-800 px-3 py-2 font-mono text-sm font-semibold text-slate-200">
+                                        {diffEntries[index]
+                                            ?.repository_relative_path ??
+                                            diff.path}
+                                    </h2>
+                                    <div className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden">
+                                        <GitDiffResultView
+                                            result={diff.result}
+                                        />
+                                    </div>
+                                </section>
+                            ))
+                        )}
+                    </div>
                 ) : null}
             </div>
         </BrowserViewCard>
@@ -268,7 +367,7 @@ export function GitFileView(props: {
 }) {
     const [mode, setMode] = React.useState<GitDiffMode>("full");
     const diffQuery = useQuery(
-        gitDiffQueryOptions(props.agent, props.path, mode),
+        gitDiffQueryOptions(props.agent, [props.path], mode),
     );
     const repositoryRoot =
         props.context.status === "inside_worktree"
@@ -338,7 +437,13 @@ export function GitFileView(props: {
                         )}
                     </p>
                 ) : (
-                    <GitDiffResultView result={diffQuery.data.result} />
+                    <GitDiffResultView
+                        result={
+                            diffQuery.data.diffs[0]?.result ?? {
+                                type: "no_changes",
+                            }
+                        }
+                    />
                 )}
             </section>
         </BrowserViewCard>

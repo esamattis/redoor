@@ -146,11 +146,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}/git/status/{*path}",
             get(git_status_handler),
         )
-        .route("/api/v1/agents/{agent}/git/diff", get(git_diff_handler))
-        .route(
-            "/api/v1/agents/{agent}/git/diff/{*path}",
-            get(git_diff_handler),
-        )
+        .route("/api/v1/agents/{agent}/git/diff", post(git_diff_handler))
         .route(
             "/api/v1/agents/{agent}/one-time-token",
             post(create_one_time_token_handler),
