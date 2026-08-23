@@ -15,6 +15,12 @@ import { languageFromFileName } from "#ui/utils/editor-language";
 import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
 import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 
+/** Carries only the editor selection details needed by actions outside CodeMirror. */
+export type EditorSelection = {
+    text: string;
+    startLine: number;
+};
+
 /** Lets :w call the current save handler without re-registering the global ex command. */
 const vimWriteRef = { current: () => {} };
 
@@ -36,6 +42,7 @@ export function CodeEditor(props: {
     onChange: (value: string) => void;
     onFocus: () => void;
     onSave: () => void;
+    onSelectionChange: (selection: EditorSelection | null) => void;
 }) {
     const resolvedTheme = useResolvedTheme();
     const onSaveRef = React.useRef(props.onSave);
@@ -211,6 +218,20 @@ export function CodeEditor(props: {
                     onUpdate={(update) => {
                         if (update.docChanged || update.selectionSet) {
                             setDocumentRevision((revision) => revision + 1);
+                            const selection = update.state.selection.main;
+                            props.onSelectionChange(
+                                selection.empty
+                                    ? null
+                                    : {
+                                          text: update.state.sliceDoc(
+                                              selection.from,
+                                              selection.to,
+                                          ),
+                                          startLine: update.state.doc.lineAt(
+                                              selection.from,
+                                          ).number,
+                                      },
+                            );
                         }
                     }}
                     className="h-full min-h-0"

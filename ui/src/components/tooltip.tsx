@@ -13,8 +13,17 @@ type TooltipProps = {
 };
 
 type TooltipHide = () => void;
+type HoverTimerRef = React.RefObject<number | null>;
 
 let activeTooltipHide: TooltipHide | null = null;
+
+/** Prevents a tooltip from opening after its trigger is no longer hovered. */
+function clearHoverTimer(hoverTimerRef: HoverTimerRef) {
+    if (hoverTimerRef.current !== null) {
+        window.clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+    }
+}
 
 /** Closes any other open tooltip so hover, focus, and touch cannot stack. */
 function claimActiveTooltip(hide: TooltipHide) {
@@ -32,7 +41,7 @@ function releaseActiveTooltip(hide: TooltipHide) {
 }
 
 /**
- * Shows a small tooltip for its child content on hover, keyboard focus, and touch.
+ * Shows a small tooltip after 500ms of hover or immediately on keyboard focus and touch.
  *
  * Pointer activation focuses links and buttons, but that focus must not keep the
  * tooltip open after the cursor leaves. Keyboard and programmatic focus still
@@ -45,6 +54,7 @@ export function Tooltip(props: TooltipProps) {
     const tooltipId = React.useId();
     const triggerRef = React.useRef<HTMLSpanElement>(null);
     const tooltipRef = React.useRef<HTMLSpanElement>(null);
+    const hoverTimerRef = React.useRef<number | null>(null);
     const ignoreFocusFromPointerRef = React.useRef(false);
     // Touch synthesizes mouseenter; ignore that hover until a real mouse leave.
     const ignoreHoverFromTouchRef = React.useRef(false);
@@ -53,10 +63,18 @@ export function Tooltip(props: TooltipProps) {
     const [isTouchOpen, setIsTouchOpen] = React.useState(false);
     const isOpen = isHovered || isFocused || isTouchOpen;
     const hideAll = React.useCallback(() => {
+        clearHoverTimer(hoverTimerRef);
         setIsHovered(false);
         setIsFocused(false);
         setIsTouchOpen(false);
     }, []);
+
+    React.useEffect(
+        () => () => {
+            clearHoverTimer(hoverTimerRef);
+        },
+        [],
+    );
     const [position, setPosition] = React.useState<{
         top: number;
         left: number;
@@ -211,10 +229,15 @@ export function Tooltip(props: TooltipProps) {
                 if (ignoreHoverFromTouchRef.current) {
                     return;
                 }
-                setIsHovered(true);
+                clearHoverTimer(hoverTimerRef);
+                hoverTimerRef.current = window.setTimeout(() => {
+                    hoverTimerRef.current = null;
+                    setIsHovered(true);
+                }, 500);
             }}
             onMouseLeave={() => {
                 ignoreHoverFromTouchRef.current = false;
+                clearHoverTimer(hoverTimerRef);
                 setIsHovered(false);
             }}
             onPointerDown={handlePointerDown}
@@ -224,6 +247,7 @@ export function Tooltip(props: TooltipProps) {
             onBlur={() => setIsFocused(false)}
             onTouchStart={() => {
                 ignoreHoverFromTouchRef.current = true;
+                clearHoverTimer(hoverTimerRef);
                 setIsHovered(false);
                 setIsTouchOpen(true);
             }}

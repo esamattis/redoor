@@ -71,13 +71,25 @@ test.describe.serial("File Edit View", () => {
         const bookmarkBox = await page
             .getByRole("button", { name: "Bookmark", exact: true })
             .boundingBox();
+        const copyReferenceButton = page.getByRole("button", {
+            name: "Copy selection with file reference",
+        });
+        const copyReferenceBox = await copyReferenceButton.boundingBox();
         expect(saveBox).not.toBeNull();
         expect(bookmarkBox).not.toBeNull();
-        if (saveBox === null || bookmarkBox === null) {
+        expect(copyReferenceBox).not.toBeNull();
+        if (
+            saveBox === null ||
+            bookmarkBox === null ||
+            copyReferenceBox === null
+        ) {
             throw new Error("expected editor action measurements");
         }
         // Bookmark is the next persistent toolbar action after Save.
         expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
+        // Copy reference follows Bookmark and stays unavailable without selected editor text.
+        expect(copyReferenceBox.x).toBeGreaterThan(bookmarkBox.x);
+        await expect(copyReferenceButton).toBeDisabled();
         const editorOptions = await openEditorOptions(page);
         await expect(
             editorOptions.getByRole("button", { name: "Reload", exact: true }),
@@ -643,6 +655,59 @@ test.describe.serial("File Edit View", () => {
         // The tooltip keeps the accessible name as Save file while advertising Ctrl+S.
         await expect(page.getByRole("tooltip")).toHaveText(
             "Save file (Ctrl+S)",
+        );
+    });
+
+    test("should copy selected text with its file and starting line reference", async ({
+        page,
+        context,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "copy-reference.txt");
+        await fs.writeFile(
+            filePath,
+            `alpha
+beta
+gamma`,
+        );
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
+            origin: WEB_BASE_URL,
+        });
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        const copyReferenceButton = page.getByRole("button", {
+            name: "Copy selection with file reference",
+        });
+        // CodeMirror renders line breaks between sibling elements, so DOM text is concatenated.
+        await expect(editor).toHaveText("alphabetagamma");
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+Home");
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("Home");
+        await page.keyboard.press("Shift+ArrowDown");
+        await page.keyboard.press("Shift+End");
+
+        // A non-empty CodeMirror selection enables the adjacent reference action.
+        await expect(copyReferenceButton).toBeEnabled();
+        await copyReferenceButton.hover();
+        // The tooltip explains both the copied syntax and why it is useful with AI agents.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.",
+        );
+        await copyReferenceButton.click();
+
+        // The clipboard payload matches the path-and-line fenced format shown by the tooltip.
+        await expect.poll(() =>
+            page.evaluate(() => navigator.clipboard.readText()),
+        ).toBe(`\`\`\`${filePath}#L2
+beta
+gamma
+\`\`\``);
+        // Non-modal feedback confirms the asynchronous browser clipboard write completed.
+        await expect(page.getByRole("status")).toHaveText(
+            "Copied selection with file reference",
         );
     });
 

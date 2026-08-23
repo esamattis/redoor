@@ -55,6 +55,10 @@ test.describe("Application navigation", () => {
             name: /Color theme:/,
         });
         await themeButton.hover();
+        // Mouse hover must not show a tooltip before the shared 500ms delay elapses.
+        await expect(page.getByRole("tooltip")).toHaveCount(0, {
+            timeout: 350,
+        });
         await expect(page.getByRole("tooltip")).toBeVisible();
         await themeButton.click();
         // Click focuses the control, but the tooltip must follow the cursor rather than stay pinned.
@@ -74,6 +78,19 @@ test.describe("Application navigation", () => {
         // The same focus-after-click trap applies to links that remain interactive after navigation.
         await page.getByRole("heading", { name: "Mount Points" }).hover();
         await expect(page.getByRole("tooltip")).toHaveCount(0);
+    });
+
+    test("shows tooltips immediately for keyboard focus", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.mouse.move(0, 0);
+
+        const themeButton = page.getByRole("button", {
+            name: /Color theme:/,
+        });
+        await themeButton.focus();
+
+        // The hover delay must not make keyboard users wait for a focused control's description.
+        await expect(page.getByRole("tooltip")).toBeVisible();
     });
 
     test("opens and dismisses the sidebar from outside on mobile", async ({

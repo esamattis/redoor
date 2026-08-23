@@ -2,6 +2,7 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import {
+    ClipboardCopy,
     Download,
     LoaderCircle,
     MoreHorizontal,
@@ -12,7 +13,10 @@ import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { BookmarkButton } from "#ui/components/browser/bookmark-action";
-import { CodeEditor } from "#ui/components/browser/code-editor";
+import {
+    CodeEditor,
+    type EditorSelection,
+} from "#ui/components/browser/code-editor";
 import {
     PersistentPathActions,
     SelectPathMenuButton,
@@ -21,6 +25,7 @@ import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
+import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
@@ -41,8 +46,21 @@ function FileEditActions(props: {
         name: string;
         entryType: "file";
     };
+    selection: EditorSelection | null;
     onSave: () => void;
 }) {
+    const copyMutation = useMutation({
+        mutationFn: async () => {
+            if (props.selection === null) {
+                throw new Error("Select text in the editor before copying");
+            }
+            const reference = `\`\`\`${props.bookmark.path}#L${props.selection.startLine}
+${props.selection.text}
+\`\`\``;
+            await navigator.clipboard.writeText(reference);
+        },
+    });
+
     return (
         <>
             <Tooltip content="Save file (Ctrl+S)">
@@ -60,6 +78,21 @@ function FileEditActions(props: {
                 </Button>
             </Tooltip>
             <BookmarkButton bookmark={props.bookmark} />
+            <Tooltip content="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.">
+                <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-label="Copy selection with file reference"
+                    disabled={props.selection === null}
+                    isLoading={copyMutation.isPending}
+                    onClick={() => copyMutation.mutate()}
+                    className="rounded-md px-3.5 font-semibold"
+                >
+                    <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
+                    Copy reference
+                </Button>
+            </Tooltip>
             {props.statusMessage ? (
                 <span
                     role="status"
@@ -75,6 +108,21 @@ function FileEditActions(props: {
                 >
                     {props.statusMessage}
                 </span>
+            ) : null}
+            {copyMutation.isSuccess || copyMutation.isError ? (
+                <Toast
+                    tone={copyMutation.isError ? "error" : "success"}
+                    icon={<ClipboardCopy className="h-4 w-4" />}
+                    dismissAriaLabel="Dismiss copy reference message"
+                    onDismiss={() => copyMutation.reset()}
+                >
+                    {copyMutation.isError
+                        ? getErrorMessage(
+                              copyMutation.error,
+                              "Could not copy the file reference",
+                          )
+                        : "Copied selection with file reference"}
+                </Toast>
             ) : null}
         </>
     );
@@ -205,10 +253,12 @@ export function FileEditView(props: {
 }) {
     const queryClient = useQueryClient();
     const [userState] = useUserState();
-    const contentQuery = useQuery(
-        fileContentQueryOptions(props.agent, props.filePath),
-    );
+    const fileQuery = fileContentQueryOptions(props.agent, props.filePath);
+    const contentQuery = useQuery(fileQuery);
     const [draft, setDraft] = React.useState<string | null>(null);
+    const [selection, setSelection] = React.useState<EditorSelection | null>(
+        null,
+    );
     const [reloadConfirmationOpen, setReloadConfirmationOpen] =
         React.useState(false);
     const [isFullWindow, setIsFullWindow] = React.useState(false);
@@ -222,10 +272,7 @@ export function FileEditView(props: {
                 }),
             ),
         onSuccess: (_, nextContent) => {
-            queryClient.setQueryData(
-                fileContentQueryOptions(props.agent, props.filePath).queryKey,
-                nextContent,
-            );
+            queryClient.setQueryData(fileQuery.queryKey, nextContent);
             // Keep a newer draft so a save cannot wipe keystrokes typed during the upload.
             setDraft((current) =>
                 current === null || current === nextContent ? null : current,
@@ -319,6 +366,7 @@ export function FileEditView(props: {
                                     name: props.fileName,
                                     entryType: "file",
                                 }}
+                                selection={selection}
                                 onSave={handleSave}
                             />
                         </div>
@@ -375,6 +423,7 @@ export function FileEditView(props: {
                                 }
                             }}
                             onSave={handleSave}
+                            onSelectionChange={setSelection}
                         />
                     )}
                 </div>
