@@ -1020,7 +1020,7 @@ test.describe.serial("File Operations", () => {
         ).toHaveCount(0);
     });
 
-    test("should list trashed files newest first and restore to an editable path", async ({
+    test("should manage trashed files without offering to trash them again", async ({
         page,
     }) => {
         test.skip(
@@ -1086,7 +1086,46 @@ test.describe.serial("File Operations", () => {
             "href",
             `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(expectedTrashPayload)}`,
         );
-        await secondRow.getByRole("button", { name: "Restore" }).click();
+        await secondRow
+            .getByRole("link", { name: secondName, exact: true })
+            .click();
+        await page
+            .getByLabel("File view")
+            .getByRole("link", { name: "Details", exact: true })
+            .click();
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page
+            .getByRole("dialog", { name: "More" })
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
+        const payloadDeleteDialog = page.getByRole("dialog", {
+            name: "Delete this file?",
+        });
+        // A payload already in trash must expose only irreversible deletion.
+        await expect(
+            payloadDeleteDialog.getByRole("checkbox", {
+                name: "Delete permanently",
+            }),
+        ).toHaveCount(0);
+        await expect(
+            payloadDeleteDialog.getByRole("button", {
+                name: "Delete file",
+                exact: true,
+            }),
+        ).toBeVisible();
+        await payloadDeleteDialog
+            .getByRole("button", { name: "Cancel" })
+            .click();
+        await page
+            .getByLabel("Agent view")
+            .getByRole("link", { name: "Trash", exact: true })
+            .click();
+        const refreshedSecondRow = page.getByRole("article", {
+            name: `Trashed item ${secondName}`,
+        });
+        await refreshedSecondRow
+            .getByRole("button", { name: "Restore" })
+            .click();
         const restoreDialog = page.getByRole("dialog", {
             name: "Restore trashed item",
         });
@@ -1101,11 +1140,20 @@ test.describe.serial("File Operations", () => {
             .click();
 
         // Removing the row confirms the trash query refreshed after restore.
-        await expect(secondRow).toHaveCount(0);
+        await expect(refreshedSecondRow).toHaveCount(0);
         // Disk contents prove the custom destination reached the agent protocol.
         await expect(fs.readFile(restoredPath, "utf8")).resolves.toBe(
             "second trash item",
         );
         await expect(fs.access(secondPath)).rejects.toThrow();
+
+        await page.getByRole("button", { name: "Empty trash" }).click();
+        const emptyDialog = page.getByRole("dialog", { name: "Empty trash?" });
+        await emptyDialog
+            .getByRole("button", { name: "Empty trash", exact: true })
+            .click();
+        // The empty state confirms the purge mutation refreshed the inventory query.
+        await expect(page.getByText("Trash is empty")).toBeVisible();
+        await expect(fs.access(firstPath)).rejects.toThrow();
     });
 });

@@ -7,6 +7,7 @@ import type { TrashItem } from "#bindings/TrashItem";
 import type { TrashListResponse } from "#bindings/TrashListResponse";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { RouteError } from "#ui/components/route-error";
@@ -142,6 +143,49 @@ function RestoreTrashDialog(props: {
     );
 }
 
+/** Confirms and executes permanent removal of every currently stored trash payload. */
+function EmptyTrashDialog(props: {
+    agent: Agent;
+    itemCount: number;
+    isOpen: boolean;
+    onClose: () => void;
+}) {
+    const queryClient = useQueryClient();
+    const mutation = useMutation({
+        mutationFn: () => props.agent.emptyTrash(),
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({
+                queryKey: queryKeys.trash(props.agent.id),
+            });
+            props.onClose();
+        },
+    });
+
+    React.useEffect(() => {
+        if (props.isOpen) mutation.reset();
+    }, [props.isOpen]);
+
+    return (
+        <ConfirmationDialog
+            isOpen={props.isOpen}
+            title="Empty trash?"
+            description={`Permanently delete ${props.itemCount} ${props.itemCount === 1 ? "item" : "items"}. This cannot be undone.`}
+            confirmLabel="Empty trash"
+            busyLabel="Emptying trash..."
+            isBusy={mutation.isPending}
+            errorMessage={
+                mutation.isError
+                    ? getErrorMessage(mutation.error, "Empty trash failed")
+                    : null
+            }
+            onClose={() => {
+                if (!mutation.isPending) props.onClose();
+            }}
+            onConfirm={() => mutation.mutate()}
+        />
+    );
+}
+
 /** Lists all provider locations as one globally newest-first restore queue. */
 function TrashPage() {
     const { agent, os, trash: initialTrash } = Route.useLoaderData();
@@ -178,6 +222,7 @@ function TrashInventoryPage(props: {
         initialData: props.initialTrash,
     });
     const [restoreItem, setRestoreItem] = React.useState<TrashRow | null>(null);
+    const [isEmptyDialogOpen, setIsEmptyDialogOpen] = React.useState(false);
     const items = trash.locations
         .flatMap((location) =>
             location.items.map((item) => ({
@@ -208,9 +253,27 @@ function TrashInventoryPage(props: {
                             filesystem.
                         </p>
                     </div>
-                    <span className="shrink-0 text-sm tabular-nums text-slate-500">
-                        {items.length} {items.length === 1 ? "item" : "items"}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-3">
+                        <span className="text-sm tabular-nums text-slate-500">
+                            {items.length}{" "}
+                            {items.length === 1 ? "item" : "items"}
+                        </span>
+                        <Tooltip content="Permanently delete every item in trash">
+                            <Button
+                                type="button"
+                                variant="danger"
+                                size="sm"
+                                disabled={items.length === 0}
+                                onClick={() => setIsEmptyDialogOpen(true)}
+                            >
+                                <Trash2
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                                Empty trash
+                            </Button>
+                        </Tooltip>
+                    </div>
                 </div>
 
                 {items.length === 0 ? (
@@ -292,6 +355,12 @@ function TrashInventoryPage(props: {
                 agent={props.agent}
                 item={restoreItem}
                 onClose={() => setRestoreItem(null)}
+            />
+            <EmptyTrashDialog
+                agent={props.agent}
+                itemCount={items.length}
+                isOpen={isEmptyDialogOpen}
+                onClose={() => setIsEmptyDialogOpen(false)}
             />
         </main>
     );

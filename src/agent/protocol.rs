@@ -223,6 +223,15 @@ async fn handle_command_message(
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
+        Command::EmptyTrash => {
+            let result = match trash.empty().await {
+                Ok(deleted_items) => CommandResult::EmptyTrash { deleted_items },
+                Err(error) => CommandResult::error(error.kind.clone(), error.to_string()),
+            };
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
         Command::RestoreTrash {
             location_id,
             item_id,
@@ -432,6 +441,7 @@ impl AgentActor {
                                     | Command::LocalCopyDirectory { .. }
                                     | Command::LocalMove { .. }
                                     | Command::Trash { .. }
+                                    | Command::EmptyTrash
                                     | Command::RestoreTrash { .. }
                             );
                             if handles_cancellation {

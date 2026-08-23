@@ -1,16 +1,35 @@
 import * as React from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import type { TrashListResponse } from "#bindings/TrashListResponse";
 import type { Agent } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { TextField } from "#ui/components/text-field";
+import { queryKeys } from "#ui/queries";
 
 export type DeletePathTarget = {
     agent: Agent | null;
     path: string;
 };
+
+/** Recognizes payload paths from inventory cached when the user opened the Trash page. */
+function isTrashPayloadPath(
+    target: DeletePathTarget,
+    queryClient: ReturnType<typeof useQueryClient>,
+): boolean {
+    if (!target.agent) return false;
+    const trash = queryClient.getQueryData<TrashListResponse>(
+        queryKeys.trash(target.agent.id),
+    );
+    return (
+        trash?.locations.some((location) => {
+            const root = `${location.path.replace(/\/+$/, "")}/files`;
+            return target.path === root || target.path.startsWith(`${root}/`);
+        }) ?? false
+    );
+}
 
 /** Centralizes trash and permanent-delete behavior for every filesystem delete surface. */
 export function DeletePathsDialog(props: {
@@ -25,8 +44,11 @@ export function DeletePathsDialog(props: {
     onClose: () => void;
     onDeleted: (targets: DeletePathTarget[]) => void | Promise<void>;
 }) {
+    const queryClient = useQueryClient();
     const canTrash = props.targets.every(
-        (target) => target.agent?.supportsMoveToTrash === true,
+        (target) =>
+            target.agent?.supportsMoveToTrash === true &&
+            !isTrashPayloadPath(target, queryClient),
     );
     const [deletePermanently, setDeletePermanently] = React.useState(!canTrash);
     const [confirmationText, setConfirmationText] = React.useState("");
@@ -91,7 +113,7 @@ export function DeletePathsDialog(props: {
             description={
                 canTrash
                     ? props.description
-                    : "Trash is unavailable for one or more selected agents. This action will delete permanently."
+                    : "These items cannot be moved to trash. This action will delete permanently."
             }
             confirmLabel={
                 deletePermanently
@@ -131,19 +153,21 @@ export function DeletePathsDialog(props: {
                     className="mt-4"
                 />
             ) : null}
-            <Checkbox
-                checked={deletePermanently}
-                role="checkbox"
-                label="Delete permanently"
-                disabled={mutation.isPending || !canTrash}
-                className="mt-4"
-                onCheckedChange={(checked) => {
-                    setDeletePermanently(checked);
-                    mutation.reset();
-                }}
-            >
-                Delete permanently
-            </Checkbox>
+            {canTrash ? (
+                <Checkbox
+                    checked={deletePermanently}
+                    role="checkbox"
+                    label="Delete permanently"
+                    disabled={mutation.isPending}
+                    className="mt-4"
+                    onCheckedChange={(checked) => {
+                        setDeletePermanently(checked);
+                        mutation.reset();
+                    }}
+                >
+                    Delete permanently
+                </Checkbox>
+            ) : null}
         </ConfirmationDialog>
     );
 }

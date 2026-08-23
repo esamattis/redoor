@@ -29,7 +29,7 @@ use super::{
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
-    trash::{list_trash_handler, restore_trash_handler},
+    trash::{empty_trash_handler, list_trash_handler, restore_trash_handler},
     ui::ui_service,
     user_state::{get_user_state_handler, update_user_state_handler},
     ws::{ui_websocket_handler, websocket_handler},
@@ -184,7 +184,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             post(create_directory_handler),
         )
         .route("/api/v1/agents/{agent}/rename", post(rename_path_handler))
-        .route("/api/v1/agents/{agent}/trash", get(list_trash_handler))
+        .route(
+            "/api/v1/agents/{agent}/trash",
+            get(list_trash_handler).delete(empty_trash_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/trash/restore",
             post(restore_trash_handler),

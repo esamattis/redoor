@@ -301,4 +301,20 @@ DeletionDate=2020-01-01T00:00:00
         // Source preservation proves the failed operation did not perform destructive cleanup.
         await expect(fs.readFile(source, "utf8")).resolves.toBe("must remain");
     });
+
+    it("empties payloads and metadata while preserving provider directories", async () => {
+        const files = path.join(trashRoot, "files");
+        const info = path.join(trashRoot, "info");
+        const payloadCount = (await fs.readdir(files)).length;
+
+        const response = await testAgent.emptyTrash();
+
+        // Counting payload roots communicates exactly how many user-visible entries were removed.
+        expect(response.deleted_items).toBe(payloadCount);
+        // Empty inventory proves no valid payload/metadata pair survived the purge.
+        await expect(testAgent.listTrash()).resolves.toEqual({ locations: [] });
+        // Retaining empty provider directories keeps subsequent trash operations ready to publish.
+        await expect(fs.readdir(files)).resolves.toEqual([]);
+        await expect(fs.readdir(info)).resolves.toEqual([]);
+    });
 });

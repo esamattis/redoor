@@ -205,6 +205,8 @@ pub enum Command {
     },
     /// Returns the platform-neutral inventory discovered by the agent at command time.
     ListTrash,
+    /// Permanently removes every payload and metadata entry from discovered trash locations.
+    EmptyTrash,
     /// Restores one opaque inventory item to an explicit user-selected destination.
     RestoreTrash {
         location_id: String,
@@ -340,6 +342,7 @@ impl Command {
             Self::RawDelete { path } => format!("RawDelete path={path}"),
             Self::Trash { path } => format!("Trash path={path}"),
             Self::ListTrash => "ListTrash".to_string(),
+            Self::EmptyTrash => "EmptyTrash".to_string(),
             Self::RestoreTrash {
                 location_id,
                 item_id,
@@ -749,6 +752,9 @@ pub enum CommandResult {
     RawDelete,
     Trash,
     TrashList(TrashListResponse),
+    EmptyTrash {
+        deleted_items: u64,
+    },
     RestoreTrash {
         path: String,
     },
@@ -1112,6 +1118,14 @@ pub struct TrashListResponse {
     pub locations: Vec<TrashLocation>,
 }
 
+/// Reports how many payload entries were permanently removed from all trash locations.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EmptyTrashResponse {
+    #[ts(type = "number")]
+    pub deleted_items: u64,
+}
+
 /// Identifies one trash storage root without exposing it as a filesystem command argument.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1326,6 +1340,9 @@ impl CommandResult {
             Self::RawDelete => "ok RawDelete".to_string(),
             Self::Trash => "ok Trash".to_string(),
             Self::TrashList(result) => format!("ok TrashList locations={}", result.locations.len()),
+            Self::EmptyTrash { deleted_items } => {
+                format!("ok EmptyTrash deleted_items={deleted_items}")
+            }
             Self::RestoreTrash { path } => format!("ok RestoreTrash path={path}"),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),

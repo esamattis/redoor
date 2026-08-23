@@ -204,6 +204,49 @@ pub(super) async fn list(service: &TrashService) -> Result<TrashListResponse, Tr
     })
 }
 
+/// Removes every direct payload and metadata entry without deleting provider-owned directories.
+pub(super) async fn empty(service: &TrashService) -> Result<u64, TrashError> {
+    let locations = discover_locations(service).await?;
+    let mut deleted_items = 0_u64;
+    for location in locations {
+        validate_private_root(&location.root).await?;
+        deleted_items += remove_directory_contents(&location.root.join("files"), true).await?;
+        remove_directory_contents(&location.root.join("info"), false).await?;
+    }
+    Ok(deleted_items)
+}
+
+/// Deletes one directory's direct entries, using guarded recursion only for real directories.
+async fn remove_directory_contents(path: &Path, count_entries: bool) -> Result<u64, TrashError> {
+    let mut entries = tokio::fs::read_dir(path)
+        .await
+        .map_err(|error| TrashError::io("Failed to open trash directory", error))?;
+    let mut removed = 0_u64;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| TrashError::io("Failed to read trash directory", error))?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|error| TrashError::io("Failed to inspect trash entry", error))?;
+        if file_type.is_dir() && !file_type.is_symlink() {
+            redoor::safe_fs::safe_rm_all(entry.path())
+                .await
+                .map_err(|error| TrashError::io("Failed to remove trash directory", error))?;
+        } else {
+            tokio::fs::remove_file(entry.path())
+                .await
+                .map_err(|error| TrashError::io("Failed to remove trash entry", error))?;
+        }
+        if count_entries {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Restores a freshly resolved item without replacing an occupied selected destination.
 pub(super) async fn restore(
     service: &TrashService,

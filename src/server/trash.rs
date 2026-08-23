@@ -7,7 +7,8 @@ use axum::{
 use redoor::{
     actors,
     commands::{
-        Command, CommandResult, ErrorResponse, RestoreTrashItemRequest, RestoreTrashItemResponse,
+        Command, CommandResult, EmptyTrashResponse, ErrorResponse, RestoreTrashItemRequest,
+        RestoreTrashItemResponse,
     },
     types::AgentId,
 };
@@ -108,6 +109,39 @@ pub(crate) async fn list_trash_handler(
             .into_response(),
         Ok(_) => unexpected_response("Unexpected trash list response"),
         Err(error) => unexpected_response(&format!("Failed to list trash: {error:?}")),
+    }
+}
+
+/// Route: `DELETE /api/v1/agents/{agent}/trash` permanently removes every trash entry.
+pub(crate) async fn empty_trash_handler(
+    Path(agent): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+) -> Response {
+    let agent_id = AgentId::from(agent);
+    if let Err(response) = require_trash_inventory_support(&state, &agent_id).await {
+        return response;
+    }
+    match state
+        .router_ref
+        .request(300000, |reply| {
+            actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command: Command::EmptyTrash,
+                reply,
+            })
+        })
+        .await
+    {
+        Ok(CommandResult::EmptyTrash { deleted_items }) => {
+            (StatusCode::OK, Json(EmptyTrashResponse { deleted_items })).into_response()
+        }
+        Ok(CommandResult::Error { kind, message }) => (
+            command_error_status(&kind),
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        Ok(_) => unexpected_response("Unexpected empty trash response"),
+        Err(error) => unexpected_response(&format!("Failed to empty trash: {error:?}")),
     }
 }
 

@@ -16,6 +16,7 @@ import type { TransferProgressState } from "#bindings/TransferProgressState";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
 import type { TrashListResponse } from "#bindings/TrashListResponse";
+import type { EmptyTrashResponse } from "#bindings/EmptyTrashResponse";
 import type { RestoreTrashItemRequest } from "#bindings/RestoreTrashItemRequest";
 import type { RestoreTrashItemResponse } from "#bindings/RestoreTrashItemResponse";
 import type { CreateDirectoryResponse } from "#bindings/CreateDirectoryResponse";
@@ -78,6 +79,7 @@ export type {
 export type {
     RawDeleteResponse,
     TrashListResponse,
+    EmptyTrashResponse,
     RestoreTrashItemRequest,
     RestoreTrashItemResponse,
     CreateDirectoryResponse,
@@ -684,6 +686,15 @@ export class Agent {
         return apiRequest<TrashListResponse>(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/trash`,
             { method: "GET" },
+            this.requestContext,
+        );
+    }
+
+    /** Permanently removes every entry from all trash locations discovered by the agent. */
+    async emptyTrash(): Promise<EmptyTrashResponse> {
+        return apiRequest<EmptyTrashResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/trash`,
+            { method: "DELETE" },
             this.requestContext,
         );
     }

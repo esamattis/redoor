@@ -4,14 +4,17 @@ mod linux;
 mod macos;
 
 use redoor::commands::{CommandErrorKind, TrashListResponse};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 /// Immutable startup configuration used by every trash command worker.
 #[derive(Clone)]
 pub(crate) struct TrashService {
     #[cfg(target_os = "linux")]
     forced_root: Option<PathBuf>,
+    /// Prevents purge from racing with publication or restoration of provider metadata.
+    mutation_lock: Arc<Mutex<()>>,
 }
 
 /// Keeps provider failures mapped to stable command error categories.
@@ -46,7 +49,10 @@ impl TrashService {
     pub(crate) async fn initialize(forced_root: Option<PathBuf>) -> Result<Self, TrashError> {
         #[cfg(target_os = "linux")]
         {
-            let service = Self { forced_root };
+            let service = Self {
+                forced_root,
+                mutation_lock: Arc::new(Mutex::new(())),
+            };
             if let Some(root) = &service.forced_root {
                 linux::prepare_private_root(root).await?;
             }
@@ -60,7 +66,9 @@ impl TrashService {
                     "Trash directory overrides are supported only on Linux",
                 ));
             }
-            Ok(Self {})
+            Ok(Self {
+                mutation_lock: Arc::new(Mutex::new(())),
+            })
         }
     }
 
@@ -76,15 +84,17 @@ impl TrashService {
 
     /// Supplies inert configuration to tests that do not execute trash commands.
     #[cfg(test)]
-    pub(crate) const fn for_tests() -> Self {
+    pub(crate) fn for_tests() -> Self {
         Self {
             #[cfg(target_os = "linux")]
             forced_root: None,
+            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
     /// Moves one entry to the provider-selected same-device trash location.
     pub(crate) async fn trash(&self, _path: PathBuf) -> Result<(), TrashError> {
+        let _guard = self.mutation_lock.lock().await;
         #[cfg(target_os = "linux")]
         return linux::trash(self, _path).await;
         #[cfg(target_os = "macos")]
@@ -107,6 +117,18 @@ impl TrashService {
         ))
     }
 
+    /// Permanently removes all payloads and metadata while preserving provider roots.
+    pub(crate) async fn empty(&self) -> Result<u64, TrashError> {
+        let _guard = self.mutation_lock.lock().await;
+        #[cfg(target_os = "linux")]
+        return linux::empty(self).await;
+        #[cfg(not(target_os = "linux"))]
+        Err(TrashError::new(
+            CommandErrorKind::InvalidInput,
+            "Trash is unsupported on this platform",
+        ))
+    }
+
     /// Resolves opaque identifiers before restoring one payload to an explicit destination.
     pub(crate) async fn restore(
         &self,
@@ -114,6 +136,7 @@ impl TrashService {
         _item_id: &str,
         _destination: PathBuf,
     ) -> Result<PathBuf, TrashError> {
+        let _guard = self.mutation_lock.lock().await;
         #[cfg(target_os = "linux")]
         return linux::restore(self, _location_id, _item_id, _destination).await;
         #[cfg(not(target_os = "linux"))]
