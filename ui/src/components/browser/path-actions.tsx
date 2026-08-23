@@ -545,7 +545,7 @@ export function PersistentPathActions(props: {
 
     return (
         <>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-2">
                 <Tooltip content={props.downloadTooltip ?? "Download"}>
                     {downloadLink}
                 </Tooltip>
