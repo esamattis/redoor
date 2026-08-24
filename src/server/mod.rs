@@ -14,6 +14,7 @@ mod pam;
 mod raw;
 mod responses;
 mod restart;
+mod retry_agent_start;
 mod routes;
 pub(crate) mod state;
 mod terminals;

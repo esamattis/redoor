@@ -955,6 +955,13 @@ pub struct StartAgentResponse {
     pub agent: AgentInfoResponse,
 }
 
+/// Confirms that the previous managed startup attempt was canceled before its replacement began.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RetryAgentStartResponse {
+    pub agent: AgentInfoResponse,
+}
+
 /// Confirms that intentional shutdown completed child cleanup.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

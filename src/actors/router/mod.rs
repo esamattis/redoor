@@ -384,6 +384,7 @@ mod tests {
                 supports_trash: true,
                 supports_move_to_trash: true,
                 watchdog: None,
+                watchdog_attempt_generation: None,
             }))
             .expect("agent registered");
 

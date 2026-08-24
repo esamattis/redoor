@@ -116,7 +116,7 @@ pub(crate) async fn list_agents_handler(
 }
 
 /// Finds one retained inventory record while preserving unknown/unmanaged distinctions.
-async fn managed_agent_snapshot(
+pub(super) async fn managed_agent_snapshot(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<AgentInfoResponse, (StatusCode, ErrorResponse)> {
@@ -146,10 +146,29 @@ async fn managed_agent_snapshot(
 }
 
 /// Waits until the router has projected a control snapshot and completed socket cleanup.
-async fn apply_managed_snapshot(
+pub(super) async fn apply_managed_snapshot(
     state: &ServerState,
     agent_id: AgentId,
     snapshot: redoor::watchdog::WatchdogSnapshot,
+) -> Result<(), String> {
+    apply_managed_snapshot_with_eviction(state, agent_id, snapshot, false).await
+}
+
+/// Fences retry against the router's old socket before a replacement can register.
+pub(super) async fn evict_managed_snapshot(
+    state: &ServerState,
+    agent_id: AgentId,
+    snapshot: redoor::watchdog::WatchdogSnapshot,
+) -> Result<(), String> {
+    apply_managed_snapshot_with_eviction(state, agent_id, snapshot, true).await
+}
+
+/// Projects one lifecycle snapshot with optional retry-specific connection cleanup.
+async fn apply_managed_snapshot_with_eviction(
+    state: &ServerState,
+    agent_id: AgentId,
+    snapshot: redoor::watchdog::WatchdogSnapshot,
+    evict_existing: bool,
 ) -> Result<(), String> {
     state
         .router_ref
@@ -158,6 +177,7 @@ async fn apply_managed_snapshot(
                 actors::router::ApplyManagedLifecycleRequest {
                     agent_id,
                     snapshot,
+                    evict_existing,
                     reply: Some(reply),
                 },
             )

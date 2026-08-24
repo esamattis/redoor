@@ -305,6 +305,42 @@ describe("Watchdog supervisor", () => {
         expect(restartedDetails.pid).not.toBe(oldPid);
     }, 30000);
 
+    it("atomically retries a managed attempt and replaces its connected child", async () => {
+        const agent = await getWatchdogAgent();
+        const firstConnectionId = agent.connectionId;
+        if (!firstConnectionId) {
+            throw new Error("Watchdog agent has no control connection id");
+        }
+        const firstDetails = await agent.getDetails();
+
+        const response = await agent.retryStart();
+        // Acceptance is a cleanup barrier but deliberately does not wait for reconnection.
+        expect(response.agent.status).toBe("starting");
+        expect(response.agent.connection_issue).toBeNull();
+        const replacement = await waitForValue({
+            timeoutMs: 15000,
+            description: "retried managed agent to connect with a fresh generation",
+            predicate: async () => {
+                const candidate = (await apiClient.listAgents()).find(
+                    (entry) =>
+                        entry.name === AGENT_NAME &&
+                        entry.status === "connected" &&
+                        entry.connectionId !== firstConnectionId,
+                );
+                if (!candidate) return undefined;
+                return candidate.getDetails();
+            },
+        });
+
+        // A different PID proves the retry endpoint canceled the owned child before replacement.
+        expect(replacement.pid).not.toBe(firstDetails.pid);
+        const inventory = await apiClient.listAgents();
+        // Unrelated controls remain responsive while the replacement registration settles.
+        expect(inventory.some((entry) => entry.name === FAILING_AGENT_NAME)).toBe(
+            true,
+        );
+    }, 30000);
+
     it("surfaces managed startup issues without blocking control APIs", async () => {
         const failingAgent = (await apiClient.listAgents()).find(
             (entry) => entry.name === FAILING_AGENT_NAME,
@@ -330,6 +366,9 @@ describe("Watchdog supervisor", () => {
         // Concrete child failures remain visible while desired-running retries continue.
         expect(issue.status).toBe("starting");
         expect(issue.connectionIssue).toBeTruthy();
+        const retried = await failingAgent.retryStart();
+        // A broken agent still accepts a clean attempt rather than treating desired-running as idempotent.
+        expect(retried.agent.status).toBe("starting");
         const inventory = await apiClient.listAgents();
         // An unrelated list control remains responsive while the broken supervisor retries.
         expect(inventory.some((entry) => entry.name === AGENT_NAME)).toBe(true);

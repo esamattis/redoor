@@ -131,6 +131,23 @@ function getAgentSearchUrl(agent: Agent, root: string, query: string): URL {
 }
 
 describe("Agents API", () => {
+    it("rejects startup retry for external and unknown agents", async () => {
+        const external = await getConnectedTestAgent();
+        const externalResponse = await fetch(
+            `${apiClient.baseUrl}/api/v1/agents/${encodeURIComponent(external.id)}/retry-start`,
+            { method: "POST", headers: external.getAuthHeaders() },
+        );
+        // Connected external processes have no supervisor-owned attempt to replace.
+        expect(externalResponse.status).toBe(409);
+
+        const missingResponse = await fetch(
+            `${apiClient.baseUrl}/api/v1/agents/missing-retry-agent/retry-start`,
+            { method: "POST", headers: external.getAuthHeaders() },
+        );
+        // Unknown inventory identities retain the lifecycle API's not-found distinction.
+        expect(missingResponse.status).toBe(404);
+    });
+
     it("uses the computer hostname when the agent name is omitted", async () => {
         const agentPid = processManager.spawnAgent({
             wsAddress: wsUrl,

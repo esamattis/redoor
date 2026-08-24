@@ -26,6 +26,7 @@ use super::{
     moves::move_file_handler,
     raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
     restart::restart_server_handler,
+    retry_agent_start::retry_agent_start_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfers::{copy_file_handler, list_transfer_progress_handler},
@@ -98,6 +99,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(get_local_agent_configuration_handler),
         )
         .route("/api/v1/agents/{agent}/start", post(start_agent_handler))
+        .route(
+            "/api/v1/agents/{agent}/retry-start",
+            post(retry_agent_start_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/restart",
             post(restart_agent_handler),

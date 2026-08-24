@@ -832,6 +832,31 @@ test.describe.serial("Agent management", () => {
             .not.toBeNull();
         // The actionable supervisor issue remains inline while desired-running retries continue.
         await expect(row.getByRole("alert")).not.toBeEmpty();
+        await page
+            .getByRole("link", { name: `${FAILING_AGENT}, starting` })
+            .click();
+        await expect(
+            page.getByRole("heading", { name: `Starting ${FAILING_AGENT}` }),
+        ).toBeVisible();
+        const retryButton = page.getByRole("button", { name: "Retry Start" });
+        // Desired-running state must not disable the explicit attempt replacement control.
+        await expect(retryButton).toBeEnabled();
+        const retryUrl = `${WEB_BASE_URL}/api/v1/agents/${FAILING_AGENT}/retry-start`;
+        const [retryResponse] = await Promise.all([
+            page.waitForResponse(
+                (response) =>
+                    response.url() === retryUrl &&
+                    response.request().method() === "POST",
+            ),
+            retryButton.click(),
+        ]);
+        // A successful response proves the UI issued the dedicated atomic retry request.
+        expect(retryResponse.ok()).toBe(true);
+        await expect(retryButton).toBeEnabled();
+        // Retry keeps intentional shutdown available while the fresh attempt is still starting.
+        await expect(
+            page.getByRole("button", { name: "Shutdown", exact: true }),
+        ).toBeEnabled();
         // An unrelated navigation remains responsive while the failing child cycles.
         await page
             .getByRole("navigation", { name: "Application" })

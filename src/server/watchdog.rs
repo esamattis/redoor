@@ -75,6 +75,7 @@ pub(crate) async fn register_agent(
                     ApplyManagedLifecycleRequest {
                         agent_id: callback_agent_id.clone(),
                         snapshot,
+                        evict_existing: false,
                         reply: None,
                     },
                 ))

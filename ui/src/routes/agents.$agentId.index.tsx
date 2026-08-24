@@ -154,6 +154,30 @@ function AgentLifecycle(props: { agent: Agent }) {
             }));
         },
     });
+    const retryMutation = useMutation({
+        mutationFn: () => props.agent.retryStart(),
+        onMutate: () => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: true,
+                    error: null,
+                    autoRedirect: states[props.agent.id]?.autoRedirect ?? true,
+                },
+            }));
+        },
+        onSuccess: () => router.invalidate(),
+        onError: (error) => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: true,
+                    error: getStartErrorMessage(error),
+                    autoRedirect: states[props.agent.id]?.autoRedirect ?? true,
+                },
+            }));
+        },
+    });
     const shutdownMutation = useMutation({
         mutationFn: () => props.agent.shutdown(),
         onSuccess: async () => {
@@ -250,8 +274,8 @@ function AgentLifecycle(props: { agent: Agent }) {
                     <div className="mt-6 flex justify-center gap-3">
                         <Button
                             type="button"
-                            onClick={() => start()}
-                            disabled={state?.starting === true}
+                            onClick={() => retryMutation.mutate()}
+                            isLoading={retryMutation.isPending}
                         >
                             Retry Start
                         </Button>

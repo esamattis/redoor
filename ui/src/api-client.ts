@@ -8,6 +8,7 @@ import type { EchoResponse } from "#bindings/EchoResponse";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentConnectionStatus } from "#bindings/AgentConnectionStatus";
 import type { StartAgentResponse } from "#bindings/StartAgentResponse";
+import type { RetryAgentStartResponse } from "#bindings/RetryAgentStartResponse";
 import type { ShutdownAgentResponse } from "#bindings/ShutdownAgentResponse";
 import type { TransferDirection } from "#bindings/TransferDirection";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
@@ -107,6 +108,7 @@ export type {
     LogEvent,
     AgentConnectionStatus,
     StartAgentResponse,
+    RetryAgentStartResponse,
     ShutdownAgentResponse,
     RenamePathRequest,
     RenamePathResponse,
@@ -380,6 +382,15 @@ export class Agent {
     async start(): Promise<StartAgentResponse> {
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
+            { method: "POST" },
+            this.requestContext,
+        );
+    }
+
+    /** Cancels the current managed startup attempt before immediately beginning a clean one. */
+    async retryStart(): Promise<RetryAgentStartResponse> {
+        return apiRequest(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/retry-start`,
             { method: "POST" },
             this.requestContext,
         );

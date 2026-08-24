@@ -47,6 +47,8 @@ pub struct RegisterAgentRequest {
     pub supports_move_to_trash: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
+    /// Fences router commit against retry invalidating the parsed registration.
+    pub watchdog_attempt_generation: Option<u64>,
 }
 
 /// Retained inventory projection used by REST, tabs, and management controls.
@@ -116,6 +118,8 @@ pub struct ApplyManagedLifecycleRequest {
     pub agent_id: AgentId,
     /// Contains only small control-plane state, never process output.
     pub snapshot: WatchdogSnapshot,
+    /// Removes the previous live connection at an explicit retry boundary.
+    pub evict_existing: bool,
     /// Allows control endpoints to wait until inventory and socket cleanup are consistent.
     pub reply: Option<RouterReply<()>>,
 }

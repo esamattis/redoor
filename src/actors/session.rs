@@ -115,8 +115,10 @@ impl SessionRuntime {
                 // the watchdog (e.g. an external agent spawned outside
                 // the server) and stale cleanup has no process to restart.
                 self.watchdog = watchdog_registry.lookup(&agent_name);
+                let mut watchdog_attempt_generation = None;
                 if let Some(watchdog) = self.watchdog.as_ref() {
-                    if !watchdog.mark_connected(self.socket_id.clone()) {
+                    let Some(attempt_generation) = watchdog.mark_connected(self.socket_id.clone())
+                    else {
                         log!(
                             Level::Warning,
                             "Rejecting managed agent registration while stopped: agent_name={}",
@@ -133,7 +135,8 @@ impl SessionRuntime {
                         ));
                         self.watchdog = None;
                         return;
-                    }
+                    };
+                    watchdog_attempt_generation = Some(attempt_generation);
                     log!(
                         Level::Debug,
                         "Session linked to watchdog supervisor: agent_name={}",
@@ -161,6 +164,7 @@ impl SessionRuntime {
                         // Full inventory support from older agents already implies moving support.
                         supports_move_to_trash: supports_move_to_trash || supports_trash,
                         watchdog: self.watchdog.clone(),
+                        watchdog_attempt_generation,
                     }));
                 self.agent_id = Some(agent_id);
             }

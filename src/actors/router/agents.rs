@@ -266,10 +266,13 @@ pub(crate) async fn register(state: &mut RouterState, request: RegisterAgentRequ
     let agent_id = request.agent_id.clone();
     let rejection_sender = request.outgoing_priority.clone();
     let watchdog = request.watchdog.clone();
+    let watchdog_attempt_generation = request.watchdog_attempt_generation;
     let accepted = match watchdog.as_ref() {
-        Some(watchdog) => watchdog
-            .while_desired_running(|| commit_registration(state, request))
-            .is_some(),
+        Some(watchdog) => watchdog_attempt_generation.is_some_and(|attempt_generation| {
+            watchdog
+                .while_current_attempt(attempt_generation, || commit_registration(state, request))
+                .is_some()
+        }),
         None => {
             commit_registration(state, request);
             true
@@ -488,20 +491,49 @@ pub(crate) async fn apply_managed_lifecycle(
     let ApplyManagedLifecycleRequest {
         agent_id,
         snapshot,
+        evict_existing,
         reply,
     } = request;
-    let Some(known) = state.agents.known_by_id.get_mut(&agent_id) else {
+    let Some(managed) = state
+        .agents
+        .known_by_id
+        .get(&agent_id)
+        .map(|known| known.managed)
+    else {
         if let Some(reply) = reply {
             let _ = reply.send(());
         }
         return;
     };
-    if !known.managed {
+    if !managed {
         if let Some(reply) = reply {
             let _ = reply.send(());
         }
         return;
     }
+
+    if evict_existing && let Some(connection) = state.agents.by_id.remove(&agent_id) {
+        connection.shutdown_transfer();
+        if let Some(known) = state.agents.known_by_id.get_mut(&agent_id) {
+            known.last_seen_at = Some(crate::types::UnixTimestampSeconds::new(
+                chrono::Utc::now().timestamp(),
+            ));
+            known.connected_at = None;
+            known.socket_id = None;
+        }
+        let _ = connection.send_priority_message(crate::types::Message::Error {
+            message: "Managed agent startup was retried".to_string(),
+        });
+        cleanup::cleanup_agent_requests(state, &agent_id).await;
+        state.terminal_registry.remove_agent_pending(&agent_id);
+        state.log_registry.remove_agent(&agent_id);
+    }
+
+    let known = state
+        .agents
+        .known_by_id
+        .get_mut(&agent_id)
+        .expect("managed agent disappeared during lifecycle projection");
 
     let live_connection = state.agents.by_id.get(&agent_id);
     let live_socket = live_connection.map(|connection| connection.socket_id.clone());
@@ -701,11 +733,62 @@ mod tests {
             supports_trash: true,
             supports_move_to_trash: true,
             watchdog: None,
+            watchdog_attempt_generation: None,
         };
         commit_registration(state, request);
         state.agents.by_id[&AgentId::from(agent_id)]
             .transfer_token
             .clone()
+    }
+
+    /// Verifies retry projection removes the old socket before reporting a fresh start.
+    #[tokio::test]
+    async fn retry_lifecycle_evicts_existing_managed_connection() {
+        crate::logging::init(None).await.unwrap();
+        let mut state = test_state();
+        let agent_id = AgentId::from("managed-retry");
+        let (register_reply, register_receiver) = oneshot::channel();
+        register_managed(
+            &mut state,
+            RegisterManagedAgentRequest {
+                agent_id: agent_id.clone(),
+                default_directory: Some("/tmp".to_string()),
+                configuration_editable: true,
+                ssh_target: None,
+                reply: register_reply,
+            },
+        );
+        register_receiver
+            .await
+            .expect("managed inventory registration acknowledged");
+        insert_control(&mut state, "managed-retry");
+
+        apply_managed_lifecycle(
+            &mut state,
+            ApplyManagedLifecycleRequest {
+                agent_id: agent_id.clone(),
+                snapshot: crate::watchdog::WatchdogSnapshot {
+                    attempt_generation: 2,
+                    desired_running: true,
+                    status: AgentConnectionStatus::Starting,
+                    connection_issue: None,
+                    provisioning_status: Vec::new(),
+                    socket_id: None,
+                },
+                evict_existing: true,
+                reply: None,
+            },
+        )
+        .await;
+
+        // REST success must not leave a dead socket available for routing or redirect.
+        assert!(!state.agents.by_id.contains_key(&agent_id));
+        // The retained managed row remains visible as the replacement attempt starts.
+        assert_eq!(
+            state.agents.known_by_id[&agent_id].status,
+            AgentConnectionStatus::Starting
+        );
+        assert_eq!(state.agents.known_by_id[&agent_id].socket_id, None);
     }
 
     /// Creates a transfer registration request and exposes its shutdown observer.
@@ -977,6 +1060,7 @@ mod tests {
                 supports_trash: true,
                 supports_move_to_trash: true,
                 watchdog: None,
+                watchdog_attempt_generation: None,
             },
         );
         // Remove the lifecycle bootstrap so the reserved lane is available for cancellation.
