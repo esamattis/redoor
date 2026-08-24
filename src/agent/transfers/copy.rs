@@ -45,12 +45,8 @@ pub(crate) enum LocalCopyError {
     InvalidSourcePath(String),
     #[error("Invalid destination path: {0}")]
     InvalidDestinationPath(String),
-    #[error("Non-utf8 destination path: {0}")]
-    NonUtf8DestinationPath(String),
     #[error("Failed to access source parent: {0}")]
     AccessSourceParent(String),
-    #[error("Failed to access absolute source path: {0}")]
-    AccessAbsoluteSourcePath(String),
     #[error("Failed to access destination parent: {0}")]
     AccessDestinationParent(String),
     #[error("Failed to open source file: {0}")]
@@ -75,8 +71,12 @@ pub(crate) enum LocalCopyError {
     UnsupportedEntryType(String),
     #[error("Failed to create destination directory: {0}")]
     CreateDestinationDirectory(String),
+    #[error("Failed to create destination symbolic link: {0}")]
+    CreateDestinationSymlink(String),
     #[error("Failed to create temp directory: {0}")]
     CreateTempDirectory(#[source] std::io::Error),
+    #[error("Failed to create temporary symbolic link: {0}")]
+    CreateTempSymlink(#[source] std::io::Error),
     #[error("Lost router connection while reporting local copy progress")]
     ProgressChannelClosed,
     #[error("Local copy canceled because its control connection ended")]
@@ -89,7 +89,8 @@ impl LocalCopyError {
         match self {
             Self::AccessSourceFile(error)
             | Self::AccessSourceDirectory(error)
-            | Self::CreateTempDirectory(error) => {
+            | Self::CreateTempDirectory(error)
+            | Self::CreateTempSymlink(error) => {
                 redoor::commands::CommandErrorKind::from_io_error(error)
             }
             Self::DestinationPlacement(error) => error.kind(),
@@ -102,10 +103,8 @@ impl LocalCopyError {
             | Self::DestinationParentNotFound(_)
             | Self::InvalidSourcePath(_)
             | Self::InvalidDestinationPath(_)
-            | Self::NonUtf8DestinationPath(_)
             | Self::UnsupportedEntryType(_) => redoor::commands::CommandErrorKind::InvalidInput,
             Self::AccessSourceParent(_)
-            | Self::AccessAbsoluteSourcePath(_)
             | Self::AccessDestinationParent(_)
             | Self::OpenSourceFile(_)
             | Self::CreateDestinationFile(_)
@@ -117,6 +116,7 @@ impl LocalCopyError {
             | Self::ReadDirectoryEntry(_)
             | Self::ReadEntryMetadata(_)
             | Self::CreateDestinationDirectory(_)
+            | Self::CreateDestinationSymlink(_)
             | Self::ProgressChannelClosed
             | Self::Canceled => redoor::commands::CommandErrorKind::Internal,
         }
@@ -124,8 +124,7 @@ impl LocalCopyError {
 }
 
 /// Builds the hidden temp file path used while a local file copy is still incomplete.
-fn temp_local_copy_path(path: &str) -> PathBuf {
-    let destination = Path::new(path);
+fn temp_local_copy_path(destination: &Path) -> PathBuf {
     let file_name = destination
         .file_name()
         .and_then(|name| name.to_str())
@@ -140,7 +139,7 @@ fn temp_local_copy_path(path: &str) -> PathBuf {
 
 /// Removes one local-copy temp file or directory if it is still present.
 async fn cleanup_local_copy_temp_path(path: &Path) {
-    match tokio::fs::metadata(path).await {
+    match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) if metadata.is_dir() => {
             let _ = redoor::safe_fs::safe_rm_all(path).await;
         }
@@ -152,8 +151,7 @@ async fn cleanup_local_copy_temp_path(path: &Path) {
 }
 
 /// Builds the hidden temp directory path used while a local directory copy is still incomplete.
-fn temp_local_copy_dir_path(path: &str) -> PathBuf {
-    let destination = Path::new(path);
+fn temp_local_copy_dir_path(destination: &Path) -> PathBuf {
     let file_name = destination
         .file_name()
         .and_then(|name| name.to_str())
@@ -186,16 +184,12 @@ pub(crate) async fn validate_local_copy_destination(
         .await
         .map_err(|_| LocalCopyError::AccessDestinationParent(dest_parent.display().to_string()))?;
 
-    let source_canonical =
-        if source_path.is_absolute() {
-            tokio::fs::canonicalize(source_path).await.map_err(|_| {
-                LocalCopyError::AccessAbsoluteSourcePath(source_path.display().to_string())
-            })?
-        } else {
-            canonical_source_parent.join(source_path.file_name().ok_or_else(|| {
-                LocalCopyError::InvalidSourcePath(source_path.display().to_string())
-            })?)
-        };
+    // Resolve the parent but retain the selected directory entry so symlinks are not dereferenced.
+    let source_canonical = canonical_source_parent.join(
+        source_path
+            .file_name()
+            .ok_or_else(|| LocalCopyError::InvalidSourcePath(source_path.display().to_string()))?,
+    );
 
     let dest_effective =
         canonical_dest_parent.join(dest_path.file_name().ok_or_else(|| {
@@ -479,8 +473,17 @@ async fn copy_directory_streaming(
             stack.push((entry_path, destination_path, entries));
         } else if metadata.is_file() {
             reporter.add_total_bytes(metadata.len());
-            let temp_path = temp_local_copy_path_for_destination(&destination_path)?;
+            let temp_path = temp_local_copy_path(&destination_path);
             copy_file_streaming(&entry_path, &destination_path, &temp_path, reporter).await?;
+        } else if metadata.file_type().is_symlink() {
+            let target = tokio::fs::read_link(&entry_path)
+                .await
+                .map_err(|_| LocalCopyError::ReadEntryMetadata(entry_path.display().to_string()))?;
+            tokio::fs::symlink(target, &destination_path)
+                .await
+                .map_err(|_| {
+                    LocalCopyError::CreateDestinationSymlink(destination_path.display().to_string())
+                })?;
         } else {
             return Err(LocalCopyError::UnsupportedEntryType(
                 entry_path.display().to_string(),
@@ -524,7 +527,12 @@ impl AgentActor {
             on_existing
         );
         match self
-            .run_local_copy_file(source_path, dest_path, on_existing, &response)
+            .run_local_copy_file(
+                PathBuf::from(source_path),
+                PathBuf::from(dest_path),
+                on_existing,
+                &response,
+            )
             .await
         {
             Ok(result) => {
@@ -557,27 +565,27 @@ impl AgentActor {
     /// Executes one same-agent file copy and returns the final protocol result.
     pub(crate) async fn run_local_copy_file(
         &self,
-        source_path: String,
-        dest_path: String,
+        source_path: PathBuf,
+        dest_path: PathBuf,
         on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
-        let source_path_buf = PathBuf::from(&source_path);
-        let dest_path_buf = PathBuf::from(&dest_path);
-        let temp_path = temp_local_copy_path_for_destination(&dest_path_buf)?;
+        let temp_path = temp_local_copy_path(&dest_path);
         let result = async {
-            let source_metadata = tokio::fs::metadata(&source_path_buf)
+            let source_metadata = tokio::fs::metadata(&source_path)
                 .await
                 .map_err(LocalCopyError::AccessSourceFile)?;
             ensure_local_copy_active(&response.cancel)?;
             if !source_metadata.is_file() {
-                return Err(LocalCopyError::SourceNotFile(source_path));
+                return Err(LocalCopyError::SourceNotFile(
+                    source_path.display().to_string(),
+                ));
             }
-            validate_local_copy_destination(&source_path_buf, &dest_path_buf, false).await?;
+            validate_local_copy_destination(&source_path, &dest_path, false).await?;
             ensure_local_copy_active(&response.cancel)?;
-            validate_local_copy_parent(&dest_path_buf).await?;
+            validate_local_copy_parent(&dest_path).await?;
             ensure_local_copy_active(&response.cancel)?;
-            check_existing_destination(&dest_path_buf, on_existing, false).await?;
+            check_existing_destination(&dest_path, on_existing, false).await?;
             ensure_local_copy_active(&response.cancel)?;
             let mut reporter = LocalCopyProgressReporter::new(
                 response.write.clone(),
@@ -587,9 +595,53 @@ impl AgentActor {
                 response.cancel.clone(),
             );
             reporter.report(true).await?;
-            stream_file_to_temp(&source_path_buf, &temp_path, &mut reporter).await?;
+            stream_file_to_temp(&source_path, &temp_path, &mut reporter).await?;
             reporter.finish().await?;
-            place_temp_at_destination(&temp_path, &dest_path_buf, on_existing, false)
+            place_temp_at_destination(&temp_path, &dest_path, on_existing, false)
+                .await
+                .map_err(LocalCopyError::from)?;
+            Ok(CommandResult::LocalCopyFile)
+        }
+        .await;
+        if result.is_err() {
+            cleanup_local_copy_temp_path(&temp_path).await;
+        }
+        result
+    }
+
+    /// Copies a symbolic link itself through a hidden name instead of dereferencing its target.
+    pub(crate) async fn run_local_copy_symlink(
+        &self,
+        source_path: PathBuf,
+        dest_path: PathBuf,
+        on_existing: CopyExistingMode,
+        response: &LocalCopyResponseContext<'_>,
+    ) -> Result<CommandResult, LocalCopyError> {
+        let temp_path = temp_local_copy_path(&dest_path);
+        let result = async {
+            let source_metadata = tokio::fs::symlink_metadata(&source_path)
+                .await
+                .map_err(LocalCopyError::AccessSourceFile)?;
+            ensure_local_copy_active(&response.cancel)?;
+            if !source_metadata.file_type().is_symlink() {
+                return Err(LocalCopyError::SourceNotFile(
+                    source_path.display().to_string(),
+                ));
+            }
+            validate_local_copy_destination(&source_path, &dest_path, false).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            validate_local_copy_parent(&dest_path).await?;
+            ensure_local_copy_active(&response.cancel)?;
+            check_existing_destination(&dest_path, on_existing, false).await?;
+            let target = tokio::fs::read_link(&source_path)
+                .await
+                .map_err(LocalCopyError::AccessSourceFile)?;
+            ensure_local_copy_active(&response.cancel)?;
+            tokio::fs::symlink(target, &temp_path)
+                .await
+                .map_err(LocalCopyError::CreateTempSymlink)?;
+            ensure_local_copy_active(&response.cancel)?;
+            place_temp_at_destination(&temp_path, &dest_path, on_existing, false)
                 .await
                 .map_err(LocalCopyError::from)?;
             Ok(CommandResult::LocalCopyFile)
@@ -618,7 +670,12 @@ impl AgentActor {
             on_existing
         );
         match self
-            .run_local_copy_directory(source_path, dest_path, on_existing, &response)
+            .run_local_copy_directory(
+                PathBuf::from(source_path),
+                PathBuf::from(dest_path),
+                on_existing,
+                &response,
+            )
             .await
         {
             Ok(result) => {
@@ -651,27 +708,27 @@ impl AgentActor {
     /// Executes one same-agent directory copy and returns the final protocol result.
     pub(crate) async fn run_local_copy_directory(
         &self,
-        source_path: String,
-        dest_path: String,
+        source_path: PathBuf,
+        dest_path: PathBuf,
         on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<CommandResult, LocalCopyError> {
-        let source_path_buf = PathBuf::from(&source_path);
-        let dest_path_buf = PathBuf::from(&dest_path);
         let temp_dest_root = temp_local_copy_dir_path(&dest_path);
         let result = async {
-            let source_metadata = tokio::fs::metadata(&source_path_buf)
+            let source_metadata = tokio::fs::metadata(&source_path)
                 .await
                 .map_err(LocalCopyError::AccessSourceDirectory)?;
             ensure_local_copy_active(&response.cancel)?;
             if !source_metadata.is_dir() {
-                return Err(LocalCopyError::SourceNotDirectory(source_path));
+                return Err(LocalCopyError::SourceNotDirectory(
+                    source_path.display().to_string(),
+                ));
             }
-            validate_local_copy_destination(&source_path_buf, &dest_path_buf, true).await?;
+            validate_local_copy_destination(&source_path, &dest_path, true).await?;
             ensure_local_copy_active(&response.cancel)?;
-            validate_local_copy_parent(&dest_path_buf).await?;
+            validate_local_copy_parent(&dest_path).await?;
             ensure_local_copy_active(&response.cancel)?;
-            check_existing_destination(&dest_path_buf, on_existing, true).await?;
+            check_existing_destination(&dest_path, on_existing, true).await?;
             ensure_local_copy_active(&response.cancel)?;
             tokio::fs::create_dir(&temp_dest_root)
                 .await
@@ -685,9 +742,9 @@ impl AgentActor {
                 response.cancel.clone(),
             );
             reporter.report(true).await?;
-            copy_directory_streaming(&source_path_buf, &temp_dest_root, &mut reporter).await?;
+            copy_directory_streaming(&source_path, &temp_dest_root, &mut reporter).await?;
             reporter.finish().await?;
-            place_temp_at_destination(&temp_dest_root, &dest_path_buf, on_existing, true)
+            place_temp_at_destination(&temp_dest_root, &dest_path, on_existing, true)
                 .await
                 .map_err(LocalCopyError::from)?;
             Ok(CommandResult::LocalCopyDirectory)
@@ -698,13 +755,6 @@ impl AgentActor {
         }
         result
     }
-}
-
-/// Builds the temp copy path from one validated destination path.
-fn temp_local_copy_path_for_destination(dest_path: &Path) -> Result<PathBuf, LocalCopyError> {
-    Ok(temp_local_copy_path(dest_path.to_str().ok_or_else(
-        || LocalCopyError::NonUtf8DestinationPath(dest_path.display().to_string()),
-    )?))
 }
 
 #[cfg(test)]
@@ -813,6 +863,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn local_copy_symlink_preserves_the_link_instead_of_its_target() {
+        let temp_dir = TempDir::create();
+        let source_path = temp_dir.path().join("source-link");
+        let dest_path = temp_dir.path().join("dest-link");
+        tokio::fs::symlink("missing-relative-target", &source_path)
+            .await
+            .expect("source symbolic link should be created");
+        let (write_tx, _write_rx) = mpsc::channel(1);
+        let agent_id = AgentId::from("agent-1");
+        let response = LocalCopyResponseContext {
+            write: &write_tx,
+            agent_id: &agent_id,
+            request_id: RequestId::new(44),
+            cancel: watch::channel(false).1,
+        };
+
+        let result = AgentActor
+            .run_local_copy_symlink(
+                source_path,
+                dest_path.clone(),
+                CopyExistingMode::Error,
+                &response,
+            )
+            .await
+            .expect("symbolic link transfer should succeed without reading its target");
+
+        // Reusing the file result keeps the existing transfer protocol stable for link entries.
+        assert!(matches!(result, CommandResult::LocalCopyFile));
+        // A broken relative target proves the transfer copied link metadata rather than target bytes.
+        assert_eq!(
+            tokio::fs::read_link(&dest_path)
+                .await
+                .expect("copied destination should remain a symbolic link"),
+            PathBuf::from("missing-relative-target")
+        );
+    }
+
     /// Verifies generation cancellation removes an in-progress hidden copy before returning.
     #[tokio::test]
     async fn local_copy_cancellation_awaits_temp_file_cleanup() {
@@ -836,8 +924,8 @@ mod tests {
             cancel: cancel_receiver,
         };
         let copy = AgentActor.run_local_copy_file(
-            source_path.display().to_string(),
-            dest_path.display().to_string(),
+            source_path.clone(),
+            dest_path.clone(),
             CopyExistingMode::Error,
             &response,
         );

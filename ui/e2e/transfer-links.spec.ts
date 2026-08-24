@@ -134,7 +134,7 @@ test.describe.serial("Transfer Path Links", () => {
             .filter({ hasText: sourceFileName })
             .filter({ hasText: destFileName });
 
-        // Same-FS renameat2 must surface as an atomic move rather than a copy or byte-copy move.
+        // Same-FS filesystem rename must surface as an atomic move rather than a copied move.
         await expect(moveRow).toContainText("atomic move");
         // Completion proves the history row remains active through source deletion.
         await expect(moveRow).toContainText("completed", { timeout: 15_000 });

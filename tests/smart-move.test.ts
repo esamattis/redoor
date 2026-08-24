@@ -86,7 +86,7 @@ describe("Smart Move API", () => {
 
         // A distinct direction lets transfer history identify move semantics rather than copy.
         expect(move.direction).toBe("move");
-        // Same-FS missing destinations must report the renameat2 path, not copy/delete.
+        // Same-FS missing destinations must report the filesystem rename path, not copy/delete.
         expect(move.atomic).toBe(true);
         // Reading the destination verifies the move published the complete file.
         expect(Buffer.from(await sourceAgent.raw(destPath)).toString()).toBe(
@@ -123,7 +123,7 @@ describe("Smart Move API", () => {
         );
         const move = await waitForMove(response.move_request_id);
 
-        // Same-FS missing directory destinations must use renameat2, not copy/delete.
+        // Same-FS missing directory destinations must use filesystem rename, not copy/delete.
         expect(move.atomic).toBe(true);
         // Preserving the directory inode proves the tree was renamed rather than reconstructed.
         expect((await fs.lstat(destPath, { bigint: true })).ino).toBe(
@@ -155,7 +155,7 @@ describe("Smart Move API", () => {
 
         // Destination endpoint identity confirms the cross-agent route was retained publicly.
         expect(move.dest?.agent).toBe(destinationAgent.id);
-        // Streaming plus source deletion is not a renameat2 publication.
+        // Streaming plus source deletion is not a filesystem rename publication.
         expect(move.atomic).toBe(false);
         // Destination bytes must be complete before the move can report completion.
         expect(
@@ -212,7 +212,9 @@ describe("Smart Move API", () => {
         // Override must publish the source bytes instead of retaining old destination content.
         expect(await fs.readFile(destPath, "utf8")).toBe("replacement");
         // Preserving the source inode proves same-filesystem override used rename rather than copying.
-        expect((await fs.lstat(destPath, { bigint: true })).ino).toBe(sourceInode);
+        expect((await fs.lstat(destPath, { bigint: true })).ino).toBe(
+            sourceInode,
+        );
         // Successful override is still a move and therefore removes the original.
         await expect(fs.stat(sourcePath)).rejects.toMatchObject({
             code: "ENOENT",
@@ -227,7 +229,10 @@ describe("Smart Move API", () => {
             suffix: "-override-file-destination",
         });
         await fs.mkdir(directorySource);
-        await fs.writeFile(path.join(directorySource, "source.txt"), "directory");
+        await fs.writeFile(
+            path.join(directorySource, "source.txt"),
+            "directory",
+        );
         const directoryInode = (
             await fs.lstat(directorySource, { bigint: true })
         ).ino;
@@ -237,14 +242,16 @@ describe("Smart Move API", () => {
             directorySource,
             { on_existing: "override" },
         );
-        const directoryMove = await waitForMove(directoryResponse.move_request_id);
+        const directoryMove = await waitForMove(
+            directoryResponse.move_request_id,
+        );
 
         // Directory-over-file must stay on the atomic exchange path.
         expect(directoryMove.atomic).toBe(true);
         // A directory must replace a file even though a plain POSIX replacement rename rejects that pair.
-        expect(await fs.readFile(path.join(fileDestination, "source.txt"), "utf8")).toBe(
-            "directory",
-        );
+        expect(
+            await fs.readFile(path.join(fileDestination, "source.txt"), "utf8"),
+        ).toBe("directory");
         // The source directory inode at the destination demonstrates an atomic exchange, not reconstruction.
         expect((await fs.lstat(fileDestination, { bigint: true })).ino).toBe(
             directoryInode,
@@ -281,11 +288,13 @@ describe("Smart Move API", () => {
             "file over directory",
         );
         // Keeping the file inode verifies the destination changed through atomic rename exchange.
-        expect((await fs.lstat(directoryDestination, { bigint: true })).ino).toBe(
-            fileInode,
-        );
+        expect(
+            (await fs.lstat(directoryDestination, { bigint: true })).ino,
+        ).toBe(fileInode);
         // Recursive cleanup must remove the displaced non-empty directory at the source name.
-        await expect(fs.lstat(fileSource)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.lstat(fileSource)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
 
         const symlinkSource = tempFiles.create("file over symlink", {
             suffix: "-override-symlink-source",
@@ -367,11 +376,16 @@ describe("Smart Move API", () => {
         ).rejects.toMatchObject({ code: "ENOENT" });
         // Keeping the source directory inode proves the destination was exchanged, not rebuilt.
         expect(
-            (await fs.lstat(directoryOverDirectoryDestination, { bigint: true }))
-                .ino,
+            (
+                await fs.lstat(directoryOverDirectoryDestination, {
+                    bigint: true,
+                })
+            ).ino,
         ).toBe(directoryOverDirectoryInode);
         // Cleanup after exchange must remove the displaced destination tree from the source name.
-        await expect(fs.lstat(directoryOverDirectorySource)).rejects.toMatchObject({
+        await expect(
+            fs.lstat(directoryOverDirectorySource),
+        ).rejects.toMatchObject({
             code: "ENOENT",
         });
     });

@@ -754,7 +754,7 @@ pub enum CommandResult {
     TarUpload,
     LocalCopyFile,
     LocalCopyDirectory,
-    /// Carries whether renameat2 published the destination so the public row can hide copy speeds.
+    /// Carries whether a filesystem rename published the destination so copy speeds stay hidden.
     LocalMove {
         atomic: bool,
     },
@@ -1313,7 +1313,7 @@ pub struct TransferProgressEntry {
     /// Tells clients whether the active operation is still before its non-cancelable commit boundary.
     pub cancelable: bool,
     pub error: Option<String>,
-    /// Stamped only after a same-agent renameat2 so the UI can label it and skip copy speeds.
+    /// Stamped only after a same-agent filesystem rename so the UI can skip copy speeds.
     pub atomic: bool,
 }
 

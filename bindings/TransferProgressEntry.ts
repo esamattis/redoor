@@ -12,6 +12,6 @@ export type TransferProgressEntry = { request_id: TransferId, agent_id: AgentId,
  */
 cancelable: boolean, error: string | null, 
 /**
- * Stamped only after a same-agent renameat2 so the UI can label it and skip copy speeds.
+ * Stamped only after a same-agent filesystem rename so the UI can skip copy speeds.
  */
 atomic: boolean, };

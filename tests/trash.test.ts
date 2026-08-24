@@ -115,8 +115,13 @@ describe.skipIf(process.platform !== "linux")("Trash API", () => {
         expect(logs).toContain(
             `Trash location selected: source=${file}, location_id=`,
         );
-        // Metadata publication records both provider artifacts before the atomic rename.
+        // Metadata publication records both provider artifacts before the filesystem rename.
         expect(logs).toContain(`Trash metadata published: source=${file}`);
+        // The selected operation must remain a rename with no hidden copy/delete fallback.
+        expect(logs).toContain(
+            `Trash payload rename started: source=${file}, payload=`,
+        );
+        expect(logs).toContain("copy_fallback=false");
         // Payload movement confirms which stage completed the filesystem mutation.
         expect(logs).toContain(`Trash payload moved: source=${file}`);
         // Completion logging closes the shared operation lifecycle after provider success.
@@ -147,6 +152,31 @@ describe.skipIf(process.platform !== "linux")("Trash API", () => {
 
         // Unique payload names prove concurrent metadata reservations do not overwrite either item.
         expect(new Set(duplicates.map((item) => item.name)).size).toBe(2);
+    });
+
+    it("does not replace an orphaned payload when selecting a trash name", async () => {
+        const source = path.join(root, "orphan-collision.txt");
+        const orphan = path.join(trashRoot, "files", "orphan-collision.txt");
+        await fs.writeFile(source, "new contents");
+        await fs.writeFile(orphan, "existing orphan contents");
+
+        await testAgent.deleteFile(source, { trash: true });
+        const item = (await testAgent.listTrash()).locations
+            .flatMap((location) => location.items)
+            .find((entry) => entry.original_path === source);
+        if (!item) {
+            throw new Error("Trashed collision source was not listed");
+        }
+
+        // An unpaired payload must not be overwritten by ordinary rename semantics.
+        await expect(fs.readFile(orphan, "utf8")).resolves.toBe(
+            "existing orphan contents",
+        );
+        // Selecting another name proves the source was still moved without copy/delete fallback.
+        expect(item.name).toBe("orphan-collision.txt.1");
+        await expect(
+            fs.readFile(path.join(trashRoot, "files", item.name), "utf8"),
+        ).resolves.toBe("new contents");
     });
 
     it("restores to the original path and removes metadata after publication", async () => {
@@ -303,6 +333,63 @@ DeletionDate=2020-01-01T00:00:00
         );
         // The original path must stay absent after choosing a different restore location.
         await expect(fs.access(source)).rejects.toThrow();
+    });
+
+    it("restores across devices through the existing transfer path", async () => {
+        const sharedMemory = "/dev/shm";
+        let sharedMemoryStats: Awaited<ReturnType<typeof fs.stat>>;
+        try {
+            sharedMemoryStats = await fs.stat(sharedMemory);
+            await fs.access(sharedMemory, fs.constants.W_OK);
+        } catch {
+            return;
+        }
+        const rootStats = await fs.stat(root);
+        if (sharedMemoryStats.dev === rootStats.dev) {
+            return;
+        }
+        const source = path.join(root, "cross-device-restore-directory");
+        const destination = path.join(
+            sharedMemory,
+            `redoor-trash-restore-${process.pid}`,
+        );
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "value.txt"), "restored contents");
+        await fs.symlink("value.txt", path.join(source, "value-link"));
+        onTestFinished(async () => {
+            await fs.rm(destination, { recursive: true, force: true });
+        });
+        await testAgent.deleteFile(source, { trash: true });
+        const listing = await testAgent.listTrash();
+        const location = listing.locations.find((entry) =>
+            entry.items.some((item) => item.original_path === source),
+        );
+        const item = location?.items.find(
+            (entry) => entry.original_path === source,
+        );
+        if (!location || !item) {
+            throw new Error("Cross-device restore item was not listed");
+        }
+
+        const response = await testAgent.restoreTrashItem({
+            location_id: location.id,
+            item_id: item.id,
+            destination_path: destination,
+        });
+
+        // Success across different devices proves restore reused transfer copy/delete semantics.
+        expect(response.path).toBe(destination);
+        await expect(
+            fs.readFile(path.join(destination, "value.txt"), "utf8"),
+        ).resolves.toBe("restored contents");
+        // Nested links must remain links instead of being dereferenced during streamed traversal.
+        await expect(
+            fs.readlink(path.join(destination, "value-link")),
+        ).resolves.toBe("value.txt");
+        // Removing metadata only after transfer completion prevents the item from remaining listed.
+        await expect(
+            fs.access(path.join(trashRoot, "info", `${item.name}.trashinfo`)),
+        ).rejects.toThrow();
     });
 
     it("rejects a forced trash root on another device without copying", async () => {

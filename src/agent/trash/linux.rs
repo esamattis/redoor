@@ -1,9 +1,12 @@
 use super::{TrashError, TrashService};
+use crate::agent::{
+    AgentActor,
+    transfers::{copy::LocalCopyResponseContext, r#move::move_source_identity},
+};
 use chrono::{Local, NaiveDateTime, TimeZone};
 use redoor::{
     Level,
-    atomic_rename::{AtomicRenameOutcome, rename_no_replace, rename_no_replace_at},
-    commands::{CommandErrorKind, TrashItem, TrashListResponse, TrashLocation},
+    commands::{CommandErrorKind, CopyExistingMode, TrashItem, TrashListResponse, TrashLocation},
     log,
     types::UnixTimestampSeconds,
 };
@@ -198,44 +201,79 @@ DeletionDate={}
             payload.display()
         );
 
-        match rename_no_replace(&source, &payload).await {
-            Ok(AtomicRenameOutcome::Renamed) => {
+        match tokio::fs::symlink_metadata(&payload).await {
+            Ok(_) => {
                 log!(
                     Level::Debug,
-                    "Trash payload moved: source={}, payload={}, info={}",
+                    "Trash payload candidate already exists: source={}, payload={}, attempt={}",
+                    source.display(),
+                    payload.display(),
+                    attempt
+                );
+                let _ = tokio::fs::remove_file(&info).await;
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&info).await;
+                return Err(TrashError::io(
+                    "Failed to inspect trash payload candidate",
+                    error,
+                ));
+            }
+        }
+
+        log!(
+            Level::Debug,
+            "Trash payload rename started: source={}, payload={}, source_device={}, trash_device={}, copy_fallback=false",
+            source.display(),
+            payload.display(),
+            source_metadata.dev(),
+            root_metadata.dev()
+        );
+        match tokio::fs::rename(&source, &payload).await {
+            Ok(()) => {
+                log!(
+                    Level::Debug,
+                    "Trash payload moved: source={}, payload={}, info={}, method=filesystem_rename, copy_fallback=false",
                     source.display(),
                     payload.display(),
                     info.display()
                 );
                 return Ok(());
             }
-            Ok(AtomicRenameOutcome::DestinationExists) => {
-                log!(
-                    Level::Debug,
-                    "Trash payload collision after metadata reservation: source={}, payload={}, attempt={}",
-                    source.display(),
-                    payload.display(),
-                    attempt
-                );
-                let _ = tokio::fs::remove_file(&info).await;
-            }
-            Ok(AtomicRenameOutcome::Missing) => {
-                let _ = tokio::fs::remove_file(&info).await;
-                return Err(TrashError::new(
-                    CommandErrorKind::NotFound,
-                    "Trash source no longer exists",
-                ));
-            }
-            Ok(AtomicRenameOutcome::CrossDevice | AtomicRenameOutcome::Unsupported) => {
-                let _ = tokio::fs::remove_file(&info).await;
-                return Err(TrashError::new(
-                    CommandErrorKind::InvalidInput,
-                    "Trash requires an atomic same-device no-replace rename",
-                ));
-            }
             Err(error) => {
                 let _ = tokio::fs::remove_file(&info).await;
-                return Err(TrashError::io("Failed to move source into trash", error));
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    return Err(TrashError::new(
+                        CommandErrorKind::NotFound,
+                        format!(
+                            "Trash source or selected trash directory no longer exists during rename: source={}, payload={}",
+                            source.display(),
+                            payload.display()
+                        ),
+                    ));
+                }
+                if error.raw_os_error() == Some(libc::EXDEV) {
+                    return Err(TrashError::new(
+                        CommandErrorKind::InvalidInput,
+                        format!(
+                            "Trash rename crossed filesystem boundaries despite device validation: source={}, payload={}, source_device={}, trash_device={}",
+                            source.display(),
+                            payload.display(),
+                            source_metadata.dev(),
+                            root_metadata.dev()
+                        ),
+                    ));
+                }
+                return Err(TrashError::io(
+                    &format!(
+                        "Filesystem rename into trash failed (copy fallback is disabled): source={}, payload={}",
+                        source.display(),
+                        payload.display()
+                    ),
+                    error,
+                ));
             }
         }
     }
@@ -326,6 +364,7 @@ pub(super) async fn restore(
     location_id: &str,
     item_id: &str,
     destination: PathBuf,
+    response: &LocalCopyResponseContext<'_>,
 ) -> Result<PathBuf, TrashError> {
     validate_identifier(location_id)?;
     validate_identifier(item_id)?;
@@ -367,53 +406,38 @@ pub(super) async fn restore(
                 TrashError::io("Failed to open restore parent", error)
             }
         })?;
-    let parent_metadata = parent_directory
-        .metadata()
-        .await
-        .map_err(|error| TrashError::io("Failed to inspect restore parent", error))?;
     let payload_metadata = tokio::fs::symlink_metadata(&item.payload)
         .await
         .map_err(|error| TrashError::io("Failed to inspect trash payload", error))?;
-    if payload_metadata.dev() != parent_metadata.dev() {
-        return Err(TrashError::new(
-            CommandErrorKind::InvalidInput,
-            "Trash payload and restore destination are on different devices",
-        ));
-    }
-    let destination_name = destination.file_name().ok_or_else(|| {
-        TrashError::new(
-            CommandErrorKind::InvalidInput,
-            "Trash restore destination has no filename",
+    let atomic = AgentActor
+        .run_local_move(
+            item.payload.clone(),
+            destination.clone(),
+            payload_metadata.is_dir(),
+            move_source_identity(&payload_metadata),
+            CopyExistingMode::Error,
+            response,
         )
-    })?;
-    match rename_no_replace_at(
-        &item.payload,
-        parent_directory.into_std().await,
-        destination_name.to_os_string(),
-    )
-    .await
-    {
-        Ok(AtomicRenameOutcome::Renamed) => {}
-        Ok(AtomicRenameOutcome::DestinationExists) => {
-            return Err(TrashError::new(
-                CommandErrorKind::AlreadyExists,
-                "Trash restore destination already exists",
-            ));
-        }
-        Ok(AtomicRenameOutcome::Missing) => {
-            return Err(TrashError::new(
-                CommandErrorKind::NotFound,
-                "Trash payload or restore parent no longer exists",
-            ));
-        }
-        Ok(AtomicRenameOutcome::CrossDevice | AtomicRenameOutcome::Unsupported) => {
-            return Err(TrashError::new(
-                CommandErrorKind::InvalidInput,
-                "Trash restore requires an atomic same-device no-replace rename",
-            ));
-        }
-        Err(error) => return Err(TrashError::io("Failed to restore trash payload", error)),
-    }
+        .await
+        .map_err(|error| {
+            TrashError::new(
+                error.kind(),
+                format!("Failed to restore trash payload with smart move: {error}"),
+            )
+        })?;
+    drop(parent_directory);
+    log!(
+        Level::Debug,
+        "Trash payload restored: payload={}, destination={}, method={}, copy_fallback={}",
+        item.payload.display(),
+        destination.display(),
+        if atomic {
+            "filesystem_rename"
+        } else {
+            "transfer_copy_delete"
+        },
+        !atomic
+    );
     if let Err(error) = tokio::fs::remove_file(&item.info).await {
         log!(
             Level::Error,

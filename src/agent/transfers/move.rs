@@ -7,7 +7,9 @@ use super::destination::{
     destination_entry_exists, remove_existing_path,
 };
 use crate::agent::{AgentActor, AgentCommandError};
-use redoor::atomic_rename::{AtomicRenameOutcome, rename_exchange, rename_no_replace};
+use redoor::atomic_rename::{
+    AtomicRenameOutcome, exchange_existing_paths, rename_without_replacement,
+};
 use redoor::commands::{CommandResult, CopyExistingMode, MoveSourceIdentity};
 use redoor::{Level, log};
 use std::path::{Path, PathBuf};
@@ -57,8 +59,8 @@ impl AgentActor {
     ) {
         let result = self
             .run_local_move(
-                source_path,
-                dest_path,
+                PathBuf::from(source_path),
+                PathBuf::from(dest_path),
                 source_is_directory,
                 expected_identity,
                 on_existing,
@@ -78,42 +80,44 @@ impl AgentActor {
         .await;
     }
 
-    /// Returns whether renameat2 published the destination so callers can stamp the public row.
-    async fn run_local_move(
+    /// Returns whether a filesystem rename published the destination for public progress stamping.
+    pub(crate) async fn run_local_move(
         &self,
-        source_path: String,
-        dest_path: String,
+        source: PathBuf,
+        dest: PathBuf,
         source_is_directory: bool,
         expected_identity: MoveSourceIdentity,
         on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<bool, LocalMoveError> {
-        let source = PathBuf::from(&source_path);
-        let dest = PathBuf::from(&dest_path);
         validate_local_copy_destination(&source, &dest, source_is_directory).await?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
         validate_local_copy_parent(&dest).await?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
         check_existing_destination(&dest, on_existing, source_is_directory).await?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
-        let source_metadata = tokio::fs::metadata(&source).await.map_err(|error| {
-            if source_is_directory {
-                LocalMoveError::from(LocalCopyError::AccessSourceDirectory(error))
-            } else {
-                LocalMoveError::from(LocalCopyError::AccessSourceFile(error))
-            }
-        })?;
+        let source_metadata = tokio::fs::symlink_metadata(&source)
+            .await
+            .map_err(|error| {
+                if source_is_directory {
+                    LocalMoveError::from(LocalCopyError::AccessSourceDirectory(error))
+                } else {
+                    LocalMoveError::from(LocalCopyError::AccessSourceFile(error))
+                }
+            })?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
         if source_is_directory != source_metadata.is_dir()
-            || (!source_is_directory && !source_metadata.is_file())
+            || (!source_is_directory
+                && !source_metadata.is_file()
+                && !source_metadata.file_type().is_symlink())
         {
             return Err(if source_is_directory {
-                LocalCopyError::SourceNotDirectory(source_path).into()
+                LocalCopyError::SourceNotDirectory(source.display().to_string()).into()
             } else {
-                LocalCopyError::SourceNotFile(source_path).into()
+                LocalCopyError::SourceNotFile(source.display().to_string()).into()
             });
         }
-        if move_source_identity(&source_metadata) != expected_identity {
+        if !move_source_matches_identity(&source, &source_metadata, &expected_identity).await? {
             return Err(LocalMoveError::SourceChanged);
         }
         let destination_exists = destination_entry_exists(&dest).await?;
@@ -128,26 +132,34 @@ impl AgentActor {
         let same_mount = metadata_on_same_mount(&source_metadata, &dest_parent_metadata);
 
         if can_use_atomic_rename(same_mount, destination_exists, on_existing) {
-            match rename_atomically(
+            match rename_same_filesystem(
                 source.clone(),
                 dest.clone(),
                 destination_exists,
-                on_existing == CopyExistingMode::Override,
+                on_existing,
             )
             .await
             {
-                Ok(AtomicRenameResult::Renamed) => return Ok(true),
-                Ok(AtomicRenameResult::Exchanged) => {
+                Ok(SameFilesystemRenameResult::Renamed) => return Ok(true),
+                Ok(SameFilesystemRenameResult::Exchanged) => {
                     finish_atomic_override(source, dest).await?;
                     return Ok(true);
                 }
-                Ok(AtomicRenameResult::FallbackRequired) => {}
+                Ok(SameFilesystemRenameResult::CopyRequired) => {}
                 Err(error) => return Err(LocalMoveError::RenameSource(error)),
             }
         }
 
-        if source_is_directory {
-            self.run_local_copy_directory(source_path.clone(), dest_path, on_existing, response)
+        if source_metadata.file_type().is_symlink() {
+            self.run_local_copy_symlink(source.clone(), dest, on_existing, response)
+                .await?;
+            super::copy::ensure_local_copy_active(&response.cancel)?;
+            verify_move_source_identity(&source, &expected_identity).await?;
+            tokio::fs::remove_file(source)
+                .await
+                .map_err(LocalMoveError::DeleteSource)?;
+        } else if source_is_directory {
+            self.run_local_copy_directory(source.clone(), dest, on_existing, response)
                 .await?;
             // Cancellation after destination publication still wins before destructive source deletion.
             super::copy::ensure_local_copy_active(&response.cancel)?;
@@ -156,7 +168,7 @@ impl AgentActor {
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
         } else {
-            self.run_local_copy_file(source_path.clone(), dest_path, on_existing, response)
+            self.run_local_copy_file(source.clone(), dest, on_existing, response)
                 .await?;
             // Source preservation is the final cancel boundary for cross-device file moves.
             super::copy::ensure_local_copy_active(&response.cancel)?;
@@ -170,7 +182,7 @@ impl AgentActor {
 }
 
 /// Identifies one local source for conditional cleanup after copy publication.
-fn move_source_identity(metadata: &std::fs::Metadata) -> MoveSourceIdentity {
+pub(crate) fn move_source_identity(metadata: &std::fs::Metadata) -> MoveSourceIdentity {
     use std::os::unix::fs::MetadataExt;
 
     MoveSourceIdentity {
@@ -188,21 +200,39 @@ async fn verify_move_source_identity(
     source: &Path,
     expected_identity: &MoveSourceIdentity,
 ) -> Result<(), LocalMoveError> {
-    let metadata = tokio::fs::metadata(source)
+    let metadata = tokio::fs::symlink_metadata(source)
         .await
         .map_err(LocalMoveError::DeleteSource)?;
-    if move_source_identity(&metadata) != *expected_identity {
+    if !move_source_matches_identity(source, &metadata, expected_identity).await? {
         return Err(LocalMoveError::SourceChanged);
     }
     Ok(())
 }
 
-/// Outcome of a no-replace rename attempt that may require copy semantics instead.
+/// Accepts legacy target identity for symlink moves while trash restore tracks the link itself.
+async fn move_source_matches_identity(
+    source: &Path,
+    entry_metadata: &std::fs::Metadata,
+    expected_identity: &MoveSourceIdentity,
+) -> Result<bool, LocalMoveError> {
+    if move_source_identity(entry_metadata) == *expected_identity {
+        return Ok(true);
+    }
+    if !entry_metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let target_metadata = tokio::fs::metadata(source)
+        .await
+        .map_err(LocalMoveError::DeleteSource)?;
+    Ok(move_source_identity(&target_metadata) == *expected_identity)
+}
+
+/// Separates completed same-filesystem renames from authoritative cross-device copy fallback.
 #[derive(Debug)]
-enum AtomicRenameResult {
+enum SameFilesystemRenameResult {
     Renamed,
     Exchanged,
-    FallbackRequired,
+    CopyRequired,
 }
 
 /// Removes the displaced destination from the visible source name without undoing a published move.
@@ -210,13 +240,19 @@ async fn finish_atomic_override(source: PathBuf, dest: PathBuf) -> Result<(), Lo
     let mut cleanup_path = None;
     for _ in 0..16 {
         let candidate = backup_path_for_destination(&source);
-        match rename_atomically(source.clone(), candidate.clone(), false, false).await {
-            Ok(AtomicRenameResult::Renamed) => {
+        match tokio::fs::symlink_metadata(&candidate).await {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                restore_after_hide_failure(&source, &dest).await;
+                return Err(LocalMoveError::HideDisplacedDestination(error));
+            }
+        }
+        match tokio::fs::rename(&source, &candidate).await {
+            Ok(()) => {
                 cleanup_path = Some(candidate);
                 break;
             }
-            Ok(AtomicRenameResult::FallbackRequired) => {}
-            Ok(AtomicRenameResult::Exchanged) => unreachable!("cleanup names are never replaced"),
             Err(error) => {
                 restore_after_hide_failure(&source, &dest).await;
                 return Err(LocalMoveError::HideDisplacedDestination(error));
@@ -247,9 +283,8 @@ async fn finish_atomic_override(source: PathBuf, dest: PathBuf) -> Result<(), Lo
 
 /// Rolls back a published exchange when the old destination cannot leave the source name safely.
 async fn restore_after_hide_failure(source: &Path, dest: &Path) {
-    let restore_result =
-        rename_atomically(source.to_path_buf(), dest.to_path_buf(), true, true).await;
-    if !matches!(restore_result, Ok(AtomicRenameResult::Exchanged)) {
+    let restore_result = exchange_existing_paths(source, dest).await;
+    if !matches!(restore_result, Ok(AtomicRenameOutcome::Renamed)) {
         // The destination is already published, so preserve the rollback failure for diagnosis.
         log!(
             Level::Error,
@@ -261,45 +296,116 @@ async fn restore_after_hide_failure(source: &Path, dest: &Path) {
     }
 }
 
-/// Uses the shared one-shot primitives while retaining smart-move race and fallback policy here.
-async fn rename_atomically(
+/// Applies destination policy while retaining the smart move transfer fallback when required.
+async fn rename_same_filesystem(
+    source: PathBuf,
+    dest: PathBuf,
+    destination_exists: bool,
+    on_existing: CopyExistingMode,
+) -> std::io::Result<SameFilesystemRenameResult> {
+    if on_existing == CopyExistingMode::Override {
+        return rename_replacing_destination(source, dest, destination_exists).await;
+    }
+    let outcome = rename_without_replacement(&source, &dest).await?;
+    if outcome == AtomicRenameOutcome::Unsupported {
+        log!(
+            Level::Debug,
+            "Atomic no-replace rename unsupported; using existing transfer copy/delete path: source={}, destination={}",
+            source.display(),
+            dest.display()
+        );
+    }
+    classify_strict_rename_outcome(outcome, on_existing, &source, &dest)
+}
+
+/// Uses exchange when available, then ordinary replacement rename on filesystems such as NFS.
+async fn rename_replacing_destination(
     source: PathBuf,
     dest: PathBuf,
     mut destination_exists: bool,
-    allow_replacement: bool,
-) -> std::io::Result<AtomicRenameResult> {
+) -> std::io::Result<SameFilesystemRenameResult> {
     for _ in 0..16 {
-        let outcome = if destination_exists {
-            rename_exchange(&source, &dest).await?
-        } else {
-            rename_no_replace(&source, &dest).await?
-        };
-        match outcome {
-            AtomicRenameOutcome::Renamed => {
-                return Ok(if destination_exists {
-                    AtomicRenameResult::Exchanged
-                } else {
-                    AtomicRenameResult::Renamed
-                });
-            }
-            AtomicRenameOutcome::DestinationExists if allow_replacement && !destination_exists => {
-                destination_exists = true;
-            }
-            AtomicRenameOutcome::Missing if allow_replacement && destination_exists => {
-                destination_exists = false;
-            }
-            AtomicRenameOutcome::DestinationExists
-            | AtomicRenameOutcome::Missing
-            | AtomicRenameOutcome::CrossDevice
-            | AtomicRenameOutcome::Unsupported => {
-                return Ok(AtomicRenameResult::FallbackRequired);
+        if destination_exists {
+            match exchange_existing_paths(&source, &dest).await? {
+                AtomicRenameOutcome::Renamed => {
+                    return Ok(SameFilesystemRenameResult::Exchanged);
+                }
+                AtomicRenameOutcome::Missing => {
+                    destination_exists = false;
+                    continue;
+                }
+                AtomicRenameOutcome::CrossDevice => {
+                    return Ok(SameFilesystemRenameResult::CopyRequired);
+                }
+                AtomicRenameOutcome::Unsupported => {
+                    log!(
+                        Level::Debug,
+                        "Atomic exchange unsupported; using replacement rename without copy fallback: source={}, destination={}",
+                        source.display(),
+                        dest.display()
+                    );
+                }
+                AtomicRenameOutcome::DestinationExists => {}
             }
         }
+        return match tokio::fs::rename(&source, &dest).await {
+            Ok(()) => Ok(SameFilesystemRenameResult::Renamed),
+            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                Ok(SameFilesystemRenameResult::CopyRequired)
+            }
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EEXIST | libc::ENOTEMPTY | libc::EISDIR | libc::ENOTDIR)
+                ) =>
+            {
+                log!(
+                    Level::Debug,
+                    "Replacement rename incompatible with destination; using existing transfer copy/delete path: source={}, destination={}, error={}",
+                    source.display(),
+                    dest.display(),
+                    error
+                );
+                Ok(SameFilesystemRenameResult::CopyRequired)
+            }
+            Err(error) => Err(error),
+        };
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::WouldBlock,
-        "destination changed too frequently to complete an atomic move",
+        "destination changed too frequently to complete a replacement rename",
     ))
+}
+
+/// Converts strict conditional outcomes without silently weakening no-replacement semantics.
+fn classify_strict_rename_outcome(
+    outcome: AtomicRenameOutcome,
+    on_existing: CopyExistingMode,
+    source: &Path,
+    dest: &Path,
+) -> std::io::Result<SameFilesystemRenameResult> {
+    match outcome {
+        AtomicRenameOutcome::Renamed => Ok(SameFilesystemRenameResult::Renamed),
+        AtomicRenameOutcome::DestinationExists if on_existing == CopyExistingMode::Merge => {
+            Ok(SameFilesystemRenameResult::CopyRequired)
+        }
+        AtomicRenameOutcome::DestinationExists => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "move destination appeared before rename: {}",
+                dest.display()
+            ),
+        )),
+        AtomicRenameOutcome::Missing => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "move source disappeared before rename: {}",
+                source.display()
+            ),
+        )),
+        AtomicRenameOutcome::CrossDevice => Ok(SameFilesystemRenameResult::CopyRequired),
+        AtomicRenameOutcome::Unsupported => Ok(SameFilesystemRenameResult::CopyRequired),
+    }
 }
 
 /// Selects atomic rename for new names and for overrides that may exchange any entry types.
@@ -349,6 +455,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unsupported_strict_rename_requests_existing_transfer_fallback() {
+        let result = classify_strict_rename_outcome(
+            AtomicRenameOutcome::Unsupported,
+            CopyExistingMode::Error,
+            Path::new("/source"),
+            Path::new("/destination"),
+        );
+
+        let result = result.expect("unsupported no-replace should select the existing transfer");
+        assert!(
+            matches!(result, SameFilesystemRenameResult::CopyRequired),
+            "smart move must retain its copy/delete fallback when conditional rename is unavailable"
+        );
+    }
+
+    #[test]
+    fn authoritative_cross_device_rename_requests_existing_transfer_path() {
+        let result = classify_strict_rename_outcome(
+            AtomicRenameOutcome::CrossDevice,
+            CopyExistingMode::Error,
+            Path::new("/source"),
+            Path::new("/destination"),
+        )
+        .expect("cross-device rename should select the transfer path");
+
+        assert!(
+            matches!(result, SameFilesystemRenameResult::CopyRequired),
+            "an authoritative filesystem boundary must request the existing transfer path"
+        );
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn atomic_rename_moves_missing_directory() {
@@ -366,11 +504,12 @@ mod tests {
             .await
             .expect("source child should be written");
 
-        let result = rename_atomically(source.clone(), dest.clone(), false, false)
-            .await
-            .expect("missing directory destinations should rename");
+        let result =
+            rename_same_filesystem(source.clone(), dest.clone(), false, CopyExistingMode::Error)
+                .await
+                .expect("missing directory destinations should rename");
         assert!(
-            matches!(result, AtomicRenameResult::Renamed),
+            matches!(result, SameFilesystemRenameResult::Renamed),
             "same-mount missing directory destinations should use the no-replace syscall"
         );
         assert!(
@@ -400,11 +539,12 @@ mod tests {
             .await
             .expect("rename source should be written");
 
-        let result = rename_atomically(source.clone(), dest.clone(), false, false)
-            .await
-            .expect("missing destinations should rename");
+        let result =
+            rename_same_filesystem(source.clone(), dest.clone(), false, CopyExistingMode::Error)
+                .await
+                .expect("missing destinations should rename");
         assert!(
-            matches!(result, AtomicRenameResult::Renamed),
+            matches!(result, SameFilesystemRenameResult::Renamed),
             "same-mount missing destinations should use the no-replace syscall"
         );
         assert!(
@@ -437,12 +577,14 @@ mod tests {
             .await
             .expect("existing destination should be written");
 
-        let result = rename_atomically(source.clone(), dest.clone(), false, false)
-            .await
-            .expect("existing destinations should fall back instead of failing the move");
-        assert!(
-            matches!(result, AtomicRenameResult::FallbackRequired),
-            "an occupied destination must not be overwritten by atomic rename"
+        let error =
+            rename_same_filesystem(source.clone(), dest.clone(), false, CopyExistingMode::Error)
+                .await
+                .expect_err("existing destinations must fail strict rename");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a destination race must remain a conflict rather than selecting copy/delete"
         );
         assert_eq!(
             tokio::fs::read_to_string(&source)
@@ -480,12 +622,17 @@ mod tests {
             .await
             .expect("destination file should be written");
 
-        let result = rename_atomically(source.clone(), dest.clone(), true, true)
-            .await
-            .expect("different entry types should exchange atomically");
+        let result = rename_same_filesystem(
+            source.clone(),
+            dest.clone(),
+            true,
+            CopyExistingMode::Override,
+        )
+        .await
+        .expect("different entry types should exchange atomically");
 
         assert!(
-            matches!(result, AtomicRenameResult::Exchanged),
+            matches!(result, SameFilesystemRenameResult::Exchanged),
             "an occupied override destination should use an atomic exchange"
         );
         assert_eq!(
@@ -527,12 +674,17 @@ mod tests {
             .await
             .expect("destination child should be written");
 
-        let result = rename_atomically(source.clone(), dest.clone(), true, true)
-            .await
-            .expect("directories should exchange atomically");
+        let result = rename_same_filesystem(
+            source.clone(),
+            dest.clone(),
+            true,
+            CopyExistingMode::Override,
+        )
+        .await
+        .expect("directories should exchange atomically");
 
         assert!(
-            matches!(result, AtomicRenameResult::Exchanged),
+            matches!(result, SameFilesystemRenameResult::Exchanged),
             "an occupied override directory should use an atomic exchange"
         );
         assert_eq!(

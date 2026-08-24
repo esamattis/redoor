@@ -7,7 +7,6 @@ use super::{
     agent_loaded_config_path, current_binary_identity, current_exe_path, external_ip, file_search,
     git, metadata,
 };
-use crate::atomic_rename::AtomicRenameOutcome;
 use crate::logging::Level;
 use std::future::Future;
 use tokio::sync::watch;
@@ -623,7 +622,7 @@ impl CommandHandler {
     }
 }
 
-/// Atomically hides a directory under an exclusive sibling name without replacing another entry.
+/// Hides a directory under an unpredictable sibling name without requiring renameat2 support.
 async fn quarantine_move_source(source: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     let parent = source.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -641,30 +640,28 @@ async fn quarantine_move_source(source: &std::path::Path) -> std::io::Result<std
     for _ in 0..MOVE_SOURCE_QUARANTINE_ATTEMPTS {
         let quarantine_name = format!(".redoor-move-{}", uuid::Uuid::new_v4().simple());
         let quarantine_path = parent.join(quarantine_name);
-        match crate::atomic_rename::rename_no_replace(source, &quarantine_path).await? {
-            AtomicRenameOutcome::Renamed => return Ok(quarantine_path),
-            AtomicRenameOutcome::DestinationExists => continue,
-            AtomicRenameOutcome::Missing => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "move source disappeared before quarantine: {}",
-                        source.display()
-                    ),
-                ));
+        match tokio::fs::symlink_metadata(&quarantine_path).await {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        match tokio::fs::rename(source, &quarantine_path).await {
+            Ok(()) => {
+                crate::log!(
+                    Level::Debug,
+                    "Move source quarantined with filesystem rename: source={}, quarantine={}, copy_fallback=false",
+                    source.display(),
+                    quarantine_path.display()
+                );
+                return Ok(quarantine_path);
             }
-            AtomicRenameOutcome::CrossDevice => {
+            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::CrossesDevices,
-                    "move source quarantine unexpectedly crossed filesystems",
+                    "move source quarantine unexpectedly crossed filesystem boundaries",
                 ));
             }
-            AtomicRenameOutcome::Unsupported => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "atomic no-replace move source quarantine is unsupported",
-                ));
-            }
+            Err(error) => return Err(error),
         }
     }
 

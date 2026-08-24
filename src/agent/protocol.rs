@@ -237,11 +237,19 @@ async fn handle_command_message(
             item_id,
             destination_path,
         } => {
+            let command_cancel = command_cancel
+                .expect("trash restore commands always receive generation cancellation");
             let result = match trash
                 .restore(
                     &location_id,
                     &item_id,
                     std::path::PathBuf::from(destination_path),
+                    &super::transfers::copy::LocalCopyResponseContext {
+                        write: &write_text,
+                        agent_id: &agent_id,
+                        request_id,
+                        cancel: command_cancel,
+                    },
                 )
                 .await
             {
@@ -453,6 +461,7 @@ impl AgentActor {
                             Command::LocalCopyFile { .. }
                                 | Command::LocalCopyDirectory { .. }
                                 | Command::LocalMove { .. }
+                                | Command::RestoreTrash { .. }
                         );
                         let local_cancel = if is_local_transfer {
                             let (sender, receiver) = watch::channel(canceled_before_registration);

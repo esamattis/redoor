@@ -12,6 +12,8 @@ use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use super::transfers::copy::LocalCopyResponseContext;
+
 /// Immutable startup configuration used by every trash command worker.
 #[derive(Clone)]
 pub(crate) struct TrashService {
@@ -164,10 +166,11 @@ impl TrashService {
         _location_id: &str,
         _item_id: &str,
         _destination: PathBuf,
+        _response: &LocalCopyResponseContext<'_>,
     ) -> Result<PathBuf, TrashError> {
         let _guard = self.mutation_lock.lock().await;
         #[cfg(target_os = "linux")]
-        return linux::restore(self, _location_id, _item_id, _destination).await;
+        return linux::restore(self, _location_id, _item_id, _destination, _response).await;
         #[cfg(not(target_os = "linux"))]
         Err(TrashError::new(
             CommandErrorKind::InvalidInput,
