@@ -9,6 +9,10 @@ export const queryKeys = {
     transfers: () => [...queryKeys.all, "transfers"] as const,
     serverInfo: () => [...queryKeys.all, "server-info"] as const,
     userState: () => [...queryKeys.all, "user-state"] as const,
+    serverLoggingLevel: () =>
+        [...queryKeys.all, "server-logging-level"] as const,
+    agentLoggingLevel: (agentId: string) =>
+        [...queryKeys.all, "agents", agentId, "logging-level"] as const,
     /**
      * Editor bytes are a one-shot buffer, not agent inventory. Nesting under
      * `agents()` would let RefreshListener prefix-match and mark the file stale.
@@ -72,6 +76,22 @@ export function serverInfoQueryOptions(api: ApiClient) {
         queryKey: queryKeys.serverInfo(),
         queryFn: () => api.getServerInfo(),
         staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares the effective server threshold between its route loader and runtime mutation. */
+export function serverLoggingLevelQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.serverLoggingLevel(),
+        queryFn: () => api.getServerLoggingLevel(),
+    });
+}
+
+/** Shares one connected agent's effective threshold without mixing it into inventory. */
+export function agentLoggingLevelQueryOptions(agent: Agent) {
+    return queryOptions({
+        queryKey: queryKeys.agentLoggingLevel(agent.id),
+        queryFn: () => agent.getLoggingLevel(),
     });
 }
 

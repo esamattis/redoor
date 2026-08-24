@@ -118,6 +118,11 @@ impl CommandHandler {
             Command::Echo { request } => self.echo(request).await,
             Command::AgentInfo => self.agent_info().await,
             Command::GetAgentDetails => self.get_agent_details().await,
+            Command::GetLoggingLevel => CommandResult::LoggingLevel(crate::logging::level()),
+            Command::SetLoggingLevel { level } => {
+                crate::logging::set_level(level);
+                CommandResult::LoggingLevel(level)
+            }
             Command::Restart => CommandResult::Restart,
             Command::SelfExec { path } => {
                 if std::path::Path::new(&path).is_absolute() {

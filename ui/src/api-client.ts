@@ -1,6 +1,5 @@
 import type { LsDirectoryResponse } from "#bindings/LsDirectoryResponse";
 import type { LsFileResponse } from "#bindings/LsFileResponse";
-import type { ErrorResponse } from "#bindings/ErrorResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import type { EchoRequest } from "#bindings/EchoRequest";
@@ -69,7 +68,17 @@ import type { GitDiffResponse } from "#bindings/GitDiffResponse";
 import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { DirectorySizeResponse } from "#bindings/DirectorySizeResponse";
-import { z } from "zod";
+import type { Level } from "#bindings/Level";
+import type { LoggingLevelRequest } from "#bindings/LoggingLevelRequest";
+import type { LoggingLevelResponse } from "#bindings/LoggingLevelResponse";
+import {
+    apiRequest,
+    requireSuccessfulResponse,
+    withAuthentication,
+    type RequestContext,
+} from "#ui/api-transport";
+
+export { ApiError } from "#ui/api-transport";
 
 export type {
     LsDirectoryResponse,
@@ -134,6 +143,9 @@ export type {
     GitStatusResponse,
     GitDiffResponse,
     GitDiffMode,
+    Level,
+    LoggingLevelRequest,
+    LoggingLevelResponse,
 };
 
 type CopyFileResponseJson = {
@@ -145,87 +157,6 @@ type MoveFileResponseJson = {
 };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
-
-const errorResponseSchema: z.ZodType<ErrorResponse> = z.object({
-    error: z.string(),
-});
-
-type RequestContext = {
-    getSessionCookie?: () => string | null;
-    onUnauthorized?: () => void;
-};
-
-/** Preserves HTTP status so authentication failures stay distinct from agent errors. */
-export class ApiError extends Error {
-    status: number;
-    /** Raw response body when the server did not return a structured ErrorResponse. */
-    body: string | null;
-
-    constructor(status: number, message: string, body: string | null = null) {
-        super(message);
-        this.name = "ApiError";
-        this.status = status;
-        this.body = body;
-    }
-}
-
-/** Adds browser credentials and the explicit cookie needed by Node-based integration clients. */
-function withAuthentication(
-    options: RequestInit | undefined,
-    context: RequestContext,
-): RequestInit {
-    const headers = new Headers(options?.headers);
-    const sessionCookie = context.getSessionCookie?.();
-    if (sessionCookie) {
-        headers.set("Cookie", sessionCookie);
-    }
-    return {
-        ...options,
-        credentials: "same-origin",
-        headers,
-    };
-}
-
-/** Converts failed responses into typed errors and reports expired browser sessions once. */
-async function requireSuccessfulResponse(
-    response: Response,
-    context: RequestContext,
-): Promise<void> {
-    if (response.ok) {
-        return;
-    }
-    if (response.status === 401) {
-        context.onUnauthorized?.();
-    }
-
-    const text = await response.text();
-    if (text) {
-        try {
-            const error = errorResponseSchema.parse(JSON.parse(text));
-            if (error.error.length > 0) {
-                throw new ApiError(response.status, error.error, text);
-            }
-        } catch (error) {
-            if (error instanceof ApiError) {
-                throw error;
-            }
-        }
-        // Non-JSON bodies (proxy HTML, plain text) still help diagnose gateway failures.
-        const trimmed = text.trim();
-        const summary =
-            trimmed.length > 280 ? `${trimmed.slice(0, 277)}...` : trimmed;
-        throw new ApiError(
-            response.status,
-            summary ||
-                `Request failed: ${response.status} ${response.statusText}`,
-            text,
-        );
-    }
-    throw new ApiError(
-        response.status,
-        `Request failed: ${response.status} ${response.statusText}`,
-    );
-}
 
 /** Encodes each filesystem component while preserving `/` as a URL path separator. */
 export function encodeFilesystemPath(path: string): string {
@@ -277,6 +208,29 @@ export class Agent {
     getAuthHeaders(): Record<string, string> {
         const sessionCookie = this.requestContext.getSessionCookie?.();
         return sessionCookie ? { Cookie: sessionCookie } : {};
+    }
+
+    /** Reads the threshold from the connected agent over its authoritative control socket. */
+    async getLoggingLevel(): Promise<LoggingLevelResponse> {
+        return apiRequest<LoggingLevelResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.id)}/logging-level`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Changes logging admission without reconnecting this agent or its live viewer. */
+    async updateLoggingLevel(level: Level): Promise<LoggingLevelResponse> {
+        const request: LoggingLevelRequest = { level };
+        return apiRequest<LoggingLevelResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.id)}/logging-level`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
     }
 
     get id(): string {
@@ -853,16 +807,6 @@ export class Agent {
     }
 }
 
-async function apiRequest<T>(
-    url: string,
-    options?: RequestInit,
-    context: RequestContext = {},
-): Promise<T> {
-    const response = await fetch(url, withAuthentication(options, context));
-    await requireSuccessfulResponse(response, context);
-    return response.json();
-}
-
 export class ApiClient {
     baseUrl: string;
     private sessionCookie: string | null = null;
@@ -943,6 +887,31 @@ export class ApiClient {
         const url = new URL("/api/v1/server/logs/ws", this.baseUrl);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         return url.toString();
+    }
+
+    /** Reads the server process's current runtime threshold. */
+    async getServerLoggingLevel(): Promise<LoggingLevelResponse> {
+        return apiRequest<LoggingLevelResponse>(
+            `${this.baseUrl}/api/v1/server/logging-level`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Changes server logging admission while retaining the mounted live stream. */
+    async updateServerLoggingLevel(
+        level: Level,
+    ): Promise<LoggingLevelResponse> {
+        const request: LoggingLevelRequest = { level };
+        return apiRequest<LoggingLevelResponse>(
+            `${this.baseUrl}/api/v1/server/logging-level`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
     }
 
     async listAgents(): Promise<Agent[]> {

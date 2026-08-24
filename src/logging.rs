@@ -3,11 +3,12 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
 };
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{
@@ -16,6 +17,7 @@ use tokio::{
         oneshot,
     },
 };
+use ts_rs::TS;
 
 const LIVE_LOG_CAPACITY: usize = 1_024;
 const LOG_RECORD_CAPACITY: usize = 2_048;
@@ -25,9 +27,14 @@ const LOGGER_CONTROL_CAPACITY: usize = 16;
 pub const LOG_HISTORY_ENTRY_LIMIT: usize = 500;
 
 static LOGGER: OnceLock<LoggerHandle> = OnceLock::new();
+/// Makes the effective process threshold available without task-local allocation or locking.
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(Level::Info as u8);
 
 /// Orders log records so callers can consistently filter and format process output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum Level {
     /// Includes highly detailed events intended for short diagnostic sessions.
     Trace,
@@ -52,6 +59,70 @@ impl Level {
             Level::Error => "ERROR",
         }
     }
+
+    /// Converts the compact atomic representation back to the canonical level.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Trace,
+            1 => Self::Debug,
+            2 => Self::Info,
+            3 => Self::Warning,
+            4 => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
+
+impl Default for Level {
+    /// Keeps normal operator lifecycle output enabled unless another source overrides it.
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
+impl std::str::FromStr for Level {
+    type Err = String;
+
+    /// Accepts human CLI/config spelling while keeping one API serialization vocabulary.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "trace" => Ok(Self::Trace),
+            "debug" => Ok(Self::Debug),
+            "info" => Ok(Self::Info),
+            "warn" | "warning" => Ok(Self::Warning),
+            "error" => Ok(Self::Error),
+            _ => {
+                Err("logging level must be one of: trace, debug, info, warning, error".to_string())
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Level {
+    /// Uses the same lowercase vocabulary accepted by TOML, CLI, env, and REST.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        })
+    }
+}
+
+/// Carries a requested runtime threshold without overloading unrelated log-stream protocol data.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LoggingLevelRequest {
+    pub level: Level,
+}
+
+/// Returns the process-authoritative threshold after a read or successful update.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LoggingLevelResponse {
+    pub level: Level,
 }
 
 /// Preserves structured severity until the background task applies filtering and formatting.
@@ -135,7 +206,6 @@ pub struct Logger {
     log_file: Option<tokio::fs::File>,
     log_file_position: u64,
     live_entries: broadcast::Sender<String>,
-    level: Level,
 }
 
 impl Logger {
@@ -170,20 +240,11 @@ impl Logger {
         };
         let (live_entries, _) = broadcast::channel(LIVE_LOG_CAPACITY);
 
-        let level = match std::env::var("REDOOR_LOGLEVEL").as_deref() {
-            Ok("trace") => Level::Trace,
-            Ok("debug") => Level::Debug,
-            Ok("warn") => Level::Warning,
-            Ok("error") => Level::Error,
-            _ => Level::Info,
-        };
-
         Ok(Self {
             log_file_path,
             log_file,
             log_file_position,
             live_entries,
-            level,
         })
     }
 
@@ -199,11 +260,8 @@ impl Logger {
         );
     }
 
-    /// Formats one application record after applying the configured severity threshold.
+    /// Formats one record already admitted by the producer-side atomic threshold.
     async fn write(&mut self, level: Level, message: String) {
-        if level < self.level {
-            return;
-        }
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let formatted = format!("[{}] [{}] {}", timestamp, level.as_str(), message);
         self.write_formatted(formatted).await;
@@ -321,9 +379,16 @@ pub async fn read_latest_entries(
 
 /// Initializes the process-global logger before any log macro is used.
 pub async fn init(log_file_path: Option<String>) -> Result<()> {
+    init_with_level(log_file_path, Level::Info).await
+}
+
+/// Initializes logging with the startup threshold resolved by the owning process role.
+pub async fn init_with_level(log_file_path: Option<String>, level: Level) -> Result<()> {
     if LOGGER.get().is_some() {
         return Ok(());
     }
+
+    set_level(level);
 
     let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
     let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
@@ -359,11 +424,71 @@ pub fn log(level: Level, message: String) {
     logger.send_record(LogMessage { level, message });
 }
 
+/// Returns whether a producer should construct and enqueue a record at this severity.
+#[inline]
+pub fn enabled(level: Level) -> bool {
+    level as u8 >= LOG_LEVEL.load(Ordering::Relaxed)
+}
+
+/// Returns the current process-wide threshold with one relaxed atomic load.
+pub fn level() -> Level {
+    Level::from_u8(LOG_LEVEL.load(Ordering::Relaxed))
+}
+
+/// Changes admission for subsequent macro calls without blocking active output or streams.
+pub fn set_level(level: Level) {
+    LOG_LEVEL.store(level as u8, Ordering::Relaxed);
+}
+
+/// Resolves CLI, role-specific env, legacy env, TOML, then the info default.
+pub fn resolve_initial_level(
+    cli: Option<Level>,
+    role_env_name: &str,
+    toml: Option<Level>,
+) -> std::result::Result<Level, String> {
+    resolve_level_sources(
+        cli,
+        role_env_name,
+        std::env::var(role_env_name).ok().as_deref(),
+        std::env::var("REDOOR_LOGLEVEL").ok().as_deref(),
+        toml,
+    )
+}
+
+/// Applies startup precedence independently of process environment access so every source is testable.
+fn resolve_level_sources(
+    cli: Option<Level>,
+    role_env_name: &str,
+    role_env: Option<&str>,
+    legacy_env: Option<&str>,
+    toml: Option<Level>,
+) -> std::result::Result<Level, String> {
+    if let Some(level) = cli {
+        return Ok(level);
+    }
+    if let Some(value) = role_env {
+        return value
+            .parse::<Level>()
+            .map_err(|error| format!("Invalid {role_env_name} value {value:?}: {error}"));
+    }
+    if let Some(value) = legacy_env {
+        return value
+            .parse::<Level>()
+            .map_err(|error| format!("Invalid REDOOR_LOGLEVEL value {value:?}: {error}"));
+    }
+    Ok(toml.unwrap_or_default())
+}
+
 /// Formats application log arguments only after callers select the intended severity.
 #[macro_export]
 macro_rules! log {
     ($level:expr, $($arg:tt)*) => {
-        $crate::logging::log($level, format!($($arg)*))
+        {
+            let level = $level;
+            if $crate::logging::enabled(level) {
+                $crate::logging::log(level, format!($($arg)*));
+            }
+        }
     };
 }
 
@@ -371,10 +496,7 @@ macro_rules! log {
 mod tests {
     use std::path::PathBuf;
 
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        sync::broadcast::error::TryRecvError,
-    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
     use crate::test_support::TempDir;
@@ -397,8 +519,7 @@ mod tests {
 
     /// Starts a directly owned logger because the process-global OnceLock cannot be reset between tests.
     async fn start_logger(path: Option<PathBuf>) -> (LoggerHandle, tokio::task::JoinHandle<()>) {
-        let mut logger = Logger::new(path).await.expect("test logger should open");
-        logger.level = Level::Info;
+        let logger = Logger::new(path).await.expect("test logger should open");
         let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
         let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
         let handle = LoggerHandle {
@@ -492,10 +613,9 @@ mod tests {
     async fn subscription_control_is_not_starved_by_record_backlog() {
         let temp_dir = TempDir::create();
         let path = temporary_log_path(&temp_dir);
-        let mut logger = Logger::new(Some(path.clone()))
+        let logger = Logger::new(Some(path.clone()))
             .await
             .expect("test logger should open");
-        logger.level = Level::Info;
         let (records, record_receiver) = mpsc::channel(2);
         let (commands, command_receiver) = mpsc::channel(1);
         let handle = LoggerHandle {
@@ -670,34 +790,96 @@ mod tests {
         task.await.expect("test logger task should stop cleanly");
     }
 
-    /// Protects filtering from leaking rejected records into either output destination.
-    #[tokio::test]
-    async fn filtered_entries_reach_neither_history_nor_live_delivery() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let (commands, task) = start_logger(Some(path.clone())).await;
-        let mut subscription = request_subscription(&commands).await;
-        send_log(&commands, Level::Debug, "filtered entry");
-        let after_filtered = request_subscription(&commands).await;
+    /// Proves disabled macro arguments are not evaluated or formatted on the hot path.
+    #[test]
+    fn disabled_macro_does_not_evaluate_arguments() {
+        let evaluations = std::cell::Cell::new(0);
+        set_level(Level::Error);
+        crate::log!(Level::Debug, "unused {}", {
+            evaluations.set(evaluations.get() + 1);
+            "argument"
+        });
+        set_level(Level::Info);
 
-        // A filtered entry must not advance the persistent history boundary.
-        assert_eq!(after_filtered.history_end, 0);
-        // The command barrier makes an empty receiver proof that no live event was published.
-        assert!(matches!(
-            subscription.receiver.try_recv(),
-            Err(TryRecvError::Empty)
-        ));
-        // An untouched append-only file confirms filtering happened before file output.
+        // A disabled event must do only the atomic comparison and skip every format argument.
+        assert_eq!(evaluations.get(), 0);
+    }
+
+    /// Protects canonical level spelling, warning compatibility, and threshold ordering.
+    #[test]
+    fn levels_parse_display_and_order_consistently() {
+        // Legacy `warn` remains accepted while APIs emit the clearer canonical spelling.
+        assert_eq!("warn".parse::<Level>(), Ok(Level::Warning));
+        assert_eq!(Level::Warning.to_string(), "warning");
+        // Increasing enum order is what makes the atomic hot-path comparison sufficient.
+        assert!(Level::Trace < Level::Debug && Level::Info < Level::Error);
+        // Invalid startup values must fail rather than silently reverting to info.
+        assert!("verbose".parse::<Level>().is_err());
+    }
+
+    /// Protects the startup contract shared by both server and standalone-agent entry points.
+    #[test]
+    fn startup_level_sources_follow_documented_precedence() {
+        // Explicit CLI state must win even when every lower-priority source is present.
         assert_eq!(
-            tokio::fs::metadata(&path)
-                .await
-                .expect("test file should exist")
-                .len(),
-            0
+            resolve_level_sources(
+                Some(Level::Error),
+                "REDOOR_SERVER_LOG_LEVEL",
+                Some("trace"),
+                Some("debug"),
+                Some(Level::Warning),
+            ),
+            Ok(Level::Error),
         );
-
-        drop(commands);
-        task.await.expect("test logger task should stop cleanly");
+        // The role-specific server or agent variable must override legacy compatibility and TOML.
+        assert_eq!(
+            resolve_level_sources(
+                None,
+                "REDOOR_AGENT_LOG_LEVEL",
+                Some("trace"),
+                Some("debug"),
+                Some(Level::Warning),
+            ),
+            Ok(Level::Trace),
+        );
+        // Legacy deployments retain precedence over TOML when no role-specific value is set.
+        assert_eq!(
+            resolve_level_sources(
+                None,
+                "REDOOR_SERVER_LOG_LEVEL",
+                None,
+                Some("debug"),
+                Some(Level::Warning),
+            ),
+            Ok(Level::Debug),
+        );
+        // TOML supplies the configured initial value before the info default is considered.
+        assert_eq!(
+            resolve_level_sources(
+                None,
+                "REDOOR_AGENT_LOG_LEVEL",
+                None,
+                None,
+                Some(Level::Warning),
+            ),
+            Ok(Level::Warning),
+        );
+        // Both process roles remain at info when no startup source is configured.
+        assert_eq!(
+            resolve_level_sources(None, "REDOOR_SERVER_LOG_LEVEL", None, None, None),
+            Ok(Level::Info),
+        );
+        // Invalid high-priority input must fail instead of falling through to a lower source.
+        assert!(
+            resolve_level_sources(
+                None,
+                "REDOOR_AGENT_LOG_LEVEL",
+                Some("verbose"),
+                Some("debug"),
+                None,
+            )
+            .is_err(),
+        );
     }
 
     /// Protects live viewing as a useful fallback when persistent logging is unavailable.

@@ -140,6 +140,39 @@ test.describe.serial("Agent logs", () => {
             .poll(() => sockets.filter((socket) => !socket.isClosed()).length)
             // Strict Mode may create transient sockets, but only one mounted stream may remain.
             .toBe(1);
+        const traceLevel = page.getByRole("button", {
+            name: "Trace logging",
+        });
+        await traceLevel.click();
+        // The agent control must expose the threshold confirmed over its authoritative socket.
+        await expect(traceLevel).toHaveAttribute("aria-pressed", "true");
+        await page.getByRole("button", { name: "Info logging" }).click();
+        // Returning to info gives the failed-update check a known confirmed value.
+        await expect(
+            page.getByRole("button", { name: "Info logging" }),
+        ).toHaveAttribute("aria-pressed", "true");
+        await page.route("**/api/v1/agents/*/logging-level", async (route) => {
+            if (route.request().method() === "PUT") {
+                await route.fulfill({
+                    status: 503,
+                    contentType: "application/json",
+                    body: JSON.stringify({ error: "Agent is disconnected" }),
+                });
+                return;
+            }
+            await route.continue();
+        });
+        await page.getByRole("button", { name: "Debug logging" }).click();
+        // Failed control-plane updates must be announced assertively to assistive technology.
+        await expect(page.getByRole("alert")).toContainText("Could not change");
+        // A rejected update must retain the last server-confirmed selection.
+        await expect(
+            page.getByRole("button", { name: "Info logging" }),
+        ).toHaveAttribute("aria-pressed", "true");
+        await expect
+            .poll(() => sockets.filter((socket) => !socket.isClosed()).length)
+            // Success and failure both leave the active log stream mounted.
+            .toBe(1);
         const activeSocket = sockets.find((socket) => !socket.isClosed());
         // The preceding poll guarantees one route-owned socket to observe during teardown.
         expect(activeSocket).toBeDefined();

@@ -2,15 +2,21 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertCircle, HardDrive } from "lucide-react";
 
 import { LogViewer } from "#ui/components/log-viewer";
+import { agentLoggingLevelQueryOptions, queryKeys } from "#ui/queries";
 
 export const Route = createFileRoute("/agents/$agentId/logs")({
-    loader: async ({ parentMatchPromise }) => {
+    loader: async ({ parentMatchPromise, context }) => {
         const agentMatch = await parentMatchPromise;
         const loaderData = agentMatch.loaderData;
         if (!loaderData) {
             throw new Error("Agent loader data is unavailable");
         }
         const agent = loaderData.agent;
+        if (agent.status === "connected") {
+            await context.queryClient.ensureQueryData(
+                agentLoggingLevelQueryOptions(agent),
+            );
+        }
         return { agent };
     },
     component: AgentLogsPage,
@@ -56,6 +62,11 @@ function AgentLogsPage() {
                     Server logs
                 </Link>
             }
+            loggingLevelControl={{
+                queryKey: queryKeys.agentLoggingLevel(agent.id),
+                load: () => agent.getLoggingLevel(),
+                update: (level) => agent.updateLoggingLevel(level),
+            }}
         />
     );
 }

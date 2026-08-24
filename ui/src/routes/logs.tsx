@@ -2,8 +2,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { LogViewer } from "#ui/components/log-viewer";
 import { Route as RootRoute } from "./__root";
+import { queryKeys, serverLoggingLevelQueryOptions } from "#ui/queries";
 
 export const Route = createFileRoute("/logs")({
+    loader: async ({ context }) => {
+        await context.queryClient.ensureQueryData(
+            serverLoggingLevelQueryOptions(context.api),
+        );
+    },
     component: ServerLogsPage,
 });
 
@@ -45,6 +51,11 @@ function ServerLogsPage() {
             sourceLabel="Server"
             websocketUrl={api.getServerLogsWebSocketUrl()}
             headerActions={agentLinks}
+            loggingLevelControl={{
+                queryKey: queryKeys.serverLoggingLevel(),
+                load: () => api.getServerLoggingLevel(),
+                update: (level) => api.updateServerLoggingLevel(level),
+            }}
         />
     );
 }

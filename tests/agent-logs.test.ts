@@ -10,7 +10,7 @@ import WebSocket from "ws";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { Agent, ApiClient, LogEvent } from "#ui/api-client";
+import { ApiError, type Agent, type ApiClient, type LogEvent } from "#ui/api-client";
 import {
     ProcessManager,
     TempFileManager,
@@ -69,6 +69,24 @@ async function openLogSocket(): Promise<{
     return { socket, events };
 }
 
+/** Opens the server process stream so runtime admission can be observed independently. */
+async function openServerLogSocket(): Promise<{
+    socket: WebSocket;
+    events: LogEvent[];
+}> {
+    const socket = new WebSocket(apiClient.getServerLogsWebSocketUrl(), {
+        headers: apiClient.getAuthHeaders(),
+    });
+    onTestFinished(() => socket.close());
+    const events: LogEvent[] = [];
+    socket.on("message", (data) => events.push(parseEvent(data)));
+    await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+    });
+    return { socket, events };
+}
+
 /** Polls the captured bounded event list until one event satisfies the requested predicate. */
 async function waitForEvent(
     events: LogEvent[],
@@ -105,6 +123,120 @@ async function waitForPing(socket: WebSocket): Promise<void> {
 }
 
 describe.sequential("dedicated agent log tunnel", () => {
+    it("authenticates and changes server and agent logging levels at runtime", async () => {
+        const unauthenticated = await fetch(
+            `${apiClient.baseUrl}/api/v1/server/logging-level`,
+        );
+        // Logging control must be protected by the same browser session middleware as log viewing.
+        expect(unauthenticated.status).toBe(401);
+
+        const initialServer = await apiClient.getServerLoggingLevel();
+        // Info remains the default when this test process supplies no startup override.
+        expect(initialServer.level).toBe("info");
+        const changedServer = await apiClient.updateServerLoggingLevel("debug");
+        // The update response must report the process-authoritative value, not merely echo a pending choice.
+        expect(changedServer.level).toBe("debug");
+        // A separate read proves the atomic value survives beyond the update request.
+        expect((await apiClient.getServerLoggingLevel()).level).toBe("debug");
+
+        const initialAgent = await testAgent.getLoggingLevel();
+        // A connected agent exposes its own process threshold rather than the server threshold.
+        expect(initialAgent.level).toBe("info");
+        const changedAgent = await testAgent.updateLoggingLevel("trace");
+        // Runtime control must travel over the authoritative agent command connection.
+        expect(changedAgent.level).toBe("trace");
+        // Restoring defaults prevents this workflow from changing unrelated log-volume assertions.
+        expect((await testAgent.updateLoggingLevel("info")).level).toBe("info");
+        expect((await apiClient.updateServerLoggingLevel("info")).level).toBe(
+            "info",
+        );
+    });
+
+    it("rejects invalid logging levels with a clear client error", async () => {
+        const response = await fetch(
+            `${apiClient.baseUrl}/api/v1/server/logging-level`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...apiClient.getAuthHeaders(),
+                },
+                body: JSON.stringify({ level: "verbose" }),
+            },
+        );
+        // Invalid enum values must be rejected instead of silently selecting the default.
+        expect(response.status).toBe(422);
+        // The rejection names the invalid field vocabulary so API callers can correct it.
+        expect(await response.text()).toContain("unknown variant");
+    });
+
+    it("applies runtime thresholds before server and agent records reach live streams", async () => {
+        const serverLogs = await openServerLogSocket();
+        await waitForEvent(
+            serverLogs.events,
+            (event) => event.type === "snapshot",
+            "server snapshot before threshold checks",
+        );
+
+        await apiClient.updateServerLoggingLevel("error");
+        await testAgent.getLoggingLevel();
+        await apiClient.updateServerLoggingLevel("trace");
+        await testAgent.getLoggingLevel();
+        await waitForEvent(
+            serverLogs.events,
+            (event) =>
+                event.type === "entry" &&
+                event.entry.includes("Routing REST command:"),
+            "enabled server trace command marker",
+        );
+        const serverTraceEntries = serverLogs.events.filter(
+            (event) =>
+                event.type === "entry" &&
+                event.entry.includes("Routing REST command:"),
+        );
+        // Only the command sent after enabling trace may reach the live stream.
+        expect(serverTraceEntries).toHaveLength(1);
+        await apiClient.updateServerLoggingLevel("info");
+
+        await testAgent.updateLoggingLevel("error");
+        const observingAgentLogs = await openLogSocket();
+        await waitForEvent(
+            observingAgentLogs.events,
+            (event) => event.type === "snapshot",
+            "agent snapshot before threshold checks",
+        );
+        const suppressedAgentLogs = await openLogSocket();
+        await waitForEvent(
+            suppressedAgentLogs.events,
+            (event) => event.type === "snapshot",
+            "agent snapshot while info is disabled",
+        );
+        await testAgent.updateLoggingLevel("trace");
+        const enabledAgentLogs = await openLogSocket();
+        await waitForEvent(
+            enabledAgentLogs.events,
+            (event) => event.type === "snapshot",
+            "agent snapshot after trace is enabled",
+        );
+        await waitForEvent(
+            observingAgentLogs.events,
+            (event) =>
+                event.type === "entry" &&
+                event.entry.includes("Agent log stream started:"),
+            "enabled agent stream-start marker",
+        );
+        const agentInfoEntries = observingAgentLogs.events.filter(
+            (event) =>
+                event.type === "entry" &&
+                event.entry.includes("Agent log stream started:"),
+        );
+        // The observer and suppressed stream started below the error threshold; only the trace-era stream is emitted.
+        expect(agentInfoEntries).toHaveLength(1);
+        suppressedAgentLogs.socket.close();
+        enabledAgentLogs.socket.close();
+        await testAgent.updateLoggingLevel("info");
+    });
+
     it("requires browser authentication", async () => {
         const status = await new Promise<number>((resolve, reject) => {
             const socket = new WebSocket(testAgent.getLogsWebSocketUrl());
@@ -287,5 +419,12 @@ describe.sequential("dedicated agent log tunnel", () => {
         });
         // Router inventory must stop advertising a live agent after authoritative socket loss.
         expect(disconnected.status).not.toBe("connected");
+        const unavailable = await testAgent.getLoggingLevel().catch((error) => error);
+        // A disconnected update/read must fail rather than displaying a value from server state.
+        expect(unavailable).toBeInstanceOf(ApiError);
+        if (unavailable instanceof ApiError) {
+            // The REST status must identify unavailable agent control without mutating any confirmed UI value.
+            expect([404, 503]).toContain(unavailable.status);
+        }
     });
 });

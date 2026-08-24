@@ -79,6 +79,26 @@ test.describe.serial("Server logs", () => {
             )
             // Strict Mode may create a transient socket, but only one mounted route socket may remain open.
             .toBe(1);
+
+        const debugLevel = page.getByRole("button", {
+            name: "Debug logging",
+        });
+        await debugLevel.click();
+        // The pressed state must reflect the value confirmed by the runtime REST response.
+        await expect(debugLevel).toHaveAttribute("aria-pressed", "true");
+        // Runtime changes provide accessible feedback without obscuring the mounted stream.
+        await expect(
+            page.getByRole("status").filter({
+                hasText: "Server logging level changed to debug.",
+            }),
+        ).toBeVisible();
+        await expect
+            .poll(
+                () => logSockets.filter((socket) => !socket.isClosed()).length,
+            )
+            // Changing the threshold must not reconnect the route-owned WebSocket.
+            .toBe(1);
+        await page.getByRole("button", { name: "Info logging" }).click();
     });
 
     test("navigates from server logs to one connected agent log route", async ({

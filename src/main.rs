@@ -545,7 +545,17 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
         },
     };
 
-    if let Err(error) = logging::init(log.clone()).await {
+    let log_level = logging::resolve_initial_level(
+        args.log_level,
+        "REDOOR_SERVER_LOG_LEVEL",
+        server_section.log_level,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+
+    if let Err(error) = logging::init_with_level(log.clone(), log_level).await {
         eprintln!("{error:#}");
         std::process::exit(1);
     }

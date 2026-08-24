@@ -22,6 +22,10 @@ use super::{
     diffs::diff_files_handler,
     files::{create_directory_handler, raw_agent_delete_handler, rename_path_handler},
     git::{git_context_handler, git_diff_handler, git_status_handler},
+    logging_levels::{
+        get_agent_logging_level_handler, get_server_logging_level_handler,
+        update_agent_logging_level_handler, update_server_logging_level_handler,
+    },
     logs::server_logs_websocket_handler,
     moves::move_file_handler,
     raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
@@ -72,6 +76,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(list_agents_handler).post(create_ssh_agent_handler),
         )
         .route("/api/v1/server", get(server_info_handler))
+        .route(
+            "/api/v1/server/logging-level",
+            get(get_server_logging_level_handler).put(update_server_logging_level_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/logging-level",
+            get(get_agent_logging_level_handler).put(update_agent_logging_level_handler),
+        )
         .route(
             "/api/v1/user/state",
             get(get_user_state_handler).post(update_user_state_handler),

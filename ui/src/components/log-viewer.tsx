@@ -1,14 +1,89 @@
 import * as React from "react";
 import { ScrollText } from "lucide-react";
 import { z } from "zod";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { LogEvent } from "#ui/api-client";
+import type { Level, LogEvent, LoggingLevelResponse } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
+import { ToggleButton } from "#ui/components/toggle-button";
+import { Toast } from "#ui/components/toast";
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 type LogEntry = { id: number; text: string };
 
 const MAX_LOG_ENTRIES = 500;
+const LOGGING_LEVELS: { value: Level; label: string }[] = [
+    { value: "trace", label: "Trace" },
+    { value: "debug", label: "Debug" },
+    { value: "info", label: "Info" },
+    { value: "warning", label: "Warning" },
+    { value: "error", label: "Error" },
+];
+
+/** Keeps confirmed query state authoritative when a runtime update is rejected. */
+function LoggingLevelControl(props: {
+    sourceLabel: string;
+    queryKey: readonly unknown[];
+    load: () => Promise<LoggingLevelResponse>;
+    update: (level: Level) => Promise<LoggingLevelResponse>;
+}) {
+    const queryClient = useQueryClient();
+    const levelQuery = useQuery({
+        queryKey: props.queryKey,
+        queryFn: props.load,
+    });
+    const [feedback, setFeedback] = React.useState<{
+        tone: "success" | "error";
+        message: string;
+    } | null>(null);
+    const mutation = useMutation({
+        mutationFn: props.update,
+        onSuccess: (response) => {
+            queryClient.setQueryData(props.queryKey, response);
+            setFeedback({
+                tone: "success",
+                message: `${props.sourceLabel} logging level changed to ${response.level}.`,
+            });
+        },
+        onError: (error) => {
+            void queryClient.invalidateQueries({ queryKey: props.queryKey });
+            setFeedback({
+                tone: "error",
+                message: `Could not change ${props.sourceLabel} logging level: ${error.message}`,
+            });
+        },
+    });
+
+    return (
+        <>
+            <div
+                role="group"
+                aria-label={`${props.sourceLabel} logging level`}
+                className="flex items-center gap-1"
+            >
+                <span className="mr-1 text-sm text-slate-400">Level</span>
+                {LOGGING_LEVELS.map((level) => (
+                    <ToggleButton
+                        key={level.value}
+                        size="sm"
+                        pressed={levelQuery.data?.level === level.value}
+                        label={`${level.label} logging`}
+                        tooltip={`Emit ${level.label.toLowerCase()} and more severe logs`}
+                        disabled={levelQuery.isPending || mutation.isPending}
+                        onClick={() => mutation.mutate(level.value)}
+                    >
+                        {level.label}
+                    </ToggleButton>
+                ))}
+            </div>
+            {feedback ? (
+                <Toast tone={feedback.tone} onDismiss={() => setFeedback(null)}>
+                    {feedback.message}
+                </Toast>
+            ) : null}
+        </>
+    );
+}
 
 const logEventSchema: z.ZodType<LogEvent> = z.discriminatedUnion("type", [
     z.object({
@@ -26,12 +101,25 @@ function parseLogEvent(data: string): LogEvent {
     return logEventSchema.parse(JSON.parse(data));
 }
 
+/** Gives every connection phase a concise operator-facing label. */
+function connectionStateLabel(state: ConnectionState): string {
+    if (state === "connected") {
+        return "Live";
+    }
+    return state === "reconnecting" ? "Reconnecting…" : "Connecting…";
+}
+
 /** Owns one reconnecting route-scoped log socket and a bounded browser rolling window. */
 export function LogViewer(props: {
     title: string;
     sourceLabel: string;
     websocketUrl: string;
     headerActions?: React.ReactNode;
+    loggingLevelControl: {
+        queryKey: readonly unknown[];
+        load: () => Promise<LoggingLevelResponse>;
+        update: (level: Level) => Promise<LoggingLevelResponse>;
+    };
 }) {
     const [entries, setEntries] = React.useState<LogEntry[]>([]);
     const [autoScroll, setAutoScroll] = React.useState(true);
@@ -164,13 +252,6 @@ export function LogViewer(props: {
         container.scrollTop = container.scrollHeight;
     }, [autoScroll, entries]);
 
-    const connectionLabel =
-        connectionState === "connected"
-            ? "Live"
-            : connectionState === "reconnecting"
-              ? "Reconnecting…"
-              : "Connecting…";
-
     return (
         <div className="flex h-full min-h-0 flex-col p-8">
             <div className="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col">
@@ -186,6 +267,12 @@ export function LogViewer(props: {
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
                         {props.headerActions}
+                        <LoggingLevelControl
+                            sourceLabel={props.sourceLabel}
+                            queryKey={props.loggingLevelControl.queryKey}
+                            load={props.loggingLevelControl.load}
+                            update={props.loggingLevelControl.update}
+                        />
                         <Checkbox
                             checked={autoScroll}
                             role="checkbox"
@@ -200,7 +287,7 @@ export function LogViewer(props: {
                         role="status"
                         aria-label={`${props.sourceLabel} log connection status`}
                     >
-                        {connectionLabel}
+                        {connectionStateLabel(connectionState)}
                     </span>
                     {statusMessage ? (
                         <span role="status">{statusMessage}</span>

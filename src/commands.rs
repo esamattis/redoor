@@ -4,6 +4,7 @@ mod handler;
 mod identity;
 mod metadata;
 
+use crate::logging::Level;
 use crate::types::{AgentId, SocketId, TransferId, UnixTimestampMillis, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -260,6 +261,12 @@ pub enum Command {
     },
     AgentInfo,
     GetAgentDetails,
+    /// Reads the process-wide threshold from the agent that owns this control socket.
+    GetLoggingLevel,
+    /// Changes logging admission for subsequent events in the connected agent process.
+    SetLoggingLevel {
+        level: Level,
+    },
     Restart,
     SelfExec {
         path: String,
@@ -371,6 +378,8 @@ impl Command {
             Self::Echo { .. } => "Echo".to_string(),
             Self::AgentInfo => "AgentInfo".to_string(),
             Self::GetAgentDetails => "GetAgentDetails".to_string(),
+            Self::GetLoggingLevel => "GetLoggingLevel".to_string(),
+            Self::SetLoggingLevel { level } => format!("SetLoggingLevel level={level}"),
             Self::Restart => "Restart".to_string(),
             Self::SelfExec { path } => format!("SelfExec path={path}"),
         }
@@ -770,6 +779,7 @@ pub enum CommandResult {
     Echo(EchoResult),
     AgentInfo(AgentInfoResult),
     GetAgentDetails(Box<AgentDetailsResponse>),
+    LoggingLevel(Level),
     Restart,
     SelfExec {
         path: String,
@@ -1406,6 +1416,7 @@ impl CommandResult {
             Self::Echo(_) => "ok Echo".to_string(),
             Self::AgentInfo(_) => "ok AgentInfo".to_string(),
             Self::GetAgentDetails(_) => "ok GetAgentDetails".to_string(),
+            Self::LoggingLevel(level) => format!("ok LoggingLevel level={level}"),
             Self::Restart => "ok Restart".to_string(),
             Self::SelfExec { path } => format!("ok SelfExec path={path}"),
             Self::Error { kind, message } => {
