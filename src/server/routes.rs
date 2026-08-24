@@ -29,6 +29,7 @@ use super::{
     retry_agent_start::retry_agent_start_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
+    transfer_cancellation::cancel_transfer_handler,
     transfers::{copy_file_handler, list_transfer_progress_handler},
     trash::{empty_trash_handler, list_trash_handler, restore_trash_handler},
     ui::ui_service,
@@ -78,6 +79,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/transfers/progress",
             get(list_transfer_progress_handler),
+        )
+        .route(
+            "/api/v1/transfers/{transfer_id}/cancel",
+            post(cancel_transfer_handler),
         )
         .route(
             "/api/v1/agents/{agent}",

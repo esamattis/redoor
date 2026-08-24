@@ -588,10 +588,10 @@ impl AgentActor {
             );
             reporter.report(true).await?;
             stream_file_to_temp(&source_path_buf, &temp_path, &mut reporter).await?;
+            reporter.finish().await?;
             place_temp_at_destination(&temp_path, &dest_path_buf, on_existing, false)
                 .await
                 .map_err(LocalCopyError::from)?;
-            reporter.finish().await?;
             Ok(CommandResult::LocalCopyFile)
         }
         .await;
@@ -686,10 +686,10 @@ impl AgentActor {
             );
             reporter.report(true).await?;
             copy_directory_streaming(&source_path_buf, &temp_dest_root, &mut reporter).await?;
+            reporter.finish().await?;
             place_temp_at_destination(&temp_dest_root, &dest_path_buf, on_existing, true)
                 .await
                 .map_err(LocalCopyError::from)?;
-            reporter.finish().await?;
             Ok(CommandResult::LocalCopyDirectory)
         }
         .await;

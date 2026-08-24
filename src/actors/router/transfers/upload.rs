@@ -338,6 +338,7 @@ pub(crate) fn finish_transfer(
             }
             (
                 transfer.canceled_by_rest,
+                transfer.explicitly_canceled,
                 transfer.completion_sender.take(),
                 transfer.ready_sender.take(),
             )
@@ -361,7 +362,7 @@ pub(crate) fn finish_transfer(
         }
     };
 
-    let (canceled_by_rest, completion_sender, ready_sender) = transfer_state;
+    let (canceled_by_rest, explicitly_canceled, completion_sender, ready_sender) = transfer_state;
 
     if canceled_by_rest {
         // After REST has already gone away, the agent response only acts as a
@@ -374,6 +375,14 @@ pub(crate) fn finish_transfer(
             request_id,
             matches!(result, CommandResult::Error { .. })
         );
+        if explicitly_canceled
+            && matches!(result, CommandResult::RawUpload | CommandResult::TarUpload)
+        {
+            // A destination publication acknowledged before cancel processing remains completed.
+            progress::mark_transfer_completed(state, request_id.as_transfer_id());
+        } else if explicitly_canceled {
+            progress::mark_transfer_canceled(state, request_id.as_transfer_id());
+        }
         state.streams.uploads.remove(&request_id);
         ui::notify_transfer_refresh(state);
 

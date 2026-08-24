@@ -465,7 +465,8 @@ function ApplicationBottomDrawer(props: {
     const [isCollapsed, setIsCollapsed] = React.useState(true);
     const lastActivationRef = React.useRef(0);
     const activeTransfers = props.transfers.filter(
-        (transfer) => transfer.state === "active",
+        (transfer) =>
+            transfer.state === "active" || transfer.state === "canceling",
     );
     const lastTransferPercentage = useLastEstimatedTransferPercentage(
         props.transfers,
@@ -802,6 +803,11 @@ function getTransferSummary(transfers: TransferProgressEntry[]) {
             transfers.filter((transfer) => transfer.state === "errored").length,
             "errored",
         ],
+        [
+            transfers.filter((transfer) => transfer.state === "canceled")
+                .length,
+            "canceled",
+        ],
     ]
         .filter(([count]) => count !== 0)
         .map(([count, label]) => `${count} ${label}`)
@@ -813,6 +819,7 @@ function TransferProgressPane(props: {
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transfers: TransferProgressEntry[];
 }) {
+    const { api } = Route.useRouteContext();
     return (
         <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-800">
             {props.transfers.length === 0 ? (
@@ -827,6 +834,7 @@ function TransferProgressPane(props: {
                 </div>
             ) : (
                 <TransferList
+                    api={api}
                     agents={props.agents}
                     transfers={props.transfers}
                 />

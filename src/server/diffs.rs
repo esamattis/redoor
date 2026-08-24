@@ -143,6 +143,7 @@ async fn download_editable_file(
                     resume_offset: None,
                     reply,
                     chunk_sender,
+                    rest_cancel_sender: None,
                 },
             )
         })

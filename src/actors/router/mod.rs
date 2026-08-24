@@ -9,8 +9,8 @@ mod ui;
 
 pub use error::RouterError;
 pub use messages::{
-    ApplyManagedLifecycleRequest, ExecuteCommandRequest, ExecuteStreamRequest,
-    OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
+    ApplyManagedLifecycleRequest, CancelPublicTransferError, ExecuteCommandRequest,
+    ExecuteStreamRequest, OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
     RegisterManagedAgentRequest, RegisterTransferConnectionRequest, RegisterUiSubscriberRequest,
     RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg,
     SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
@@ -313,6 +313,9 @@ impl RouterState {
                     request_id,
                 } => {
                     cleanup::cancel_transfer(&mut self, request_id, agent_id);
+                }
+                RouterMsg::CancelPublicTransfer { transfer_id, reply } => {
+                    let _ = reply.send(cleanup::cancel_public_transfer(&mut self, transfer_id));
                 }
                 RouterMsg::StartCopyRest(request) => {
                     transfers::copy::start(&mut self, request);

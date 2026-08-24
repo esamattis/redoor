@@ -23,6 +23,8 @@ pub(crate) struct DownloadStartContext {
     pub(crate) resume_offset: Option<u64>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub(crate) chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+    /// Optional direct signal for terminating the public HTTP body on explicit cancellation.
+    pub(crate) rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Inputs needed to register a new direct upload in progress tracking.
@@ -101,6 +103,7 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
         // A client retry may restart the full request or overlap one queued frame with a range.
         progress.transferred_bytes = restart_offset;
         progress.state = TransferProgressState::Active;
+        progress.cancelable = true;
         progress.ended_at = None;
         progress.error = None;
     } else {
@@ -118,6 +121,7 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
                 started_at: now,
                 ended_at: None,
                 state: TransferProgressState::Active,
+                cancelable: true,
                 error: None,
                 atomic: false,
             },
@@ -127,7 +131,8 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
         context.request_id,
         DirectDownload {
             agent_id: context.agent_id,
-            chunk_sender: context.chunk_sender,
+            chunk_sender: Some(context.chunk_sender),
+            rest_cancel_sender: context.rest_cancel_sender,
             progress_id: Some(progress_id),
             canceled_by_rest: false,
         },
@@ -154,6 +159,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             started_at: now,
             ended_at: None,
             state: TransferProgressState::Active,
+            cancelable: true,
             error: None,
             atomic: false,
         },
@@ -166,6 +172,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             ready_sender: Some(context.ready_sender),
             ready: false,
             canceled_by_rest: false,
+            explicitly_canceled: false,
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
@@ -195,6 +202,7 @@ pub(crate) fn record_copy_start(state: &mut RouterState, context: CopyStartConte
             started_at: now,
             ended_at: None,
             state: TransferProgressState::Active,
+            cancelable: true,
             error: None,
             atomic: false,
         },
@@ -279,6 +287,7 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         .remove(&transfer_id);
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Completed;
+        progress.cancelable = false;
         if progress.total_bytes == 0
             || (had_predicted_download_total && progress.transferred_bytes != progress.total_bytes)
         {
@@ -311,6 +320,7 @@ pub(crate) fn mark_copy_transfer_completed(
             progress.total_bytes = total_bytes;
         }
         progress.state = TransferProgressState::Completed;
+        progress.cancelable = false;
         progress.transferred_bytes = progress.total_bytes;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = None;
@@ -331,6 +341,7 @@ pub(crate) fn mark_transfer_errored(
     let mut updated = false;
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
         progress.state = TransferProgressState::Errored;
+        progress.cancelable = false;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = Some(error_message);
         state
@@ -340,6 +351,31 @@ pub(crate) fn mark_transfer_errored(
         updated = true;
     }
     if updated {
+        ui::notify_transfer_refresh_immediately(state);
+    }
+}
+
+/// Publishes cancellation intent before control messages are sent to transfer workers.
+pub(crate) fn mark_transfer_canceling(state: &mut RouterState, transfer_id: TransferId) {
+    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+        progress.state = TransferProgressState::Canceling;
+        progress.cancelable = false;
+        progress.error = None;
+        ui::notify_transfer_refresh_immediately(state);
+    }
+}
+
+/// Settles an acknowledged cancellation without discarding partial byte progress.
+pub(crate) fn mark_transfer_canceled(state: &mut RouterState, transfer_id: TransferId) {
+    if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+        progress.state = TransferProgressState::Canceled;
+        progress.cancelable = false;
+        progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
+        progress.error = None;
+        state
+            .progress
+            .predicted_download_totals
+            .remove(&transfer_id);
         ui::notify_transfer_refresh_immediately(state);
     }
 }
@@ -473,6 +509,7 @@ mod tests {
                 started_at: UnixTimestampSeconds::new(1),
                 ended_at: None,
                 state: TransferProgressState::Active,
+                cancelable: true,
                 error: None,
                 atomic: false,
             },
@@ -533,6 +570,7 @@ mod tests {
         transferred_bytes: u64,
         state: TransferProgressState,
     ) -> TransferProgressEntry {
+        let cancelable = matches!(state, TransferProgressState::Active);
         TransferProgressEntry {
             request_id: transfer_id,
             agent_id: AgentId::from("agent-1"),
@@ -545,6 +583,7 @@ mod tests {
             started_at: UnixTimestampSeconds::new(1),
             ended_at: None,
             state,
+            cancelable,
             error: None,
             atomic: false,
         }

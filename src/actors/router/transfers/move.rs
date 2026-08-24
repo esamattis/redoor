@@ -1,6 +1,6 @@
 use super::super::progress;
 use super::super::state::{CopyContentKind, CopyExecution, CopyOperation, RouterState};
-use super::copy::cleanup_copy_tracking;
+use super::copy::{acknowledge_remote_cancel, cleanup_copy_tracking};
 use crate::commands::{Command, CommandResult, MoveSourceIdentity};
 use crate::log;
 use crate::logging::Level;
@@ -63,6 +63,18 @@ pub(crate) fn finish_transfer(
         CopyExecution::RemoteStream { dest_request_id, .. } if dest_request_id == request_id
     ) && move_request.content_kind.completion_matches(&result);
     if destination_completed {
+        if matches!(
+            state
+                .progress
+                .entries
+                .get(&public_request_id)
+                .map(|entry| &entry.state),
+            Some(crate::commands::TransferProgressState::Canceling)
+        ) {
+            // Cancellation before source deletion preserves the source even if destination publication won.
+            acknowledge_remote_cancel(state, public_request_id, request_id);
+            return true;
+        }
         let source_agent_id = move_request.source_agent_id.clone();
         let source_path = move_request.source_path.clone();
         let source_identity = move_request
@@ -84,7 +96,27 @@ pub(crate) fn finish_transfer(
 
     match result {
         CommandResult::Error { message, .. } => {
-            progress::mark_transfer_errored(state, public_request_id, message);
+            if matches!(
+                state
+                    .progress
+                    .entries
+                    .get(&public_request_id)
+                    .map(|entry| &entry.state),
+                Some(crate::commands::TransferProgressState::Canceling)
+            ) {
+                match move_request.execution {
+                    CopyExecution::RemoteStream { .. } => {
+                        acknowledge_remote_cancel(state, public_request_id, request_id);
+                        return true;
+                    }
+                    CopyExecution::LocalAgent { .. } => {
+                        progress::mark_transfer_canceled(state, public_request_id);
+                    }
+                    CopyExecution::DeletingMoveSource { .. } => unreachable!(),
+                }
+            } else {
+                progress::mark_transfer_errored(state, public_request_id, message);
+            }
         }
         CommandResult::RawDelete if deleting_source => {
             progress::mark_copy_transfer_completed(state, public_request_id, None);
@@ -162,6 +194,10 @@ fn begin_source_deletion(
             agent_id: source_agent_id.clone(),
             request_id: delete_request_id,
         };
+    }
+    if let Some(entry) = state.progress.entries.get_mut(&public_request_id) {
+        // Source deletion is the destructive commit phase and cannot be interrupted safely.
+        entry.cancelable = false;
     }
     state
         .copies

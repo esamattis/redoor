@@ -920,7 +920,8 @@ mod tests {
             download_id,
             super::super::state::DirectDownload {
                 agent_id: AgentId::from("agent"),
-                chunk_sender,
+                chunk_sender: Some(chunk_sender),
+                rest_cancel_sender: None,
                 progress_id: Some(download_id.as_transfer_id()),
                 canceled_by_rest: false,
             },
@@ -937,6 +938,7 @@ mod tests {
                 ready_sender: Some(ready_sender),
                 ready: true,
                 canceled_by_rest: false,
+                explicitly_canceled: false,
             },
         );
 

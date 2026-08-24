@@ -25,6 +25,7 @@ function transfer(
         started_at: 100,
         ended_at: null,
         state: "active",
+        cancelable: true,
         error: null,
         atomic: false,
         ...overrides,

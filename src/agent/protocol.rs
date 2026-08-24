@@ -365,6 +365,8 @@ impl AgentActor {
                     command,
                     ..
                 } => {
+                    let canceled_before_registration =
+                        state.pending_transfer_cancellations.remove(&request_id);
                     log!(
                         Level::Info,
                         "Command received: agent_id={}, request_id={}, command={}",
@@ -416,7 +418,7 @@ impl AgentActor {
                         None
                     };
 
-                    if !self
+                    let started_upload = self
                         .start_upload_session(
                             state.active_uploads.clone(),
                             write_text,
@@ -424,8 +426,19 @@ impl AgentActor {
                             request_id,
                             command.clone(),
                         )
-                        .await
+                        .await;
+                    if started_upload
+                        && canceled_before_registration
+                        && let Some(upload) = state.active_uploads.get(request_id)
                     {
+                        let _ = upload.cancel_sender.send(true);
+                    }
+                    if !started_upload {
+                        if canceled_before_registration
+                            && let Some(download) = state.active_downloads.get(request_id)
+                        {
+                            let _ = download.cancel_sender.send(true);
+                        }
                         let transfer_sender = match transfer_sender {
                             Some(sender) => sender,
                             None => write_text.clone(),
@@ -433,7 +446,21 @@ impl AgentActor {
                         let write_text = write_text.clone();
                         let agent_id = state.agent_id.clone();
                         let active_downloads = state.active_downloads.clone();
+                        let active_local_transfers = state.active_local_transfers.clone();
                         let trash = state.trash.clone();
+                        let is_local_transfer = matches!(
+                            command,
+                            Command::LocalCopyFile { .. }
+                                | Command::LocalCopyDirectory { .. }
+                                | Command::LocalMove { .. }
+                        );
+                        let local_cancel = if is_local_transfer {
+                            let (sender, receiver) = watch::channel(canceled_before_registration);
+                            active_local_transfers.insert(request_id, sender);
+                            Some(receiver)
+                        } else {
+                            None
+                        };
                         command_tasks.spawn(async move {
                             let handles_cancellation = matches!(
                                 command,
@@ -445,6 +472,7 @@ impl AgentActor {
                                     | Command::RestoreTrash { .. }
                             );
                             if handles_cancellation {
+                                let cancel = local_cancel.unwrap_or(command_cancel);
                                 handle_command_message(
                                     request_id,
                                     command,
@@ -454,11 +482,14 @@ impl AgentActor {
                                         agent_id,
                                         active_downloads,
                                         file_search_cancel,
-                                        command_cancel: Some(command_cancel),
+                                        command_cancel: Some(cancel),
                                         trash,
                                     },
                                 )
                                 .await;
+                                if is_local_transfer {
+                                    active_local_transfers.remove(request_id);
+                                }
                             } else {
                                 let mut command_cancel = command_cancel;
                                 tokio::select! {
@@ -487,8 +518,15 @@ impl AgentActor {
                     let download_handle = state.active_downloads.get(request_id);
 
                     let upload_handle = state.active_uploads.get(request_id);
+                    let local_canceled = state.active_local_transfers.cancel(request_id);
 
-                    if let Some(download_handle) = download_handle {
+                    if local_canceled {
+                        log!(
+                            Level::Info,
+                            "Received local transfer cancel from server: request_id={}",
+                            request_id
+                        );
+                    } else if let Some(download_handle) = download_handle {
                         log!(
                             Level::Info,
                             "Received transfer cancel from server: request_id={}",
@@ -503,9 +541,12 @@ impl AgentActor {
                         );
                         let _ = upload_handle.cancel_sender.send(true);
                     } else {
+                        // Priority traffic can overtake the command lane. Keep a
+                        // tombstone so the worker starts canceled instead of losing the request.
+                        state.pending_transfer_cancellations.insert(request_id);
                         log!(
-                            Level::Warning,
-                            "Received transfer cancel for unknown transfer: request_id={}",
+                            Level::Info,
+                            "Retained transfer cancel until command registration: request_id={}",
                             request_id
                         );
                     }

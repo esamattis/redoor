@@ -18,6 +18,7 @@ mod retry_agent_start;
 mod routes;
 pub(crate) mod state;
 mod terminals;
+mod transfer_cancellation;
 mod transfers;
 mod trash;
 mod ui;

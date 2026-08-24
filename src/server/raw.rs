@@ -262,6 +262,7 @@ pub(crate) async fn raw_agent_handler(
 
     let (response_sender, response_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
+    let (rest_cancel_sender, rest_cancel_receiver) = tokio::sync::watch::channel(false);
 
     let request_id = match state
         .router_ref
@@ -280,6 +281,7 @@ pub(crate) async fn raw_agent_handler(
                     resume_offset: range_start,
                     reply,
                     chunk_sender: response_sender,
+                    rest_cancel_sender: Some(rest_cancel_sender.clone()),
                 },
             )
         })
@@ -312,13 +314,19 @@ pub(crate) async fn raw_agent_handler(
         next_offset: range_start.unwrap_or(0),
         file_size: metadata.file_size,
     });
-    let body_stream =
-        match begin_download_body_stream(response_receiver, &path, one_time_progress, cancel_guard)
-            .await
-        {
-            Ok(stream) => stream,
-            Err(response) => return response,
-        };
+    let body_stream = match begin_download_body_stream(
+        response_receiver,
+        rest_cancel_sender,
+        rest_cancel_receiver,
+        &path,
+        one_time_progress,
+        cancel_guard,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(response) => return response,
+    };
 
     let mut response_builder = Response::builder()
         .status(status_code)
@@ -369,6 +377,7 @@ async fn stream_directory_archive(
 
     let (response_sender, response_receiver) =
         tokio::sync::mpsc::channel::<redoor::streaming::StreamChunk>(1);
+    let (rest_cancel_sender, rest_cancel_receiver) = tokio::sync::watch::channel(false);
 
     let request_id = match state
         .router_ref
@@ -390,6 +399,7 @@ async fn stream_directory_archive(
                     resume_offset: None,
                     reply,
                     chunk_sender: response_sender,
+                    rest_cancel_sender: Some(rest_cancel_sender.clone()),
                 },
             )
         })
@@ -413,11 +423,19 @@ async fn stream_directory_archive(
     let cancel_guard =
         DownloadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
 
-    let body_stream =
-        match begin_download_body_stream(response_receiver, &path, None, cancel_guard).await {
-            Ok(stream) => stream,
-            Err(response) => return response,
-        };
+    let body_stream = match begin_download_body_stream(
+        response_receiver,
+        rest_cancel_sender,
+        rest_cancel_receiver,
+        &path,
+        None,
+        cancel_guard,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(response) => return response,
+    };
 
     // Gzip only the HTTP body: agent still emits plain tar for reuse by copy uploads.
     let tar_reader = tokio_util::io::StreamReader::new(body_stream);
@@ -449,6 +467,8 @@ async fn stream_directory_archive(
 /// then builds the HTTP body stream used by both raw file and directory tar downloads.
 async fn begin_download_body_stream(
     mut response_receiver: tokio::sync::mpsc::Receiver<redoor::streaming::StreamChunk>,
+    rest_cancel_lifetime: tokio::sync::watch::Sender<bool>,
+    mut rest_cancel_receiver: tokio::sync::watch::Receiver<bool>,
     path: &str,
     mut one_time_progress: Option<OneTimeDownloadProgress>,
     mut cancel_guard: DownloadCancelGuard,
@@ -489,6 +509,8 @@ async fn begin_download_body_stream(
     use async_stream::stream;
 
     Ok(stream! {
+        // Holding a sender prevents ordinary registry cleanup from resembling explicit cancel.
+        let _rest_cancel_lifetime = rest_cancel_lifetime;
         // `first_chunk` was awaited before constructing the HTTP response so we could still
         // return a normal JSON error response with an appropriate status code if the agent
         // failed immediately. Once we start streaming the body, the headers and status code are
@@ -497,7 +519,10 @@ async fn begin_download_body_stream(
         let mut pending_chunk = Some(first_chunk);
         while let Some(parsed) = match pending_chunk.take() {
             Some(chunk) => Some(chunk),
-            None => response_receiver.recv().await,
+            None => tokio::select! {
+                _ = rest_cancel_receiver.wait_for(|canceled| *canceled) => None,
+                chunk = response_receiver.recv() => chunk,
+            },
         } {
             if parsed.is_error {
                 // A later chunk can only fail after the response has already started. Convert the
@@ -682,6 +707,7 @@ mod tests {
 
         let path = "/tmp/stalled.bin".to_string();
         let (chunk_sender, chunk_receiver) = mpsc::channel(1);
+        let (rest_cancel_sender, rest_cancel_receiver) = watch::channel(false);
         let request_id = router_ref
             .request(1_000, |reply| {
                 RouterMsg::ExecuteStreamCommandRest(ExecuteStreamRequest {
@@ -697,6 +723,7 @@ mod tests {
                     resume_offset: None,
                     reply,
                     chunk_sender,
+                    rest_cancel_sender: Some(rest_cancel_sender.clone()),
                 })
             })
             .await
@@ -734,9 +761,16 @@ mod tests {
         let cancel_guard =
             DownloadCancelGuard::new(router_ref.clone(), agent_id.clone(), request_id);
         let mut body = Box::pin(
-            begin_download_body_stream(chunk_receiver, &path, None, cancel_guard)
-                .await
-                .expect("first chunk starts body"),
+            begin_download_body_stream(
+                chunk_receiver,
+                rest_cancel_sender,
+                rest_cancel_receiver,
+                &path,
+                None,
+                cancel_guard,
+            )
+            .await
+            .expect("first chunk starts body"),
         );
         let first_bytes = body
             .next()

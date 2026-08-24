@@ -106,6 +106,8 @@ impl AgentRuntime {
         self.state.clear_transfer_connection();
         self.state.active_uploads.clear();
         self.state.active_downloads.clear();
+        self.state.active_local_transfers.clear();
+        self.state.pending_transfer_cancellations.clear();
         self.state.active_terminals.clear();
         self.state.active_log_streams.clear();
         self.state.cancel_file_search();
@@ -196,6 +198,8 @@ impl AgentRuntime {
                 self.state.transfer_shutdown = None;
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
+                self.state.active_local_transfers.clear();
+                self.state.pending_transfer_cancellations.clear();
                 let next_generation = self.state.advance_transfer_generation();
                 if let Some(token) = self.state.transfer_token.clone() {
                     log!(
@@ -284,6 +288,8 @@ impl AgentRuntime {
                 self.state.clear_transfer_connection();
                 self.state.active_uploads.clear();
                 self.state.active_downloads.clear();
+                self.state.active_local_transfers.clear();
+                self.state.pending_transfer_cancellations.clear();
                 self.state.active_terminals.clear();
                 self.state.active_log_streams.clear();
                 self.state.cancel_file_search();

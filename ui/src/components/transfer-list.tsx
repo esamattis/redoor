@@ -6,9 +6,15 @@ import {
     Copy,
     AlertCircle,
     MoveRight,
+    CircleX,
 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
 import { Tooltip } from "#ui/components/tooltip";
+import { IconButton } from "#ui/components/icon-button";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { Toast } from "#ui/components/toast";
+import { queryKeys } from "#ui/queries";
 import { formatSize, formatSpeed } from "#ui/utils/path";
 import {
     formatRemainingTime,
@@ -204,21 +210,134 @@ function TransferTableHeader() {
                 <th className="text-left p-3 text-sm font-medium text-slate-400">
                     Status
                 </th>
+                <th className="w-14 p-3 text-right text-sm font-medium text-slate-400">
+                    Actions
+                </th>
             </tr>
         </thead>
     );
 }
 
+/** Keeps terminal state and diagnostics consistent across transfer directions. */
+function TransferStatusCell(props: { transfer: TransferProgressEntry }) {
+    return (
+        <td className="whitespace-nowrap p-3">
+            <div className="flex flex-col gap-1">
+                <span
+                    className={`text-sm font-medium ${
+                        props.transfer.state === "errored"
+                            ? "text-red-400"
+                            : props.transfer.state === "completed"
+                              ? "text-emerald-400"
+                              : "text-slate-100"
+                    }`}
+                >
+                    {props.transfer.state}
+                </span>
+                {props.transfer.error ? (
+                    <span className="inline-flex max-w-xs items-start gap-1 text-xs text-red-400">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate" title={props.transfer.error}>
+                            {props.transfer.error}
+                        </span>
+                    </span>
+                ) : null}
+            </div>
+        </td>
+    );
+}
+
+/** Exposes cancellation only while the server advertises a safe boundary. */
+function TransferActionsCell(props: {
+    transfer: TransferProgressEntry;
+    disabled: boolean;
+    onCancel: () => void;
+}) {
+    return (
+        <td className="p-3 text-right">
+            {props.transfer.cancelable && props.transfer.state === "active" ? (
+                <IconButton
+                    type="button"
+                    label="Cancel transfer"
+                    disabled={props.disabled}
+                    onClick={props.onCancel}
+                    className="rounded-md p-2 text-slate-400 transition-colors hover:bg-red-500/15 hover:text-red-300"
+                >
+                    <CircleX className="h-4 w-4" />
+                </IconButton>
+            ) : null}
+        </td>
+    );
+}
+
+/** Gives both history and drawer contexts the same empty state. */
+function EmptyTransferList() {
+    return (
+        <div className="p-6 text-center text-sm text-slate-500">
+            No transfers
+        </div>
+    );
+}
+
+/** Keeps the modal copy independent from transfer-table rendering details. */
+function TransferCancellationDialog(props: {
+    isOpen: boolean;
+    isBusy: boolean;
+    errorMessage: string | null;
+    onClose: () => void;
+    onConfirm: () => void;
+}) {
+    return (
+        <ConfirmationDialog
+            isOpen={props.isOpen}
+            title="Cancel transfer?"
+            description="Partial progress will be preserved, but unpublished temporary output will be removed. A transfer that has crossed its commit boundary may still complete."
+            confirmLabel="Cancel transfer"
+            busyLabel="Canceling transfer..."
+            isBusy={props.isBusy}
+            confirmDisabled={props.isBusy}
+            errorMessage={props.errorMessage}
+            onClose={props.onClose}
+            onConfirm={props.onConfirm}
+        />
+    );
+}
+
+/** Surfaces accepted cancellation without making the workflow modal. */
+function TransferCancellationToast(props: {
+    message: string | null;
+    onDismiss: () => void;
+}) {
+    return props.message === null ? null : (
+        <Toast tone="success" onDismiss={props.onDismiss}>
+            {props.message}
+        </Toast>
+    );
+}
+
 export function TransferList(props: {
+    api: ApiClient;
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
     transfers: TransferProgressEntry[];
 }) {
+    const queryClient = useQueryClient();
+    const [selectedTransfer, setSelectedTransfer] =
+        React.useState<TransferProgressEntry | null>(null);
+    const [toastMessage, setToastMessage] = React.useState<string | null>(null);
+    const cancelMutation = useMutation({
+        mutationFn: (transferId: number) =>
+            props.api.cancelTransfer(transferId),
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({
+                queryKey: queryKeys.transfers(),
+            });
+            setSelectedTransfer(null);
+            setToastMessage("Transfer cancellation requested");
+        },
+    });
+
     if (props.transfers.length === 0) {
-        return (
-            <div className="p-6 text-center text-sm text-slate-500">
-                No transfers
-            </div>
-        );
+        return <EmptyTransferList />;
     }
 
     return (
@@ -359,38 +478,43 @@ export function TransferList(props: {
                                 <td className="w-80 whitespace-nowrap p-3">
                                     <TransferProgressCell transfer={transfer} />
                                 </td>
-                                <td className="whitespace-nowrap p-3">
-                                    <div className="flex flex-col gap-1">
-                                        <span
-                                            className={`text-sm font-medium ${
-                                                transfer.state === "errored"
-                                                    ? "text-red-400"
-                                                    : transfer.state ===
-                                                        "completed"
-                                                      ? "text-emerald-400"
-                                                      : "text-slate-100"
-                                            }`}
-                                        >
-                                            {transfer.state}
-                                        </span>
-                                        {transfer.error ? (
-                                            <span className="inline-flex max-w-xs items-start gap-1 text-xs text-red-400">
-                                                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                                <span
-                                                    className="truncate"
-                                                    title={transfer.error}
-                                                >
-                                                    {transfer.error}
-                                                </span>
-                                            </span>
-                                        ) : null}
-                                    </div>
-                                </td>
+                                <TransferStatusCell transfer={transfer} />
+                                <TransferActionsCell
+                                    transfer={transfer}
+                                    disabled={cancelMutation.isPending}
+                                    onCancel={() => {
+                                        cancelMutation.reset();
+                                        setSelectedTransfer(transfer);
+                                    }}
+                                />
                             </tr>
                         );
                     })}
                 </tbody>
             </table>
+            <TransferCancellationDialog
+                isOpen={selectedTransfer !== null}
+                isBusy={cancelMutation.isPending}
+                errorMessage={
+                    cancelMutation.error instanceof Error
+                        ? cancelMutation.error.message
+                        : null
+                }
+                onClose={() => {
+                    if (!cancelMutation.isPending) {
+                        setSelectedTransfer(null);
+                    }
+                }}
+                onConfirm={() => {
+                    if (selectedTransfer !== null) {
+                        cancelMutation.mutate(selectedTransfer.request_id);
+                    }
+                }}
+            />
+            <TransferCancellationToast
+                message={toastMessage}
+                onDismiss={() => setToastMessage(null)}
+            />
         </div>
     );
 }

@@ -106,12 +106,12 @@ impl RawUploadWorker {
             self.request_id,
             self.session.path
         );
+        self.cleanup().await;
         self.send_error_response(
             CommandErrorKind::InvalidInput,
             "Upload canceled by server".to_string(),
         )
         .await;
-        self.cleanup().await;
     }
 
     /// Handles worker shutdown after the upload registry has been torn down.

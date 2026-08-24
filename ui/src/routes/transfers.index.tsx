@@ -30,6 +30,7 @@ function TransfersPage() {
                 </div>
                 <div className="overflow-hidden rounded-lg border border-slate-800">
                     <TransferList
+                        api={api}
                         agents={agents}
                         transfers={transferProgress.transfers}
                     />

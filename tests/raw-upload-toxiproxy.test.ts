@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import { ApiClient, Agent } from "#ui/api-client";
 import type { TransferProgressEntry } from "#ui/api-client";
+import fs from "node:fs/promises";
 
 import {
     ProcessManager,
@@ -212,6 +213,78 @@ describe("Raw Upload API with toxiproxy", () => {
         // Finishing successfully confirms the responsiveness fix does not break the throttled upload itself.
         expect(uploadResponse.ok).toBe(true);
     }, 20000);
+
+    it("cancels a throttled upload over the control path and removes partial output", async () => {
+        const totalBytes = 8 * 1024 * 1024;
+        const destinationRoot = tempFiles.tempDirectory({
+            suffix: "-upload-cancel",
+        });
+        const destinationPath = `${destinationRoot}/canceled.bin`;
+        const { proxy, proxiedAgent } = await createToxiproxyAgent({
+            serverPort,
+            agent: testAgent,
+            proxyNamePrefix: "raw-upload-cancel",
+        });
+        onTestFinished(async () => {
+            await proxy.remove().catch(() => undefined);
+        });
+        await proxy.addToxic({
+            name: "slow-cancelable-upload",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: { rate: 32 },
+        });
+
+        const uploadResult = proxiedAgent
+            .upload(
+                destinationPath,
+                new File([Buffer.alloc(totalBytes, "x")], "canceled.bin"),
+            )
+            .then(
+                () => ({ completed: true as const }),
+                (error: Error) => ({ completed: false as const, error }),
+            );
+        const active = await waitForValue({
+            description: "partially uploaded row before explicit cancellation",
+            timeoutMs: 15000,
+            predicate: async () =>
+                (await apiClient.getTransferProgress()).transfers.find(
+                    (transfer) =>
+                        transfer.path === destinationPath &&
+                        transfer.state === "active" &&
+                        transfer.transferred_bytes > 0 &&
+                        transfer.transferred_bytes < totalBytes,
+                ),
+        });
+
+        const cancellation = await apiClient.cancelTransfer(active.request_id);
+        // Accepted proves cancellation used the public id rather than an internal websocket request id.
+        expect(cancellation.status).toBe("accepted");
+        const canceled = await waitForValue({
+            description: "terminal canceled upload row",
+            predicate: async () =>
+                (await apiClient.getTransferProgress()).transfers.find(
+                    (transfer) =>
+                        transfer.request_id === active.request_id &&
+                        transfer.state === "canceled",
+                ),
+        });
+        // Partial progress remains visible so cancellation is not misreported as a fresh zero-byte error.
+        expect(canceled.transferred_bytes).toBeGreaterThan(0);
+        const repeated = await apiClient.cancelTransfer(active.request_id);
+        // A repeated request must be harmless after the worker acknowledgement settles the row.
+        expect(repeated.status).toBe("already_canceled");
+        const result = await uploadResult;
+        // Closing the server-side upload producer must terminate the throttled HTTP request.
+        expect(result.completed).toBe(false);
+        await expect(testAgent.metadata(destinationPath)).rejects.toThrow();
+        const remainingEntries = await fs.readdir(destinationRoot);
+        // Terminal cancellation is published only after hidden partial output is removed.
+        expect(remainingEntries).toEqual([]);
+        // A responsive command after cleanup proves cancellation did not block the control lane.
+        expect((await testAgent.getDetails()).name).toBe(testAgent.name);
+    }, 25000);
 
     it("should report interrupted uploads and recover after removing the toxic", async () => {
         const chunkSizeBytes = 64 * 1024;

@@ -149,6 +149,8 @@ impl AgentActor {
         if source_is_directory {
             self.run_local_copy_directory(source_path.clone(), dest_path, on_existing, response)
                 .await?;
+            // Cancellation after destination publication still wins before destructive source deletion.
+            super::copy::ensure_local_copy_active(&response.cancel)?;
             verify_move_source_identity(&source, &expected_identity).await?;
             redoor::safe_fs::safe_rm_all(source)
                 .await
@@ -156,6 +158,8 @@ impl AgentActor {
         } else {
             self.run_local_copy_file(source_path.clone(), dest_path, on_existing, response)
                 .await?;
+            // Source preservation is the final cancel boundary for cross-device file moves.
+            super::copy::ensure_local_copy_active(&response.cancel)?;
             verify_move_source_identity(&source, &expected_identity).await?;
             tokio::fs::remove_file(source)
                 .await

@@ -3,10 +3,163 @@ use super::progress;
 use super::state::{CopyExecution, RouterState};
 use super::transfers::copy;
 use super::ui;
-use crate::commands::{CommandErrorKind, CommandResult};
+use crate::commands::{
+    CancelTransferResponse, CancelTransferStatus, CommandErrorKind, CommandResult,
+    TransferProgressState,
+};
 use crate::log;
 use crate::logging::Level;
-use crate::types::{AgentId, Message};
+use crate::types::{AgentId, Message, TransferId};
+
+/// Preserves an accepted cancellation when disconnect teardown releases the remaining ownership.
+fn settle_disconnected_transfer(state: &mut RouterState, transfer_id: TransferId, reason: String) {
+    if matches!(
+        state
+            .progress
+            .entries
+            .get(&transfer_id)
+            .map(|entry| &entry.state),
+        Some(TransferProgressState::Canceling)
+    ) {
+        progress::mark_transfer_canceled(state, transfer_id);
+    } else {
+        progress::mark_transfer_errored(state, transfer_id, reason);
+    }
+}
+
+/// Resolves a public transfer id, publishes canceling state, and uses only priority control lanes.
+pub(crate) fn cancel_public_transfer(
+    state: &mut RouterState,
+    transfer_id: TransferId,
+) -> Result<CancelTransferResponse, super::messages::CancelPublicTransferError> {
+    let progress_entry = state
+        .progress
+        .entries
+        .get(&transfer_id)
+        .ok_or(super::messages::CancelPublicTransferError::NotFound)?;
+    match progress_entry.state {
+        TransferProgressState::Canceling => {
+            return Ok(CancelTransferResponse {
+                transfer_id,
+                status: CancelTransferStatus::AlreadyCanceling,
+            });
+        }
+        TransferProgressState::Canceled => {
+            return Ok(CancelTransferResponse {
+                transfer_id,
+                status: CancelTransferStatus::AlreadyCanceled,
+            });
+        }
+        TransferProgressState::Active if progress_entry.cancelable => {}
+        TransferProgressState::Active
+        | TransferProgressState::Errored
+        | TransferProgressState::Completed => {
+            return Err(super::messages::CancelPublicTransferError::NotCancelable);
+        }
+    }
+
+    progress::mark_transfer_canceling(state, transfer_id);
+
+    if let Some(copy_request) = state.copies.by_public_id.get_mut(&transfer_id) {
+        let controls = match copy_request.execution {
+            CopyExecution::RemoteStream {
+                source_request_id,
+                dest_request_id,
+                ..
+            } => {
+                let mut controls = vec![(copy_request.dest_agent_id.clone(), dest_request_id)];
+                if copy_request.pending_source_command.is_some() {
+                    // No source worker exists yet, so cancellation itself is its cleanup acknowledgement.
+                    copy_request.pending_source_command.take();
+                    copy_request.source_cancel_acknowledged = true;
+                } else {
+                    controls.push((copy_request.source_agent_id.clone(), source_request_id));
+                }
+                controls
+            }
+            CopyExecution::LocalAgent {
+                ref agent_id,
+                request_id,
+            } => vec![(agent_id.clone(), request_id)],
+            CopyExecution::DeletingMoveSource { .. } => {
+                return Err(super::messages::CancelPublicTransferError::NotCancelable);
+            }
+        };
+        for (agent_id, request_id) in controls {
+            if let Some(connection) = state.agents.by_id.get(&agent_id)
+                && !connection.send_priority_message(Message::CancelTransfer { request_id })
+            {
+                // Falling back to the command lane is slower but must not lose accepted cleanup.
+                connection.send_message(Message::CancelTransfer { request_id });
+            }
+        }
+        return Ok(CancelTransferResponse {
+            transfer_id,
+            status: CancelTransferStatus::Accepted,
+        });
+    }
+
+    let download_id = state
+        .streams
+        .downloads
+        .iter()
+        .find_map(|(request_id, download)| {
+            (download
+                .progress_id
+                .unwrap_or_else(|| request_id.as_transfer_id())
+                == transfer_id)
+                .then_some(*request_id)
+        });
+    if let Some(request_id) = download_id {
+        if let Some(download) = state.streams.downloads.get_mut(&request_id) {
+            // Drop the REST sink immediately, but retain ownership until the
+            // agent's terminal frame confirms its file and registry are released.
+            download.chunk_sender.take();
+            download.canceled_by_rest = true;
+            if let Some(sender) = download.rest_cancel_sender.take() {
+                let _ = sender.send(true);
+            }
+            if let Some(connection) = state.agents.by_id.get(&download.agent_id)
+                && !connection.send_priority_message(Message::CancelTransfer { request_id })
+            {
+                connection.send_message(Message::CancelTransfer { request_id });
+            }
+        }
+        return Ok(CancelTransferResponse {
+            transfer_id,
+            status: CancelTransferStatus::Accepted,
+        });
+    }
+
+    let request_id = crate::types::RequestId::new(transfer_id.0);
+    if let Some(upload) = state.streams.uploads.get_mut(&request_id) {
+        upload.canceled_by_rest = true;
+        upload.explicitly_canceled = true;
+        let agent_id = upload.agent_id.clone();
+        if let Some(sender) = upload.completion_sender.take() {
+            let _ = sender.send(Err(RouterError::ClientCanceledUpload));
+        }
+        if let Some(sender) = upload.ready_sender.take() {
+            let _ = sender.send(Err(RouterError::ClientCanceledUpload));
+        }
+        if let Some(connection) = state.agents.by_id.get(&agent_id)
+            && !connection.send_priority_message(Message::CancelTransfer { request_id })
+        {
+            connection.send_message(Message::CancelTransfer { request_id });
+        }
+        return Ok(CancelTransferResponse {
+            transfer_id,
+            status: CancelTransferStatus::Accepted,
+        });
+    }
+
+    // An active row without live ownership can only be a just-completed race.
+    progress::mark_transfer_canceled(state, transfer_id);
+    Ok(CancelTransferResponse {
+        transfer_id,
+        status: CancelTransferStatus::Accepted,
+    })
+}
 
 /// Cleans up all router-owned state associated with a disconnected agent.
 pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &AgentId) {
@@ -59,7 +212,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
             *request_id,
             format!("Agent disconnected: {}", agent_id),
         );
-        progress::mark_transfer_errored(
+        settle_disconnected_transfer(
             state,
             *request_id,
             format!("Agent disconnected: {}", agent_id),
@@ -85,7 +238,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
     for request_id in &orphaned_downloads {
         if let Some(transfer) = state.streams.downloads.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            progress::mark_transfer_errored(
+            settle_disconnected_transfer(
                 state,
                 transfer
                     .progress_id
@@ -104,7 +257,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
     for request_id in &orphaned_uploads {
         if let Some(transfer) = state.streams.uploads.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            progress::mark_transfer_errored(
+            settle_disconnected_transfer(
                 state,
                 request_id.as_transfer_id(),
                 disconnect_message.clone(),
@@ -180,7 +333,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
                 });
             }
         }
-        progress::mark_transfer_errored(state, *public_request_id, reason.clone());
+        settle_disconnected_transfer(state, *public_request_id, reason.clone());
         copy::cleanup_copy_tracking(state, *public_request_id);
     }
 
@@ -193,7 +346,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
         .collect();
     for request_id in &download_ids {
         if let Some(transfer) = state.streams.downloads.remove(request_id) {
-            progress::mark_transfer_errored(
+            settle_disconnected_transfer(
                 state,
                 transfer
                     .progress_id
@@ -212,7 +365,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
         .collect();
     for request_id in &upload_ids {
         if let Some(transfer) = state.streams.uploads.remove(request_id) {
-            progress::mark_transfer_errored(state, request_id.as_transfer_id(), reason.clone());
+            settle_disconnected_transfer(state, request_id.as_transfer_id(), reason.clone());
             if let Some(sender) = transfer.completion_sender {
                 let _ = sender.send(Err(RouterError::TransferConnectionUnavailable {
                     agent_id: agent_id.to_string(),
@@ -266,6 +419,7 @@ pub(crate) fn cancel_transfer(
             }
 
             transfer.canceled_by_rest = true;
+            transfer.chunk_sender.take();
             let progress_id = transfer
                 .progress_id
                 .unwrap_or_else(|| request_id.as_transfer_id());

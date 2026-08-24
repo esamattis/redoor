@@ -14,6 +14,7 @@ import type { TransferDirection } from "#bindings/TransferDirection";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
 import type { TransferProgressListResponse } from "#bindings/TransferProgressListResponse";
 import type { TransferProgressState } from "#bindings/TransferProgressState";
+import type { CancelTransferResponse } from "#bindings/CancelTransferResponse";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
 import type { TrashListResponse } from "#bindings/TrashListResponse";
@@ -88,6 +89,7 @@ export type {
     TransferProgressEntry,
     TransferProgressListResponse,
     TransferProgressState,
+    CancelTransferResponse,
     UiEvent,
     CopyFileRequest,
     CopyFileResponse,
@@ -132,25 +134,6 @@ export type {
     GitStatusResponse,
     GitDiffResponse,
     GitDiffMode,
-};
-
-type TransferProgressEntryJson = Omit<
-    TransferProgressEntry,
-    | "request_id"
-    | "total_bytes"
-    | "transferred_bytes"
-    | "started_at"
-    | "ended_at"
-> & {
-    request_id: number;
-    total_bytes: number;
-    transferred_bytes: number;
-    started_at: number;
-    ended_at: number | null;
-};
-
-type TransferProgressListResponseJson = {
-    transfers: Array<TransferProgressEntryJson>;
 };
 
 type CopyFileResponseJson = {
@@ -1069,17 +1052,19 @@ export class ApiClient {
     }
 
     async getTransferProgress(): Promise<TransferProgressListResponse> {
-        const response = await apiRequest<TransferProgressListResponseJson>(
+        return apiRequest<TransferProgressListResponse>(
             `${this.baseUrl}/api/v1/transfers/progress`,
             undefined,
             this.requestContext(),
         );
+    }
 
-        return {
-            transfers: response.transfers.map((transfer) => ({
-                ...transfer,
-            })),
-        };
+    async cancelTransfer(transferId: number): Promise<CancelTransferResponse> {
+        return apiRequest<CancelTransferResponse>(
+            `${this.baseUrl}/api/v1/transfers/${encodeURIComponent(String(transferId))}/cancel`,
+            { method: "POST" },
+            this.requestContext(),
+        );
     }
 
     /** Generates a unified diff after both agents confirm their files are editable. */

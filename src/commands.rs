@@ -1300,6 +1300,8 @@ pub struct TransferProgressEntry {
     pub started_at: UnixTimestampSeconds,
     pub ended_at: Option<UnixTimestampSeconds>,
     pub state: TransferProgressState,
+    /// Tells clients whether the active operation is still before its non-cancelable commit boundary.
+    pub cancelable: bool,
     pub error: Option<String>,
     /// Stamped only after a same-agent renameat2 so the UI can label it and skip copy speeds.
     pub atomic: bool,
@@ -1322,8 +1324,29 @@ pub enum TransferDirection {
 #[serde(rename_all = "snake_case")]
 pub enum TransferProgressState {
     Active,
+    Canceling,
+    Canceled,
     Errored,
     Completed,
+}
+
+/// Describes the idempotent result of asking the router to cancel one public transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum CancelTransferStatus {
+    Accepted,
+    AlreadyCanceling,
+    AlreadyCanceled,
+}
+
+/// Returns the public transfer and its cancellation lifecycle result.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CancelTransferResponse {
+    pub transfer_id: TransferId,
+    pub status: CancelTransferStatus,
 }
 
 impl CommandResult {

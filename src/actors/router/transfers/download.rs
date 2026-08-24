@@ -91,6 +91,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
                 full_size: request.full_size,
                 resume_offset: request.resume_offset,
                 chunk_sender: request.chunk_sender,
+                rest_cancel_sender: request.rest_cancel_sender,
             },
         );
 
@@ -139,12 +140,29 @@ pub(crate) fn route_chunk(
                         request_id,
                         chunk.is_error
                     );
+                    let transfer_id = transfer
+                        .progress_id
+                        .unwrap_or_else(|| request_id.as_transfer_id());
+                    if matches!(
+                        state
+                            .progress
+                            .entries
+                            .get(&transfer_id)
+                            .map(|entry| &entry.state),
+                        Some(crate::commands::TransferProgressState::Canceling)
+                    ) {
+                        progress::mark_transfer_canceled(state, transfer_id);
+                    }
                     state.streams.downloads.remove(&request_id);
                 }
                 let _ = reply.send(());
                 return;
             }
-            transfer.chunk_sender.clone()
+            let Some(chunk_sender) = transfer.chunk_sender.clone() else {
+                let _ = reply.send(());
+                return;
+            };
+            chunk_sender
         }
         None => {
             if state.streams.uploads.contains_key(&request_id) {

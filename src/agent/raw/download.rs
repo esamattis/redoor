@@ -28,6 +28,7 @@ enum RawDownloadEvent {
     Continue,
     Cancel,
     Exit,
+    Send(bool),
 }
 
 /// Owns the state and side effects for one in-progress raw file download.
@@ -47,8 +48,13 @@ impl RawDownloadWorker {
 
     /// Waits for the cooperative cancel signal used by download workers.
     async fn wait_for_event(&mut self) -> RawDownloadEvent {
-        match self.cancel_receiver.changed().await {
-            Ok(()) if *self.cancel_receiver.borrow() => RawDownloadEvent::Cancel,
+        Self::wait_for_cancel(&mut self.cancel_receiver).await
+    }
+
+    /// Waits on a split receiver so payload sends can race cancellation without borrowing all state.
+    async fn wait_for_cancel(cancel_receiver: &mut watch::Receiver<bool>) -> RawDownloadEvent {
+        match cancel_receiver.changed().await {
+            Ok(()) if *cancel_receiver.borrow() => RawDownloadEvent::Cancel,
             Ok(()) => RawDownloadEvent::Continue,
             Err(_) => RawDownloadEvent::Exit,
         }
@@ -57,6 +63,20 @@ impl RawDownloadWorker {
     /// Frames and forwards one raw download payload over the websocket.
     async fn send_chunk(&mut self, request: StreamChunkFrameRequest<'_>) -> bool {
         send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
+    }
+
+    /// Keeps priority cancellation responsive while a throttled payload lane applies backpressure.
+    async fn send_chunk_while_cancelable(
+        &mut self,
+        request: StreamChunkFrameRequest<'_>,
+    ) -> RawDownloadEvent {
+        let write = &self.write;
+        let chunk_index = &mut self.chunk_index;
+        let cancel_receiver = &mut self.cancel_receiver;
+        tokio::select! {
+            sent = send_framed_stream_bytes(write, chunk_index, request) => RawDownloadEvent::Send(sent),
+            event = Self::wait_for_cancel(cancel_receiver) => event,
+        }
     }
 
     /// Unregisters the download worker from the active download registry.
@@ -72,12 +92,12 @@ impl RawDownloadWorker {
             self.request_id,
             self.path
         );
+        self.cleanup().await;
         let _ = self
             .send_chunk(
                 StreamChunkFrameRequest::new(self.request_id, Self::CANCEL_MESSAGE).is_error(true),
             )
             .await;
-        self.cleanup().await;
     }
 
     /// Stops quietly after the download registry has been torn down.
@@ -133,6 +153,7 @@ impl RawDownloadWorker {
                     } {
                         RawDownloadEvent::Continue => continue,
                         RawDownloadEvent::Cancel => {
+                            drop(file);
                             self.cancel().await;
                             return;
                         }
@@ -149,19 +170,33 @@ impl RawDownloadWorker {
 
                                 if let Some(data) =
                                     pending_chunk.replace(buffer[..bytes_read].to_vec())
-                                    && !self
-                                        .send_chunk(
+                                {
+                                    match self
+                                        .send_chunk_while_cancelable(
                                             StreamChunkFrameRequest::new(self.request_id, &data)
                                                 .is_last(false),
                                         )
                                         .await
-                                {
-                                    log!(
-                                        Level::Warning,
-                                        "WebSocket channel full or closed, aborting download"
-                                    );
-                                    self.cleanup().await;
-                                    return;
+                                    {
+                                        RawDownloadEvent::Send(true)
+                                        | RawDownloadEvent::Continue => {}
+                                        RawDownloadEvent::Cancel => {
+                                            drop(file);
+                                            self.cancel().await;
+                                            return;
+                                        }
+                                        RawDownloadEvent::Send(false) | RawDownloadEvent::Exit => {
+                                            log!(
+                                                Level::Warning,
+                                                "WebSocket channel full or closed, aborting download"
+                                            );
+                                            self.cleanup().await;
+                                            return;
+                                        }
+                                        RawDownloadEvent::Read(_) => {
+                                            unreachable!("send wait cannot read a file")
+                                        }
+                                    }
                                 }
                             }
                             Err(error) => {
@@ -180,13 +215,30 @@ impl RawDownloadWorker {
                                 return;
                             }
                         },
+                        RawDownloadEvent::Send(_) => unreachable!("read wait cannot send a chunk"),
                     }
                 }
 
                 let final_chunk = pending_chunk.unwrap_or_default();
-                let _ = self
-                    .send_chunk(StreamChunkFrameRequest::new(self.request_id, &final_chunk))
-                    .await;
+                match self
+                    .send_chunk_while_cancelable(StreamChunkFrameRequest::new(
+                        self.request_id,
+                        &final_chunk,
+                    ))
+                    .await
+                {
+                    RawDownloadEvent::Cancel => {
+                        drop(file);
+                        self.cancel().await;
+                        return;
+                    }
+                    RawDownloadEvent::Send(_) | RawDownloadEvent::Continue => {}
+                    RawDownloadEvent::Exit => {
+                        self.cleanup().await;
+                        return;
+                    }
+                    RawDownloadEvent::Read(_) => unreachable!("send wait cannot read a file"),
+                }
 
                 log!(
                     Level::Info,

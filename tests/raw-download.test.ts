@@ -67,6 +67,107 @@ describe("Raw Download API", () => {
         expect(downloadedContent).toBe(testContent);
     });
 
+    it("cancels a throttled download and closes its HTTP stream promptly", async () => {
+        const testFilePath = tempFiles.create(Buffer.alloc(8 * 1024 * 1024, "d"), {
+            suffix: ".bin",
+        });
+        const serverProcess = processManager.getProcess(serverPid);
+        if (!serverProcess) {
+            throw new Error("Server process not found");
+        }
+        const toxiproxy = new Toxiproxy("http://127.0.0.1:8474");
+        const proxyPort = await getAvailablePort();
+        const proxy = await toxiproxy.createProxy({
+            name: `raw-download-explicit-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            listen: `127.0.0.1:${proxyPort}`,
+            upstream: `127.0.0.1:${serverPort}`,
+        });
+        const proxiedAgentName = "raw-download-explicit-cancel-agent";
+        const connected = waitForLogMessage(
+            serverProcess,
+            new RegExp(`Transfer socket registered: agent_id=${proxiedAgentName},`),
+            10000,
+        );
+        const proxiedAgentPid = processManager.spawnAgent({
+            wsAddress: `ws://${proxy.listen}/ws`,
+            name: proxiedAgentName,
+            cwd: tempFiles.tempDirectory({ suffix: "-explicit-cancel-agent-cwd" }),
+        });
+        onTestFinished(async () => {
+            processManager.kill(proxiedAgentPid);
+            await proxy.remove().catch(() => undefined);
+        });
+        await proxy.addToxic({
+            name: "slow-cancelable-download",
+            type: "bandwidth",
+            stream: "upstream",
+            toxicity: 1,
+            attributes: { rate: 512 },
+        });
+        await connected;
+        const proxiedAgent = await waitForValue({
+            description: "explicit cancellation proxied agent",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (agent) => agent.name === proxiedAgentName,
+                ),
+        });
+
+        const response = await proxiedAgent.download(testFilePath);
+        const reader = response.body?.getReader();
+        expect(reader).toBeDefined();
+        if (reader === undefined) {
+            throw new Error("download response did not expose a body reader");
+        }
+        const firstChunk = await reader.read();
+        // Receiving bytes proves the download worker and throttled HTTP response were both live.
+        expect(firstChunk.value?.byteLength ?? 0).toBeGreaterThan(0);
+        const active = await waitForValue({
+            description: "partially downloaded row before explicit cancellation",
+            predicate: async () =>
+                (await apiClient.getTransferProgress()).transfers.find(
+                    (transfer) =>
+                        transfer.path === testFilePath &&
+                        transfer.direction === "download" &&
+                        transfer.state === "active" &&
+                        transfer.transferred_bytes > 0,
+                ),
+        });
+
+        expect((await apiClient.cancelTransfer(active.request_id)).status).toBe(
+            "accepted",
+        );
+        let streamClosedByServer = false;
+        try {
+            while (!streamClosedByServer) {
+                const read = await reader.read();
+                streamClosedByServer = read.done;
+            }
+        } catch (error) {
+            // Fixed-length HTTP responses terminate with a protocol error when cancellation truncates them.
+            expect(error).toBeInstanceOf(Error);
+            streamClosedByServer = true;
+        }
+        // Explicit cancellation, not consumer-side reader cancellation, must close the HTTP body.
+        expect(streamClosedByServer).toBe(true);
+        const canceled = await waitForValue({
+            description: "terminal canceled download row",
+            predicate: async () =>
+                (await apiClient.getTransferProgress()).transfers.find(
+                    (transfer) =>
+                        transfer.request_id === active.request_id &&
+                        transfer.state === "canceled",
+                ),
+        });
+        // Cancellation preserves the byte snapshot instead of converting the row into an error.
+        expect(canceled.transferred_bytes).toBeGreaterThan(0);
+        reader.releaseLock();
+        // The server-settled response releases the reader without client cancellation.
+        expect(response.body?.locked).toBe(false);
+        // Control work remains responsive while the agent releases its file handle.
+        expect((await testAgent.getDetails()).name).toBe(testAgent.name);
+    }, 25000);
+
     it("should authorize an exact raw path with a one-time token", async () => {
         const testContent = "one-time download";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });

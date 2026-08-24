@@ -6,7 +6,7 @@ use redoor::{
     types::{AgentId, RequestId},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use tokio::sync::{mpsc, watch};
@@ -164,6 +164,51 @@ pub(crate) struct DownloadSessionHandle {
 /// Tracks active download workers so cancellation can target the right request id.
 pub(crate) struct ActiveDownloads {
     inner: Arc<Mutex<HashMap<RequestId, DownloadSessionHandle>>>,
+}
+
+#[derive(Clone, Default)]
+/// Owns request-scoped cancellation signals for local copy and move workers.
+pub(crate) struct ActiveLocalTransfers {
+    inner: Arc<Mutex<HashMap<RequestId, watch::Sender<bool>>>>,
+}
+
+impl ActiveLocalTransfers {
+    /// Registers one worker without coupling it to control-generation cancellation.
+    pub(crate) fn insert(&self, request_id: RequestId, sender: watch::Sender<bool>) {
+        self.inner
+            .lock()
+            .expect("active local transfers mutex poisoned")
+            .insert(request_id, sender);
+    }
+
+    /// Signals only the requested copy or move and leaves unrelated workers running.
+    pub(crate) fn cancel(&self, request_id: RequestId) -> bool {
+        self.inner
+            .lock()
+            .expect("active local transfers mutex poisoned")
+            .get(&request_id)
+            .is_some_and(|sender| sender.send(true).is_ok())
+    }
+
+    /// Releases a worker's signal only after its temp-owning future has returned.
+    pub(crate) fn remove(&self, request_id: RequestId) {
+        self.inner
+            .lock()
+            .expect("active local transfers mutex poisoned")
+            .remove(&request_id);
+    }
+
+    /// Cancels all request-scoped workers when their authoritative connection ends.
+    pub(crate) fn clear(&self) {
+        let mut transfers = self
+            .inner
+            .lock()
+            .expect("active local transfers mutex poisoned");
+        for sender in transfers.values() {
+            let _ = sender.send(true);
+        }
+        transfers.clear();
+    }
 }
 
 impl ActiveDownloads {
@@ -353,6 +398,9 @@ pub(crate) struct AgentState {
     pub(crate) connection_generation: u64,
     pub(crate) active_uploads: ActiveUploads,
     pub(crate) active_downloads: ActiveDownloads,
+    pub(crate) active_local_transfers: ActiveLocalTransfers,
+    /// Retains cancels that overtake commands on the independent priority lane.
+    pub(crate) pending_transfer_cancellations: HashSet<RequestId>,
     pub(crate) active_terminals: ActiveTerminals,
     pub(crate) active_log_streams: ActiveLogStreams,
     /// Supersedes recursive traversal without serializing unrelated control commands.
@@ -385,6 +433,8 @@ impl AgentState {
             connection_generation: 0,
             active_uploads: ActiveUploads::new(),
             active_downloads: ActiveDownloads::new(),
+            active_local_transfers: ActiveLocalTransfers::default(),
+            pending_transfer_cancellations: HashSet::new(),
             active_terminals: ActiveTerminals::new(),
             active_log_streams: ActiveLogStreams::new(),
             active_file_search_cancel: None,
@@ -543,5 +593,25 @@ mod tests {
         assert_eq!(streams.len(), 1);
         // Removing a sibling must not spuriously cancel the still-active viewer.
         assert!(!*second_receiver.borrow());
+    }
+
+    /// Verifies explicit cancellation targets one local transfer rather than its whole generation.
+    #[test]
+    fn local_transfer_cancellation_is_request_scoped() {
+        let transfers = ActiveLocalTransfers::default();
+        let (first_sender, first_receiver) = watch::channel(false);
+        let (second_sender, second_receiver) = watch::channel(false);
+        transfers.insert(RequestId::new(1), first_sender);
+        transfers.insert(RequestId::new(2), second_sender);
+
+        // A known request must accept cancellation synchronously for prompt control-path handling.
+        assert!(transfers.cancel(RequestId::new(1)));
+        // The selected worker receives the cooperative stop signal.
+        assert!(*first_receiver.borrow());
+        // An unrelated copy remains active instead of inheriting broad generation cancellation.
+        assert!(!*second_receiver.borrow());
+        transfers.remove(RequestId::new(1));
+        // Released request ownership makes repeated late protocol frames harmless.
+        assert!(!transfers.cancel(RequestId::new(1)));
     }
 }

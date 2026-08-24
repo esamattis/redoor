@@ -123,7 +123,9 @@ pub struct DirectDownload {
     /// Agent currently producing this stream.
     pub(crate) agent_id: AgentId,
     /// Bounded REST-facing sink that receives forwarded chunks.
-    pub(crate) chunk_sender: tokio::sync::mpsc::Sender<StreamChunk>,
+    pub(crate) chunk_sender: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+    /// Stops a live REST body before waiting for the agent's cleanup acknowledgement.
+    pub(crate) rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
     /// Progress entry may differ from the request id when a range request resumes a download.
     pub(crate) progress_id: Option<TransferId>,
     /// Whether REST-side teardown already triggered cancellation for this
@@ -150,6 +152,8 @@ pub struct DirectUpload {
     pub(crate) ready: bool,
     /// Whether the REST side has already requested cancellation.
     pub(crate) canceled_by_rest: bool,
+    /// Distinguishes an explicit user action from an implicit disconnected HTTP producer.
+    pub(crate) explicitly_canceled: bool,
 }
 
 #[derive(Default)]
@@ -255,6 +259,10 @@ pub(crate) struct CopyRequest {
     pub(crate) source_path: String,
     /// Filesystem identity that must still match before move-source deletion.
     pub(crate) source_identity: Option<crate::commands::MoveSourceIdentity>,
+    /// Records source cleanup while an explicit remote cancellation is settling.
+    pub(crate) source_cancel_acknowledged: bool,
+    /// Records destination cleanup while an explicit remote cancellation is settling.
+    pub(crate) dest_cancel_acknowledged: bool,
 }
 
 #[derive(Default)]

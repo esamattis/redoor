@@ -13,6 +13,13 @@ use axum::extract::ws::Message as WsMessage;
 /// One-shot reply port used by router request/reply messages.
 pub type RouterReply<T> = tokio::sync::oneshot::Sender<T>;
 
+/// Distinguishes public cancellation lookup failures from commit-boundary conflicts.
+#[derive(Debug)]
+pub enum CancelPublicTransferError {
+    NotFound,
+    NotCancelable,
+}
+
 /// Payload for registering one websocket-backed agent session with the router.
 pub struct RegisterAgentRequest {
     /// Stable agent identifier used as the router registry key.
@@ -260,6 +267,8 @@ pub struct ExecuteStreamRequest {
     pub reply: RouterReply<Result<RequestId, RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
+    /// Explicit user cancellation closes the REST body independently of payload backpressure.
+    pub rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Outcome of waiting for an upload destination to become ready.
@@ -407,6 +416,11 @@ pub enum RouterMsg {
     CancelTransfer {
         agent_id: AgentId,
         request_id: RequestId,
+    },
+    CancelPublicTransfer {
+        transfer_id: TransferId,
+        reply:
+            RouterReply<Result<crate::commands::CancelTransferResponse, CancelPublicTransferError>>,
     },
     StartCopyRest(StartCopyRequest),
     TransferProgressUpdate(TransferProgressUpdateRequest),

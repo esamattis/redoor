@@ -76,6 +76,38 @@ pub(crate) fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: 
     }
 }
 
+/// Settles explicit remote cancellation only after both temp-owning workers acknowledge cleanup.
+pub(super) fn acknowledge_remote_cancel(
+    state: &mut RouterState,
+    public_request_id: TransferId,
+    request_id: RequestId,
+) {
+    let settled = state
+        .copies
+        .by_public_id
+        .get_mut(&public_request_id)
+        .is_some_and(|request| {
+            let CopyExecution::RemoteStream {
+                source_request_id,
+                dest_request_id,
+                ..
+            } = request.execution
+            else {
+                return false;
+            };
+            if request_id == source_request_id {
+                request.source_cancel_acknowledged = true;
+            } else if request_id == dest_request_id {
+                request.dest_cancel_acknowledged = true;
+            }
+            request.source_cancel_acknowledged && request.dest_cancel_acknowledged
+        });
+    if settled {
+        progress::mark_transfer_canceled(state, public_request_id);
+        cleanup_copy_tracking(state, public_request_id);
+    }
+}
+
 /// Sends an error frame to the destination side of a remote copy so it can terminate cleanly.
 pub(crate) fn abort_copy_upload(
     state: &mut RouterState,
@@ -181,6 +213,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                         operation: request.operation,
                         source_path: request.source_path.clone(),
                         source_identity: request.source_identity.clone(),
+                        source_cancel_acknowledged: false,
+                        dest_cancel_acknowledged: false,
                     },
                 );
                 state.streams.uploads.insert(
@@ -191,6 +225,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                         ready_sender: None,
                         ready: true,
                         canceled_by_rest: false,
+                        explicitly_canceled: false,
                     },
                 );
 
@@ -263,6 +298,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     operation: request.operation,
                     source_path: request.source_path.clone(),
                     source_identity: request.source_identity,
+                    source_cancel_acknowledged: false,
+                    dest_cancel_acknowledged: false,
                 },
             );
 
@@ -270,7 +307,8 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 source_request_id,
                 DirectDownload {
                     agent_id: request.source_agent_id.clone(),
-                    chunk_sender: tokio::sync::mpsc::channel(1).0,
+                    chunk_sender: Some(tokio::sync::mpsc::channel(1).0),
+                    rest_cancel_sender: None,
                     progress_id: None,
                     canceled_by_rest: false,
                 },
@@ -283,6 +321,7 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     ready_sender: None,
                     ready: false,
                     canceled_by_rest: false,
+                    explicitly_canceled: false,
                 },
             );
 
@@ -328,6 +367,33 @@ pub(crate) fn start_source_after_destination_ready(
     let Some(public_request_id) = state.copies.public_id_for_internal(dest_request_id) else {
         return;
     };
+    if matches!(
+        state
+            .progress
+            .entries
+            .get(&public_request_id)
+            .map(|entry| &entry.state),
+        Some(crate::commands::TransferProgressState::Canceling)
+    ) {
+        let source_request_id = state
+            .copies
+            .by_public_id
+            .get_mut(&public_request_id)
+            .and_then(|request| {
+                request.pending_source_command.take();
+                request.source_cancel_acknowledged = true;
+                match request.execution {
+                    CopyExecution::RemoteStream {
+                        source_request_id, ..
+                    } => Some(source_request_id),
+                    _ => None,
+                }
+            });
+        if let Some(source_request_id) = source_request_id {
+            acknowledge_remote_cancel(state, public_request_id, source_request_id);
+        }
+        return;
+    }
     let source_start = state
         .copies
         .by_public_id
@@ -455,8 +521,28 @@ pub(crate) fn route_chunk(
         };
 
         let _ = abort_copy_upload(state, public_request_id, error_message.clone());
-        progress::mark_transfer_errored(state, public_request_id, error_message);
-        cleanup_copy_tracking(state, public_request_id);
+        if matches!(
+            state
+                .progress
+                .entries
+                .get(&public_request_id)
+                .map(|entry| &entry.state),
+            Some(crate::commands::TransferProgressState::Canceling)
+        ) {
+            acknowledge_remote_cancel(state, public_request_id, chunk.request_id);
+        } else {
+            progress::mark_transfer_errored(state, public_request_id, error_message);
+        }
+        if !matches!(
+            state
+                .progress
+                .entries
+                .get(&public_request_id)
+                .map(|entry| &entry.state),
+            Some(crate::commands::TransferProgressState::Canceling)
+        ) {
+            cleanup_copy_tracking(state, public_request_id);
+        }
         let _ = reply.send(());
         return;
     }
@@ -596,7 +682,27 @@ pub(crate) fn finish_transfer(
 
     match result {
         CommandResult::Error { message, .. } => {
-            progress::mark_transfer_errored(state, public_request_id, message);
+            if matches!(
+                state
+                    .progress
+                    .entries
+                    .get(&public_request_id)
+                    .map(|entry| &entry.state),
+                Some(crate::commands::TransferProgressState::Canceling)
+            ) {
+                match copy_request.execution {
+                    CopyExecution::RemoteStream { .. } => {
+                        acknowledge_remote_cancel(state, public_request_id, request_id);
+                        return true;
+                    }
+                    CopyExecution::LocalAgent { .. } => {
+                        progress::mark_transfer_canceled(state, public_request_id);
+                    }
+                    CopyExecution::DeletingMoveSource { .. } => unreachable!(),
+                }
+            } else {
+                progress::mark_transfer_errored(state, public_request_id, message);
+            }
         }
         CommandResult::LocalCopyFile
             if copy_request.content_kind == super::super::state::CopyContentKind::RawFile =>

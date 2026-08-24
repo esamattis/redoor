@@ -142,6 +142,7 @@ enum TarDownloadEvent {
     Continue,
     Cancel,
     Exit,
+    Sent(bool),
 }
 
 /// Owns the state and side effects for one in-progress tar directory download.
@@ -164,8 +165,13 @@ impl TarDownloadWorker {
 
     /// Waits for the cooperative cancel signal used by tar download workers.
     async fn wait_for_event(&mut self) -> TarDownloadEvent {
-        match self.cancel_receiver.changed().await {
-            Ok(()) if *self.cancel_receiver.borrow() => TarDownloadEvent::Cancel,
+        Self::wait_for_cancel(&mut self.cancel_receiver).await
+    }
+
+    /// Waits on a split receiver so payload backpressure can be interrupted by control traffic.
+    async fn wait_for_cancel(cancel_receiver: &mut watch::Receiver<bool>) -> TarDownloadEvent {
+        match cancel_receiver.changed().await {
+            Ok(()) if *cancel_receiver.borrow() => TarDownloadEvent::Cancel,
             Ok(()) => TarDownloadEvent::Continue,
             Err(_) => TarDownloadEvent::Exit,
         }
@@ -174,6 +180,20 @@ impl TarDownloadWorker {
     /// Frames and forwards one tar payload over the websocket.
     async fn send_chunk(&mut self, request: StreamChunkFrameRequest<'_>) -> bool {
         send_framed_stream_bytes(&self.write, &mut self.chunk_index, request).await
+    }
+
+    /// Races a potentially blocked transfer-lane send against the priority cancel signal.
+    async fn send_chunk_while_cancelable(
+        &mut self,
+        request: StreamChunkFrameRequest<'_>,
+    ) -> TarDownloadEvent {
+        let write = &self.write;
+        let chunk_index = &mut self.chunk_index;
+        let cancel_receiver = &mut self.cancel_receiver;
+        tokio::select! {
+            sent = send_framed_stream_bytes(write, chunk_index, request) => TarDownloadEvent::Sent(sent),
+            event = Self::wait_for_cancel(cancel_receiver) => event,
+        }
     }
 
     /// Unregisters the download worker from the active download registry.
@@ -189,6 +209,7 @@ impl TarDownloadWorker {
             self.request_id,
             self.path
         );
+        self.cleanup().await;
         let _ = self
             .send_chunk(
                 StreamChunkFrameRequest::new(self.request_id, Self::CANCEL_MESSAGE)
@@ -196,7 +217,6 @@ impl TarDownloadWorker {
                     .is_error(true),
             )
             .await;
-        self.cleanup().await;
     }
 
     /// Stops quietly after the download registry has been torn down.
@@ -205,7 +225,7 @@ impl TarDownloadWorker {
     }
 
     /// Starts the metadata-only size walk beside the tar stream so HTTP can start now.
-    fn spawn_size_measure(&self, source_path: PathBuf) {
+    fn spawn_size_measure(&self, source_path: PathBuf) -> tokio::task::JoinHandle<()> {
         let write_text = self.write_text.clone();
         let agent_id = self.agent_id.clone();
         let request_id = self.request_id;
@@ -253,7 +273,7 @@ impl TarDownloadWorker {
                     );
                 }
             }
-        });
+        })
     }
 
     /// Runs the tar streaming loop until EOF, cancellation, or failure.
@@ -302,17 +322,19 @@ impl TarDownloadWorker {
             return;
         }
 
-        if self.include_root {
+        let mut size_measure_handle = if self.include_root {
             // REST directory downloads include the root; remote copies do not
             // and already ignore this update, so skip the extra metadata walk.
-            self.spawn_size_measure(source_path.clone());
-        }
+            Some(self.spawn_size_measure(source_path.clone()))
+        } else {
+            None
+        };
 
         let (tar_sender, mut tar_receiver) = mpsc::channel::<Vec<u8>>(8);
         let source_path_for_worker = source_path.clone();
         let include_root = self.include_root;
 
-        tokio::task::spawn_blocking(move || {
+        let mut archive_handle = Some(tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Handle::current();
             let writer = ChannelTarWriter {
                 sender: tar_sender,
@@ -326,7 +348,7 @@ impl TarDownloadWorker {
                     error
                 );
             }
-        });
+        }));
 
         let mut pending_chunk: Option<Vec<u8>> = None;
 
@@ -340,44 +362,102 @@ impl TarDownloadWorker {
                 TarDownloadEvent::Chunk(chunk_bytes) => chunk_bytes,
                 TarDownloadEvent::Continue => continue,
                 TarDownloadEvent::Cancel => {
+                    drop(tar_receiver);
+                    if let Some(handle) = archive_handle.take() {
+                        let _ = handle.await;
+                    }
+                    if let Some(handle) = size_measure_handle.take() {
+                        let _ = handle.await;
+                    }
                     self.cancel().await;
                     return;
                 }
                 TarDownloadEvent::Exit => {
+                    drop(tar_receiver);
+                    if let Some(handle) = archive_handle.take() {
+                        let _ = handle.await;
+                    }
+                    if let Some(handle) = size_measure_handle.take() {
+                        let _ = handle.await;
+                    }
                     self.shutdown().await;
                     return;
                 }
+                TarDownloadEvent::Sent(_) => unreachable!("chunk receive wait cannot send"),
             };
 
             let Some(chunk_bytes) = next_chunk_bytes else {
                 break;
             };
 
-            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes)
-                && !self
-                    .send_chunk(
+            if let Some(previous_chunk) = pending_chunk.replace(chunk_bytes) {
+                match self
+                    .send_chunk_while_cancelable(
                         StreamChunkFrameRequest::new(self.request_id, &previous_chunk)
                             .payload_kind(StreamPayloadKind::Tar)
                             .is_last(false),
                     )
                     .await
-            {
-                log!(
-                    Level::Warning,
-                    "WebSocket channel full or closed, aborting tar download"
-                );
-                self.cleanup().await;
-                return;
+                {
+                    TarDownloadEvent::Sent(true) | TarDownloadEvent::Continue => {}
+                    TarDownloadEvent::Cancel => {
+                        drop(tar_receiver);
+                        if let Some(handle) = archive_handle.take() {
+                            let _ = handle.await;
+                        }
+                        if let Some(handle) = size_measure_handle.take() {
+                            let _ = handle.await;
+                        }
+                        self.cancel().await;
+                        return;
+                    }
+                    TarDownloadEvent::Sent(false) | TarDownloadEvent::Exit => {
+                        log!(
+                            Level::Warning,
+                            "WebSocket channel full or closed, aborting tar download"
+                        );
+                        drop(tar_receiver);
+                        if let Some(handle) = archive_handle.take() {
+                            let _ = handle.await;
+                        }
+                        if let Some(handle) = size_measure_handle.take() {
+                            let _ = handle.await;
+                        }
+                        self.cleanup().await;
+                        return;
+                    }
+                    TarDownloadEvent::Chunk(_) => unreachable!("send wait cannot receive tar data"),
+                }
             }
         }
 
+        drop(tar_receiver);
+        if let Some(handle) = archive_handle.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = size_measure_handle.take() {
+            let _ = handle.await;
+        }
+
         let final_chunk = pending_chunk.unwrap_or_default();
-        let _ = self
-            .send_chunk(
+        match self
+            .send_chunk_while_cancelable(
                 StreamChunkFrameRequest::new(self.request_id, &final_chunk)
                     .payload_kind(StreamPayloadKind::Tar),
             )
-            .await;
+            .await
+        {
+            TarDownloadEvent::Cancel => {
+                self.cancel().await;
+                return;
+            }
+            TarDownloadEvent::Sent(_) | TarDownloadEvent::Continue => {}
+            TarDownloadEvent::Exit => {
+                self.cleanup().await;
+                return;
+            }
+            TarDownloadEvent::Chunk(_) => unreachable!("send wait cannot receive tar data"),
+        }
 
         log!(
             Level::Info,
