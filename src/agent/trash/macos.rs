@@ -5,7 +5,7 @@ use objc2_foundation::{
     NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
     NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSURL,
 };
-use redoor::commands::CommandErrorKind;
+use redoor::{Level, commands::CommandErrorKind, log};
 use std::path::{Path, PathBuf};
 
 /// Moves one entry with Foundation so macOS selects the correct volume-local Trash.
@@ -16,10 +16,25 @@ pub(super) async fn trash(path: PathBuf) -> Result<(), TrashError> {
 /// Retains Foundation's resulting URL internally so tests can clean the exact native item.
 async fn trash_with_destination(path: PathBuf) -> Result<Option<PathBuf>, TrashError> {
     let source = normalized_existing_entry(&path).await?;
-    tokio::fs::symlink_metadata(&source)
+    log!(
+        Level::Debug,
+        "macOS trash source normalized: requested_path={}, source={}",
+        path.display(),
+        source.display()
+    );
+    let metadata = tokio::fs::symlink_metadata(&source)
         .await
         .map_err(|error| TrashError::io("Failed to inspect trash source", error))?;
-    tokio::task::spawn_blocking(move || {
+    log!(
+        Level::Debug,
+        "macOS trash source inspected: source={}, directory={}, symlink={}, size={}",
+        source.display(),
+        metadata.is_dir(),
+        metadata.file_type().is_symlink(),
+        metadata.len()
+    );
+    let source_for_log = source.clone();
+    let destination = tokio::task::spawn_blocking(move || {
         autoreleasepool(|_| {
             let url = NSURL::from_file_path(&source).ok_or_else(|| {
                 TrashError::new(
@@ -41,7 +56,16 @@ async fn trash_with_destination(path: PathBuf) -> Result<Option<PathBuf>, TrashE
             CommandErrorKind::Internal,
             format!("macOS trash task failed: {error}"),
         )
-    })?
+    })??;
+    log!(
+        Level::Debug,
+        "macOS trash payload moved: source={}, destination={}",
+        source_for_log.display(),
+        destination
+            .as_deref()
+            .map_or_else(|| "unknown".to_string(), |path| path.display().to_string())
+    );
+    Ok(destination)
 }
 
 /// Canonicalizes only the parent so moving a symlink never follows its target.

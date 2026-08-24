@@ -3,7 +3,11 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
-use redoor::commands::{CommandErrorKind, TrashListResponse};
+use redoor::{
+    Level,
+    commands::{CommandErrorKind, TrashListResponse},
+    log,
+};
 use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -93,17 +97,42 @@ impl TrashService {
     }
 
     /// Moves one entry to the provider-selected same-device trash location.
-    pub(crate) async fn trash(&self, _path: PathBuf) -> Result<(), TrashError> {
+    pub(crate) async fn trash(&self, path: PathBuf) -> Result<(), TrashError> {
+        log!(
+            Level::Debug,
+            "Trash operation requested: path={}",
+            path.display()
+        );
         let _guard = self.mutation_lock.lock().await;
+        log!(
+            Level::Debug,
+            "Trash mutation lock acquired: path={}",
+            path.display()
+        );
         #[cfg(target_os = "linux")]
-        return linux::trash(self, _path).await;
+        let result = linux::trash(self, path.clone()).await;
         #[cfg(target_os = "macos")]
-        return macos::trash(_path).await;
+        let result = macos::trash(path.clone()).await;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        Err(TrashError::new(
+        let result = Err(TrashError::new(
             CommandErrorKind::InvalidInput,
             "Trash is unsupported on this platform",
-        ))
+        ));
+        match &result {
+            Ok(()) => log!(
+                Level::Debug,
+                "Trash operation completed: path={}",
+                path.display()
+            ),
+            Err(error) => log!(
+                Level::Debug,
+                "Trash operation failed: path={}, kind={:?}, error={}",
+                path.display(),
+                error.kind,
+                error
+            ),
+        }
+        result
     }
 
     /// Discovers and orders a fresh trash inventory without recursively scanning payloads.

@@ -13,9 +13,15 @@ import {
     ProcessManager,
     TempFileManager,
     startServerAndAgent,
+    waitForValue,
 } from "./test-utils";
 
 const AGENT_NAME = "trash-test-agent";
+const AGENT_LOG_PATH = path.join(
+    import.meta.dirname,
+    "../log",
+    `${AGENT_NAME}.log`,
+);
 
 describe.skipIf(process.platform !== "linux")("Trash API", () => {
     const processManager = new ProcessManager();
@@ -42,6 +48,10 @@ describe.skipIf(process.platform !== "linux")("Trash API", () => {
     });
 
     it("moves files, populated directories, and symlinks without changing inode identity", async () => {
+        await testAgent.updateLoggingLevel("debug");
+        onTestFinished(async () => {
+            await testAgent.updateLoggingLevel("info");
+        });
         const file = path.join(root, "inode-file.txt");
         const directory = path.join(root, "populated-directory");
         const symlink = path.join(root, "source-link");
@@ -88,6 +98,29 @@ describe.skipIf(process.platform !== "linux")("Trash API", () => {
                 await fs.lstat(path.join(trashRoot, "files", symlinkItem.name))
             ).isSymbolicLink(),
         ).toBe(true);
+        const logs = await waitForValue({
+            predicate: async () => {
+                const contents = await fs.readFile(AGENT_LOG_PATH, "utf8");
+                return contents.includes(
+                    `Trash operation completed: path=${symlink}`,
+                )
+                    ? contents
+                    : undefined;
+            },
+            description: "detailed trash debug lifecycle",
+        });
+        // Request logging provides the original operator-selected path before normalization.
+        expect(logs).toContain(`Trash operation requested: path=${file}`);
+        // Provider selection identifies the exact trash root chosen for diagnosis.
+        expect(logs).toContain(
+            `Trash location selected: source=${file}, location_id=`,
+        );
+        // Metadata publication records both provider artifacts before the atomic rename.
+        expect(logs).toContain(`Trash metadata published: source=${file}`);
+        // Payload movement confirms which stage completed the filesystem mutation.
+        expect(logs).toContain(`Trash payload moved: source=${file}`);
+        // Completion logging closes the shared operation lifecycle after provider success.
+        expect(logs).toContain(`Trash operation completed: path=${file}`);
     });
 
     it("uses collision-safe names for duplicate basenames and concurrent requests", async () => {

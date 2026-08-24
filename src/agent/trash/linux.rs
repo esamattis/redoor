@@ -77,10 +77,37 @@ async fn create_private_directory_tree(path: &Path) -> Result<(), TrashError> {
 /// Moves a source only after the selected root and same-device relationship are revalidated.
 pub(super) async fn trash(service: &TrashService, path: PathBuf) -> Result<(), TrashError> {
     let source = normalized_existing_entry(&path).await?;
+    log!(
+        Level::Debug,
+        "Trash source normalized: requested_path={}, source={}",
+        path.display(),
+        source.display()
+    );
     let source_metadata = tokio::fs::symlink_metadata(&source)
         .await
         .map_err(|error| TrashError::io("Failed to inspect trash source", error))?;
+    log!(
+        Level::Debug,
+        "Trash source inspected: source={}, device={}, inode={}, directory={}, symlink={}, size={}",
+        source.display(),
+        source_metadata.dev(),
+        source_metadata.ino(),
+        source_metadata.is_dir(),
+        source_metadata.file_type().is_symlink(),
+        source_metadata.len()
+    );
     let location = select_location(service, &source, &source_metadata).await?;
+    log!(
+        Level::Debug,
+        "Trash location selected: source={}, location_id={}, root={}, mount_top={}",
+        source.display(),
+        location.id,
+        location.root.display(),
+        location
+            .mount_top
+            .as_deref()
+            .map_or_else(|| "none".to_string(), |path| path.display().to_string())
+    );
     validate_private_root(&location.root).await?;
     reject_trash_containment(&source, &location.root)?;
     let root_metadata = tokio::fs::metadata(&location.root)
@@ -106,6 +133,13 @@ pub(super) async fn trash(service: &TrashService, path: PathBuf) -> Result<(), T
         ));
     }
     let metadata_path = metadata_original_path(&source, location.mount_top.as_deref())?;
+    log!(
+        Level::Debug,
+        "Trash source validated: source={}, metadata_path={}, trash_device={}",
+        source.display(),
+        metadata_path.display(),
+        root_metadata.dev()
+    );
     let deletion_date = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     for attempt in 0..1024_u32 {
         let name = collision_name(basename, attempt);
@@ -119,9 +153,25 @@ pub(super) async fn trash(service: &TrashService, path: PathBuf) -> Result<(), T
             .await
         {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                log!(
+                    Level::Debug,
+                    "Trash name collision: source={}, candidate={}, attempt={}",
+                    source.display(),
+                    name.to_string_lossy(),
+                    attempt
+                );
+                continue;
+            }
             Err(error) => return Err(TrashError::io("Failed to reserve trash metadata", error)),
         };
+        log!(
+            Level::Debug,
+            "Trash metadata reserved: source={}, candidate={}, info={}",
+            source.display(),
+            name.to_string_lossy(),
+            info.display()
+        );
         let contents = format!(
             "[Trash Info]
 Path={}
@@ -140,10 +190,33 @@ DeletionDate={}
             return Err(TrashError::io("Failed to write trash metadata", error));
         }
         drop(file);
+        log!(
+            Level::Debug,
+            "Trash metadata published: source={}, info={}, payload={}",
+            source.display(),
+            info.display(),
+            payload.display()
+        );
 
         match rename_no_replace(&source, &payload).await {
-            Ok(AtomicRenameOutcome::Renamed) => return Ok(()),
+            Ok(AtomicRenameOutcome::Renamed) => {
+                log!(
+                    Level::Debug,
+                    "Trash payload moved: source={}, payload={}, info={}",
+                    source.display(),
+                    payload.display(),
+                    info.display()
+                );
+                return Ok(());
+            }
             Ok(AtomicRenameOutcome::DestinationExists) => {
+                log!(
+                    Level::Debug,
+                    "Trash payload collision after metadata reservation: source={}, payload={}, attempt={}",
+                    source.display(),
+                    payload.display(),
+                    attempt
+                );
                 let _ = tokio::fs::remove_file(&info).await;
             }
             Ok(AtomicRenameOutcome::Missing) => {
