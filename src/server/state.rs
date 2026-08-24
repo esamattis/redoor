@@ -67,7 +67,7 @@ pub(crate) struct CoordinatorArgs {
     /// `~/.local/share/<app-name>/server.log` for non-root users.
     #[arg(long, env = "REDOOR_SERVER_LOG")]
     pub(crate) log: Option<String>,
-    /// Initial threshold. CLI overrides role env, legacy env, TOML, and the info default.
+    /// Initial threshold. CLI overrides role environment, TOML, and the info default.
     #[arg(long = "log-level")]
     pub(crate) log_level: Option<Level>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates

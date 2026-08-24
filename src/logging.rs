@@ -440,7 +440,7 @@ pub fn set_level(level: Level) {
     LOG_LEVEL.store(level as u8, Ordering::Relaxed);
 }
 
-/// Resolves CLI, role-specific env, legacy env, TOML, then the info default.
+/// Resolves CLI, role-specific environment, TOML, then the info default.
 pub fn resolve_initial_level(
     cli: Option<Level>,
     role_env_name: &str,
@@ -450,7 +450,6 @@ pub fn resolve_initial_level(
         cli,
         role_env_name,
         std::env::var(role_env_name).ok().as_deref(),
-        std::env::var("REDOOR_LOGLEVEL").ok().as_deref(),
         toml,
     )
 }
@@ -460,7 +459,6 @@ fn resolve_level_sources(
     cli: Option<Level>,
     role_env_name: &str,
     role_env: Option<&str>,
-    legacy_env: Option<&str>,
     toml: Option<Level>,
 ) -> std::result::Result<Level, String> {
     if let Some(level) = cli {
@@ -470,11 +468,6 @@ fn resolve_level_sources(
         return value
             .parse::<Level>()
             .map_err(|error| format!("Invalid {role_env_name} value {value:?}: {error}"));
-    }
-    if let Some(value) = legacy_env {
-        return value
-            .parse::<Level>()
-            .map_err(|error| format!("Invalid REDOOR_LOGLEVEL value {value:?}: {error}"));
     }
     Ok(toml.unwrap_or_default())
 }
@@ -826,59 +819,33 @@ mod tests {
                 Some(Level::Error),
                 "REDOOR_SERVER_LOG_LEVEL",
                 Some("trace"),
-                Some("debug"),
                 Some(Level::Warning),
             ),
             Ok(Level::Error),
         );
-        // The role-specific server or agent variable must override legacy compatibility and TOML.
+        // The role-specific server or agent variable must override TOML.
         assert_eq!(
             resolve_level_sources(
                 None,
                 "REDOOR_AGENT_LOG_LEVEL",
                 Some("trace"),
-                Some("debug"),
                 Some(Level::Warning),
             ),
             Ok(Level::Trace),
         );
-        // Legacy deployments retain precedence over TOML when no role-specific value is set.
-        assert_eq!(
-            resolve_level_sources(
-                None,
-                "REDOOR_SERVER_LOG_LEVEL",
-                None,
-                Some("debug"),
-                Some(Level::Warning),
-            ),
-            Ok(Level::Debug),
-        );
         // TOML supplies the configured initial value before the info default is considered.
         assert_eq!(
-            resolve_level_sources(
-                None,
-                "REDOOR_AGENT_LOG_LEVEL",
-                None,
-                None,
-                Some(Level::Warning),
-            ),
+            resolve_level_sources(None, "REDOOR_AGENT_LOG_LEVEL", None, Some(Level::Warning)),
             Ok(Level::Warning),
         );
         // Both process roles remain at info when no startup source is configured.
         assert_eq!(
-            resolve_level_sources(None, "REDOOR_SERVER_LOG_LEVEL", None, None, None),
+            resolve_level_sources(None, "REDOOR_SERVER_LOG_LEVEL", None, None),
             Ok(Level::Info),
         );
         // Invalid high-priority input must fail instead of falling through to a lower source.
         assert!(
-            resolve_level_sources(
-                None,
-                "REDOOR_AGENT_LOG_LEVEL",
-                Some("verbose"),
-                Some("debug"),
-                None,
-            )
-            .is_err(),
+            resolve_level_sources(None, "REDOOR_AGENT_LOG_LEVEL", Some("verbose"), None).is_err(),
         );
     }
 

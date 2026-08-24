@@ -52,7 +52,7 @@ pub(crate) struct AgentArgs {
     /// Defaults to `~/.local/share/<app-name>/agent.log` for non-root users.
     #[arg(long, env = "REDOOR_AGENT_LOG")]
     pub(crate) log: Option<String>,
-    /// Initial threshold. CLI overrides role env, legacy env, TOML, and the info default.
+    /// Initial threshold. CLI overrides role environment, TOML, and the info default.
     #[arg(long = "log-level")]
     pub(crate) log_level: Option<Level>,
     /// Home directory opened by the UI without limiting filesystem access.

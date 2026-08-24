@@ -50,7 +50,7 @@ Required when running `redoor server`. Optional in agent-only configs.
 | `port` | integer (u16) | `7666` | HTTP listen port. Override with `--port` / `REDOOR_PORT`. |
 | `bind` | string | `127.0.0.1` | Listen address. Use `0.0.0.0` only when intentionally exposing beyond localhost. Override with `--bind`. |
 | `log` | string | platform default\* | Server log file path. Override with `--log` / `REDOOR_SERVER_LOG`. |
-| `log_level` | string | `info` | Initial threshold: `trace`, `debug`, `info`, `warning`, or `error`. Override with `--log-level`, `REDOOR_SERVER_LOG_LEVEL`, or legacy `REDOOR_LOGLEVEL`. Runtime UI/API changes last only until restart. |
+| `log_level` | string | `info` | Initial threshold: `trace`, `debug`, `info`, `warning`, or `error`. Override with `--log-level` or `REDOOR_SERVER_LOG_LEVEL`. Runtime UI/API changes last only until restart. |
 | `username` | string | see auth below | Browser UI login username. Non-empty when set. |
 | `password` | string | see auth below | Browser UI login password. Non-empty when set. |
 | `cookie_secure` | bool | `false` | When `true`, session cookies are marked `Secure` (use behind HTTPS). |
@@ -88,7 +88,7 @@ Used by a standalone `redoor agent` process (and by systemd/launchd agent units)
 | `name` | string | computer hostname | Registration name shown in the UI. Override with `--name` / `REDOOR_AGENT_NAME`. |
 | `home` | string | process user home directory | Home directory opened in the UI; does not limit filesystem access. Override with `--home` / `REDOOR_AGENT_HOME`. |
 | `log` | string | platform default\* | Agent log file path. Override with `--log` / `REDOOR_AGENT_LOG`. |
-| `log_level` | string | `info` | Initial threshold. Override with `--log-level`, `REDOOR_AGENT_LOG_LEVEL`, or legacy `REDOOR_LOGLEVEL`. Runtime changes are not written to TOML. |
+| `log_level` | string | `info` | Initial threshold. Override with `--log-level` or `REDOOR_AGENT_LOG_LEVEL`. Runtime changes are not written to TOML. |
 
 \*Default log path: `~/.local/share/redoor/agent.log` (non-root) or `/var/log/redoor/agent.log` (root).
 
