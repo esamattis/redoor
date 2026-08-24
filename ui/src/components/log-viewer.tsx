@@ -5,11 +5,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { Level, LogEvent, LoggingLevelResponse } from "#ui/api-client";
 import { Checkbox } from "#ui/components/checkbox";
-import { ToggleButton } from "#ui/components/toggle-button";
+import { Select } from "#ui/components/select";
 import { Toast } from "#ui/components/toast";
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 type LogEntry = { id: number; text: string };
+type LoggingLevelControlConfig = {
+    queryKey: readonly unknown[];
+    load: () => Promise<LoggingLevelResponse>;
+    update: (level: Level) => Promise<LoggingLevelResponse>;
+};
 
 const MAX_LOG_ENTRIES = 500;
 const LOGGING_LEVELS: { value: Level; label: string }[] = [
@@ -23,30 +28,30 @@ const LOGGING_LEVELS: { value: Level; label: string }[] = [
 /** Keeps confirmed query state authoritative when a runtime update is rejected. */
 function LoggingLevelControl(props: {
     sourceLabel: string;
-    queryKey: readonly unknown[];
-    load: () => Promise<LoggingLevelResponse>;
-    update: (level: Level) => Promise<LoggingLevelResponse>;
+    config: LoggingLevelControlConfig;
 }) {
     const queryClient = useQueryClient();
     const levelQuery = useQuery({
-        queryKey: props.queryKey,
-        queryFn: props.load,
+        queryKey: props.config.queryKey,
+        queryFn: props.config.load,
     });
     const [feedback, setFeedback] = React.useState<{
         tone: "success" | "error";
         message: string;
     } | null>(null);
     const mutation = useMutation({
-        mutationFn: props.update,
+        mutationFn: props.config.update,
         onSuccess: (response) => {
-            queryClient.setQueryData(props.queryKey, response);
+            queryClient.setQueryData(props.config.queryKey, response);
             setFeedback({
                 tone: "success",
                 message: `${props.sourceLabel} logging level changed to ${response.level}.`,
             });
         },
         onError: (error) => {
-            void queryClient.invalidateQueries({ queryKey: props.queryKey });
+            void queryClient.invalidateQueries({
+                queryKey: props.config.queryKey,
+            });
             setFeedback({
                 tone: "error",
                 message: `Could not change ${props.sourceLabel} logging level: ${error.message}`,
@@ -56,32 +61,71 @@ function LoggingLevelControl(props: {
 
     return (
         <>
-            <div
-                role="group"
-                aria-label={`${props.sourceLabel} logging level`}
-                className="flex items-center gap-1"
-            >
-                <span className="mr-1 text-sm text-slate-400">Level</span>
-                {LOGGING_LEVELS.map((level) => (
-                    <ToggleButton
-                        key={level.value}
-                        size="sm"
-                        pressed={levelQuery.data?.level === level.value}
-                        label={`${level.label} logging`}
-                        tooltip={`Emit ${level.label.toLowerCase()} and more severe logs`}
-                        disabled={levelQuery.isPending || mutation.isPending}
-                        onClick={() => mutation.mutate(level.value)}
-                    >
-                        {level.label}
-                    </ToggleButton>
-                ))}
-            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-400">
+                Level
+                <Select
+                    aria-label={`${props.sourceLabel} logging level`}
+                    value={levelQuery.data?.level ?? ""}
+                    disabled={levelQuery.isPending || mutation.isPending}
+                    onChange={(event) => {
+                        const level = LOGGING_LEVELS.find(
+                            (candidate) =>
+                                candidate.value === event.target.value,
+                        );
+                        if (level) {
+                            mutation.mutate(level.value);
+                        }
+                    }}
+                    className="h-9 min-w-28 py-1.5 text-sm"
+                >
+                    {LOGGING_LEVELS.map((level) => (
+                        <option key={level.value} value={level.value}>
+                            {level.label}
+                        </option>
+                    ))}
+                </Select>
+            </label>
             {feedback ? (
                 <Toast tone={feedback.tone} onDismiss={() => setFeedback(null)}>
                     {feedback.message}
                 </Toast>
             ) : null}
         </>
+    );
+}
+
+/** Groups independent viewer controls so the socket-owning component stays focused. */
+function LogViewerControls(props: {
+    sourceLabel: string;
+    headerActions?: React.ReactNode;
+    loggingLevelControl: LoggingLevelControlConfig;
+    autoScroll: boolean;
+    wrapLines: boolean;
+    onAutoScrollChange: (checked: boolean) => void;
+    onWrapLinesChange: (checked: boolean) => void;
+}) {
+    return (
+        <div className="flex flex-wrap items-center gap-3">
+            {props.headerActions}
+            <LoggingLevelControl
+                sourceLabel={props.sourceLabel}
+                config={props.loggingLevelControl}
+            />
+            <Checkbox
+                checked={props.autoScroll}
+                role="checkbox"
+                onCheckedChange={props.onAutoScrollChange}
+            >
+                Auto-scroll
+            </Checkbox>
+            <Checkbox
+                checked={props.wrapLines}
+                role="checkbox"
+                onCheckedChange={props.onWrapLinesChange}
+            >
+                Wrap lines
+            </Checkbox>
+        </div>
     );
 }
 
@@ -115,14 +159,11 @@ export function LogViewer(props: {
     sourceLabel: string;
     websocketUrl: string;
     headerActions?: React.ReactNode;
-    loggingLevelControl: {
-        queryKey: readonly unknown[];
-        load: () => Promise<LoggingLevelResponse>;
-        update: (level: Level) => Promise<LoggingLevelResponse>;
-    };
+    loggingLevelControl: LoggingLevelControlConfig;
 }) {
     const [entries, setEntries] = React.useState<LogEntry[]>([]);
     const [autoScroll, setAutoScroll] = React.useState(true);
+    const [wrapLines, setWrapLines] = React.useState(true);
     const [fileLoggingEnabled, setFileLoggingEnabled] = React.useState<
         boolean | null
     >(null);
@@ -265,22 +306,15 @@ export function LogViewer(props: {
                             {props.title}
                         </h1>
                     </div>
-                    <div className="flex flex-wrap items-center gap-3">
-                        {props.headerActions}
-                        <LoggingLevelControl
-                            sourceLabel={props.sourceLabel}
-                            queryKey={props.loggingLevelControl.queryKey}
-                            load={props.loggingLevelControl.load}
-                            update={props.loggingLevelControl.update}
-                        />
-                        <Checkbox
-                            checked={autoScroll}
-                            role="checkbox"
-                            onCheckedChange={setAutoScroll}
-                        >
-                            Auto-scroll
-                        </Checkbox>
-                    </div>
+                    <LogViewerControls
+                        sourceLabel={props.sourceLabel}
+                        headerActions={props.headerActions}
+                        loggingLevelControl={props.loggingLevelControl}
+                        autoScroll={autoScroll}
+                        wrapLines={wrapLines}
+                        onAutoScrollChange={setAutoScroll}
+                        onWrapLinesChange={setWrapLines}
+                    />
                 </div>
                 <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
                     <span
@@ -304,12 +338,16 @@ export function LogViewer(props: {
                     role="log"
                     aria-label={`${props.sourceLabel} log entries`}
                     aria-live="off"
-                    className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-slate-800 bg-[#080a0e] p-4 font-mono text-xs leading-5 text-slate-300"
+                    className="min-h-0 flex-1 overflow-auto rounded-lg border border-slate-800 bg-[#080a0e] p-4 font-mono text-xs leading-5 text-slate-300"
                 >
                     {entries.map((entry) => (
                         <div
                             key={entry.id}
-                            className="whitespace-pre-wrap wrap-break-word"
+                            className={
+                                wrapLines
+                                    ? "whitespace-pre-wrap wrap-break-word"
+                                    : "whitespace-pre"
+                            }
                         >
                             {entry.text}
                         </div>

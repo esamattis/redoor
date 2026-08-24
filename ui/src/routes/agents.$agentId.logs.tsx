@@ -54,14 +54,6 @@ function AgentLogsPage() {
             title={`${agent.name} logs`}
             sourceLabel={agent.name}
             websocketUrl={agent.getLogsWebSocketUrl()}
-            headerActions={
-                <Link
-                    to="/logs"
-                    className="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-white/5"
-                >
-                    Server logs
-                </Link>
-            }
             loggingLevelControl={{
                 queryKey: queryKeys.agentLoggingLevel(agent.id),
                 load: () => agent.getLoggingLevel(),

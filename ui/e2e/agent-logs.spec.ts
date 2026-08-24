@@ -93,6 +93,9 @@ test.describe.serial("Agent logs", () => {
         const autoScroll = page.getByRole("checkbox", { name: "Auto-scroll" });
         // Agent logs should follow the newest entry by default just like server logs.
         await expect(autoScroll).toHaveAttribute("aria-checked", "true");
+        const wrapLines = page.getByRole("checkbox", { name: "Wrap lines" });
+        // The shared agent viewer must expose the same line-wrapping control as server logs.
+        await expect(wrapLines).toHaveAttribute("aria-checked", "true");
         await expect
             .poll(() =>
                 logRegion.evaluate(
@@ -140,17 +143,15 @@ test.describe.serial("Agent logs", () => {
             .poll(() => sockets.filter((socket) => !socket.isClosed()).length)
             // Strict Mode may create transient sockets, but only one mounted stream may remain.
             .toBe(1);
-        const traceLevel = page.getByRole("button", {
-            name: "Trace logging",
+        const loggingLevel = page.getByRole("combobox", {
+            name: "agent1_src logging level",
         });
-        await traceLevel.click();
+        await loggingLevel.selectOption("trace");
         // The agent control must expose the threshold confirmed over its authoritative socket.
-        await expect(traceLevel).toHaveAttribute("aria-pressed", "true");
-        await page.getByRole("button", { name: "Info logging" }).click();
+        await expect(loggingLevel).toHaveValue("trace");
+        await loggingLevel.selectOption("info");
         // Returning to info gives the failed-update check a known confirmed value.
-        await expect(
-            page.getByRole("button", { name: "Info logging" }),
-        ).toHaveAttribute("aria-pressed", "true");
+        await expect(loggingLevel).toHaveValue("info");
         await page.route("**/api/v1/agents/*/logging-level", async (route) => {
             if (route.request().method() === "PUT") {
                 await route.fulfill({
@@ -162,13 +163,11 @@ test.describe.serial("Agent logs", () => {
             }
             await route.continue();
         });
-        await page.getByRole("button", { name: "Debug logging" }).click();
+        await loggingLevel.selectOption("debug");
         // Failed control-plane updates must be announced assertively to assistive technology.
         await expect(page.getByRole("alert")).toContainText("Could not change");
         // A rejected update must retain the last server-confirmed selection.
-        await expect(
-            page.getByRole("button", { name: "Info logging" }),
-        ).toHaveAttribute("aria-pressed", "true");
+        await expect(loggingLevel).toHaveValue("info");
         await expect
             .poll(() => sockets.filter((socket) => !socket.isClosed()).length)
             // Success and failure both leave the active log stream mounted.

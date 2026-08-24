@@ -47,12 +47,34 @@ test.describe.serial("Server logs", () => {
         const autoScroll = page.getByRole("checkbox", { name: "Auto-scroll" });
         // Operators should initially follow the newest entry without extra interaction.
         await expect(autoScroll).toHaveAttribute("aria-checked", "true");
+        const wrapLines = page.getByRole("checkbox", { name: "Wrap lines" });
+        // Existing readable wrapping remains the initial behavior until an operator disables it.
+        await expect(wrapLines).toHaveAttribute("aria-checked", "true");
 
         const logRegion = page.getByRole("log", {
             name: "Server log entries",
         });
         // The newest seeded fixture must survive the bounded latest-history scan.
         await expect(logRegion).toContainText("[history-fixture] 510");
+        // Wrapped entries must use preformatted wrapping while preserving logger whitespace.
+        expect(
+            await logRegion.evaluate((element) =>
+                element.firstElementChild
+                    ? getComputedStyle(element.firstElementChild).whiteSpace
+                    : null,
+            ),
+        ).toBe("pre-wrap");
+        await wrapLines.click();
+        // The checkbox exposes the nowrap state to assistive technology.
+        await expect(wrapLines).toHaveAttribute("aria-checked", "false");
+        // Disabling wrapping must retain each physical log entry on one visual line.
+        expect(
+            await logRegion.evaluate((element) =>
+                element.firstElementChild
+                    ? getComputedStyle(element.firstElementChild).whiteSpace
+                    : null,
+            ),
+        ).toBe("pre");
         // Excluding the oldest fixture proves the server did not return the file beginning or whole file.
         await expect(logRegion).not.toContainText("[history-fixture] 001");
 
@@ -80,12 +102,12 @@ test.describe.serial("Server logs", () => {
             // Strict Mode may create a transient socket, but only one mounted route socket may remain open.
             .toBe(1);
 
-        const debugLevel = page.getByRole("button", {
-            name: "Debug logging",
+        const loggingLevel = page.getByRole("combobox", {
+            name: "Server logging level",
         });
-        await debugLevel.click();
-        // The pressed state must reflect the value confirmed by the runtime REST response.
-        await expect(debugLevel).toHaveAttribute("aria-pressed", "true");
+        await loggingLevel.selectOption("debug");
+        // The selected option must reflect the value confirmed by the runtime REST response.
+        await expect(loggingLevel).toHaveValue("debug");
         // Runtime changes provide accessible feedback without obscuring the mounted stream.
         await expect(
             page.getByRole("status").filter({
@@ -98,7 +120,7 @@ test.describe.serial("Server logs", () => {
             )
             // Changing the threshold must not reconnect the route-owned WebSocket.
             .toBe(1);
-        await page.getByRole("button", { name: "Info logging" }).click();
+        await loggingLevel.selectOption("info");
     });
 
     test("navigates from server logs to one connected agent log route", async ({

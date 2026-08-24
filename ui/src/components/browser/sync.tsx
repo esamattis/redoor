@@ -2,7 +2,6 @@ import React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
-    ChevronDown,
     Copy,
     FolderInput,
     GitCompareArrows,
@@ -14,6 +13,7 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { InputControl } from "#ui/components/input-control";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
+import { Select } from "#ui/components/select";
 import { Tooltip } from "#ui/components/tooltip";
 import { DestinationConflictDialog } from "#ui/components/browser/selected-files-transfer-dialog";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
@@ -39,27 +39,22 @@ export function AgentPathFields(props: {
         <div className="grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Agent
-                <span className="relative block">
-                    <select
-                        aria-label="Sync agent"
-                        value={props.agentId}
-                        onChange={(event) =>
-                            props.onAgentChange(event.target.value)
-                        }
-                        disabled={props.disabled}
-                        className="h-11 w-full appearance-none rounded-lg border border-slate-700 bg-slate-950 py-2 pl-3 pr-10 text-slate-100 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                        {props.agents.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                                {agent.name}
-                            </option>
-                        ))}
-                    </select>
-                    <ChevronDown
-                        aria-hidden="true"
-                        className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-slate-400"
-                    />
-                </span>
+                <Select
+                    aria-label="Sync agent"
+                    value={props.agentId}
+                    onChange={(event) =>
+                        props.onAgentChange(event.target.value)
+                    }
+                    disabled={props.disabled}
+                    containerClassName="block"
+                    className="h-11 rounded-lg bg-slate-950 focus:ring-1 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {props.agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                        </option>
+                    ))}
+                </Select>
             </label>
             <label className="grid gap-2 text-sm font-medium text-slate-200">
                 Path
