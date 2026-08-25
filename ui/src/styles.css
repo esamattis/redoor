@@ -216,6 +216,16 @@ code {
     overflow: auto;
 }
 
+/* Match compact git-diff type on phones so the editor stays readable beside chrome. */
+@media (max-width: 639px) {
+    [data-file-editor] .cm-editor,
+    [data-file-editor] .cm-scroller,
+    [data-file-editor] .cm-content,
+    [data-file-editor] .cm-gutters {
+        font-size: 9px;
+    }
+}
+
 /* Keep overflowing tabs scrollable without letting a scrollbar change the header height. */
 .top-tab-strip {
     scrollbar-width: none;

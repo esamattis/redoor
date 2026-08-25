@@ -113,6 +113,18 @@ test.describe.serial("File Edit View", () => {
         ).toHaveAttribute("href", /[?&]download=1$/);
     });
 
+    test("should use compact editor text on mobile", async ({ page }) => {
+        await page.setViewportSize({ width: 360, height: 844 });
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`,
+        );
+        // Phone-width editor type must match the 9px git diff so more of each line stays on screen.
+        await expect(page.getByLabel("File editor")).toHaveCSS(
+            "font-size",
+            "9px",
+        );
+    });
+
     test("should open details from the second file tab", async ({ page }) => {
         await page.goto(ctx.agentBrowserUrl);
         await page
