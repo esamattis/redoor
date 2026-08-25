@@ -78,26 +78,6 @@ async fn create_private_directory_tree(path: &Path) -> Result<(), TrashError> {
     Ok(())
 }
 
-/// Uses NFS's fast server-side rename when atomic no-replacement rename is unavailable.
-///
-/// The private `0700` trash directory, exclusive `.trashinfo` reservation, and service mutation
-/// lock prevent collisions between Redoor operations. An unrelated process running as the same
-/// Unix user could still create this exact payload after the check and have it replaced, but that
-/// narrow residual race is preferable to copying potentially large NFS entries into trash.
-async fn rename_into_unoccupied_trash_payload(
-    source: &Path,
-    payload: &Path,
-) -> std::io::Result<bool> {
-    match tokio::fs::symlink_metadata(payload).await {
-        Ok(_) => Ok(false),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            tokio::fs::rename(source, payload).await?;
-            Ok(true)
-        }
-        Err(error) => Err(error),
-    }
-}
-
 /// Moves a source only after the selected root and same-device relationship are revalidated.
 pub(super) async fn trash(service: &TrashService, path: PathBuf) -> Result<(), TrashError> {
     let source = normalized_existing_entry(&path).await?;
@@ -253,56 +233,11 @@ DeletionDate={}
                 continue;
             }
             Ok(AtomicRenameOutcome::Unsupported) => {
-                match rename_into_unoccupied_trash_payload(&source, &payload).await {
-                    Ok(true) => {
-                        log!(
-                            Level::Debug,
-                            "Trash payload moved: source={}, payload={}, info={}, method=nfs_rename_fallback, copy_fallback=false",
-                            source.display(),
-                            payload.display(),
-                            info.display()
-                        );
-                        return Ok(());
-                    }
-                    Ok(false) => {
-                        log!(
-                            Level::Debug,
-                            "Trash payload candidate already exists before NFS rename fallback: source={}, payload={}, attempt={}",
-                            source.display(),
-                            payload.display(),
-                            attempt
-                        );
-                        let _ = tokio::fs::remove_file(&info).await;
-                        continue;
-                    }
-                    Err(error) => {
-                        let _ = tokio::fs::remove_file(&info).await;
-                        if error.kind() == std::io::ErrorKind::NotFound {
-                            return Err(TrashError::new(
-                                CommandErrorKind::NotFound,
-                                format!(
-                                    "Trash source or selected trash directory no longer exists during NFS rename fallback: source={}, payload={}",
-                                    source.display(),
-                                    payload.display()
-                                ),
-                            ));
-                        }
-                        if error.raw_os_error() == Some(libc::EXDEV) {
-                            return Err(TrashError::new(
-                                CommandErrorKind::InvalidInput,
-                                format!(
-                                    "NFS trash rename crossed filesystem boundaries despite device validation: source={}, payload={}",
-                                    source.display(),
-                                    payload.display()
-                                ),
-                            ));
-                        }
-                        return Err(TrashError::io(
-                            "NFS filesystem rename into trash failed",
-                            error,
-                        ));
-                    }
-                }
+                let _ = tokio::fs::remove_file(&info).await;
+                return Err(TrashError::new(
+                    CommandErrorKind::InvalidInput,
+                    "Trash filesystem does not support no-replacement publication",
+                ));
             }
             Ok(AtomicRenameOutcome::Missing) => {
                 let _ = tokio::fs::remove_file(&info).await;
@@ -960,56 +895,6 @@ async fn mount_points() -> Result<Vec<PathBuf>, TrashError> {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
-
-    #[tokio::test]
-    async fn nfs_rename_fallback_remains_metadata_only_and_checks_collisions() {
-        let temp_dir = TempDir::create();
-        let source = temp_dir.path().join("source");
-        let payload = temp_dir.path().join("payload");
-        tokio::fs::write(&source, "source contents").await.unwrap();
-        let source_inode = tokio::fs::symlink_metadata(&source).await.unwrap().ino();
-
-        let renamed = rename_into_unoccupied_trash_payload(&source, &payload)
-            .await
-            .unwrap();
-
-        assert!(
-            renamed,
-            "an unoccupied payload should use the ordinary rename fallback"
-        );
-        assert_eq!(
-            tokio::fs::symlink_metadata(&payload).await.unwrap().ino(),
-            source_inode,
-            "inode identity proves the fallback renames instead of copying"
-        );
-        assert!(
-            !tokio::fs::try_exists(&source).await.unwrap(),
-            "a successful metadata rename should remove the source name"
-        );
-
-        let competing_source = temp_dir.path().join("competing-source");
-        tokio::fs::write(&competing_source, "new contents")
-            .await
-            .unwrap();
-        let collision = rename_into_unoccupied_trash_payload(&competing_source, &payload)
-            .await
-            .unwrap();
-
-        assert!(
-            !collision,
-            "a payload visible before fallback publication should be treated as a collision"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(&payload).await.unwrap(),
-            "source contents",
-            "the pre-publication collision check should preserve the existing payload"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(&competing_source).await.unwrap(),
-            "new contents",
-            "rejecting a collision should preserve the source"
-        );
-    }
 
     #[test]
     fn percent_encoding_round_trips_arbitrary_path_bytes() {

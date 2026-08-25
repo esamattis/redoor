@@ -8,7 +8,8 @@ use super::destination::{
 };
 use crate::agent::{AgentActor, AgentCommandError};
 use redoor::atomic_rename::{
-    AtomicRenameOutcome, exchange_existing_paths, rename_without_replacement,
+    AtomicRenameOutcome, ReplacementRenameOutcome, exchange_existing_paths,
+    rename_with_replacement, rename_without_replacement,
 };
 use redoor::commands::{CommandResult, CopyExistingMode, MoveSourceIdentity};
 use redoor::{Level, log};
@@ -511,7 +512,13 @@ async fn rename_same_filesystem(
         on_existing
     );
     if on_existing == CopyExistingMode::Override {
-        return rename_replacing_destination(source, dest, destination_exists).await;
+        return match rename_with_replacement(&source, &dest, destination_exists).await? {
+            ReplacementRenameOutcome::Renamed => Ok(SameFilesystemRenameResult::Renamed),
+            ReplacementRenameOutcome::Exchanged => Ok(SameFilesystemRenameResult::Exchanged),
+            ReplacementRenameOutcome::CrossDevice | ReplacementRenameOutcome::Incompatible => {
+                Ok(SameFilesystemRenameResult::CopyRequired)
+            }
+        };
     }
     let outcome = rename_without_replacement(&source, &dest).await?;
     log!(
@@ -521,178 +528,7 @@ async fn rename_same_filesystem(
         dest.display(),
         outcome
     );
-    if outcome == AtomicRenameOutcome::Unsupported && on_existing == CopyExistingMode::Error {
-        log!(
-            Level::Debug,
-            "Atomic no-replace rename unsupported; using same-filesystem NFS rename fallback: source={}, destination={}",
-            source.display(),
-            dest.display()
-        );
-        return rename_without_exclusive_support(&source, &dest).await;
-    }
     classify_strict_rename_outcome(outcome, on_existing, &source, &dest)
-}
-
-/// Uses an ordinary rename for strict same-filesystem moves when exclusive rename is unavailable.
-///
-/// The destination is checked immediately before rename, but an unrelated process can still create
-/// it between these operations and be replaced. This narrow race is required for NFS filesystems
-/// that support server-side rename but reject `RENAME_NOREPLACE`.
-async fn rename_without_exclusive_support(
-    source: &Path,
-    dest: &Path,
-) -> std::io::Result<SameFilesystemRenameResult> {
-    match tokio::fs::symlink_metadata(dest).await {
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "move destination appeared before NFS rename: {}",
-                    dest.display()
-                ),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    match tokio::fs::rename(source, dest).await {
-        Ok(()) => {
-            log!(
-                Level::Debug,
-                "Smart move NFS rename fallback succeeded: source={}, dest={}",
-                source.display(),
-                dest.display()
-            );
-            Ok(SameFilesystemRenameResult::Renamed)
-        }
-        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-            log!(
-                Level::Debug,
-                "Smart move NFS rename fallback crossed devices: source={}, dest={}, error={}",
-                source.display(),
-                dest.display(),
-                error
-            );
-            Ok(SameFilesystemRenameResult::CopyRequired)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// Uses exchange when available, then ordinary replacement rename on filesystems such as NFS.
-async fn rename_replacing_destination(
-    source: PathBuf,
-    dest: PathBuf,
-    mut destination_exists: bool,
-) -> std::io::Result<SameFilesystemRenameResult> {
-    for _ in 0..16 {
-        log!(
-            Level::Debug,
-            "Smart move replacement rename attempt: source={}, dest={}, destination_exists={}",
-            source.display(),
-            dest.display(),
-            destination_exists
-        );
-        if destination_exists {
-            match exchange_existing_paths(&source, &dest).await? {
-                AtomicRenameOutcome::Renamed => {
-                    log!(
-                        Level::Debug,
-                        "Smart move exchange succeeded: source={}, dest={}",
-                        source.display(),
-                        dest.display()
-                    );
-                    return Ok(SameFilesystemRenameResult::Exchanged);
-                }
-                AtomicRenameOutcome::Missing => {
-                    log!(
-                        Level::Debug,
-                        "Smart move exchange found destination missing; retrying rename: source={}, dest={}",
-                        source.display(),
-                        dest.display()
-                    );
-                    destination_exists = false;
-                    continue;
-                }
-                AtomicRenameOutcome::CrossDevice => {
-                    log!(
-                        Level::Debug,
-                        "Smart move exchange crossed devices: source={}, dest={}",
-                        source.display(),
-                        dest.display()
-                    );
-                    return Ok(SameFilesystemRenameResult::CopyRequired);
-                }
-                AtomicRenameOutcome::Unsupported => {
-                    log!(
-                        Level::Debug,
-                        "Atomic exchange unsupported; using replacement rename without copy fallback: source={}, destination={}",
-                        source.display(),
-                        dest.display()
-                    );
-                }
-                AtomicRenameOutcome::DestinationExists => {
-                    log!(
-                        Level::Debug,
-                        "Smart move exchange reported destination exists unexpectedly: source={}, dest={}",
-                        source.display(),
-                        dest.display()
-                    );
-                }
-            }
-        }
-        return match tokio::fs::rename(&source, &dest).await {
-            Ok(()) => {
-                log!(
-                    Level::Debug,
-                    "Smart move replacement rename succeeded: source={}, dest={}",
-                    source.display(),
-                    dest.display()
-                );
-                Ok(SameFilesystemRenameResult::Renamed)
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                log!(
-                    Level::Debug,
-                    "Smart move replacement rename crossed devices: source={}, dest={}, error={}",
-                    source.display(),
-                    dest.display(),
-                    error
-                );
-                Ok(SameFilesystemRenameResult::CopyRequired)
-            }
-            Err(error)
-                if matches!(
-                    error.raw_os_error(),
-                    Some(libc::EEXIST | libc::ENOTEMPTY | libc::EISDIR | libc::ENOTDIR)
-                ) =>
-            {
-                log!(
-                    Level::Debug,
-                    "Replacement rename incompatible with destination; using existing transfer copy/delete path: source={}, destination={}, error={}",
-                    source.display(),
-                    dest.display(),
-                    error
-                );
-                Ok(SameFilesystemRenameResult::CopyRequired)
-            }
-            Err(error) => {
-                log!(
-                    Level::Debug,
-                    "Smart move replacement rename failed: source={}, dest={}, error={}",
-                    source.display(),
-                    dest.display(),
-                    error
-                );
-                Err(error)
-            }
-        };
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "destination changed too frequently to complete a replacement rename",
-    ))
 }
 
 /// Converts strict conditional outcomes without silently weakening no-replacement semantics.
@@ -807,73 +643,6 @@ mod tests {
         assert!(
             matches!(result, SameFilesystemRenameResult::CopyRequired),
             "merge must retain its copy/delete fallback when conditional rename is unavailable"
-        );
-    }
-
-    #[tokio::test]
-    async fn unsupported_strict_rename_uses_same_filesystem_fallback() {
-        let temp_dir = TempDir::create();
-        let source = temp_dir.path().join("source.txt");
-        let dest = temp_dir.path().join("dest.txt");
-        tokio::fs::write(&source, "moved")
-            .await
-            .expect("fallback source should be written");
-
-        let result = rename_without_exclusive_support(&source, &dest)
-            .await
-            .expect("ordinary rename should support the missing destination");
-
-        assert!(
-            matches!(result, SameFilesystemRenameResult::Renamed),
-            "unsupported strict rename must remain a filesystem rename instead of copying"
-        );
-        assert!(
-            !tokio::fs::try_exists(&source).await.expect("source lookup"),
-            "successful fallback rename must remove the source name"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(&dest)
-                .await
-                .expect("fallback destination should be readable"),
-            "moved",
-            "fallback rename must publish the original source contents"
-        );
-    }
-
-    #[tokio::test]
-    async fn unsupported_strict_rename_fallback_preserves_existing_destination() {
-        let temp_dir = TempDir::create();
-        let source = temp_dir.path().join("source.txt");
-        let dest = temp_dir.path().join("dest.txt");
-        tokio::fs::write(&source, "source")
-            .await
-            .expect("fallback source should be written");
-        tokio::fs::write(&dest, "keep")
-            .await
-            .expect("fallback destination should be written");
-
-        let error = rename_without_exclusive_support(&source, &dest)
-            .await
-            .expect_err("fallback must reject a destination found during its recheck");
-
-        assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::AlreadyExists,
-            "an observed destination must retain strict conflict semantics"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(&source)
-                .await
-                .expect("source should remain readable"),
-            "source",
-            "a rejected fallback must preserve the source"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(&dest)
-                .await
-                .expect("destination should remain readable"),
-            "keep",
-            "a rejected fallback must preserve the destination"
         );
     }
 
