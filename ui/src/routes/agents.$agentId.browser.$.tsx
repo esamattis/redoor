@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { z } from "zod";
 import {
     type ApiClient,
     type Agent,
@@ -51,7 +52,30 @@ import type { MountPoint } from "#bindings/MountPoint";
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync" | "git";
     diff?: boolean;
+    line?: number;
 };
+
+/** Accepts only 1-based whole line numbers so garbage query values cannot drive the editor. */
+const browserLineSchema = z
+    .union([
+        z.number().int().gte(1),
+        z
+            .string()
+            .regex(/^[1-9][0-9]*$/)
+            .transform(Number)
+            .pipe(z.number().int().gte(1)),
+    ])
+    .optional()
+    .catch(undefined);
+
+/** Reads line from the raw query so the loader can preserve it without adding line to loaderDeps. */
+function lineFromLocationSearch(searchStr: string): number | undefined {
+    const params = new URLSearchParams(
+        searchStr.startsWith("?") ? searchStr.slice(1) : searchStr,
+    );
+    const value = params.get("line");
+    return value === null ? undefined : browserLineSchema.parse(value);
+}
 
 export const Route = createFileRoute("/agents/$agentId/browser/$")({
     validateSearch: (search): BrowserSearch => ({
@@ -64,9 +88,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 ? search.view
                 : undefined,
         diff: search.diff === true || search.diff === "true" ? true : undefined,
+        line: browserLineSchema.parse(search.line),
     }),
     loaderDeps: ({ search }) => ({ view: search.view, diff: search.diff }),
-    loader: async ({ context, deps, params, parentMatchPromise }) => {
+    loader: async ({ context, deps, params, parentMatchPromise, location }) => {
         const agentMatch = await parentMatchPromise;
         const agentLoaderData = agentMatch.loaderData;
         if (!agentLoaderData) {
@@ -133,6 +158,11 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 : null;
             if (isLsFileResponse(lsResult)) {
                 replaceUnsupportedOrLegacyFileView(params, deps.view, metadata);
+                replaceLegacyEditFileView(
+                    params,
+                    deps.view,
+                    lineFromLocationSearch(location.searchStr),
+                );
                 if (
                     wantsFileContentView(deps.view) &&
                     metadata?.editable === true
@@ -423,6 +453,7 @@ function FileBrowser() {
                     downloadUrl={agent.getRawUrl(lsResult.path, {
                         download: true,
                     })}
+                    scrollToLine={search.line}
                 />
             ) : activeView === "view" && viewableImage ? (
                 <FileImageView
@@ -590,7 +621,7 @@ function wantsFileContentView(view: BrowserSearch["view"]) {
     return view === undefined || view === "edit";
 }
 
-/** Replaces history so unsupported files and legacy edit URLs do not stay on the stack. */
+/** Replaces history so unsupported files and leftover content URLs do not stay on the stack. */
 function replaceUnsupportedOrLegacyFileView(
     params: { agentId: string; _splat?: string },
     view: BrowserSearch["view"],
@@ -606,14 +637,23 @@ function replaceUnsupportedOrLegacyFileView(
             replace: true,
         });
     }
-    if (view === "edit") {
-        throw redirect({
-            to: "/agents/$agentId/browser/$",
-            params,
-            search: {},
-            replace: true,
-        });
+}
+
+/** Strips leftover ?view=edit while keeping an inbound line bookmark. */
+function replaceLegacyEditFileView(
+    params: { agentId: string; _splat?: string },
+    view: BrowserSearch["view"],
+    line: BrowserSearch["line"],
+) {
+    if (view !== "edit") {
+        return;
     }
+    throw redirect({
+        to: "/agents/$agentId/browser/$",
+        params,
+        search: line === undefined ? {} : { line },
+        replace: true,
+    });
 }
 
 /** Selects the most specific filesystem mount containing the browsed directory. */

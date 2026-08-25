@@ -67,6 +67,34 @@ function useFocusEditorShortcut(view: EditorView | null) {
     }, [view]);
 }
 
+/** Moves the caret to a 1-based line from the URL so bookmarks open at that location. */
+function moveCaretToLine(view: EditorView, line: number) {
+    const lineCount = view.state.doc.lines;
+    // Empty documents have no real line to reveal; clamping would still dispatch a no-op caret.
+    if (view.state.doc.length === 0 || lineCount < 1) {
+        return;
+    }
+    const clamped = Math.min(Math.max(line, 1), lineCount);
+    const docLine = view.state.doc.line(clamped);
+    view.dispatch({
+        selection: { anchor: docLine.from },
+        effects: EditorView.scrollIntoView(docLine.from, { y: "nearest" }),
+    });
+}
+
+/** Applies inbound ?line= once the view exists so typing and saves do not re-scroll. */
+function useInboundScrollToLine(
+    view: EditorView | null,
+    scrollToLine: number | undefined,
+) {
+    React.useLayoutEffect(() => {
+        if (view === null || scrollToLine === undefined) {
+            return;
+        }
+        moveCaretToLine(view, scrollToLine);
+    }, [view, scrollToLine]);
+}
+
 /**
  * Presentational CodeMirror surface so FileEditView can keep query/draft ownership.
  * A bounded height lets CodeMirror virtualize the viewport instead of growing the page.
@@ -78,6 +106,7 @@ export function CodeEditor(props: {
     editable: boolean;
     vimMode: boolean;
     wrapLines: boolean;
+    scrollToLine?: number;
     onChange: (value: string) => void;
     onFocus: () => void;
     onSave: () => void;
@@ -99,6 +128,7 @@ export function CodeEditor(props: {
     const hasReceivedFocusRef = React.useRef(false);
     const [view, setView] = React.useState<EditorView | null>(null);
     const [documentRevision, setDocumentRevision] = React.useState(0);
+    const [caretLine, setCaretLine] = React.useState<number | null>(null);
     const firstLineEnd = props.value.indexOf("\n");
     const firstLine = props.value.slice(
         0,
@@ -203,6 +233,7 @@ export function CodeEditor(props: {
     ]);
 
     useFocusEditorShortcut(view);
+    useInboundScrollToLine(view, props.scrollToLine);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -220,6 +251,11 @@ export function CodeEditor(props: {
                 aria-label="Editor viewport"
                 className="min-h-0 flex-1 overflow-hidden rounded-md border border-transparent p-1.5 focus-within:border-blue-500"
             >
+                {caretLine === null ? null : (
+                    <span className="sr-only" aria-label="Editor caret line">
+                        {String(caretLine)}
+                    </span>
+                )}
                 <CodeMirror
                     ref={editorRef}
                     value={props.value}
@@ -229,12 +265,22 @@ export function CodeEditor(props: {
                     editable={props.editable}
                     basicSetup={{ searchKeymap: false }}
                     extensions={extensions}
-                    onCreateEditor={setView}
+                    onCreateEditor={(editorView) => {
+                        setView(editorView);
+                        setCaretLine(
+                            editorView.state.doc.lineAt(
+                                editorView.state.selection.main.head,
+                            ).number,
+                        );
+                    }}
                     onChange={props.onChange}
                     onUpdate={(update) => {
                         if (update.docChanged || update.selectionSet) {
                             setDocumentRevision((revision) => revision + 1);
                             const selection = update.state.selection.main;
+                            setCaretLine(
+                                update.state.doc.lineAt(selection.head).number,
+                            );
                             props.onSelectionChange(
                                 selection.empty
                                     ? null

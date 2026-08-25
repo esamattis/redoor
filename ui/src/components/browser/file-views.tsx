@@ -258,6 +258,7 @@ function FileEditorSurface(props: {
     editable: boolean;
     vimMode: boolean;
     wrapLines: boolean;
+    scrollToLine?: number;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
     onChange: (content: string) => void;
     onFocus: () => void;
@@ -281,6 +282,7 @@ function FileEditorSurface(props: {
             editable={props.editable}
             vimMode={props.vimMode}
             wrapLines={props.wrapLines}
+            scrollToLine={props.scrollToLine}
             onChange={props.onChange}
             onFocus={props.onFocus}
             onSave={props.onSave}
@@ -311,13 +313,17 @@ function getFileEditorStatus(props: {
     return props.isDirty ? "Unsaved changes" : null;
 }
 
-/** Edits file contents in a viewport-bounded CodeMirror with explicit save/reload. */
+/**
+ * Edits file contents in a viewport-bounded CodeMirror with explicit save/reload.
+ * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
+ */
 export function FileEditView(props: {
     agent: Agent;
     fileName: string;
     filePath: string;
     mimeType: string;
     downloadUrl: string;
+    scrollToLine?: number;
 }) {
     const queryClient = useQueryClient();
     const [userState] = useUserState();
@@ -484,6 +490,7 @@ export function FileEditView(props: {
                         editable={canEdit}
                         vimMode={userState.vimMode}
                         wrapLines={userState.wrapEditorLines}
+                        scrollToLine={props.scrollToLine}
                         onChange={(nextContent) => {
                             setDraft(nextContent);
                             if (saveMutation.isSuccess) saveMutation.reset();

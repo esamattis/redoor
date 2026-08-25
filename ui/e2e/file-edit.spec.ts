@@ -28,6 +28,20 @@ async function openEditorOptions(page: Page) {
     return page.getByRole("dialog", { name: "Editor options" });
 }
 
+/** Builds a buffer long enough that CodeMirror virtualizes distant lines. */
+async function writeLargeLineQueryFile(filePath: string) {
+    const lines = [
+        "FIRST_VISIBLE_LINE",
+        ...Array.from(
+            { length: 498 },
+            (_, index) => `middle line ${index + 2}`,
+        ),
+        "LAST_BUFFER_LINE",
+    ];
+    await fs.writeFile(filePath, lines.join("\n"));
+    return lines.length;
+}
+
 test.describe.serial("File Edit View", () => {
     let ctx: TestContext;
 
@@ -967,5 +981,127 @@ gamma
             "oklch(0.623 0.214 259.815)",
         );
         await expectEditorText(editor, "t");
+    });
+
+    test("should scroll to the last line from the line query", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "line-query-last.txt");
+        const lastLine = await writeLargeLineQueryFile(filePath);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=${lastLine}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        // The query is 1-based and must reveal the virtualized document end.
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toBeVisible();
+        // The jump must also move the caret, not only scroll the viewport.
+        await expect(page.getByLabel("Editor caret line")).toHaveText(
+            String(lastLine),
+        );
+
+        const pageScroll = await page.getByRole("main").evaluate((element) => ({
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+        }));
+        // Vertical scrolling must stay in CodeMirror even after jumping to the last line.
+        expect(pageScroll.scrollHeight).toBeLessThanOrEqual(
+            pageScroll.clientHeight + 1,
+        );
+
+        await editor.focus();
+        await page.keyboard.press("ArrowUp");
+        // Arrow movement proves the caret was on the last line and can leave it.
+        await expect(page.getByLabel("Editor caret line")).toHaveText(
+            String(lastLine - 1),
+        );
+        // Caret changes must not write back into the inbound-only line query.
+        await expect(page).toHaveURL(new RegExp(`[?&]line=${lastLine}(?:&|$)`));
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=1`,
+        );
+        // Changing line on the same file must move the caret again without requiring a remount.
+        await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+        await expect(editor.getByText("FIRST_VISIBLE_LINE")).toBeVisible();
+    });
+
+    test("should scroll to the first line from the line query", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "line-query-first.txt");
+        await writeLargeLineQueryFile(filePath);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=1`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expect(editor.getByText("FIRST_VISIBLE_LINE")).toBeVisible();
+        // line=1 must place the caret on the first line, matching other query jumps.
+        await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+        // Distant lines stay virtualized because the jump did not scroll to the end.
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toHaveCount(0);
+    });
+
+    test("should clamp an oversized line query to the last line", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "line-query-clamp.txt");
+        await fs.writeFile(
+            filePath,
+            `short first
+short last`,
+        );
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=99999`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        await expect(editor.getByText("short last")).toBeVisible();
+        // Out-of-range numbers must clamp instead of crashing or ignoring the jump.
+        await expect(page.getByLabel("Editor caret line")).toHaveText("2");
+    });
+
+    test("should ignore invalid line query values", async ({ page }) => {
+        const filePath = path.join(ctx.testDirPath, "line-query-invalid.txt");
+        await writeLargeLineQueryFile(filePath);
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=abc`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor.getByText("FIRST_VISIBLE_LINE")).toBeVisible();
+        // Non-integers must not jump, so the last line stays virtualized.
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toHaveCount(0);
+        await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?line=0`,
+        );
+        await expect(editor.getByText("FIRST_VISIBLE_LINE")).toBeVisible();
+        // Zero is not a 1-based line, so it is dropped the same way as garbage.
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toHaveCount(0);
+        await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+    });
+
+    test("should keep the line query on the legacy edit view redirect", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "line-query-legacy.txt");
+        const lastLine = await writeLargeLineQueryFile(filePath);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=edit&line=${lastLine}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        // Legacy ?view=edit must still land in the editor rather than Details.
+        await expect(editor).toBeVisible();
+        await expect(page).not.toHaveURL(/[?&]view=/);
+        // The redirect must preserve line so the bookmark still scrolls.
+        await expect(page).toHaveURL(new RegExp(`[?&]line=${lastLine}(?:&|$)`));
+        await expect(editor.getByText("LAST_BUFFER_LINE")).toBeVisible();
+        await expect(page.getByLabel("Editor caret line")).toHaveText(
+            String(lastLine),
+        );
     });
 });
