@@ -521,15 +521,63 @@ async fn rename_same_filesystem(
         dest.display(),
         outcome
     );
-    if outcome == AtomicRenameOutcome::Unsupported {
+    if outcome == AtomicRenameOutcome::Unsupported && on_existing == CopyExistingMode::Error {
         log!(
             Level::Debug,
-            "Atomic no-replace rename unsupported; using existing transfer copy/delete path: source={}, destination={}",
+            "Atomic no-replace rename unsupported; using same-filesystem NFS rename fallback: source={}, destination={}",
             source.display(),
             dest.display()
         );
+        return rename_without_exclusive_support(&source, &dest).await;
     }
     classify_strict_rename_outcome(outcome, on_existing, &source, &dest)
+}
+
+/// Uses an ordinary rename for strict same-filesystem moves when exclusive rename is unavailable.
+///
+/// The destination is checked immediately before rename, but an unrelated process can still create
+/// it between these operations and be replaced. This narrow race is required for NFS filesystems
+/// that support server-side rename but reject `RENAME_NOREPLACE`.
+async fn rename_without_exclusive_support(
+    source: &Path,
+    dest: &Path,
+) -> std::io::Result<SameFilesystemRenameResult> {
+    match tokio::fs::symlink_metadata(dest).await {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "move destination appeared before NFS rename: {}",
+                    dest.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    match tokio::fs::rename(source, dest).await {
+        Ok(()) => {
+            log!(
+                Level::Debug,
+                "Smart move NFS rename fallback succeeded: source={}, dest={}",
+                source.display(),
+                dest.display()
+            );
+            Ok(SameFilesystemRenameResult::Renamed)
+        }
+        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+            log!(
+                Level::Debug,
+                "Smart move NFS rename fallback crossed devices: source={}, dest={}, error={}",
+                source.display(),
+                dest.display(),
+                error
+            );
+            Ok(SameFilesystemRenameResult::CopyRequired)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Uses exchange when available, then ordinary replacement rename on filesystems such as NFS.
@@ -747,10 +795,10 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_strict_rename_requests_existing_transfer_fallback() {
+    fn unsupported_merge_rename_requests_existing_transfer_fallback() {
         let result = classify_strict_rename_outcome(
             AtomicRenameOutcome::Unsupported,
-            CopyExistingMode::Error,
+            CopyExistingMode::Merge,
             Path::new("/source"),
             Path::new("/destination"),
         );
@@ -758,7 +806,74 @@ mod tests {
         let result = result.expect("unsupported no-replace should select the existing transfer");
         assert!(
             matches!(result, SameFilesystemRenameResult::CopyRequired),
-            "smart move must retain its copy/delete fallback when conditional rename is unavailable"
+            "merge must retain its copy/delete fallback when conditional rename is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_strict_rename_uses_same_filesystem_fallback() {
+        let temp_dir = TempDir::create();
+        let source = temp_dir.path().join("source.txt");
+        let dest = temp_dir.path().join("dest.txt");
+        tokio::fs::write(&source, "moved")
+            .await
+            .expect("fallback source should be written");
+
+        let result = rename_without_exclusive_support(&source, &dest)
+            .await
+            .expect("ordinary rename should support the missing destination");
+
+        assert!(
+            matches!(result, SameFilesystemRenameResult::Renamed),
+            "unsupported strict rename must remain a filesystem rename instead of copying"
+        );
+        assert!(
+            !tokio::fs::try_exists(&source).await.expect("source lookup"),
+            "successful fallback rename must remove the source name"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("fallback destination should be readable"),
+            "moved",
+            "fallback rename must publish the original source contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_strict_rename_fallback_preserves_existing_destination() {
+        let temp_dir = TempDir::create();
+        let source = temp_dir.path().join("source.txt");
+        let dest = temp_dir.path().join("dest.txt");
+        tokio::fs::write(&source, "source")
+            .await
+            .expect("fallback source should be written");
+        tokio::fs::write(&dest, "keep")
+            .await
+            .expect("fallback destination should be written");
+
+        let error = rename_without_exclusive_support(&source, &dest)
+            .await
+            .expect_err("fallback must reject a destination found during its recheck");
+
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "an observed destination must retain strict conflict semantics"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&source)
+                .await
+                .expect("source should remain readable"),
+            "source",
+            "a rejected fallback must preserve the source"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&dest)
+                .await
+                .expect("destination should remain readable"),
+            "keep",
+            "a rejected fallback must preserve the destination"
         );
     }
 
