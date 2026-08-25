@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { parse as parseDiff } from "diff2html";
 import { ColorSchemeType, LineType } from "diff2html/lib/types";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-base";
@@ -91,13 +92,46 @@ function firstFileLine(file: ReturnType<typeof parseDiff>[number]): string {
     return "";
 }
 
+/** Reads the new-file line from a diff2html gutter without wrapping the row in a link. */
+function newFileLineNumber(row: Element): number | undefined {
+    const lineText = row.querySelector(".line-num2")?.textContent?.trim() ?? "";
+    if (!/^[1-9][0-9]*$/.test(lineText)) {
+        return undefined;
+    }
+    return Number(lineText);
+}
+
+/**
+ * Appends a trailing editor link so the source text stays selectable and is not itself a link.
+ * Only new-side numbers are used because those are the lines that exist in the current file.
+ */
+function appendEditorLineLinks(root: HTMLElement, editorHref: string) {
+    for (const row of root.querySelectorAll("tr")) {
+        const line = newFileLineNumber(row);
+        const codeLine = row.querySelector(".d2h-code-line");
+        if (line === undefined || codeLine === null) {
+            continue;
+        }
+        const link = document.createElement("a");
+        link.href = `${editorHref}?line=${String(line)}`;
+        link.dataset.editorLine = String(line);
+        link.className = "d2h-editor-line-link";
+        link.setAttribute("aria-label", `Open line ${String(line)} in editor`);
+        link.textContent = "Open";
+        codeLine.append(link);
+    }
+}
+
 /** Turns trusted server-generated unified diff text into the shared accessible table. */
 export function UnifiedDiff(props: {
     unifiedDiff: string;
     emptyMessage?: string;
+    /** Browser path for the current file so trailing Open links can jump with ?line=. */
+    editorHref?: string;
 }) {
     const targetRef = React.useRef<HTMLDivElement>(null);
     const resolvedTheme = useResolvedTheme();
+    const navigate = useNavigate();
 
     React.useEffect(() => {
         const target = targetRef.current;
@@ -141,7 +175,48 @@ export function UnifiedDiff(props: {
             hljs,
         );
         diffUi.draw();
-    }, [props.unifiedDiff, resolvedTheme]);
+
+        const editorHref = props.editorHref;
+        if (editorHref === undefined) {
+            return;
+        }
+        appendEditorLineLinks(target, editorHref);
+
+        /** Keeps unmodified clicks in the SPA while still allowing new-tab opens via the href. */
+        const handleEditorLineClick = (event: MouseEvent) => {
+            if (
+                event.defaultPrevented ||
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+            ) {
+                return;
+            }
+            const eventTarget = event.target;
+            if (!(eventTarget instanceof Element)) {
+                return;
+            }
+            const link = eventTarget.closest("a[data-editor-line]");
+            if (!(link instanceof HTMLAnchorElement)) {
+                return;
+            }
+            const line = Number(link.dataset.editorLine);
+            if (!Number.isInteger(line) || line < 1) {
+                return;
+            }
+            event.preventDefault();
+            void navigate({
+                to: editorHref,
+                search: { line },
+            });
+        };
+        target.addEventListener("click", handleEditorLineClick);
+        return () => {
+            target.removeEventListener("click", handleEditorLineClick);
+        };
+    }, [props.unifiedDiff, props.editorHref, resolvedTheme, navigate]);
 
     if (props.unifiedDiff === "") {
         return (

@@ -324,6 +324,28 @@ code {
     white-space: pre;
 }
 
+/* Trailing control matches Button secondary so it reads as an action, not code. */
+.file-diff-html .d2h-editor-line-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-inline-start: 0.75em;
+    padding: 0.05em 0.45em;
+    border: 1px solid var(--color-slate-700);
+    border-radius: 0.25rem;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    color: var(--color-slate-200);
+    text-decoration: none;
+    vertical-align: middle;
+}
+
+.file-diff-html .d2h-editor-line-link:hover,
+.file-diff-html .d2h-editor-line-link:focus-visible {
+    background-color: rgb(255 255 255 / 0.05);
+    text-decoration: none;
+}
+
 /* Highlight tokens inherit diff row backgrounds while adapting to app theme. */
 .file-diff-html .hljs-keyword,
 .file-diff-html .hljs-type,

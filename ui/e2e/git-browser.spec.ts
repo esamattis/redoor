@@ -282,4 +282,29 @@ test.describe.serial("Git browser", () => {
                 .getByRole("link", { name: "Git", exact: true }),
         ).toHaveCount(0);
     });
+
+    test("opens the editor at a diff line from the trailing Open link", async ({
+        page,
+    }) => {
+        await fs.writeFile(untrackedPath, "alpha\nbeta\ngamma\n");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(untrackedPath)}?view=git`,
+        );
+
+        const diff = page.getByRole("region", { name: "Full Git diff" });
+        await expect(diff).toContainText("gamma");
+        // Trailing Open is the only control that should navigate; the source text stays unlinked.
+        await expect(
+            diff.getByRole("link", { name: "Open line 3 in editor" }),
+        ).toBeVisible();
+        await diff
+            .getByRole("link", { name: "Open line 3 in editor" })
+            .click();
+
+        // ?line= must drop the Git view so the inbound editor jump can run.
+        await expect(page).toHaveURL(new RegExp(`[?&]line=3(?:&|$)`));
+        await expect(page).not.toHaveURL(/\bview=git\b/);
+        await expect(page.getByLabel("File editor")).toContainText("gamma");
+        await expect(page.getByLabel("Editor caret line")).toHaveText("3");
+    });
 });

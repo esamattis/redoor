@@ -327,6 +327,9 @@ export function GitDirectoryView(props: {
                                     <div className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden">
                                         <GitDiffResultView
                                             result={diff.result}
+                                            editorHref={props.agent.getBrowserUrl(
+                                                diff.path,
+                                            )}
                                         />
                                     </div>
                                 </section>
@@ -340,12 +343,16 @@ export function GitDirectoryView(props: {
 }
 
 /** Explains all non-text outcomes rather than presenting them as empty patches. */
-function GitDiffResultView(props: { result: GitDiffResult }) {
+function GitDiffResultView(props: {
+    result: GitDiffResult;
+    editorHref: string;
+}) {
     if (props.result.type === "text") {
         return (
             <UnifiedDiff
                 unifiedDiff={props.result.unified_diff}
                 emptyMessage="No changes in this comparison."
+                editorHref={props.editorHref}
             />
         );
     }
@@ -450,6 +457,7 @@ export function GitFileView(props: {
                                 type: "no_changes",
                             }
                         }
+                        editorHref={props.agent.getBrowserUrl(props.path)}
                     />
                 )}
             </section>
