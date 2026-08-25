@@ -1,7 +1,8 @@
 use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
 use redoor::{
-    actors,
+    Level, actors,
     commands::{Command, CommandResult, ErrorResponse, MoveFileRequest, MoveFileResponse},
+    log,
 };
 
 use super::{
@@ -23,6 +24,15 @@ pub(crate) async fn move_file_handler(
         Ok(path) => path,
         Err(response) => return *response,
     };
+    log!(
+        Level::Debug,
+        "Smart move request received: source_agent={}, source_path={}, dest_agent={}, dest_path={}, on_existing={:?}",
+        payload.source.agent,
+        source_path,
+        payload.dest.agent,
+        dest_path,
+        payload.on_existing
+    );
     if payload.source.agent == payload.dest.agent && source_path == dest_path {
         return (
             StatusCode::BAD_REQUEST,
@@ -46,7 +56,19 @@ pub(crate) async fn move_file_handler(
         })
         .await
     {
-        Ok(CommandResult::MoveMetadata(metadata)) => metadata,
+        Ok(CommandResult::MoveMetadata(metadata)) => {
+            log!(
+                Level::Debug,
+                "Smart move source metadata: source_agent={}, source_path={}, is_file={}, is_dir={}, file_size={}, identity={:?}",
+                payload.source.agent,
+                source_path,
+                metadata.is_file,
+                metadata.is_dir,
+                metadata.file_size,
+                metadata.identity
+            );
+            metadata
+        }
         Ok(CommandResult::Error { kind, message }) => {
             return (
                 command_error_status(&kind),
@@ -91,14 +113,16 @@ pub(crate) async fn move_file_handler(
             .into_response();
     };
 
+    let source_agent_id = payload.source.agent.clone();
+    let dest_agent_id = payload.dest.agent.clone();
     let move_request_id = match state
         .router_ref
         .request(30000, |reply| {
             actors::router::RouterMsg::StartCopyRest(actors::router::StartCopyRequest {
                 source_agent_id: payload.source.agent,
-                source_path,
+                source_path: source_path.clone(),
                 dest_agent_id: payload.dest.agent,
-                dest_path,
+                dest_path: dest_path.clone(),
                 total_bytes,
                 content_kind,
                 on_existing: payload.on_existing,
@@ -109,7 +133,20 @@ pub(crate) async fn move_file_handler(
         })
         .await
     {
-        Ok(Ok(request_id)) => request_id,
+        Ok(Ok(request_id)) => {
+            log!(
+                Level::Debug,
+                "Smart move started: move_request_id={}, source_agent={}, source_path={}, dest_agent={}, dest_path={}, content_kind={:?}, total_bytes={}",
+                request_id,
+                source_agent_id,
+                source_path,
+                dest_agent_id,
+                dest_path,
+                content_kind,
+                total_bytes
+            );
+            request_id
+        }
         Ok(Err(error)) => return router_error_response(error),
         Err(error) => {
             return (

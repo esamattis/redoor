@@ -71,6 +71,13 @@ pub(crate) fn finish_transfer(
                 .map(|entry| &entry.state),
             Some(crate::commands::TransferProgressState::Canceling)
         ) {
+            log!(
+                Level::Debug,
+                "Smart move destination completed while canceling; preserving source: public_request_id={}, agent_id={}, request_id={}",
+                public_request_id,
+                agent_id,
+                request_id
+            );
             // Cancellation before source deletion preserves the source even if destination publication won.
             acknowledge_remote_cancel(state, public_request_id, request_id);
             return true;
@@ -83,6 +90,15 @@ pub(crate) fn finish_transfer(
             .expect("remote moves must retain their source identity");
         let final_total_bytes =
             final_total_bytes(state, public_request_id, move_request.content_kind);
+        log!(
+            Level::Debug,
+            "Smart move destination published; starting source deletion: public_request_id={}, source_agent_id={}, source_path={}, source_identity={:?}, final_total_bytes={:?}",
+            public_request_id,
+            source_agent_id,
+            source_path,
+            source_identity,
+            final_total_bytes
+        );
         begin_source_deletion(
             state,
             public_request_id,
@@ -96,6 +112,15 @@ pub(crate) fn finish_transfer(
 
     match result {
         CommandResult::Error { message, .. } => {
+            log!(
+                Level::Debug,
+                "Smart move command failed: public_request_id={}, agent_id={}, request_id={}, deleting_source={}, message={}",
+                public_request_id,
+                agent_id,
+                request_id,
+                deleting_source,
+                message
+            );
             if matches!(
                 state
                     .progress
@@ -119,9 +144,24 @@ pub(crate) fn finish_transfer(
             }
         }
         CommandResult::RawDelete if deleting_source => {
+            log!(
+                Level::Debug,
+                "Smart move source deletion completed: public_request_id={}, agent_id={}, request_id={}",
+                public_request_id,
+                agent_id,
+                request_id
+            );
             progress::mark_copy_transfer_completed(state, public_request_id, None);
         }
         CommandResult::LocalMove { atomic } => {
+            log!(
+                Level::Debug,
+                "Smart move local completion: public_request_id={}, agent_id={}, request_id={}, atomic={}",
+                public_request_id,
+                agent_id,
+                request_id,
+                atomic
+            );
             if let Some(entry) = state.progress.entries.get_mut(&public_request_id) {
                 // Copy/delete and cross-agent completions never take this arm, so they stay false.
                 entry.atomic = atomic;
@@ -208,13 +248,22 @@ fn begin_source_deletion(
     {
         entry.total_bytes = total_bytes;
     }
+    log!(
+        Level::Debug,
+        "Smart move queuing source deletion: public_request_id={}, source_agent_id={}, delete_request_id={}, source_path={}, source_identity={:?}",
+        public_request_id,
+        source_agent_id,
+        delete_request_id,
+        source_path,
+        source_identity
+    );
     let command_queued = state
         .agents
         .by_id
         .get(&source_agent_id)
         .is_some_and(|source_agent| {
             source_agent.send_message(Message::Command {
-                agent_id: source_agent_id,
+                agent_id: source_agent_id.clone(),
                 request_id: delete_request_id,
                 command: Command::DeleteMoveSource {
                     path: source_path,
@@ -223,6 +272,12 @@ fn begin_source_deletion(
             })
         });
     if !command_queued {
+        log!(
+            Level::Debug,
+            "Smart move source deletion not queued; source agent unavailable: public_request_id={}, source_agent_id={}",
+            public_request_id,
+            source_agent_id
+        );
         progress::mark_transfer_errored(
             state,
             public_request_id,

@@ -59,8 +59,8 @@ impl AgentActor {
     ) {
         let result = self
             .run_local_move(
-                PathBuf::from(source_path),
-                PathBuf::from(dest_path),
+                PathBuf::from(&source_path),
+                PathBuf::from(&dest_path),
                 source_is_directory,
                 expected_identity,
                 on_existing,
@@ -68,8 +68,31 @@ impl AgentActor {
             )
             .await;
         let result = match result {
-            Ok(atomic) => CommandResult::LocalMove { atomic },
-            Err(error) => AgentCommandError::from(error).into(),
+            Ok(atomic) => {
+                log!(
+                    Level::Debug,
+                    "Smart move completed: source={}, dest={}, atomic={}, method={}",
+                    source_path,
+                    dest_path,
+                    atomic,
+                    if atomic {
+                        "filesystem_rename"
+                    } else {
+                        "transfer_copy_delete"
+                    }
+                );
+                CommandResult::LocalMove { atomic }
+            }
+            Err(error) => {
+                log!(
+                    Level::Debug,
+                    "Smart move failed: source={}, dest={}, error={}",
+                    source_path,
+                    dest_path,
+                    error
+                );
+                AgentCommandError::from(error).into()
+            }
         };
         self.send_command_response(
             response.write,
@@ -90,6 +113,15 @@ impl AgentActor {
         on_existing: CopyExistingMode,
         response: &LocalCopyResponseContext<'_>,
     ) -> Result<bool, LocalMoveError> {
+        log!(
+            Level::Debug,
+            "Smart move started: source={}, dest={}, directory={}, on_existing={:?}, expected_identity={:?}",
+            source.display(),
+            dest.display(),
+            source_is_directory,
+            on_existing,
+            expected_identity
+        );
         validate_local_copy_destination(&source, &dest, source_is_directory).await?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
         validate_local_copy_parent(&dest).await?;
@@ -106,11 +138,36 @@ impl AgentActor {
                 }
             })?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
+        {
+            use std::os::unix::fs::MetadataExt;
+            log!(
+                Level::Debug,
+                "Smart move source inspected: source={}, device={}, inode={}, directory={}, symlink={}, file={}, size={}, mtime={}.{}",
+                source.display(),
+                source_metadata.dev(),
+                source_metadata.ino(),
+                source_metadata.is_dir(),
+                source_metadata.file_type().is_symlink(),
+                source_metadata.is_file(),
+                source_metadata.len(),
+                source_metadata.mtime(),
+                source_metadata.mtime_nsec()
+            );
+        }
         if source_is_directory != source_metadata.is_dir()
             || (!source_is_directory
                 && !source_metadata.is_file()
                 && !source_metadata.file_type().is_symlink())
         {
+            log!(
+                Level::Debug,
+                "Smart move source type mismatch: source={}, expected_directory={}, is_dir={}, is_file={}, is_symlink={}",
+                source.display(),
+                source_is_directory,
+                source_metadata.is_dir(),
+                source_metadata.is_file(),
+                source_metadata.file_type().is_symlink()
+            );
             return Err(if source_is_directory {
                 LocalCopyError::SourceNotDirectory(source.display().to_string()).into()
             } else {
@@ -118,6 +175,13 @@ impl AgentActor {
             });
         }
         if !move_source_matches_identity(&source, &source_metadata, &expected_identity).await? {
+            log!(
+                Level::Debug,
+                "Smart move source identity mismatch before rename: source={}, expected_identity={:?}, actual_identity={:?}",
+                source.display(),
+                expected_identity,
+                move_source_identity(&source_metadata)
+            );
             return Err(LocalMoveError::SourceChanged);
         }
         let destination_exists = destination_entry_exists(&dest).await?;
@@ -130,8 +194,33 @@ impl AgentActor {
         })?;
         super::copy::ensure_local_copy_active(&response.cancel)?;
         let same_mount = metadata_on_same_mount(&source_metadata, &dest_parent_metadata);
+        let atomic_rename = can_use_atomic_rename(same_mount, destination_exists, on_existing);
+        {
+            use std::os::unix::fs::MetadataExt;
+            log!(
+                Level::Debug,
+                "Smart move placement decided: source={}, dest={}, dest_parent={}, source_device={}, dest_parent_device={}, same_mount={}, destination_exists={}, on_existing={:?}, atomic_rename={}",
+                source.display(),
+                dest.display(),
+                dest_parent.display(),
+                source_metadata.dev(),
+                dest_parent_metadata.dev(),
+                same_mount,
+                destination_exists,
+                on_existing,
+                atomic_rename
+            );
+        }
 
-        if can_use_atomic_rename(same_mount, destination_exists, on_existing) {
+        if atomic_rename {
+            log!(
+                Level::Debug,
+                "Smart move attempting atomic rename: source={}, dest={}, destination_exists={}, on_existing={:?}",
+                source.display(),
+                dest.display(),
+                destination_exists,
+                on_existing
+            );
             match rename_same_filesystem(
                 source.clone(),
                 dest.clone(),
@@ -140,21 +229,70 @@ impl AgentActor {
             )
             .await
             {
-                Ok(SameFilesystemRenameResult::Renamed) => return Ok(true),
+                Ok(SameFilesystemRenameResult::Renamed) => {
+                    log!(
+                        Level::Debug,
+                        "Smart move atomic rename published destination: source={}, dest={}, method=rename",
+                        source.display(),
+                        dest.display()
+                    );
+                    return Ok(true);
+                }
                 Ok(SameFilesystemRenameResult::Exchanged) => {
+                    log!(
+                        Level::Debug,
+                        "Smart move atomic exchange published destination: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
                     finish_atomic_override(source, dest).await?;
                     return Ok(true);
                 }
-                Ok(SameFilesystemRenameResult::CopyRequired) => {}
-                Err(error) => return Err(LocalMoveError::RenameSource(error)),
+                Ok(SameFilesystemRenameResult::CopyRequired) => {
+                    log!(
+                        Level::Debug,
+                        "Smart move atomic rename requested copy/delete fallback: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
+                }
+                Err(error) => {
+                    log!(
+                        Level::Debug,
+                        "Smart move atomic rename failed: source={}, dest={}, error={}",
+                        source.display(),
+                        dest.display(),
+                        error
+                    );
+                    return Err(LocalMoveError::RenameSource(error));
+                }
             }
         }
 
+        let copy_kind = if source_metadata.file_type().is_symlink() {
+            "symlink"
+        } else if source_is_directory {
+            "directory"
+        } else {
+            "file"
+        };
+        log!(
+            Level::Debug,
+            "Smart move using copy/delete: source={}, dest={}, kind={}, copy_fallback=true",
+            source.display(),
+            dest.display(),
+            copy_kind
+        );
         if source_metadata.file_type().is_symlink() {
             self.run_local_copy_symlink(source.clone(), dest, on_existing, response)
                 .await?;
             super::copy::ensure_local_copy_active(&response.cancel)?;
             verify_move_source_identity(&source, &expected_identity).await?;
+            log!(
+                Level::Debug,
+                "Smart move deleting copied symlink source: source={}",
+                source.display()
+            );
             tokio::fs::remove_file(source)
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
@@ -164,6 +302,11 @@ impl AgentActor {
             // Cancellation after destination publication still wins before destructive source deletion.
             super::copy::ensure_local_copy_active(&response.cancel)?;
             verify_move_source_identity(&source, &expected_identity).await?;
+            log!(
+                Level::Debug,
+                "Smart move deleting copied directory source: source={}",
+                source.display()
+            );
             redoor::safe_fs::safe_rm_all(source)
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
@@ -173,6 +316,11 @@ impl AgentActor {
             // Source preservation is the final cancel boundary for cross-device file moves.
             super::copy::ensure_local_copy_active(&response.cancel)?;
             verify_move_source_identity(&source, &expected_identity).await?;
+            log!(
+                Level::Debug,
+                "Smart move deleting copied file source: source={}",
+                source.display()
+            );
             tokio::fs::remove_file(source)
                 .await
                 .map_err(LocalMoveError::DeleteSource)?;
@@ -200,10 +348,23 @@ async fn verify_move_source_identity(
     source: &Path,
     expected_identity: &MoveSourceIdentity,
 ) -> Result<(), LocalMoveError> {
-    let metadata = tokio::fs::symlink_metadata(source)
-        .await
-        .map_err(LocalMoveError::DeleteSource)?;
+    let metadata = tokio::fs::symlink_metadata(source).await.map_err(|error| {
+        log!(
+            Level::Debug,
+            "Smart move source disappeared before deletion: source={}, error={}",
+            source.display(),
+            error
+        );
+        LocalMoveError::DeleteSource(error)
+    })?;
     if !move_source_matches_identity(source, &metadata, expected_identity).await? {
+        log!(
+            Level::Debug,
+            "Smart move source identity mismatch before deletion: source={}, expected_identity={:?}, actual_identity={:?}",
+            source.display(),
+            expected_identity,
+            move_source_identity(&metadata)
+        );
         return Err(LocalMoveError::SourceChanged);
     }
     Ok(())
@@ -215,16 +376,41 @@ async fn move_source_matches_identity(
     entry_metadata: &std::fs::Metadata,
     expected_identity: &MoveSourceIdentity,
 ) -> Result<bool, LocalMoveError> {
-    if move_source_identity(entry_metadata) == *expected_identity {
+    let entry_identity = move_source_identity(entry_metadata);
+    if entry_identity == *expected_identity {
+        log!(
+            Level::Debug,
+            "Smart move source identity matched entry: source={}, identity={:?}",
+            source.display(),
+            entry_identity
+        );
         return Ok(true);
     }
     if !entry_metadata.file_type().is_symlink() {
+        log!(
+            Level::Debug,
+            "Smart move source identity did not match non-symlink entry: source={}, expected_identity={:?}, actual_identity={:?}",
+            source.display(),
+            expected_identity,
+            entry_identity
+        );
         return Ok(false);
     }
     let target_metadata = tokio::fs::metadata(source)
         .await
         .map_err(LocalMoveError::DeleteSource)?;
-    Ok(move_source_identity(&target_metadata) == *expected_identity)
+    let target_identity = move_source_identity(&target_metadata);
+    let matched = target_identity == *expected_identity;
+    log!(
+        Level::Debug,
+        "Smart move source identity compared through symlink target: source={}, matched={}, expected_identity={:?}, entry_identity={:?}, target_identity={:?}",
+        source.display(),
+        matched,
+        expected_identity,
+        entry_identity,
+        target_identity
+    );
+    Ok(matched)
 }
 
 /// Separates completed same-filesystem renames from authoritative cross-device copy fallback.
@@ -250,6 +436,13 @@ async fn finish_atomic_override(source: PathBuf, dest: PathBuf) -> Result<(), Lo
         }
         match tokio::fs::rename(&source, &candidate).await {
             Ok(()) => {
+                log!(
+                    Level::Debug,
+                    "Smart move hid displaced destination: source={}, dest={}, cleanup={}",
+                    source.display(),
+                    dest.display(),
+                    candidate.display()
+                );
                 cleanup_path = Some(candidate);
                 break;
             }
@@ -277,6 +470,12 @@ async fn finish_atomic_override(source: PathBuf, dest: PathBuf) -> Result<(), Lo
             cleanup_path.display(),
             error
         );
+    } else {
+        log!(
+            Level::Debug,
+            "Smart move removed displaced destination: cleanup={}",
+            cleanup_path.display()
+        );
     }
     Ok(())
 }
@@ -303,10 +502,25 @@ async fn rename_same_filesystem(
     destination_exists: bool,
     on_existing: CopyExistingMode,
 ) -> std::io::Result<SameFilesystemRenameResult> {
+    log!(
+        Level::Debug,
+        "Smart move same-filesystem rename started: source={}, dest={}, destination_exists={}, on_existing={:?}",
+        source.display(),
+        dest.display(),
+        destination_exists,
+        on_existing
+    );
     if on_existing == CopyExistingMode::Override {
         return rename_replacing_destination(source, dest, destination_exists).await;
     }
     let outcome = rename_without_replacement(&source, &dest).await?;
+    log!(
+        Level::Debug,
+        "Smart move no-replace rename outcome: source={}, dest={}, outcome={:?}",
+        source.display(),
+        dest.display(),
+        outcome
+    );
     if outcome == AtomicRenameOutcome::Unsupported {
         log!(
             Level::Debug,
@@ -325,16 +539,41 @@ async fn rename_replacing_destination(
     mut destination_exists: bool,
 ) -> std::io::Result<SameFilesystemRenameResult> {
     for _ in 0..16 {
+        log!(
+            Level::Debug,
+            "Smart move replacement rename attempt: source={}, dest={}, destination_exists={}",
+            source.display(),
+            dest.display(),
+            destination_exists
+        );
         if destination_exists {
             match exchange_existing_paths(&source, &dest).await? {
                 AtomicRenameOutcome::Renamed => {
+                    log!(
+                        Level::Debug,
+                        "Smart move exchange succeeded: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
                     return Ok(SameFilesystemRenameResult::Exchanged);
                 }
                 AtomicRenameOutcome::Missing => {
+                    log!(
+                        Level::Debug,
+                        "Smart move exchange found destination missing; retrying rename: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
                     destination_exists = false;
                     continue;
                 }
                 AtomicRenameOutcome::CrossDevice => {
+                    log!(
+                        Level::Debug,
+                        "Smart move exchange crossed devices: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
                     return Ok(SameFilesystemRenameResult::CopyRequired);
                 }
                 AtomicRenameOutcome::Unsupported => {
@@ -345,12 +584,34 @@ async fn rename_replacing_destination(
                         dest.display()
                     );
                 }
-                AtomicRenameOutcome::DestinationExists => {}
+                AtomicRenameOutcome::DestinationExists => {
+                    log!(
+                        Level::Debug,
+                        "Smart move exchange reported destination exists unexpectedly: source={}, dest={}",
+                        source.display(),
+                        dest.display()
+                    );
+                }
             }
         }
         return match tokio::fs::rename(&source, &dest).await {
-            Ok(()) => Ok(SameFilesystemRenameResult::Renamed),
+            Ok(()) => {
+                log!(
+                    Level::Debug,
+                    "Smart move replacement rename succeeded: source={}, dest={}",
+                    source.display(),
+                    dest.display()
+                );
+                Ok(SameFilesystemRenameResult::Renamed)
+            }
             Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                log!(
+                    Level::Debug,
+                    "Smart move replacement rename crossed devices: source={}, dest={}, error={}",
+                    source.display(),
+                    dest.display(),
+                    error
+                );
                 Ok(SameFilesystemRenameResult::CopyRequired)
             }
             Err(error)
@@ -368,7 +629,16 @@ async fn rename_replacing_destination(
                 );
                 Ok(SameFilesystemRenameResult::CopyRequired)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                log!(
+                    Level::Debug,
+                    "Smart move replacement rename failed: source={}, dest={}, error={}",
+                    source.display(),
+                    dest.display(),
+                    error
+                );
+                Err(error)
+            }
         };
     }
     Err(std::io::Error::new(
@@ -384,7 +654,7 @@ fn classify_strict_rename_outcome(
     source: &Path,
     dest: &Path,
 ) -> std::io::Result<SameFilesystemRenameResult> {
-    match outcome {
+    let result = match outcome {
         AtomicRenameOutcome::Renamed => Ok(SameFilesystemRenameResult::Renamed),
         AtomicRenameOutcome::DestinationExists if on_existing == CopyExistingMode::Merge => {
             Ok(SameFilesystemRenameResult::CopyRequired)
@@ -405,7 +675,28 @@ fn classify_strict_rename_outcome(
         )),
         AtomicRenameOutcome::CrossDevice => Ok(SameFilesystemRenameResult::CopyRequired),
         AtomicRenameOutcome::Unsupported => Ok(SameFilesystemRenameResult::CopyRequired),
+    };
+    match &result {
+        Ok(classified) => log!(
+            Level::Debug,
+            "Smart move classified no-replace outcome: source={}, dest={}, outcome={:?}, on_existing={:?}, result={:?}",
+            source.display(),
+            dest.display(),
+            outcome,
+            on_existing,
+            classified
+        ),
+        Err(error) => log!(
+            Level::Debug,
+            "Smart move classified no-replace failure: source={}, dest={}, outcome={:?}, on_existing={:?}, error={}",
+            source.display(),
+            dest.display(),
+            outcome,
+            on_existing,
+            error
+        ),
     }
+    result
 }
 
 /// Selects atomic rename for new names and for overrides that may exchange any entry types.

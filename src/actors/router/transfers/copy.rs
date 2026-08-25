@@ -192,6 +192,21 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 },
             );
 
+            if request.operation == CopyOperation::Move {
+                log!(
+                    Level::Debug,
+                    "Smart move routing started: public_request_id={}, source_agent_id={}, dest_agent_id={}, source_path={}, dest_path={}, local={}, content_kind={:?}, on_existing={:?}, source_identity={:?}",
+                    public_request_id,
+                    request.source_agent_id,
+                    request.dest_agent_id,
+                    request.source_path,
+                    request.dest_path,
+                    request.source_agent_id == request.dest_agent_id,
+                    request.content_kind,
+                    request.on_existing,
+                    request.source_identity
+                );
+            }
             if request.source_agent_id == request.dest_agent_id {
                 let local_request_id = state.next_id();
 

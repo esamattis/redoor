@@ -195,16 +195,36 @@ impl CommandHandler {
     /// Captures the source identity before a move starts so later deletion is conditional.
     async fn move_metadata(&self, path: String) -> CommandResult {
         match tokio::fs::metadata(&path).await {
-            Ok(metadata) => CommandResult::MoveMetadata(MoveMetadataResult {
-                file_size: metadata.len(),
-                is_file: metadata.is_file(),
-                is_dir: metadata.is_dir(),
-                identity: move_source_identity(&metadata),
-            }),
-            Err(error) => CommandResult::io_error(
-                &format!("Failed to get move source metadata for path {path:?}"),
-                error,
-            ),
+            Ok(metadata) => {
+                let identity = move_source_identity(&metadata);
+                crate::log!(
+                    Level::Debug,
+                    "Smart move metadata captured: path={}, is_file={}, is_dir={}, file_size={}, identity={:?}",
+                    path,
+                    metadata.is_file(),
+                    metadata.is_dir(),
+                    metadata.len(),
+                    identity
+                );
+                CommandResult::MoveMetadata(MoveMetadataResult {
+                    file_size: metadata.len(),
+                    is_file: metadata.is_file(),
+                    is_dir: metadata.is_dir(),
+                    identity,
+                })
+            }
+            Err(error) => {
+                crate::log!(
+                    Level::Debug,
+                    "Smart move metadata failed: path={}, error={}",
+                    path,
+                    error
+                );
+                CommandResult::io_error(
+                    &format!("Failed to get move source metadata for path {path:?}"),
+                    error,
+                )
+            }
         }
     }
 
@@ -235,34 +255,80 @@ impl CommandHandler {
         C: FnOnce(std::path::PathBuf) -> F,
         F: Future<Output = std::io::Result<()>> + Send + 'static,
     {
+        crate::log!(
+            Level::Debug,
+            "Smart move source deletion started: path={}, expected_identity={:?}",
+            path,
+            expected_identity
+        );
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata,
             Err(error) => {
+                crate::log!(
+                    Level::Debug,
+                    "Smart move source deletion could not inspect source: path={}, error={}",
+                    path,
+                    error
+                );
                 return CommandResult::io_error(
                     &format!("Failed to verify move source path {path:?}"),
                     error,
                 );
             }
         };
-        if move_source_identity(&metadata) != expected_identity {
+        let actual_identity = move_source_identity(&metadata);
+        if actual_identity != expected_identity {
+            crate::log!(
+                Level::Debug,
+                "Smart move source deletion refused after identity change: path={}, expected_identity={:?}, actual_identity={:?}",
+                path,
+                expected_identity,
+                actual_identity
+            );
             return CommandResult::error(
                 CommandErrorKind::InvalidInput,
                 "Move source changed while it was being copied; refusing to delete it",
             );
         }
         if !metadata.is_dir() {
+            crate::log!(
+                Level::Debug,
+                "Smart move deleting file source: path={}, identity={:?}",
+                path,
+                actual_identity
+            );
             return match tokio::fs::remove_file(&path).await {
                 Ok(()) => CommandResult::RawDelete,
-                Err(error) => CommandResult::io_error("Failed to delete move source", error),
+                Err(error) => {
+                    crate::log!(
+                        Level::Debug,
+                        "Smart move file source deletion failed: path={}, error={}",
+                        path,
+                        error
+                    );
+                    CommandResult::io_error("Failed to delete move source", error)
+                }
             };
         }
         if let Err(error) = crate::safe_fs::validate_recursive_remove(&path).await {
             return CommandResult::io_error("Failed to validate move source deletion", error);
         }
 
+        crate::log!(
+            Level::Debug,
+            "Smart move quarantining directory source: path={}, identity={:?}",
+            path,
+            actual_identity
+        );
         let quarantine_path = match quarantine_move_source(std::path::Path::new(&path)).await {
             Ok(path) => path,
             Err(error) => {
+                crate::log!(
+                    Level::Debug,
+                    "Smart move source quarantine failed: path={}, error={}",
+                    path,
+                    error
+                );
                 return CommandResult::io_error("Failed to quarantine move source", error);
             }
         };
