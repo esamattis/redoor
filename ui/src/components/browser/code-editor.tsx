@@ -3,7 +3,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { bbedit } from "@uiw/codemirror-theme-bbedit";
 import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { search } from "@codemirror/search";
-import { Prec } from "@codemirror/state";
+import { Prec, type EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim, Vim } from "@replit/codemirror-vim";
 import {
@@ -67,7 +67,7 @@ function useFocusEditorShortcut(view: EditorView | null) {
     }, [view]);
 }
 
-/** Moves the caret to a 1-based line from the URL so bookmarks open at that location. */
+/** Selects the inbound ?line= target and centers it so the opened location is obvious in a tall buffer. */
 function moveCaretToLine(view: EditorView, line: number) {
     const lineCount = view.state.doc.lines;
     // Empty documents have no real line to reveal; clamping would still dispatch a no-op caret.
@@ -77,9 +77,21 @@ function moveCaretToLine(view: EditorView, line: number) {
     const clamped = Math.min(Math.max(line, 1), lineCount);
     const docLine = view.state.doc.line(clamped);
     view.dispatch({
-        selection: { anchor: docLine.from },
-        effects: EditorView.scrollIntoView(docLine.from, { y: "nearest" }),
+        selection: { anchor: docLine.from, head: docLine.to },
+        effects: EditorView.scrollIntoView(docLine.from, { y: "center" }),
     });
+}
+
+/** Reads the current range so chrome and tests can follow the editor selection. */
+function editorSelectionFromState(state: EditorState): EditorSelection | null {
+    const selection = state.selection.main;
+    if (selection.empty) {
+        return null;
+    }
+    return {
+        text: state.sliceDoc(selection.from, selection.to),
+        startLine: state.doc.lineAt(selection.from).number,
+    };
 }
 
 /** Applies inbound ?line= once the view exists so typing and saves do not re-scroll. */
@@ -129,6 +141,7 @@ export function CodeEditor(props: {
     const [view, setView] = React.useState<EditorView | null>(null);
     const [documentRevision, setDocumentRevision] = React.useState(0);
     const [caretLine, setCaretLine] = React.useState<number | null>(null);
+    const [selectedText, setSelectedText] = React.useState<string | null>(null);
     const firstLineEnd = props.value.indexOf("\n");
     const firstLine = props.value.slice(
         0,
@@ -256,6 +269,11 @@ export function CodeEditor(props: {
                         {String(caretLine)}
                     </span>
                 )}
+                {selectedText === null ? null : (
+                    <span className="sr-only" aria-label="Editor selected text">
+                        {selectedText}
+                    </span>
+                )}
                 <CodeMirror
                     ref={editorRef}
                     value={props.value}
@@ -277,23 +295,16 @@ export function CodeEditor(props: {
                     onUpdate={(update) => {
                         if (update.docChanged || update.selectionSet) {
                             setDocumentRevision((revision) => revision + 1);
-                            const selection = update.state.selection.main;
                             setCaretLine(
-                                update.state.doc.lineAt(selection.head).number,
+                                update.state.doc.lineAt(
+                                    update.state.selection.main.head,
+                                ).number,
                             );
-                            props.onSelectionChange(
-                                selection.empty
-                                    ? null
-                                    : {
-                                          text: update.state.sliceDoc(
-                                              selection.from,
-                                              selection.to,
-                                          ),
-                                          startLine: update.state.doc.lineAt(
-                                              selection.from,
-                                          ).number,
-                                      },
+                            const nextSelection = editorSelectionFromState(
+                                update.state,
                             );
+                            setSelectedText(nextSelection?.text ?? null);
+                            props.onSelectionChange(nextSelection);
                         }
                     }}
                     className="h-full min-h-0"
