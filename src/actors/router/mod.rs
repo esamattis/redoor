@@ -88,6 +88,19 @@ impl RouterHandle {
             }
         }
     }
+
+    /// Runs a request/reply interaction whose operation has no bounded completion time.
+    pub async fn request_unbounded<T, F>(&self, build: F) -> Result<T, RouterCallError>
+    where
+        T: Send + 'static,
+        F: FnOnce(oneshot::Sender<T>) -> RouterMsg,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send_async(build(reply_tx))
+            .await
+            .map_err(|_| RouterCallError::RouterStopped)?;
+        reply_rx.await.map_err(|_| RouterCallError::RouterStopped)
+    }
 }
 
 /// Stable error type used by server code that previously relied on `call_t!`.

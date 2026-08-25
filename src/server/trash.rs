@@ -169,7 +169,7 @@ pub(crate) async fn restore_trash_handler(
     }
     match state
         .router_ref
-        .request(30000, |reply| {
+        .request_unbounded(|reply| {
             actors::router::RouterMsg::ExecuteCommandRest(actors::router::ExecuteCommandRequest {
                 agent_id: agent_id.clone(),
                 command: Command::RestoreTrash {
