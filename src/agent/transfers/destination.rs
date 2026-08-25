@@ -1,3 +1,4 @@
+use redoor::atomic_rename::{AtomicRenameOutcome, rename_without_replacement};
 use redoor::commands::CopyExistingMode;
 use redoor::{Level, log};
 use std::path::{Path, PathBuf};
@@ -28,6 +29,8 @@ pub(crate) enum DestinationPlaceError {
     MergeEntry { from: String, to: String },
     #[error("Failed to place destination from {from} to {to}")]
     PlaceDestination { from: String, to: String },
+    #[error("Atomic no-replacement publication is unsupported for destination: {0}")]
+    ExclusivePublicationUnsupported(String),
     #[error("Failed to move existing destination aside before override: {0}")]
     BackupExistingDestination(#[source] std::io::Error),
     #[error("Failed to read merge source directory: {0}")]
@@ -51,6 +54,7 @@ impl DestinationPlaceError {
             Self::AlreadyExists(_) => redoor::commands::CommandErrorKind::AlreadyExists,
             Self::TypeMismatch { .. }
             | Self::SymlinkDestination(_)
+            | Self::ExclusivePublicationUnsupported(_)
             | Self::UnsupportedMergeEntryType(_) => {
                 redoor::commands::CommandErrorKind::InvalidInput
             }
@@ -210,6 +214,10 @@ pub(crate) async fn place_temp_at_destination(
     on_existing: CopyExistingMode,
     content_is_directory: bool,
 ) -> Result<(), DestinationPlaceError> {
+    if on_existing == CopyExistingMode::Error {
+        return place_temp_without_replacement(temp_path, final_path).await;
+    }
+
     let exists = destination_entry_exists(final_path).await?;
 
     if !exists {
@@ -222,9 +230,7 @@ pub(crate) async fn place_temp_at_destination(
     }
 
     match on_existing {
-        CopyExistingMode::Error => Err(DestinationPlaceError::AlreadyExists(
-            final_path.display().to_string(),
-        )),
+        CopyExistingMode::Error => unreachable!("strict publication returns before inspection"),
         CopyExistingMode::Override => {
             publish_over_existing_with_backup(temp_path, final_path).await
         }
@@ -243,6 +249,36 @@ pub(crate) async fn place_temp_at_destination(
                     }
                 })
             }
+        }
+    }
+}
+
+/// Keeps the strict conflict policy authoritative at the final filesystem publication boundary.
+async fn place_temp_without_replacement(
+    temp_path: &Path,
+    final_path: &Path,
+) -> Result<(), DestinationPlaceError> {
+    let outcome = rename_without_replacement(temp_path, final_path)
+        .await
+        .map_err(|_| DestinationPlaceError::PlaceDestination {
+            from: temp_path.display().to_string(),
+            to: final_path.display().to_string(),
+        })?;
+    match outcome {
+        AtomicRenameOutcome::Renamed => Ok(()),
+        AtomicRenameOutcome::DestinationExists => Err(DestinationPlaceError::AlreadyExists(
+            final_path.display().to_string(),
+        )),
+        AtomicRenameOutcome::Unsupported => {
+            Err(DestinationPlaceError::ExclusivePublicationUnsupported(
+                final_path.display().to_string(),
+            ))
+        }
+        AtomicRenameOutcome::Missing | AtomicRenameOutcome::CrossDevice => {
+            Err(DestinationPlaceError::PlaceDestination {
+                from: temp_path.display().to_string(),
+                to: final_path.display().to_string(),
+            })
         }
     }
 }
@@ -357,6 +393,42 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use redoor::commands::CommandErrorKind;
+
+    #[tokio::test]
+    async fn strict_publication_preserves_an_existing_destination() {
+        let temp_dir = TempDir::create();
+        let temp = temp_dir.path().join("temp");
+        let destination = temp_dir.path().join("destination");
+        tokio::fs::write(&temp, "new contents")
+            .await
+            .expect("temporary content should be created");
+        tokio::fs::write(&destination, "competing contents")
+            .await
+            .expect("competing destination should be created");
+
+        let error = place_temp_at_destination(&temp, &destination, CopyExistingMode::Error, false)
+            .await
+            .expect_err("strict publication must reject an occupied destination");
+
+        assert!(
+            matches!(error, DestinationPlaceError::AlreadyExists(_)),
+            "the atomic collision should retain the public conflict classification"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&destination)
+                .await
+                .expect("competing destination should remain readable"),
+            "competing contents",
+            "strict publication must not replace a destination that wins publication"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&temp)
+                .await
+                .expect("temporary source should remain readable"),
+            "new contents",
+            "a rejected publication must preserve the completed temporary content"
+        );
+    }
 
     #[tokio::test]
     async fn merge_rejects_symlink_destination_root() {
