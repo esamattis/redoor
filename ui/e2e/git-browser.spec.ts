@@ -126,6 +126,16 @@ test.describe.serial("Git browser", () => {
             name: /Git diff for/,
         });
         await expect(directoryDiffs).toHaveCount(5);
+        // Diff box titles open the file edit view without using the status list.
+        await expect(
+            page
+                .getByRole("region", { name: `Git diff for ${trackedPath}` })
+                .getByRole("heading")
+                .getByRole("link", { name: "tracked.ts", exact: true }),
+        ).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(trackedPath)}`,
+        );
         // Patches follow first appearance in the grouped status rows, with duplicate rows de-duplicated.
         expect(
             await directoryDiffs.evaluateAll((regions) =>
