@@ -324,12 +324,21 @@ code {
     white-space: pre;
 }
 
+/* The inner code wrapper is content-sized, so anchor the action to the full cell. */
+.file-diff-html .d2h-editor-line-cell {
+    position: relative;
+    padding-inline-end: 5em;
+}
+
 /* Trailing control matches Button secondary so it reads as an action, not code. */
 .file-diff-html .d2h-editor-line-link {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    margin-inline-start: 0.75em;
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: 0.5em;
+    transform: translateY(-50%);
     padding: 0.05em 0.45em;
     border: 1px solid var(--color-slate-700);
     border-radius: 0.25rem;

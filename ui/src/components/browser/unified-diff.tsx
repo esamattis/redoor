@@ -109,16 +109,18 @@ function appendEditorLineLinks(root: HTMLElement, editorHref: string) {
     for (const row of root.querySelectorAll("tr")) {
         const line = newFileLineNumber(row);
         const codeLine = row.querySelector(".d2h-code-line");
-        if (line === undefined || codeLine === null) {
+        const codeCell = codeLine?.parentElement;
+        if (line === undefined || codeCell === null || codeCell === undefined) {
             continue;
         }
+        codeCell.classList.add("d2h-editor-line-cell");
         const link = document.createElement("a");
         link.href = `${editorHref}?line=${String(line)}`;
         link.dataset.editorLine = String(line);
         link.className = "d2h-editor-line-link";
         link.setAttribute("aria-label", `Open line ${String(line)} in editor`);
         link.textContent = "Open";
-        codeLine.append(link);
+        codeCell.append(link);
     }
 }
 
