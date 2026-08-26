@@ -386,11 +386,11 @@ impl AuthState {
                 {
                     Ok(Ok(valid)) => valid,
                     Ok(Err(error)) => {
-                        log!(Level::Error, "PAM authentication failed: {error}");
+                        log!(Level::Error, "PAM authentication failed: {error:#}");
                         false
                     }
                     Err(error) => {
-                        log!(Level::Error, "PAM authentication task failed: {error}");
+                        log!(Level::Error, "PAM authentication task failed: {error:#}");
                         false
                     }
                 }
@@ -610,7 +610,7 @@ pub(crate) async fn login_handler(
         Ok(session_id) => session_id,
         Err(error) => {
             // Keep IO/path details off the wire; operators still see them in server logs.
-            log!(Level::Error, "Failed to create session: {error}");
+            log!(Level::Error, "Failed to create session: {error:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -647,7 +647,7 @@ pub(crate) async fn logout_handler(
     headers: HeaderMap,
 ) -> Response {
     if let Err(error) = state.auth.delete_session(&headers).await {
-        log!(Level::Error, "Failed to delete session: {error}");
+        log!(Level::Error, "Failed to delete session: {error:#}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

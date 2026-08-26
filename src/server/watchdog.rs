@@ -167,6 +167,20 @@ fn ssh_backed_spawn_fn(
     redoor_port: u16,
     agent_token: String,
 ) -> SpawnFn {
+    log!(
+        Level::Debug,
+        "Creating managed SSH spawn closure: target={}, ssh_server_port={}, name={:?}, remote_bin={:?}, home={:?}, log={:?}, username={:?}",
+        config.target,
+        config
+            .ssh_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "ssh-config".to_string()),
+        config.name,
+        config.remote_bin,
+        config.home,
+        config.log,
+        config.username
+    );
     let diagnostic_log = config.log.clone();
     let config = std::sync::Arc::new(config);
     let spawn = SpawnFn::new(move |status| {
@@ -186,15 +200,45 @@ async fn ssh_backed_spawn_once(
     agent_token: String,
     status: redoor::watchdog::ProvisioningStatusSink,
 ) -> Result<Child, String> {
+    let attempt_start = std::time::Instant::now();
+    log!(
+        Level::Debug,
+        "Managed SSH spawn attempt started: target={}, ssh_server_port={}, name={:?}, remote_bin={:?}, home={:?}, redoor_port={}, has_password={}",
+        config.target,
+        config
+            .ssh_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "ssh-config".to_string()),
+        config.name,
+        config.remote_bin,
+        config.home,
+        redoor_port,
+        config.password.is_some()
+    );
     let prepared =
         match crate::ssh::prepare_ssh_backed_agent(&config, redoor_port, &agent_token, &status)
             .await
         {
-            Ok(prepared) => prepared,
+            Ok(prepared) => {
+                log!(
+                    Level::Debug,
+                    "Managed SSH prepare succeeded: target={}, elapsed={:?}",
+                    config.target,
+                    attempt_start.elapsed()
+                );
+                prepared
+            }
             Err(error) => {
                 log!(
-                    Level::Warning,
-                    "ssh prepare failed, will retry next cycle: {}",
+                    Level::Error,
+                    "Managed SSH prepare failed: target={}, elapsed={:?}, error={:#}",
+                    config.target,
+                    attempt_start.elapsed(),
+                    error
+                );
+                log!(
+                    Level::Error,
+                    "ssh prepare failed, will retry next cycle: {:#}",
                     error
                 );
                 return Err(error.to_string());
@@ -202,8 +246,33 @@ async fn ssh_backed_spawn_once(
         };
     // ExitOnForwardFailure makes an occupied random remote port terminate the
     // child; the supervisor's next cycle calls this again with a new port.
-    prepared
+    let spawn_start = std::time::Instant::now();
+    log!(
+        Level::Debug,
+        "Managed SSH spawning child: target={}, redoor_port={}, prepare_elapsed={:?}",
+        config.target,
+        redoor_port,
+        attempt_start.elapsed()
+    );
+    let result = prepared
         .spawn_managed(&status)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &result {
+        Ok(child) => log!(
+            Level::Debug,
+            "Managed SSH child spawned: target={}, elapsed={:?}, child_id={:?}",
+            config.target,
+            spawn_start.elapsed(),
+            child.id()
+        ),
+        Err(error) => log!(
+            Level::Error,
+            "Managed SSH child spawn failed: target={}, elapsed={:?}, error={:#}",
+            config.target,
+            spawn_start.elapsed(),
+            error
+        ),
+    }
+    result
 }

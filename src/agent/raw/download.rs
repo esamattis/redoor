@@ -116,8 +116,8 @@ impl RawDownloadWorker {
 
                 if let Some(start) = self.range_start {
                     if let Err(error) = file.seek(std::io::SeekFrom::Start(start)).await {
-                        log!(Level::Error, "Failed to seek file: {}", error);
-                        let error_msg = format!("Failed to seek file: {}", error);
+                        log!(Level::Error, "Failed to seek file: {error:#}");
+                        let error_msg = format!("Failed to seek file: {error:#}");
                         let _ = self
                             .send_chunk(
                                 StreamChunkFrameRequest::new(self.request_id, error_msg.as_bytes())
@@ -200,8 +200,8 @@ impl RawDownloadWorker {
                                 }
                             }
                             Err(error) => {
-                                log!(Level::Error, "Failed to read file: {}", error);
-                                let error_msg = format!("Failed to read file: {}", error);
+                                log!(Level::Error, "Failed to read file: {error:#}");
+                                let error_msg = format!("Failed to read file: {error:#}");
                                 let _ = self
                                     .send_chunk(
                                         StreamChunkFrameRequest::new(
@@ -250,8 +250,8 @@ impl RawDownloadWorker {
                 self.cleanup().await;
             }
             Err(error) => {
-                log!(Level::Error, "Failed to open file: {}", error);
-                let error_msg = format!("Failed to open file: {}", error);
+                log!(Level::Error, "Failed to open file: {error:#}");
+                let error_msg = format!("Failed to open file: {error:#}");
                 let _ = self
                     .send_chunk(
                         StreamChunkFrameRequest::new(self.request_id, error_msg.as_bytes())

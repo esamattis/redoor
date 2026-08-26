@@ -69,7 +69,7 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
         Ok(Ok(status)) if status.success() => true,
         Ok(Ok(status)) => {
             log!(
-                Level::Warning,
+                Level::Error,
                 "Remote provisioning temp cleanup failed: path={}, status={}",
                 path,
                 status.code().unwrap_or(-1)
@@ -78,8 +78,8 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
         }
         Ok(Err(error)) => {
             log!(
-                Level::Warning,
-                "Remote provisioning temp cleanup failed: path={}, error={}",
+                Level::Error,
+                "Remote provisioning temp cleanup failed: path={}, error={:#}",
                 path,
                 error
             );
@@ -87,7 +87,7 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
         }
         Err(_) => {
             log!(
-                Level::Warning,
+                Level::Error,
                 "Remote provisioning temp cleanup timed out: path={}",
                 path
             );
@@ -119,19 +119,19 @@ fn debug_remote_bin() -> anyhow::Result<String> {
 /// redoor binary reports for `--version`, and the SHA-1 of that binary file
 /// (empty version/sha1 when there is no readable binary at the path).
 pub(super) struct RemoteSniff {
-    os: String,
-    arch: String,
+    pub(super) os: String,
+    pub(super) arch: String,
     /// Stdout of `<remote_bin> --version` with leading/trailing whitespace
     /// stripped. Empty when the binary is missing, not executable, or
     /// otherwise fails to run, in which case it needs to be (re)installed.
-    version_output: String,
+    pub(super) version_output: String,
     /// Lowercase hex SHA-1 of the remote binary file contents. Empty when the
     /// file is missing or unreadable. Used to skip re-upload when the remote
     /// bytes already match the local binary (critical for debug builds where
     /// `--version` stays constant across rebuilds).
-    sha1sum: String,
+    pub(super) sha1sum: String,
     /// Shell-expanded remote path so status lines can show the real file.
-    remote_bin: String,
+    pub(super) remote_bin: String,
 }
 
 /// Builds the shell script used to inspect a remote binary in one SSH
@@ -169,6 +169,15 @@ pub(super) async fn sniff_remote(
     host: &SshHost,
     remote_bin: &str,
 ) -> Result<RemoteSniff, Box<dyn std::error::Error>> {
+    log!(
+        Level::Debug,
+        "Remote sniff started: target={}, ssh_server_port={}, remote_bin={}, script_bytes={}",
+        host.target(),
+        host.server_port_label(),
+        remote_bin,
+        remote_sniff_script(remote_bin).len()
+    );
+    let sniff_start = std::time::Instant::now();
     // The whole probe is one shell script so we only authenticate once.
     // We probe with `--version` instead of `test -x` so a binary that
     // exists at the path but is broken, the wrong program, or a stale
@@ -178,8 +187,25 @@ pub(super) async fn sniff_remote(
     // when the remote file already matches the local bytes. Prefer
     // `sha1sum` (Linux) and fall back to `shasum` (macOS).
     let script = remote_sniff_script(remote_bin);
+    log!(
+        Level::Debug,
+        "Remote sniff script prepared: target={}, remote_bin={}, script='{}'",
+        host.target(),
+        remote_bin,
+        script.replace('\n', "\\n")
+    );
     let options = SshRunOptions::default().compressed();
-    let output = host.run_script_captured(&script, &options).await?;
+    let output = host.run_script_captured(&script, &options).await.map_err(|error| {
+        log!(
+            Level::Error,
+            "Remote sniff script execution failed: target={}, remote_bin={}, elapsed={:?}, error={:#}",
+            host.target(),
+            remote_bin,
+            sniff_start.elapsed(),
+            error
+        );
+        error
+    })?;
     let trimmed = output.trim();
     let parts: Vec<&str> = trimmed.split(',').collect();
     if parts.len() != 5 {
@@ -214,6 +240,18 @@ pub(super) async fn sniff_remote(
         arch,
         version_output,
         sha1sum
+    );
+    log!(
+        Level::Debug,
+        "Remote sniff parsed: target={}, remote_bin={}, os={}, arch={}, version_output='{}', sha1sum='{}', raw_output='{}', elapsed={:?}",
+        host.target(),
+        resolved_remote_bin,
+        os,
+        arch,
+        version_output,
+        sha1sum,
+        trimmed,
+        sniff_start.elapsed()
     );
     Ok(RemoteSniff {
         os: os.to_string(),

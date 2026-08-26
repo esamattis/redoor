@@ -171,7 +171,7 @@ async fn run_log_stream(
     let snapshot = match history {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            log!(Level::Error, "Failed to read agent log history: {error}");
+            log!(Level::Error, "Failed to read agent log history: {error:#}");
             let _ = send_snapshot_or_disconnect(
                 &mut sink,
                 &mut stream,

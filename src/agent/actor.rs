@@ -492,7 +492,7 @@ impl AgentRuntime {
                         self.state.agent_name
                     );
                     if let Err(error) = control_tx.send(WsMessage::text(json)).await {
-                        log!(Level::Error, "Failed to send agent registration: {}", error);
+                        log!(Level::Error, "Failed to send agent registration: {error:#}");
                     }
                 }
             }

@@ -18,7 +18,7 @@ const SSH_CONNECT_TIMEOUT_SECONDS: u32 = 15;
 /// Keeping the destination explicit lets a relay machine route agent traffic
 /// to a redoor server that the SSH target cannot reach directly.
 #[derive(Clone)]
-struct ReverseForward {
+pub(super) struct ReverseForward {
     /// Port exposed on the SSH target for the remotely launched agent.
     remote_port: u16,
     /// Host reached from the machine running the local SSH client.
@@ -48,25 +48,25 @@ impl ReverseForward {
 #[derive(Clone, Default)]
 pub(super) struct SshRunOptions {
     /// Reverse port forwards (`ssh -R`) to request on this connection.
-    reverse_forwards: Vec<ReverseForward>,
+    pub(super) reverse_forwards: Vec<ReverseForward>,
     /// When true, adds `-C` so ssh compresses its traffic. Useful for bulk
     /// transfers like binary uploads and the one-shot sniff command; left off
     /// for the long-running agent session which is mostly idle and would just
     /// burn CPU on compression.
-    compressed: bool,
+    pub(super) compressed: bool,
     /// When set, the value is sent through ssh stdin and exported by a remote
     /// shell preamble so secrets never appear in either process's argv.
-    secret_env: Option<(String, String)>,
+    pub(super) secret_env: Option<(String, String)>,
     /// When set, the ssh process's stdout/stderr is redirected (append
     /// mode) to this local file path. Used only for the long-running
     /// agent run so sniff/upload diagnostics still go to the terminal.
-    log_file: Option<String>,
+    pub(super) log_file: Option<String>,
     /// Pipes stderr so a standalone launcher can detect an initial reverse
     /// forwarding bind failure while still copying agent logs to its terminal.
-    pipe_stderr: bool,
+    pub(super) pipe_stderr: bool,
     /// Managed SSH agents must skip the remote singleton PID lock so sequential
     /// TOML-backed agents on one user can start after the previous session.
-    managed_agent: bool,
+    pub(super) managed_agent: bool,
 }
 
 /// Selects who owns SSH stderr so forwarding diagnostics remain observable even
@@ -227,11 +227,27 @@ impl SshHost {
         args: &[&str],
         options: &SshRunOptions,
     ) -> Result<tokio::process::Child, std::io::Error> {
+        log!(
+            Level::Debug,
+            "SSH spawn requested: target={}, ssh_server_port={}, username={:?}, command={}, args={:?}, reverse_forwards={}, has_secret={}, log_file={:?}, managed_agent={}, pipe_stderr={}, compressed={}",
+            self.target,
+            self.server_port_label(),
+            self.username,
+            command,
+            args,
+            options.reverse_forwards.len(),
+            options.secret_env.is_some(),
+            options.log_file,
+            options.managed_agent,
+            options.pipe_stderr,
+            options.compressed
+        );
         let mut ssh = build_ssh_command(self, command, args, options).await?;
 
         log!(
             Level::Debug,
-            "Spawning ssh command: {}",
+            "Spawning ssh command: target={}, argv={}",
+            self.target,
             ssh_command_argv_debug(&ssh)
         );
 
@@ -241,9 +257,39 @@ impl SshHost {
         // Note: this only kills the local ssh client; the remote
         // `redoor agent` would need a separate shutdown signal.
         ssh.kill_on_drop(true);
-        let mut child = ssh.spawn()?;
-        if let Some((_, value)) = &options.secret_env {
+        let mut child = ssh.spawn().map_err(|error| {
+            log!(
+                Level::Error,
+                "SSH spawn failed to start child: target={}, command={}, error={:#}",
+                self.target,
+                command,
+                error
+            );
+            error
+        })?;
+        log!(
+            Level::Debug,
+            "SSH spawn child created: target={}, command={}, child_id={:?}, has_secret={}",
+            self.target,
+            command,
+            child.id(),
+            options.secret_env.is_some()
+        );
+        if let Some((name, value)) = &options.secret_env {
+            log!(
+                Level::Debug,
+                "SSH spawn writing secret env: target={}, env_name={}, command={}",
+                self.target,
+                name,
+                command
+            );
             write_secret_and_retain_stdin(&mut child, value).await?;
+            log!(
+                Level::Debug,
+                "SSH spawn secret written and stdin retained: target={}, command={}",
+                self.target,
+                command
+            );
         }
         Ok(child)
     }
@@ -261,16 +307,41 @@ impl SshHost {
         args: &[&str],
         options: &SshRunOptions,
     ) -> Result<std::process::ExitStatus, std::io::Error> {
+        log!(
+            Level::Debug,
+            "SSH run requested: target={}, ssh_server_port={}, username={:?}, command={}, args={:?}, reverse_forwards={}, has_secret={}, log_file={:?}, managed_agent={}, compressed={}",
+            self.target,
+            self.server_port_label(),
+            self.username,
+            command,
+            args,
+            options.reverse_forwards.len(),
+            options.secret_env.is_some(),
+            options.log_file,
+            options.managed_agent,
+            options.compressed
+        );
         let mut ssh = build_ssh_command(self, command, args, options).await?;
 
         log!(
             Level::Debug,
-            "Running ssh command: {}",
+            "Running ssh command: target={}, argv={}",
+            self.target,
             ssh_command_argv_debug(&ssh)
         );
 
         ssh.kill_on_drop(true);
-        ssh.status().await
+        let start = std::time::Instant::now();
+        let status = ssh.status().await?;
+        log!(
+            Level::Debug,
+            "SSH run completed: target={}, command={}, exit_status={}, elapsed={:?}",
+            self.target,
+            command,
+            status.code().unwrap_or(-1),
+            start.elapsed()
+        );
+        Ok(status)
     }
 
     /// Streams a script to `sh -s` on the remote host and captures stdout.
@@ -282,6 +353,16 @@ impl SshHost {
         script: &str,
         options: &SshRunOptions,
     ) -> Result<String, std::io::Error> {
+        log!(
+            Level::Debug,
+            "SSH run_script_captured started: target={}, ssh_server_port={}, username={:?}, script_bytes={}, compressed={}, has_secret={}",
+            self.target,
+            self.server_port_label(),
+            self.username,
+            script.len(),
+            options.compressed,
+            options.secret_env.is_some()
+        );
         let mut ssh = build_ssh_command(self, "sh", &["-s"], options).await?;
         ssh.stdin(Stdio::piped());
         ssh.stdout(Stdio::piped());
@@ -290,11 +371,22 @@ impl SshHost {
 
         log!(
             Level::Debug,
-            "Running ssh script through {}",
+            "Running ssh script through target={}, argv={}",
+            self.target,
             ssh_command_argv_debug(&ssh)
         );
 
-        let mut child = ssh.spawn()?;
+        let start = std::time::Instant::now();
+        let mut child = ssh.spawn().map_err(|error| {
+            log!(
+                Level::Error,
+                "SSH run_script_captured failed to spawn: target={}, error={:#}, elapsed={:?}",
+                self.target,
+                error,
+                start.elapsed()
+            );
+            error
+        })?;
         let mut stdin = child.stdin.take().expect("script requires piped ssh stdin");
         let stdout = child
             .stdout
@@ -313,7 +405,23 @@ impl SshHost {
         let status = child.wait().await?;
         let stdout = join_diagnostic_reader(stdout_handle, "stdout").await?;
         let stderr = join_diagnostic_reader(stderr_handle, "stderr").await?;
+        log!(
+            Level::Debug,
+            "SSH run_script_captured completed: target={}, exit_status={}, elapsed={:?}, stdout_bytes={}, stderr_bytes={}",
+            self.target,
+            status.code().unwrap_or(-1),
+            start.elapsed(),
+            stdout.len(),
+            stderr.len()
+        );
         if !status.success() {
+            log!(
+                Level::Error,
+                "SSH run_script_captured failed with non-zero status: target={}, status={}, stderr='{}'",
+                self.target,
+                status.code().unwrap_or(-1),
+                sanitized_ssh_text(self, &stderr)
+            );
             return Err(std::io::Error::other(format_ssh_failure(
                 self,
                 "remote host probe",
@@ -326,7 +434,15 @@ impl SshHost {
                 "failed to stream script through ssh stdin: {error}"
             ))
         })?;
-        Ok(String::from_utf8_lossy(&stdout).to_string())
+        let output = String::from_utf8_lossy(&stdout).to_string();
+        log!(
+            Level::Debug,
+            "SSH run_script_captured succeeded: target={}, output_bytes={}, output_preview='{}'",
+            self.target,
+            output.len(),
+            output.chars().take(200).collect::<String>()
+        );
+        Ok(output)
     }
 
     /// Streams `local_path` to the remote host by piping it into
@@ -376,14 +492,39 @@ impl SshHost {
 
         log!(
             Level::Debug,
-            "Running ssh command: {}",
+            "SSH upload_via_cat starting: target={}, ssh_server_port={}, username={:?}, local_path={}, remote_path={}, argv={}",
+            self.target,
+            self.server_port_label(),
+            self.username,
+            local_path.display(),
+            remote_path,
             ssh_command_argv_debug(&ssh)
         );
 
-        let mut child = ssh.spawn()?;
+        let upload_start = std::time::Instant::now();
+        let mut child = ssh.spawn().map_err(|error| {
+            log!(
+                Level::Error,
+                "SSH upload_via_cat failed to spawn: target={}, remote_path={}, error={:#}, elapsed={:?}",
+                self.target,
+                remote_path,
+                error,
+                upload_start.elapsed()
+            );
+            error
+        })?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
-        let mut file = tokio::fs::File::open(local_path).await?;
+        let mut file = tokio::fs::File::open(local_path).await.map_err(|error| {
+            log!(
+                Level::Error,
+                "SSH upload_via_cat failed to open local file: target={}, local_path={}, error={:#}",
+                self.target,
+                local_path.display(),
+                error
+            );
+            error
+        })?;
 
         // Run the copy on a separate task so we can concurrently wait for
         // the child. If the remote `cat` exits early (e.g. disk full), the
@@ -410,6 +551,15 @@ impl SshHost {
             .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))?;
 
         if !status.success() {
+            log!(
+                Level::Error,
+                "SSH upload_via_cat remote cat failed: target={}, remote_path={}, exit_status={}, elapsed={:?}, stderr='{}'",
+                self.target,
+                remote_path,
+                status.code().unwrap_or(-1),
+                upload_start.elapsed(),
+                stderr_trim
+            );
             let mut msg = format_ssh_failure(self, "binary upload", status, &stderr_bytes);
             if stderr_trim.contains("text file busy") || stderr_trim.contains("ETXTBSY") {
                 msg.push_str(
@@ -420,11 +570,27 @@ impl SshHost {
         }
 
         copy_result.map_err(|e| {
+            log!(
+                Level::Error,
+                "SSH upload_via_cat copy task failed: target={}, remote_path={}, error={:#}, elapsed={:?}",
+                self.target,
+                remote_path,
+                e,
+                upload_start.elapsed()
+            );
             std::io::Error::other(format!(
-                "failed while streaming local file to remote '{}': {}",
+                "failed while streaming local file to remote '{}': {:#}",
                 remote_path, e
             ))
         })?;
+        log!(
+            Level::Debug,
+            "SSH upload_via_cat succeeded: target={}, remote_path={}, elapsed={:?}, stderr='{}'",
+            self.target,
+            remote_path,
+            upload_start.elapsed(),
+            stderr_trim
+        );
         Ok(())
     }
 }
@@ -596,6 +762,27 @@ async fn build_ssh_command(
             }
         }
     }
+
+    log!(
+        Level::Debug,
+        "Built SSH command: target={}, ssh_server_port={}, command={}, args={:?}, argv={}, reverse_forwards={:?}, has_secret={}, log_file={:?}, managed_agent={}, pipe_stderr={}, compressed={}, stderr_route={:?}",
+        host.target,
+        host.server_port_label(),
+        command,
+        args,
+        ssh_command_argv_debug(&ssh),
+        options
+            .reverse_forwards
+            .iter()
+            .map(|f| f.to_ssh_spec())
+            .collect::<Vec<_>>(),
+        options.secret_env.is_some(),
+        options.log_file,
+        options.managed_agent,
+        options.pipe_stderr,
+        options.compressed,
+        stderr_route(options)
+    );
 
     Ok(ssh)
 }

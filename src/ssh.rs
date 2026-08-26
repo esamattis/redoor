@@ -182,6 +182,12 @@ impl RandomRemotePort {
     fn next(&self) -> u16 {
         let previous = self.previous.load(std::sync::atomic::Ordering::Relaxed);
         let port = random_remote_port(previous);
+        log!(
+            Level::Debug,
+            "Selected random remote port: previous={}, next={}, range=49152..=65535",
+            previous,
+            port
+        );
         self.previous
             .store(port, std::sync::atomic::Ordering::Relaxed);
         port
@@ -221,11 +227,52 @@ impl PreparedSshBackedAgent {
         &self,
         remote_port: u16,
     ) -> Result<tokio::process::Child, std::io::Error> {
+        log!(
+            Level::Debug,
+            "Prepared SSH spawn requested: target={}, remote_bin={}, remote_port={}, agent_name={}, app_name={}, destination={}:{}",
+            self.host.target(),
+            self.remote_bin,
+            remote_port,
+            self.agent_name,
+            self.app_name,
+            self.destination_host,
+            self.destination_port
+        );
         let (remote_argv, options) = self.launch_settings(remote_port);
         let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
-        self.host
+        log!(
+            Level::Debug,
+            "Prepared SSH spawn launching: target={}, remote_bin={}, remote_argv={:?}, reverse_forwards={}, has_log_file={}, managed_agent={}, compressed={}, pipe_stderr={}",
+            self.host.target(),
+            self.remote_bin,
+            argv_refs,
+            options.reverse_forwards.len(),
+            options.log_file.is_some(),
+            options.managed_agent,
+            options.compressed,
+            options.pipe_stderr
+        );
+        let result = self
+            .host
             .spawn(&self.remote_bin, &argv_refs, &options)
-            .await
+            .await;
+        match &result {
+            Ok(child) => log!(
+                Level::Debug,
+                "Prepared SSH spawn succeeded: target={}, remote_port={}, child_id={:?}",
+                self.host.target(),
+                remote_port,
+                child.id()
+            ),
+            Err(error) => log!(
+                Level::Error,
+                "Prepared SSH spawn failed: target={}, remote_port={}, error={:#}",
+                self.host.target(),
+                remote_port,
+                error
+            ),
+        }
+        result
     }
 
     /// Starts an agent through a fresh random remote port and returns both the
@@ -235,6 +282,14 @@ impl PreparedSshBackedAgent {
         status: &ProvisioningStatusSink,
     ) -> Result<(u16, tokio::process::Child), std::io::Error> {
         let remote_port = self.random_remote_port.next();
+        log!(
+            Level::Debug,
+            "Standalone SSH spawn_random selected port: target={}, remote_port={}, remote_bin={}, agent_name={}",
+            self.host.target(),
+            remote_port,
+            self.remote_bin,
+            self.agent_name
+        );
         status.report(format!("Spawning the remote binary at {}", self.remote_bin));
         log!(
             Level::Info,
@@ -248,6 +303,13 @@ impl PreparedSshBackedAgent {
             self.destination_port
         );
         let child = self.spawn(remote_port).await?;
+        log!(
+            Level::Debug,
+            "Standalone SSH spawn_random completed: target={}, remote_port={}, child_id={:?}",
+            self.host.target(),
+            remote_port,
+            child.id()
+        );
         Ok((remote_port, child))
     }
 
@@ -258,6 +320,20 @@ impl PreparedSshBackedAgent {
         status: &ProvisioningStatusSink,
     ) -> Result<tokio::process::Child, std::io::Error> {
         let remote_port = self.random_remote_port.next();
+        log!(
+            Level::Debug,
+            "Managed SSH spawn_managed selected port: target={}, ssh_server_port={}, remote_port={}, remote_bin={}, agent_name={}, app_name={}, home={:?}, destination={}:{}, secure_server={:?}",
+            self.host.target(),
+            self.host.server_port_label(),
+            remote_port,
+            self.remote_bin,
+            self.agent_name,
+            self.app_name,
+            self.home,
+            self.destination_host,
+            self.destination_port,
+            self.secure_server.as_ref().map(|s| &s.authority)
+        );
         status.report(format!("Spawning the remote binary at {}", self.remote_bin));
         log!(
             Level::Info,
@@ -271,11 +347,38 @@ impl PreparedSshBackedAgent {
             self.destination_port
         );
         let (remote_argv, options) = self.launch_settings(remote_port);
+        log!(
+            Level::Debug,
+            "Managed SSH launch settings: target={}, remote_port={}, remote_bin={}, remote_argv={:?}, log_file={:?}, managed_agent=true",
+            self.host.target(),
+            remote_port,
+            self.remote_bin,
+            remote_argv,
+            options.log_file
+        );
         let options = options.with_managed_agent();
         let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
-        self.host
+        let result = self
+            .host
             .spawn(&self.remote_bin, &argv_refs, &options)
-            .await
+            .await;
+        match &result {
+            Ok(child) => log!(
+                Level::Debug,
+                "Managed SSH spawn_managed succeeded: target={}, remote_port={}, child_id={:?}",
+                self.host.target(),
+                remote_port,
+                child.id()
+            ),
+            Err(error) => log!(
+                Level::Error,
+                "Managed SSH spawn_managed failed: target={}, remote_port={}, error={:#}",
+                self.host.target(),
+                remote_port,
+                error
+            ),
+        }
+        result
     }
 
     /// Builds the matching remote agent argv and reverse-forward options so the
@@ -289,7 +392,7 @@ impl PreparedSshBackedAgent {
             "--app-name".to_string(),
             self.app_name.clone(),
             "agent".to_string(),
-            server_url,
+            server_url.clone(),
             "--exit-on-stdin-eof".to_string(),
             "--name".to_string(),
             self.agent_name.clone(),
@@ -305,6 +408,21 @@ impl PreparedSshBackedAgent {
             remote_argv.push("--home".to_string());
             remote_argv.push(home.clone());
         }
+        log!(
+            Level::Debug,
+            "Built SSH launch settings: target={}, remote_port={}, server_url={}, remote_bin={}, app_name={}, agent_name={}, home={:?}, destination={}:{}, secure_server={:?}, remote_argv={:?}",
+            self.host.target(),
+            remote_port,
+            server_url,
+            self.remote_bin,
+            self.app_name,
+            self.agent_name,
+            self.home,
+            self.destination_host,
+            self.destination_port,
+            self.secure_server.as_ref().map(|s| &s.authority),
+            remote_argv
+        );
         let options = self.options.clone().with_reverse_forward(
             remote_port,
             self.destination_host.clone(),
@@ -337,7 +455,24 @@ pub(crate) async fn prepare_ssh_backed_agent(
     agent_token: &str,
     status: &ProvisioningStatusSink,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
-    prepare_ssh_backed_agent_for_destination(
+    log!(
+        Level::Debug,
+        "Preparing managed SSH agent: target={}, ssh_server_port={}, name={:?}, remote_bin={:?}, home={:?}, log={:?}, username={:?}, destination=localhost:{}, has_password={}, has_binary_source=false",
+        config.target,
+        config
+            .ssh_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "ssh-config".to_string()),
+        config.name,
+        config.remote_bin,
+        config.home,
+        config.log,
+        config.username,
+        redoor_port,
+        config.password.is_some()
+    );
+    let start = std::time::Instant::now();
+    let result = prepare_ssh_backed_agent_for_destination(
         config,
         "localhost".to_string(),
         redoor_port,
@@ -345,7 +480,28 @@ pub(crate) async fn prepare_ssh_backed_agent(
         RelayPreparationOptions::default(),
         status,
     )
-    .await
+    .await;
+    match &result {
+        Ok(prepared) => log!(
+            Level::Debug,
+            "Managed SSH prepare completed: target={}, elapsed={:?}, remote_bin={}, agent_name={}, app_name={}, destination={}:{}",
+            config.target,
+            start.elapsed(),
+            prepared.remote_bin,
+            prepared.agent_name,
+            prepared.app_name,
+            prepared.destination_host,
+            prepared.destination_port
+        ),
+        Err(error) => log!(
+            Level::Error,
+            "Managed SSH prepare failed: target={}, elapsed={:?}, error={:#}",
+            config.target,
+            start.elapsed(),
+            error
+        ),
+    }
+    result
 }
 
 /// Prepares an SSH-backed agent whose reverse tunnel terminates at a destination
@@ -358,9 +514,44 @@ async fn prepare_ssh_backed_agent_for_destination(
     preparation: RelayPreparationOptions<'_>,
     status: &ProvisioningStatusSink,
 ) -> Result<PreparedSshBackedAgent, Box<dyn std::error::Error>> {
+    let prepare_start = std::time::Instant::now();
+    log!(
+        Level::Debug,
+        "SSH prepare for destination started: target={}, ssh_server_port={}, name={:?}, destination={}:{}, has_password={}, monitor_forward_failure={}, has_binary_source={}, has_secure_server={}, agent_app_name={:?}",
+        config.target,
+        config
+            .ssh_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "ssh-config".to_string()),
+        config.name,
+        destination_host,
+        destination_port,
+        config.password.is_some(),
+        preparation.monitor_forward_failure,
+        preparation.binary_source.is_some(),
+        preparation.secure_server.is_some(),
+        preparation.agent_app_name
+    );
     let remote_bin = match config.remote_bin.clone() {
-        Some(remote_bin) => remote_bin,
-        None => default_remote_bin()?,
+        Some(remote_bin) => {
+            log!(
+                Level::Debug,
+                "SSH prepare using operator remote_bin: target={}, remote_bin={}",
+                config.target,
+                remote_bin
+            );
+            remote_bin
+        }
+        None => {
+            let default = default_remote_bin()?;
+            log!(
+                Level::Debug,
+                "SSH prepare resolved default remote_bin: target={}, remote_bin={}",
+                config.target,
+                default
+            );
+            default
+        }
     };
     let agent_name = config
         .name
@@ -381,6 +572,14 @@ async fn prepare_ssh_backed_agent_for_destination(
     // intentionally placed at that path. Auto-install may redirect debug
     // uploads to the dedicated `debug` path instead of the versioned default.
     let remote_bin = if let Some(binary_source) = preparation.binary_source {
+        log!(
+            Level::Debug,
+            "SSH prepare force-upload path: target={}, binary_source={}, remote_bin={}, elapsed={:?}",
+            config.target,
+            binary_source.display(),
+            remote_bin,
+            prepare_start.elapsed()
+        );
         let remote_bin =
             provision::force_upload_binary(&host, binary_source, &remote_bin, status).await?;
         log!(
@@ -389,6 +588,13 @@ async fn prepare_ssh_backed_agent_for_destination(
             config.target,
             binary_source.display(),
             remote_bin
+        );
+        log!(
+            Level::Debug,
+            "SSH prepare force-upload completed: target={}, remote_bin={}, elapsed={:?}",
+            config.target,
+            remote_bin,
+            prepare_start.elapsed()
         );
         remote_bin
     } else if config.remote_bin.is_none() {
@@ -399,9 +605,46 @@ async fn prepare_ssh_backed_agent_for_destination(
             config.target,
             host.server_port_label()
         );
+        log!(
+            Level::Debug,
+            "SSH prepare sniff started: target={}, ssh_server_port={}, remote_bin={}, elapsed={:?}",
+            config.target,
+            host.server_port_label(),
+            remote_bin,
+            prepare_start.elapsed()
+        );
+        let sniff_start = std::time::Instant::now();
         let sniff = sniff_remote(&host, &remote_bin).await?;
+        log!(
+            Level::Debug,
+            "SSH prepare sniff completed: target={}, elapsed={:?}, os={}, arch={}, version='{}', sha1sum='{}', resolved_remote_bin={}",
+            config.target,
+            sniff_start.elapsed(),
+            sniff.os,
+            sniff.arch,
+            sniff.version_output,
+            sniff.sha1sum,
+            sniff.remote_bin
+        );
         status.report(sniff.status_message());
-        ensure_remote_binary(&host, &sniff, status).await?
+        let ensure_start = std::time::Instant::now();
+        log!(
+            Level::Debug,
+            "SSH prepare ensure_remote_binary started: target={}, remote_bin={}, elapsed={:?}",
+            config.target,
+            sniff.remote_bin,
+            prepare_start.elapsed()
+        );
+        let ensured = ensure_remote_binary(&host, &sniff, status).await?;
+        log!(
+            Level::Debug,
+            "SSH prepare ensure_remote_binary completed: target={}, remote_bin={}, elapsed={:?}, total_prepare_elapsed={:?}",
+            config.target,
+            ensured,
+            ensure_start.elapsed(),
+            prepare_start.elapsed()
+        );
+        ensured
     } else {
         status.report(format!(
             "Using operator-provided remote binary at {remote_bin}"
@@ -412,6 +655,13 @@ async fn prepare_ssh_backed_agent_for_destination(
             config.target,
             remote_bin
         );
+        log!(
+            Level::Debug,
+            "SSH prepare skipped sniff/provision for operator remote_bin: target={}, remote_bin={}, elapsed={:?}",
+            config.target,
+            remote_bin,
+            prepare_start.elapsed()
+        );
         remote_bin
     };
 
@@ -419,9 +669,20 @@ async fn prepare_ssh_backed_agent_for_destination(
     // TOML-managed launches choose a fresh remote port for every attempt.
     let mut options = SshRunOptions::default().with_secret_env("REDOOR_AGENT_TOKEN", agent_token);
     if let Some(log) = &config.log {
+        log!(
+            Level::Debug,
+            "SSH prepare configuring log file: target={}, log_file={}",
+            config.target,
+            log
+        );
         options = options.with_log_file(log);
     }
     if preparation.monitor_forward_failure {
+        log!(
+            Level::Debug,
+            "SSH prepare enabling piped stderr for forward failure monitoring: target={}",
+            config.target
+        );
         options = options.with_piped_stderr();
     }
 
@@ -432,6 +693,20 @@ async fn prepare_ssh_backed_agent_for_destination(
         remote_bin,
         config.home,
         config.log,
+    );
+    log!(
+        Level::Debug,
+        "SSH prepare finished: target={}, agent_name={}, remote_bin={}, home={:?}, log={:?}, destination={}:{}, secure_server={:?}, agent_app_name={:?}, total_elapsed={:?}",
+        config.target,
+        agent_name,
+        remote_bin,
+        config.home,
+        config.log,
+        destination_host,
+        destination_port,
+        preparation.secure_server.as_ref().map(|s| &s.authority),
+        preparation.agent_app_name,
+        prepare_start.elapsed()
     );
 
     Ok(PreparedSshBackedAgent {
@@ -599,7 +874,7 @@ pub(crate) async fn start_relay(
             {
                 Ok(value) => prepared = Some(value),
                 Err(error) => {
-                    log!(Level::Error, "Relay preparation failed: {error}");
+                    log!(Level::Error, "Relay preparation failed: {error:#}");
                     wait_for_relay_retry(backoff).await;
                     backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
                     continue;
@@ -620,7 +895,7 @@ pub(crate) async fn start_relay(
             ),
             Err(error) => log!(
                 Level::Error,
-                "Relay SSH attempt failed; relay will retry: {error}"
+                "Relay SSH attempt failed; relay will retry: {error:#}"
             ),
         }
         if started.elapsed() >= RELAY_STABLE_RUNTIME {

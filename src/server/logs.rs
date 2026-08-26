@@ -122,7 +122,7 @@ async fn read_subscription_history(subscription: &LogSubscription) -> (Vec<Strin
     match logging::read_latest_entries(path, subscription.history_end).await {
         Ok(entries) => (entries, false),
         Err(error) => {
-            log!(Level::Error, "Failed to read server log history: {error}");
+            log!(Level::Error, "Failed to read server log history: {error:#}");
             (Vec::new(), true)
         }
     }

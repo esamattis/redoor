@@ -20,7 +20,7 @@ const MAX_CONCURRENT_COMMANDS: usize = 32;
 fn command_task_capacity_available(command_tasks: &mut JoinSet<()>, is_upload: bool) -> bool {
     while let Some(result) = command_tasks.try_join_next() {
         if let Err(error) = result {
-            log!(Level::Warning, "Agent command task failed: {error}");
+            log!(Level::Error, "Agent command task failed: {error:#}");
         }
     }
     is_upload || command_tasks.len() < MAX_CONCURRENT_COMMANDS
