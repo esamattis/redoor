@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot};
 
@@ -61,6 +61,7 @@ pub struct SpawnFn {
             + Sync,
     >,
     diagnostic_log: Option<PathBuf>,
+    process_name: &'static str,
 }
 
 impl SpawnFn {
@@ -73,12 +74,19 @@ impl SpawnFn {
         Self {
             inner: Arc::new(move |status| Box::pin(f(status))),
             diagnostic_log: None,
+            process_name: "Agent process",
         }
     }
 
     /// Records where redirected child output can be read after an unsuccessful exit.
     pub fn with_diagnostic_log(mut self, path: impl Into<PathBuf>) -> Self {
         self.diagnostic_log = Some(path.into());
+        self
+    }
+
+    /// Names the owned child accurately in browser-visible lifecycle failures.
+    pub fn with_process_name(mut self, process_name: &'static str) -> Self {
+        self.process_name = process_name;
         self
     }
 
@@ -548,6 +556,7 @@ async fn run_started_cycle(
                 commands,
                 spawn.diagnostic_log.as_deref(),
                 diagnostic_log_offset,
+                spawn.process_name,
                 attempt_generation,
             )
             .await
@@ -609,11 +618,16 @@ async fn wait_for_child(
     commands: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
     diagnostic_log: Option<&Path>,
     diagnostic_log_offset: u64,
+    process_name: &str,
     attempt_generation: u64,
 ) -> CycleResult {
     // Tokio closes Child::stdin when wait() is polled. Managed SSH agents retain
     // that pipe so the remote process sees EOF only when this watchdog cycle ends.
     let _retained_stdin = child.stdin.take();
+    let stderr_reader = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_bounded_tail(stderr)));
     let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
     tokio::pin!(startup_timeout);
     let mut connected = false;
@@ -622,7 +636,14 @@ async fn wait_for_child(
     loop {
         tokio::select! {
             status = child.wait() => {
-                let issue = format_exit_issue(status, diagnostic_log, diagnostic_log_offset).await;
+                let stderr = read_child_diagnostic(stderr_reader).await;
+                let issue = format_exit_issue(
+                    status,
+                    diagnostic_log,
+                    diagnostic_log_offset,
+                    process_name,
+                    stderr.as_deref(),
+                ).await;
                 publish_issue(watchdog, attempt_generation, issue);
                 return CycleResult { action: CommandAction::Continue, was_connected: connected };
             }
@@ -852,11 +873,23 @@ async fn format_exit_issue(
     status: std::io::Result<std::process::ExitStatus>,
     diagnostic_log: Option<&Path>,
     attempt_offset: u64,
+    process_name: &str,
+    captured_output: Option<&[u8]>,
 ) -> String {
     let mut issue = match status {
-        Ok(status) => format!("Agent process exited with status {status}"),
-        Err(error) => format!("Failed to wait for agent process: {error}"),
+        Ok(status) => match status.code() {
+            Some(code) => format!("{process_name} exited with status code {code}"),
+            None => format!("{process_name} exited with {status}"),
+        },
+        Err(error) => format!("Failed to wait for {process_name}: {error}"),
     };
+    if let Some(output) = captured_output.filter(|output| !output.is_empty()) {
+        issue.push_str(&format!(
+            "\n{process_name} output:\n{}",
+            sanitize_diagnostic_output(output).trim()
+        ));
+        return issue;
+    }
     let Some(path) = diagnostic_log else {
         return issue;
     };
@@ -879,6 +912,54 @@ async fn format_exit_issue(
         )),
     }
     issue
+}
+
+/// Drains a process pipe while retaining only the tail needed for a useful UI error.
+async fn read_bounded_tail(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+    let mut tail = Vec::with_capacity(MAX_EXIT_DIAGNOSTIC_BYTES as usize);
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(tail);
+        }
+        tail.extend_from_slice(&chunk[..read]);
+        if tail.len() > MAX_EXIT_DIAGNOSTIC_BYTES as usize {
+            let excess = tail.len() - MAX_EXIT_DIAGNOSTIC_BYTES as usize;
+            tail.drain(..excess);
+        }
+    }
+}
+
+/// Resolves a completed stderr reader without replacing the process status on read failure.
+async fn read_child_diagnostic(
+    reader: Option<tokio::task::JoinHandle<std::io::Result<Vec<u8>>>>,
+) -> Option<Vec<u8>> {
+    match reader?.await {
+        Ok(Ok(output)) => Some(output),
+        Ok(Err(error)) => Some(format!("Failed to read process output: {error}").into_bytes()),
+        Err(error) => Some(format!("Process output task failed: {error}").into_bytes()),
+    }
+}
+
+/// Removes terminal controls and direction markers before output reaches browser clients.
+fn sanitize_diagnostic_output(output: &[u8]) -> String {
+    String::from_utf8_lossy(output)
+        .chars()
+        .filter(|character| {
+            !matches!(
+                character,
+                '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+        })
+        .map(|character| {
+            if character == '\n' || character == '\t' || !character.is_control() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 /// Reads at most the final diagnostic window written since this process attempt began.
@@ -1218,12 +1299,49 @@ mod tests {
         file.flush().await.expect("flush current attempt output");
         let status = Command::new("sh").arg("-c").arg("exit 1").status().await;
 
-        let issue = format_exit_issue(status, Some(&path), attempt_offset).await;
+        let issue =
+            format_exit_issue(status, Some(&path), attempt_offset, "Agent process", None).await;
 
         // The browser-facing issue must expose the subprocess's actionable error.
         assert!(issue.contains("invalid configured directory: /missing"));
         // Output from an old retry must not be presented as part of the latest failure.
         assert!(!issue.contains("output from an earlier attempt"));
+    }
+
+    #[tokio::test]
+    async fn piped_ssh_stderr_is_visible_in_connection_issue() {
+        crate::logging::init(None).await.unwrap();
+        let registry = WatchdogRegistry::new();
+        let spawn = SpawnFn::new(|_status| async {
+            Command::new("sh")
+                .arg("-c")
+                .arg("printf 'Error: remote port forwarding failed for listen port 51268\\n' >&2; exit 255")
+                .kill_on_drop(true)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| error.to_string())
+        })
+        .with_process_name("SSH process");
+        let _guard = SupervisorGuard(
+            spawn_supervisor("ssh-diagnostic".into(), spawn, &registry, callback())
+                .expect("register"),
+        );
+        let handle = registry.lookup("ssh-diagnostic").expect("managed handle");
+
+        handle.start().expect("start accepted");
+        wait_until(|| handle.snapshot().connection_issue.is_some()).await;
+        let issue = handle
+            .snapshot()
+            .connection_issue
+            .expect("failed SSH child should publish its stderr");
+
+        // Naming the actual child avoids implying that the verified remote binary returned 255.
+        assert!(issue.contains("SSH process exited with status code 255"));
+        // OpenSSH's reason must reach the UI instead of collapsing into a bare exit status.
+        assert!(issue.contains("remote port forwarding failed for listen port 51268"));
+        handle.shutdown().await.expect("backoff interrupted");
     }
 
     #[tokio::test]

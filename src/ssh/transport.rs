@@ -473,6 +473,7 @@ impl SshHost {
         // No TTY and stdin is the upload stream, so new hosts cannot be confirmed interactively.
         ssh.arg("-T");
         ssh.arg("-o").arg("ExitOnForwardFailure=yes");
+        disable_connection_multiplexing(&mut ssh);
         ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
         ssh.arg("-o")
             .arg(format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}"));
@@ -666,6 +667,7 @@ async fn build_ssh_command(
     // Without this, ssh keeps running and the remote command executes
     // against a tunnel that will never come up.
     ssh.arg("-o").arg("ExitOnForwardFailure=yes");
+    disable_connection_multiplexing(&mut ssh);
     // Managed SSH has no TTY for host-key prompts; accept-new still rejects changed keys.
     ssh.arg("-T");
     ssh.arg("-o").arg("StrictHostKeyChecking=accept-new");
@@ -785,6 +787,12 @@ async fn build_ssh_command(
     );
 
     Ok(ssh)
+}
+
+/// Keeps a failed multiplexed session from leaving reverse forwards on an old master.
+fn disable_connection_multiplexing(ssh: &mut Command) {
+    ssh.arg("-o").arg("ControlMaster=no");
+    ssh.arg("-o").arg("ControlPath=none");
 }
 
 /// Formats argv only so configured passwords in the child environment stay out of logs.
@@ -1062,6 +1070,9 @@ mod tests {
         assert!(format!("{configured_command:?}").contains("StrictHostKeyChecking=accept-new"));
         // Missing managed credentials must fail rather than opening an interactive prompt.
         assert!(format!("{configured_command:?}").contains("BatchMode=yes"));
+        // A configured control master must not retain a forward when opening its session fails.
+        assert!(format!("{configured_command:?}").contains("ControlMaster=no"));
+        assert!(format!("{configured_command:?}").contains("ControlPath=none"));
 
         let overridden_host =
             super::SshHost::new("configured-alias".to_string()).ssh_port(Some(2222));

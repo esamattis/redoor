@@ -356,7 +356,12 @@ impl PreparedSshBackedAgent {
             remote_argv,
             options.log_file
         );
-        let options = options.with_managed_agent();
+        let mut options = options.with_managed_agent();
+        if options.log_file().is_none() {
+            // The watchdog drains this bounded stream into connection_issue so
+            // OpenSSH failures do not collapse into an unexplained status 255.
+            options = options.with_piped_stderr();
+        }
         let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
         let result = self
             .host

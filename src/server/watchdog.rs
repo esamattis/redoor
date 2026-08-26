@@ -185,7 +185,8 @@ fn ssh_backed_spawn_fn(
     let config = std::sync::Arc::new(config);
     let spawn = SpawnFn::new(move |status| {
         ssh_backed_spawn_once(config.clone(), redoor_port, agent_token.clone(), status)
-    });
+    })
+    .with_process_name("SSH process");
     match diagnostic_log {
         Some(path) => spawn.with_diagnostic_log(path),
         None => spawn,
