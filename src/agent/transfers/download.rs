@@ -284,7 +284,7 @@ impl TarDownloadWorker {
             Ok(metadata) => metadata,
             Err(error) => {
                 let error_message = format!("Failed to open directory: {}", error);
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Tar download open failed: request_id={}, path={}, error={}",
                     self.request_id,
@@ -305,7 +305,7 @@ impl TarDownloadWorker {
 
         if !metadata.is_dir() {
             let error_message = format!("Source path is not a directory: {}", self.path);
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Tar download open failed: request_id={}, path={}, error=not a directory",
                 self.request_id,
@@ -341,7 +341,7 @@ impl TarDownloadWorker {
                 runtime,
             };
             if let Err(error) = write_directory_tar(writer, &source_path_for_worker, include_root) {
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Tar directory streaming failed: path={}, error={}",
                     source_path_for_worker.display(),

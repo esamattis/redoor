@@ -2,6 +2,6 @@
 import type { Level } from "./Level";
 
 /**
- * Carries a requested runtime threshold without overloading unrelated log-stream protocol data.
+ * Carries a requested runtime threshold without overloading stream protocol data.
  */
 export type LoggingLevelRequest = { level: Level, };

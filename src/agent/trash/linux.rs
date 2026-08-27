@@ -438,7 +438,7 @@ pub(super) async fn restore(
         !atomic
     );
     if let Err(error) = tokio::fs::remove_file(&item.info).await {
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Failed to remove trash metadata after restore: path={}, error={}",
             item.info.display(),

@@ -8,9 +8,8 @@ use axum::{
 use futures_util::StreamExt;
 use headers::HeaderMap;
 use redoor::{
-    Level, actors,
+    actors,
     commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
-    log,
     streaming::StreamChunkFrameRequest,
     types::{AgentId, ChunkIndex, RequestId},
 };
@@ -261,7 +260,7 @@ impl Drop for UploadCancelGuard {
                 })
                 .await
             {
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Failed to queue dropped upload cleanup: agent_id={}, request_id={}, error={}",
                     agent_id,

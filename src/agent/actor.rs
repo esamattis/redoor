@@ -7,7 +7,7 @@ use super::{
 };
 use futures_util::StreamExt;
 use redoor::{
-    Level, log,
+    Level, log, log_error,
     types::{AgentId, Message},
 };
 use sysinfo::System;
@@ -239,10 +239,8 @@ impl AgentRuntime {
                 if let Some(tx) = &self.state.ws_control_tx
                     && tx.send(msg).await.is_err()
                 {
-                    log!(
-                        Level::Error,
-                        "Failed to send message, connection may be lost"
-                    );
+                    let error = anyhow::anyhow!("agent websocket channel is closed");
+                    log_error!(error, "Failed to send message; connection may be lost");
                 }
             }
             AgentMsg::TerminalFinished { terminal_id } => {
@@ -253,7 +251,8 @@ impl AgentRuntime {
             }
             AgentMsg::Shutdown => return false,
             AgentMsg::ExitWithError => {
-                log!(Level::Error, "Exiting agent due to error");
+                let error = anyhow::anyhow!("agent received fatal exit signal");
+                log_error!(error, "Exiting agent due to error");
                 std::process::exit(1);
             }
         }
@@ -494,7 +493,10 @@ impl AgentRuntime {
                         self.state.agent_name
                     );
                     if let Err(error) = control_tx.send(WsMessage::text(json)).await {
-                        log!(Level::Error, "Failed to send agent registration: {error:#}");
+                        log_error!(
+                            anyhow::Error::new(error),
+                            "Failed to send agent registration"
+                        );
                     }
                 }
             }

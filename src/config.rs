@@ -32,7 +32,7 @@ pub(crate) use local_agent::spawn_local_agent;
 /// so we don't have to spell out the generic parameter on every function.
 type ParsedDocument<'a> = Document<&'a String>;
 
-use crate::logging::Level;
+use crate::logging::{Level, LogFormat};
 use crate::ssh::SshBackedAgentConfig;
 
 /// Configuration for one local agent, parsed from the agents toml.
@@ -79,6 +79,8 @@ pub(crate) struct ServerSection {
     pub(crate) log: Option<String>,
     /// Initial server threshold; runtime API changes deliberately do not rewrite it.
     pub(crate) log_level: Option<Level>,
+    /// Initial process output format; browser streams remain structured.
+    pub(crate) log_format: Option<LogFormat>,
     pub(crate) username: Option<String>,
     pub(crate) password: Option<String>,
     /// When true, session cookies are marked `Secure` for HTTPS deployments.
@@ -100,6 +102,8 @@ pub(crate) struct AgentSection {
     pub(crate) log: Option<String>,
     /// Initial standalone-agent threshold before runtime control becomes available.
     pub(crate) log_level: Option<Level>,
+    /// Initial process output format; browser streams remain structured.
+    pub(crate) log_format: Option<LogFormat>,
 }
 
 /// Full parsed config file shared by server and agent processes.
@@ -261,11 +265,12 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<Option<ServerSection
     // instead of silently falling back to a default the operator didn't mean.
     // agent_token moved to the document root; keep rejecting it here with a
     // pointer so existing files fail with an actionable message.
-    const KNOWN_KEYS: [&str; 7] = [
+    const KNOWN_KEYS: [&str; 8] = [
         "port",
         "bind",
         "log",
         "log_level",
+        "log_format",
         "username",
         "password",
         "cookie_secure",
@@ -313,6 +318,15 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<Option<ServerSection
             item.as_str()
                 .with_context(|| "server.log_level must be a string")?
                 .parse::<Level>()
+                .map_err(anyhow::Error::msg)
+        })
+        .transpose()?;
+    let log_format = table
+        .get("log_format")
+        .map(|item| {
+            item.as_str()
+                .with_context(|| "server.log_format must be a string")?
+                .parse::<LogFormat>()
                 .map_err(anyhow::Error::msg)
         })
         .transpose()?;
@@ -368,6 +382,7 @@ fn parse_server_section(doc: &ParsedDocument<'_>) -> Result<Option<ServerSection
         bind,
         log,
         log_level,
+        log_format,
         username,
         password,
         cookie_secure,
@@ -381,7 +396,7 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
     };
 
     // `ws_address` remains accepted so existing agent configs keep working.
-    const KNOWN_KEYS: [&str; 7] = [
+    const KNOWN_KEYS: [&str; 8] = [
         "server",
         "ws_address",
         "name",
@@ -389,6 +404,7 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         "dir",
         "log",
         "log_level",
+        "log_format",
     ];
     for (key, _) in table.iter() {
         if !KNOWN_KEYS.contains(&key) {
@@ -433,6 +449,10 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         Some(value) => Some(value.parse::<Level>().map_err(anyhow::Error::msg)?),
         None => None,
     };
+    let log_format = match non_empty_string("log_format")? {
+        Some(value) => Some(value.parse::<LogFormat>().map_err(anyhow::Error::msg)?),
+        None => None,
+    };
 
     Ok(Some(AgentSection {
         server,
@@ -440,6 +460,7 @@ fn parse_agent_section(doc: &ParsedDocument<'_>) -> Result<Option<AgentSection>>
         home,
         log: non_empty_string("log")?,
         log_level,
+        log_format,
     }))
 }
 

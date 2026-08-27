@@ -230,14 +230,14 @@ async fn ssh_backed_spawn_once(
                 prepared
             }
             Err(error) => {
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Managed SSH prepare failed: target={}, elapsed={:?}, error={:#}",
                     config.target,
                     attempt_start.elapsed(),
                     error
                 );
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "ssh prepare failed, will retry next cycle: {:#}",
                     error
@@ -267,7 +267,7 @@ async fn ssh_backed_spawn_once(
             spawn_start.elapsed(),
             child.id()
         ),
-        Err(error) => log!(
+        Err(error) => redoor::log_failure!(
             Level::Error,
             "Managed SSH child spawn failed: target={}, elapsed={:?}, error={:#}",
             config.target,

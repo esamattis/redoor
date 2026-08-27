@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use redoor::types::SocketId;
 use redoor::watchdog::WatchdogRegistry;
 use redoor::websocket::keepalive_interval;
-use redoor::{Level, actors, commands::UiEvent, log};
+use redoor::{actors, commands::UiEvent};
 use uuid::Uuid;
 
 use super::state::ServerState;
@@ -72,7 +72,7 @@ async fn forward_ui_events(
         let json = match serde_json::to_string(&event) {
             Ok(json) => json,
             Err(error) => {
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Failed to serialize UI websocket event: {}",
                     error
@@ -110,7 +110,7 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: actors::router::RouterH
         ))
         .await
     {
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Failed to queue UI subscriber registration: subscriber_id={}, error={}",
             subscriber_id,
@@ -130,7 +130,7 @@ async fn handle_ui_socket(socket: WebSocket, router_ref: actors::router::RouterH
         })
         .await
     {
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Failed to queue UI subscriber cleanup: subscriber_id={}, error={}",
             subscriber_id,

@@ -68,7 +68,7 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
     {
         Ok(Ok(status)) if status.success() => true,
         Ok(Ok(status)) => {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Remote provisioning temp cleanup failed: path={}, status={}",
                 path,
@@ -77,7 +77,7 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
             false
         }
         Ok(Err(error)) => {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Remote provisioning temp cleanup failed: path={}, error={:#}",
                 path,
@@ -86,7 +86,7 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
             false
         }
         Err(_) => {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Remote provisioning temp cleanup timed out: path={}",
                 path
@@ -196,7 +196,7 @@ pub(super) async fn sniff_remote(
     );
     let options = SshRunOptions::default().compressed();
     let output = host.run_script_captured(&script, &options).await.map_err(|error| {
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Remote sniff script execution failed: target={}, remote_bin={}, elapsed={:?}, error={:#}",
             host.target(),

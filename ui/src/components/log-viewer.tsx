@@ -3,20 +3,28 @@ import { ScrollText } from "lucide-react";
 import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { Level, LogEvent, LoggingLevelResponse } from "#ui/api-client";
+import type {
+    Level,
+    LogEntry,
+    LogEvent,
+    LoggingLevelResponse,
+} from "#ui/api-client";
+import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
+import { CopyableCodeRow } from "#ui/components/copyable-code-row";
+import { Dialog } from "#ui/components/dialog";
 import { Select } from "#ui/components/select";
 import { Toast } from "#ui/components/toast";
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
-type LogEntry = { id: number; text: string };
+type ViewerEntry = { id: number; record: LogEntry };
 type LoggingLevelControlConfig = {
     queryKey: readonly unknown[];
     load: () => Promise<LoggingLevelResponse>;
     update: (level: Level) => Promise<LoggingLevelResponse>;
 };
 
-const MAX_LOG_ENTRIES = 500;
+const MAX_LOG_ENTRIES = 1000;
 const LOGGING_LEVELS: { value: Level; label: string }[] = [
     { value: "trace", label: "Trace" },
     { value: "debug", label: "Debug" },
@@ -129,13 +137,22 @@ function LogViewerControls(props: {
     );
 }
 
+const logEntrySchema = z.object({
+    timestamp: z.string().datetime({ offset: true }),
+    level: z.enum(["trace", "debug", "info", "warning", "error"]),
+    message: z.string(),
+    error: z
+        .object({ chain: z.string(), backtrace: z.string().nullable() })
+        .nullable(),
+});
+
 const logEventSchema: z.ZodType<LogEvent> = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("snapshot"),
-        entries: z.array(z.string()),
+        entries: z.array(logEntrySchema),
         file_logging_enabled: z.boolean(),
     }),
-    z.object({ type: z.literal("entry"), entry: z.string() }),
+    z.object({ type: z.literal("entry"), entry: logEntrySchema }),
     z.object({ type: z.literal("lagged"), skipped: z.number() }),
     z.object({ type: z.literal("error"), message: z.string() }),
 ]);
@@ -153,6 +170,161 @@ function connectionStateLabel(state: ConnectionState): string {
     return state === "reconnecting" ? "Reconnecting…" : "Connecting…";
 }
 
+/** Gives severity a visible and screen-reader-friendly label independent from message text. */
+function Severity(props: { level: Level }) {
+    const label =
+        props.level === "warning"
+            ? "Warning"
+            : `${props.level.charAt(0).toUpperCase()}${props.level.slice(1)}`;
+    const tone =
+        props.level === "error"
+            ? "text-red-300"
+            : props.level === "warning"
+              ? "text-amber-300"
+              : props.level === "debug" || props.level === "trace"
+                ? "text-slate-500"
+                : "text-blue-300";
+    return (
+        <span
+            className={`font-semibold ${tone}`}
+            aria-label={`Severity: ${label}`}
+        >
+            {label.toUpperCase()}
+        </span>
+    );
+}
+
+/** Discloses bounded failure diagnostics in separate copyable sections. */
+function ErrorDetailsDialog(props: {
+    entry: LogEntry | null;
+    sourceLabel: string;
+    onClose: () => void;
+}) {
+    return (
+        <Dialog
+            isOpen={props.entry !== null}
+            title="Error details"
+            description={props.entry?.message ?? ""}
+            closeAriaLabel="Close error details"
+            size="wide"
+            onClose={props.onClose}
+        >
+            {props.entry?.error ? (
+                <div className="mt-5 grid gap-4">
+                    <dl className="grid gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm sm:grid-cols-[auto_1fr]">
+                        <dt className="font-semibold text-slate-400">Source</dt>
+                        <dd className="text-slate-200">{props.sourceLabel}</dd>
+                        <dt className="font-semibold text-slate-400">
+                            Timestamp
+                        </dt>
+                        <dd>
+                            <time dateTime={props.entry.timestamp}>
+                                {props.entry.timestamp}
+                            </time>
+                        </dd>
+                    </dl>
+                    <CopyableCodeRow
+                        label="Error chain"
+                        value={props.entry.error.chain}
+                        multiline
+                    />
+                    {props.entry.error.backtrace ? (
+                        <CopyableCodeRow
+                            label="Backtrace"
+                            value={props.entry.error.backtrace}
+                            multiline
+                        />
+                    ) : (
+                        <section
+                            aria-labelledby="backtrace-heading"
+                            className="rounded-lg border border-slate-800 bg-slate-950/70 p-3"
+                        >
+                            <h3
+                                id="backtrace-heading"
+                                className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-500"
+                            >
+                                Backtrace
+                            </h3>
+                            <p className="mt-2 text-sm text-slate-400">
+                                Backtrace unavailable
+                            </p>
+                        </section>
+                    )}
+                </div>
+            ) : null}
+        </Dialog>
+    );
+}
+
+/** Renders structured fields while making only diagnostic errors interactive. */
+function LogRecordRow(props: {
+    entry: ViewerEntry;
+    wrapLines: boolean;
+    onOpenError: (entry: LogEntry, trigger: HTMLButtonElement) => void;
+}) {
+    const content = (
+        <>
+            <time
+                dateTime={props.entry.record.timestamp}
+                className="text-slate-500 sm:shrink-0"
+            >
+                {props.entry.record.timestamp}
+            </time>
+            <Severity level={props.entry.record.level} />
+            <span
+                className={
+                    props.wrapLines
+                        ? "min-w-0 whitespace-pre-wrap wrap-break-word"
+                        : "whitespace-pre"
+                }
+            >
+                {props.entry.record.message}
+            </span>
+        </>
+    );
+    if (props.entry.record.level === "error" && props.entry.record.error) {
+        return (
+            <Button
+                type="button"
+                variant="subtle"
+                size="sm"
+                aria-label={`Open error details: ${props.entry.record.message}`}
+                onClick={(event) =>
+                    props.onOpenError(props.entry.record, event.currentTarget)
+                }
+                className="flex w-full flex-col items-start justify-start gap-x-3 gap-y-0 rounded px-2 py-1 text-left text-red-200 hover:bg-red-950/40 focus-visible:outline-2 focus-visible:outline-red-400 sm:flex-row"
+            >
+                {content}
+            </Button>
+        );
+    }
+    return (
+        <div
+            className={`flex flex-col gap-x-3 gap-y-0 px-2 py-1 sm:flex-row ${props.entry.record.level === "warning" ? "text-amber-100" : ""}`}
+        >
+            {content}
+        </div>
+    );
+}
+
+/** Owns diagnostic selection and focus restoration independently from socket lifecycle. */
+function useErrorDetailsSelection() {
+    const [selected, setSelected] = React.useState<LogEntry | null>(null);
+    const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+    const open = React.useCallback(
+        (entry: LogEntry, trigger: HTMLButtonElement) => {
+            triggerRef.current = trigger;
+            setSelected(entry);
+        },
+        [],
+    );
+    const close = React.useCallback(() => {
+        setSelected(null);
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }, []);
+    return { selected, open, close };
+}
+
 /** Owns one reconnecting route-scoped log socket and a bounded browser rolling window. */
 export function LogViewer(props: {
     title: string;
@@ -161,7 +333,8 @@ export function LogViewer(props: {
     headerActions?: React.ReactNode;
     loggingLevelControl: LoggingLevelControlConfig;
 }) {
-    const [entries, setEntries] = React.useState<LogEntry[]>([]);
+    const [entries, setEntries] = React.useState<ViewerEntry[]>([]);
+    const errorDetails = useErrorDetailsSelection();
     const [autoScroll, setAutoScroll] = React.useState(true);
     const [wrapLines, setWrapLines] = React.useState(true);
     const [fileLoggingEnabled, setFileLoggingEnabled] = React.useState<
@@ -182,8 +355,8 @@ export function LogViewer(props: {
         let reconnectTimer: number | null = null;
 
         /** Allocates stable local keys because identical logger text can validly render twice. */
-        const createEntry = (text: string): LogEntry => {
-            const entry = { id: nextEntryId.current, text };
+        const createEntry = (record: LogEntry): ViewerEntry => {
+            const entry = { id: nextEntryId.current, record };
             nextEntryId.current += 1;
             return entry;
         };
@@ -328,8 +501,8 @@ export function LogViewer(props: {
                     ) : null}
                     {fileLoggingEnabled === false ? (
                         <span role="status">
-                            History is unavailable because file logging is
-                            disabled. New in-process logs still appear live.
+                            Persistent output is disabled. The latest 1,000
+                            in-process records remain available for replay.
                         </span>
                     ) : null}
                 </div>
@@ -341,19 +514,20 @@ export function LogViewer(props: {
                     className="min-h-0 flex-1 overflow-auto rounded-lg border border-slate-800 bg-[#080a0e] p-4 font-mono text-xs leading-5 text-slate-300"
                 >
                     {entries.map((entry) => (
-                        <div
+                        <LogRecordRow
                             key={entry.id}
-                            className={
-                                wrapLines
-                                    ? "whitespace-pre-wrap wrap-break-word"
-                                    : "whitespace-pre"
-                            }
-                        >
-                            {entry.text}
-                        </div>
+                            entry={entry}
+                            wrapLines={wrapLines}
+                            onOpenError={errorDetails.open}
+                        />
                     ))}
                 </div>
             </div>
+            <ErrorDetailsDialog
+                entry={errorDetails.selected}
+                sourceLabel={props.sourceLabel}
+                onClose={errorDetails.close}
+            />
         </div>
     );
 }

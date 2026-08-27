@@ -54,13 +54,15 @@ test.describe.serial("Server logs", () => {
         const logRegion = page.getByRole("log", {
             name: "Server log entries",
         });
-        // The newest seeded fixture must survive the bounded latest-history scan.
-        await expect(logRegion).toContainText("[history-fixture] 510");
+        // Process startup records must be replayed without scanning pre-existing file contents.
+        await expect(logRegion).toContainText("Loaded server config");
         // Wrapped entries must use preformatted wrapping while preserving logger whitespace.
         expect(
             await logRegion.evaluate((element) =>
-                element.firstElementChild
-                    ? getComputedStyle(element.firstElementChild).whiteSpace
+                element.firstElementChild?.lastElementChild
+                    ? getComputedStyle(
+                          element.firstElementChild.lastElementChild,
+                      ).whiteSpace
                     : null,
             ),
         ).toBe("pre-wrap");
@@ -70,26 +72,15 @@ test.describe.serial("Server logs", () => {
         // Disabling wrapping must retain each physical log entry on one visual line.
         expect(
             await logRegion.evaluate((element) =>
-                element.firstElementChild
-                    ? getComputedStyle(element.firstElementChild).whiteSpace
+                element.firstElementChild?.lastElementChild
+                    ? getComputedStyle(
+                          element.firstElementChild.lastElementChild,
+                      ).whiteSpace
                     : null,
             ),
         ).toBe("pre");
-        // Excluding the oldest fixture proves the server did not return the file beginning or whole file.
+        // File-only fixtures from before process startup must not leak into in-process replay.
         await expect(logRegion).not.toContainText("[history-fixture] 001");
-
-        const historyText = (await logRegion.textContent()) ?? "";
-        const retainedFixtures = Array.from(
-            historyText.matchAll(/\[history-fixture\] (\d{3})/g),
-        );
-        // Multiple retained fixtures are needed to make chronological ordering observable.
-        expect(retainedFixtures.length).toBeGreaterThan(1);
-        const firstFixture = retainedFixtures[0]?.[1] ?? "";
-        const lastFixture = retainedFixtures.at(-1)?.[1] ?? "";
-        // Oldest-to-newest DOM order must place a later fixture number after an earlier retained one.
-        expect(Number(lastFixture)).toBeGreaterThan(Number(firstFixture));
-        // The newest deterministic fixture must remain the final fixture in source order.
-        expect(lastFixture).toBe("510");
 
         await expect
             .poll(
@@ -226,6 +217,26 @@ test.describe.serial("Server logs", () => {
         await expect
             .poll(() => logRegion.evaluate((element) => element.scrollTop))
             .toBeLessThanOrEqual(1);
+
+        const errorRow = page.getByRole("button", {
+            name: new RegExp(`Open error details: .*${marker}`),
+        });
+        // Error records must expose keyboard-operable semantics rather than relying on color.
+        await errorRow.focus();
+        await errorRow.press("Enter");
+        const errorDialog = page.getByRole("dialog", { name: "Error details" });
+        // The wide diagnostic dialog keeps the human message separate from details.
+        await expect(errorDialog).toBeVisible();
+        await expect(
+            errorDialog.getByLabel("Error chain contents"),
+        ).toContainText(marker);
+        // Backtrace has either captured output or an explicit unavailable state.
+        await expect(errorDialog).toContainText(/Backtrace/);
+        await errorDialog
+            .getByRole("button", { name: "Close error details" })
+            .click();
+        // Dialog dismissal restores focus to the invoking error row.
+        await expect(errorRow).toBeFocused();
 
         await autoScroll.click();
         // The button-based checkbox must expose that bottom-following behavior is enabled again.

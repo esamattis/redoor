@@ -6,7 +6,7 @@ use super::{
 use redoor::{
     Level,
     commands::{Command, CommandErrorKind, CommandHandler, CommandResult},
-    log, streaming,
+    log, log_error, streaming,
     types::{AgentId, Message, RequestId},
 };
 use tokio::sync::{mpsc, watch};
@@ -20,7 +20,7 @@ const MAX_CONCURRENT_COMMANDS: usize = 32;
 fn command_task_capacity_available(command_tasks: &mut JoinSet<()>, is_upload: bool) -> bool {
     while let Some(result) = command_tasks.try_join_next() {
         if let Err(error) = result {
-            log!(Level::Error, "Agent command task failed: {error:#}");
+            log_error!(anyhow::Error::new(error), "Agent command task failed");
         }
     }
     is_upload || command_tasks.len() < MAX_CONCURRENT_COMMANDS
@@ -708,7 +708,7 @@ impl AgentActor {
                     });
                 }
                 Message::Error { message } => {
-                    log!(Level::Error, "Server error: {}", message);
+                    log_error!(anyhow::Error::msg(message), "Server reported an error");
                     let _ = agent_ref.try_send(AgentMsg::ExitWithError);
                 }
                 _ => {}

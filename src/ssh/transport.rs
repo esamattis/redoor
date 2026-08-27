@@ -258,7 +258,7 @@ impl SshHost {
         // `redoor agent` would need a separate shutdown signal.
         ssh.kill_on_drop(true);
         let mut child = ssh.spawn().map_err(|error| {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH spawn failed to start child: target={}, command={}, error={:#}",
                 self.target,
@@ -378,7 +378,7 @@ impl SshHost {
 
         let start = std::time::Instant::now();
         let mut child = ssh.spawn().map_err(|error| {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH run_script_captured failed to spawn: target={}, error={:#}, elapsed={:?}",
                 self.target,
@@ -415,7 +415,7 @@ impl SshHost {
             stderr.len()
         );
         if !status.success() {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH run_script_captured failed with non-zero status: target={}, status={}, stderr='{}'",
                 self.target,
@@ -504,7 +504,7 @@ impl SshHost {
 
         let upload_start = std::time::Instant::now();
         let mut child = ssh.spawn().map_err(|error| {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH upload_via_cat failed to spawn: target={}, remote_path={}, error={:#}, elapsed={:?}",
                 self.target,
@@ -517,7 +517,7 @@ impl SshHost {
         let mut stdin = child.stdin.take().expect("stdin was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
         let mut file = tokio::fs::File::open(local_path).await.map_err(|error| {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH upload_via_cat failed to open local file: target={}, local_path={}, error={:#}",
                 self.target,
@@ -552,7 +552,7 @@ impl SshHost {
             .map_err(|e| std::io::Error::other(format!("copy task panicked: {e}")))?;
 
         if !status.success() {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH upload_via_cat remote cat failed: target={}, remote_path={}, exit_status={}, elapsed={:?}, stderr='{}'",
                 self.target,
@@ -571,7 +571,7 @@ impl SshHost {
         }
 
         copy_result.map_err(|e| {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "SSH upload_via_cat copy task failed: target={}, remote_path={}, error={:#}, elapsed={:?}",
                 self.target,

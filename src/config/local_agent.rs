@@ -33,6 +33,8 @@ pub(crate) async fn spawn_local_agent(
         .arg(crate::app_name::app_name()?)
         .arg("agent")
         .arg(&ws_url)
+        .arg("--log-format")
+        .arg("line")
         .arg("--name")
         .arg(&name)
         .arg("--token")

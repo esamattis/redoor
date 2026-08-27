@@ -172,6 +172,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
     let agent_name = resolved.name;
     let log_file = resolved.log;
     let log_level = resolved.log_level;
+    let log_format = resolved.log_format;
     let token = resolved.token;
     let notification_delay = resolved
         .notification_delay_seconds
@@ -191,7 +192,7 @@ pub(crate) async fn run(args: AgentArgs) -> Result<(), Box<dyn std::error::Error
 
     let agent_id = AgentId::from(agent_name.clone());
 
-    redoor::logging::init_with_level(log_file, log_level)
+    redoor::logging::init_with_options(log_file, log_level, log_format)
         .await
         .map_err(|error| format!("{error:#}"))?;
     match &loaded_config_path {
@@ -282,6 +283,8 @@ struct ResolvedAgentSettings {
     log: Option<String>,
     /// Effective startup threshold resolved before logger initialization.
     log_level: Level,
+    /// Effective process output format resolved before logger initialization.
+    log_format: redoor::logging::LogFormat,
     /// Non-negative delay selected on the command line, or `None` when explicitly disabled.
     notification_delay_seconds: Option<u64>,
     /// Path of the TOML file that contributed settings, when one was loaded.
@@ -392,6 +395,11 @@ fn resolve_agent_settings_from_sources(
         "REDOOR_AGENT_LOG_LEVEL",
         agent_section.log_level,
     )?;
+    let log_format = redoor::logging::resolve_initial_format(
+        args.log_format,
+        "REDOOR_AGENT_LOG_FORMAT",
+        agent_section.log_format,
+    )?;
 
     Ok(ResolvedAgentSettings {
         ws_address,
@@ -403,6 +411,7 @@ fn resolve_agent_settings_from_sources(
         trash_directory,
         log,
         log_level,
+        log_format,
         notification_delay_seconds,
         loaded_config_path,
     })

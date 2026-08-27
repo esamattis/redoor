@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU8, AtomicU64, Ordering},
     },
 };
@@ -10,27 +10,29 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::AsyncWriteExt,
     sync::{
         broadcast,
         mpsc::{self, Sender, error::TrySendError},
-        oneshot,
     },
 };
 use ts_rs::TS;
 
 const LIVE_LOG_CAPACITY: usize = 1_024;
 const LOG_RECORD_CAPACITY: usize = 2_048;
-const LOGGER_CONTROL_CAPACITY: usize = 16;
-
-/// Caps every historical scan to the same browser-sized rolling window.
-pub const LOG_HISTORY_ENTRY_LIMIT: usize = 500;
+/// Gives relay validation the same per-section diagnostic bound used by producers.
+pub const LOG_DIAGNOSTIC_LIMIT: usize = 64 * 1_024;
+/// Keeps one structured entry comfortably below the relay frame limit.
+pub const LOG_MESSAGE_LIMIT: usize = 32 * 1_024;
+const TRUNCATION_NOTICE: &str = "
+[diagnostic truncated]";
+/// Caps process-local browser replay at an exact, predictable memory bound.
+pub const LOG_HISTORY_ENTRY_LIMIT: usize = 1_000;
 
 static LOGGER: OnceLock<LoggerHandle> = OnceLock::new();
-/// Makes the effective process threshold available without task-local allocation or locking.
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(Level::Info as u8);
 
-/// Orders log records so callers can consistently filter and format process output.
+/// Orders log records so callers can consistently filter and present process output.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -49,14 +51,14 @@ pub enum Level {
 }
 
 impl Level {
-    /// Keeps the file, console, and live-stream level representation identical.
-    fn as_str(&self) -> &str {
+    /// Keeps human process output compatible with the established severity labels.
+    fn as_str(self) -> &'static str {
         match self {
-            Level::Trace => "TRACE",
-            Level::Debug => "DEBUG",
-            Level::Info => "INFO",
-            Level::Warning => "WARN",
-            Level::Error => "ERROR",
+            Self::Trace => "TRACE",
+            Self::Debug => "DEBUG",
+            Self::Info => "INFO",
+            Self::Warning => "WARN",
+            Self::Error => "ERROR",
         }
     }
 
@@ -74,7 +76,7 @@ impl Level {
 }
 
 impl Default for Level {
-    /// Keeps normal operator lifecycle output enabled unless another source overrides it.
+    /// Keeps normal lifecycle output enabled unless another source overrides it.
     fn default() -> Self {
         Self::Info
     }
@@ -83,7 +85,7 @@ impl Default for Level {
 impl std::str::FromStr for Level {
     type Err = String;
 
-    /// Accepts human CLI/config spelling while keeping one API serialization vocabulary.
+    /// Accepts human startup spelling while retaining one API vocabulary.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "trace" => Ok(Self::Trace),
@@ -99,7 +101,7 @@ impl std::str::FromStr for Level {
 }
 
 impl std::fmt::Display for Level {
-    /// Uses the same lowercase vocabulary accepted by TOML, CLI, env, and REST.
+    /// Uses the lowercase spelling accepted by TOML, CLI, env, and REST.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Trace => "trace",
@@ -111,56 +113,174 @@ impl std::fmt::Display for Level {
     }
 }
 
-/// Carries a requested runtime threshold without overloading unrelated log-stream protocol data.
+/// Selects operator-facing output without changing structured browser payloads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum LogFormat {
+    /// Preserves the human-readable line format.
+    #[default]
+    Line,
+    /// Emits one JSON object per physical output line.
+    Json,
+}
+
+impl std::str::FromStr for LogFormat {
+    type Err = String;
+
+    /// Restricts startup values to documented sink formats.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "line" => Ok(Self::Line),
+            "json" => Ok(Self::Json),
+            _ => Err("log format must be one of: line, json".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for LogFormat {
+    /// Uses stable CLI and TOML spelling.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Line => "line",
+            Self::Json => "json",
+        })
+    }
+}
+
+/// Retains diagnostics separately so viewers can disclose them on demand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LogErrorDetails {
+    /// Contains the anyhow context/source sequence, subject to a visible bound.
+    pub chain: String,
+    /// Contains a captured backtrace when runtime capture is enabled.
+    pub backtrace: Option<String>,
+}
+
+impl LogErrorDetails {
+    /// Extracts the complete anyhow diagnostic before the bounded producer enqueue.
+    fn from_error(error: &anyhow::Error) -> Self {
+        let chain = error
+            .chain()
+            .enumerate()
+            .map(|(index, cause)| {
+                if index == 0 {
+                    cause.to_string()
+                } else {
+                    format!("Caused by: {cause}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let rendered_backtrace = error.backtrace().to_string();
+        let backtrace = (!rendered_backtrace.trim().is_empty()
+            && !rendered_backtrace.contains("disabled backtrace"))
+        .then(|| bound_diagnostic(rendered_backtrace));
+        Self {
+            chain: bound_diagnostic(chain),
+            backtrace,
+        }
+    }
+}
+
+/// Represents one record identically across replay, live events, and JSON output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LogEntry {
+    /// Uses RFC 3339 milliseconds and an explicit offset for unambiguous ordering.
+    pub timestamp: String,
+    pub level: Level,
+    /// Excludes rendered timestamp and severity prefixes.
+    pub message: String,
+    /// Exists only for failures sent through the dedicated error logger.
+    pub error: Option<LogErrorDetails>,
+}
+
+impl LogEntry {
+    /// Captures time before enqueueing so output backlog does not alter event chronology.
+    fn new(level: Level, message: String, error: Option<LogErrorDetails>) -> Self {
+        Self {
+            timestamp: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            level,
+            message,
+            error,
+        }
+    }
+
+    /// Preserves the established human-readable line format for existing consumers.
+    fn render_line(&self) -> String {
+        let timestamp = chrono::DateTime::parse_from_rfc3339(&self.timestamp)
+            .expect("logger-created timestamps must remain valid RFC 3339 values")
+            .format("%Y-%m-%d %H:%M:%S%.3f");
+        format!("[{timestamp}] [{}] {}", self.level.as_str(), self.message)
+    }
+}
+
+/// Carries a requested runtime threshold without overloading stream protocol data.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LoggingLevelRequest {
     pub level: Level,
 }
 
-/// Returns the process-authoritative threshold after a read or successful update.
+/// Returns the authoritative threshold after a read or successful update.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LoggingLevelResponse {
     pub level: Level,
 }
 
-/// Preserves structured severity until the background task applies filtering and formatting.
-struct LogMessage {
-    level: Level,
-    message: String,
-}
-
-/// Distinguishes application records from overload notices generated when queue capacity returns.
+/// Distinguishes application records from overload notices.
 enum LogRecord {
-    /// Carries one application record without making its producer wait for output.
-    Message(LogMessage),
-    /// Makes bounded-queue loss visible once the logger can accept records again.
-    Dropped(u64),
+    /// Carries one accepted application record without waiting for output.
+    Message(LogEntry),
 }
 
-/// Keeps subscription setup off the lossy record lane so output backlog cannot starve control.
-enum LoggerCommand {
-    /// Captures the current persisted prefix before subsequently processed records are published.
-    Subscribe {
-        reply: oneshot::Sender<LogSubscription>,
-    },
+/// Owns the replay/live boundary separately from potentially slow output I/O.
+struct ReplayState {
+    history: VecDeque<LogEntry>,
+    live_entries: broadcast::Sender<LogEntry>,
 }
 
-/// Keeps normal logging non-blocking while allowing WebSocket setup to await an ordered reply.
+impl ReplayState {
+    /// Publishes only records accepted by the bounded sink queue.
+    fn publish(&mut self, entry: LogEntry) {
+        if self.history.len() == LOG_HISTORY_ENTRY_LIMIT {
+            self.history.pop_front();
+        }
+        self.history.push_back(entry.clone());
+        let _ = self.live_entries.send(entry);
+    }
+}
+
+/// Keeps normal logging non-blocking while sharing a precise replay/live boundary.
 struct LoggerHandle {
     records: Sender<LogRecord>,
-    commands: Sender<LoggerCommand>,
     dropped_records: Arc<AtomicU64>,
+    replay: Arc<Mutex<ReplayState>>,
+    file_logging_enabled: bool,
 }
 
 impl LoggerHandle {
-    /// Admits a record without waiting and preserves an exact count when bounded capacity is exhausted.
-    fn send_record(&self, message: LogMessage) {
+    /// Admits a record immediately and retains exact bounded-queue loss accounting.
+    fn send_record(&self, entry: LogEntry) {
         let dropped = self.dropped_records.swap(0, Ordering::AcqRel);
         if dropped > 0 {
-            match self.records.try_send(LogRecord::Dropped(dropped)) {
-                Ok(()) => {}
+            let notice = LogEntry::new(
+                Level::Warning,
+                format!("Logger dropped {dropped} records while its output queue was full"),
+                None,
+            );
+            match self.records.try_send(LogRecord::Message(notice.clone())) {
+                Ok(()) => self
+                    .replay
+                    .lock()
+                    .expect("logger replay state must not be poisoned")
+                    .publish(notice),
                 Err(TrySendError::Full(_)) => {
                     self.dropped_records
                         .fetch_add(dropped + 1, Ordering::Relaxed);
@@ -169,52 +289,60 @@ impl LoggerHandle {
                 Err(TrySendError::Closed(_)) => return,
             }
         }
+        match self.records.try_send(LogRecord::Message(entry.clone())) {
+            Ok(()) => self
+                .replay
+                .lock()
+                .expect("logger replay state must not be poisoned")
+                .publish(entry),
+            Err(TrySendError::Full(_)) => {
+                self.dropped_records.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Closed(_)) => {}
+        }
+    }
 
-        if matches!(
-            self.records.try_send(LogRecord::Message(message)),
-            Err(TrySendError::Full(_))
-        ) {
-            self.dropped_records.fetch_add(1, Ordering::Relaxed);
+    /// Captures history and installs the receiver while holding one short lock.
+    fn subscribe(&self) -> LogSubscription {
+        let replay = self
+            .replay
+            .lock()
+            .expect("logger replay state must not be poisoned");
+        LogSubscription {
+            entries: replay.history.iter().cloned().collect(),
+            file_logging_enabled: self.file_logging_enabled,
+            receiver: replay.live_entries.subscribe(),
         }
     }
 }
 
-/// Captures the stable file prefix and live receiver created at one logger queue position.
+/// Carries an atomic process-local snapshot and its structured live receiver.
 pub struct LogSubscription {
-    /// Identifies the file only when persistent logging opened and remains usable.
-    pub log_file_path: Option<PathBuf>,
-    /// Prevents later appends from leaking into the historical snapshot.
-    pub history_end: u64,
-    /// Delivers accepted entries through bounded storage so slow clients cannot grow memory forever.
-    pub receiver: broadcast::Receiver<String>,
+    pub entries: Vec<LogEntry>,
+    /// Explains persistence availability without exposing an internal path.
+    pub file_logging_enabled: bool,
+    pub receiver: broadcast::Receiver<LogEntry>,
 }
 
-/// Distinguishes logger shutdown failures during WebSocket subscription setup.
+/// Distinguishes logger shutdown failures during subscription setup.
 #[derive(Debug, thiserror::Error)]
 pub enum SubscribeError {
-    /// Indicates that no running logger task can accept the ordered command.
+    /// No running logger task can accept the command.
     #[error("logger command channel is closed")]
     LoggerClosed,
-    /// Indicates that the logger stopped after accepting but before answering the command.
-    #[error("logger dropped the subscription response")]
-    ResponseDropped,
 }
 
-/// Owns mutable file state in one task so producers never perform or wait for file I/O.
+/// Owns output and replay state in one task so producers never wait for I/O.
 pub struct Logger {
     log_file_path: Option<PathBuf>,
     log_file: Option<tokio::fs::File>,
-    log_file_position: u64,
-    live_entries: broadcast::Sender<String>,
+    format: LogFormat,
 }
 
 impl Logger {
-    /// Opens persistent output before startup continues so subscriptions never advertise an unusable file.
-    ///
-    /// Missing parent directories are created first so conventional paths like
-    /// `~/.local/share/<app-name>/server.log` work on first boot.
-    pub async fn new(log_file_path: Option<PathBuf>) -> Result<Self> {
-        let (log_file_path, log_file, log_file_position) = match log_file_path {
+    /// Opens persistent output before startup so availability is authoritative.
+    pub async fn new(log_file_path: Option<PathBuf>, format: LogFormat) -> Result<Self> {
+        let (log_file_path, log_file) = match log_file_path {
             Some(path) => {
                 if let Some(parent) = path
                     .parent()
@@ -230,212 +358,174 @@ impl Logger {
                     .open(&path)
                     .await
                     .with_context(|| format!("Failed to open log file '{}'", path.display()))?;
-                let metadata = file
-                    .metadata()
-                    .await
-                    .with_context(|| format!("Failed to inspect log file '{}'", path.display()))?;
-                (Some(path), Some(file), metadata.len())
+                (Some(path), Some(file))
             }
-            None => (None, None, 0),
+            None => (None, None),
         };
-        let (live_entries, _) = broadcast::channel(LIVE_LOG_CAPACITY);
-
         Ok(Self {
             log_file_path,
             log_file,
-            log_file_position,
-            live_entries,
+            format,
         })
     }
 
-    /// Reports file failures without recursively enqueueing another record into the broken logger.
+    /// Reports sink failures directly to avoid recursively using the broken logger.
     fn report_file_error(operation: &str, path: &std::path::Path, error: &std::io::Error) {
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         eprintln!(
-            "[{}] [ERROR] Failed to {} log file '{}': {}",
-            timestamp,
-            operation,
-            path.display(),
-            error
+            "Failed to {operation} log file '{}': {error}",
+            path.display()
         );
     }
 
-    /// Formats one record already admitted by the producer-side atomic threshold.
-    async fn write(&mut self, level: Level, message: String) {
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let formatted = format!("[{}] [{}] {}", timestamp, level.as_str(), message);
-        self.write_formatted(formatted).await;
-    }
-
-    /// Writes a synthetic warning even when the configured level would hide ordinary warnings.
-    async fn write_drop_notice(&mut self, dropped: u64) {
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let formatted = format!(
-            "[{}] [WARN] Logger dropped {dropped} records while its output queue was full",
-            timestamp
-        );
-        self.write_formatted(formatted).await;
-    }
-
-    /// Writes one accepted entry before publishing it so the history cutoff trails file output.
-    async fn write_formatted(&mut self, formatted: String) {
-        let mut bytes = formatted.as_bytes().to_vec();
+    /// Writes, retains, and broadcasts one record in deterministic order.
+    async fn write_entry(&mut self, entry: LogEntry) {
+        let formatted = match self.format {
+            LogFormat::Line => entry.render_line(),
+            LogFormat::Json => serde_json::to_string(&entry)
+                .expect("serializing an owned structured log record must succeed"),
+        };
+        let mut bytes = formatted.into_bytes();
         bytes.push(b'\n');
         if let Err(error) = tokio::io::stdout().write_all(&bytes).await {
             eprintln!("Failed to write logger output to stdout: {error}");
         }
-
-        if let Some(file) = self.log_file.as_mut() {
-            match file.write_all(&bytes).await {
-                Ok(()) => self.log_file_position += bytes.len() as u64,
-                Err(error) => {
-                    if let Some(path) = self.log_file_path.as_deref() {
-                        Self::report_file_error("write", path, &error);
-                    }
-                    // A partial write makes the exact cutoff unknowable, so stop advertising history.
-                    self.log_file = None;
-                    self.log_file_path = None;
-                    self.log_file_position = 0;
-                }
+        if let Some(file) = self.log_file.as_mut()
+            && let Err(error) = file.write_all(&bytes).await
+        {
+            if let Some(path) = self.log_file_path.as_deref() {
+                Self::report_file_error("write", path, &error);
             }
+            self.log_file = None;
+            self.log_file_path = None;
         }
-
-        // Multiline messages remain one live entry but reconnect as physical file lines; changing
-        // the established line-oriented format requires a separate compatibility decision.
-        let _ = self.live_entries.send(formatted);
     }
 
-    /// Processes one bounded record while retaining a single owner for output ordering.
+    /// Processes one bounded record while preserving output ownership.
     async fn process_record(&mut self, record: LogRecord) {
         match record {
-            LogRecord::Message(log_message) => {
-                self.write(log_message.level, log_message.message).await;
-            }
-            LogRecord::Dropped(dropped) => self.write_drop_notice(dropped).await,
+            LogRecord::Message(entry) => self.write_entry(entry).await,
         }
     }
 
-    /// Drains only the bounded backlog visible at admission before capturing a subscription boundary.
-    async fn process_command(
-        &mut self,
-        command: LoggerCommand,
-        records: &mut mpsc::Receiver<LogRecord>,
-    ) {
-        match command {
-            LoggerCommand::Subscribe { reply } => {
-                let backlog = records.len();
-                for _ in 0..backlog {
-                    let Some(record) = records.recv().await else {
-                        break;
-                    };
-                    self.process_record(record).await;
-                }
-                let subscription = LogSubscription {
-                    log_file_path: self.log_file_path.clone(),
-                    history_end: self.log_file_position,
-                    receiver: self.live_entries.subscribe(),
-                };
-                let _ = reply.send(subscription);
-            }
-        }
-    }
-
-    /// Prioritizes bounded control traffic while draining accepted records through one output owner.
-    async fn run(
-        mut self,
-        mut records: mpsc::Receiver<LogRecord>,
-        mut commands: mpsc::Receiver<LoggerCommand>,
-    ) {
-        loop {
-            tokio::select! {
-                biased;
-                Some(command) = commands.recv() => self.process_command(command, &mut records).await,
-                Some(record) = records.recv() => self.process_record(record).await,
-                else => break,
-            }
+    /// Drains records through one output owner without coupling subscriptions to sink latency.
+    async fn run(mut self, mut records: mpsc::Receiver<LogRecord>) {
+        while let Some(record) = records.recv().await {
+            self.process_record(record).await;
         }
     }
 }
 
-/// Scans a stable file prefix asynchronously while retaining only the newest display entries.
-pub async fn read_latest_entries(
-    path: &std::path::Path,
-    history_end: u64,
-) -> std::io::Result<Vec<String>> {
-    let file = tokio::fs::File::open(path).await?;
-    let limited_file = file.take(history_end);
-    let mut lines = BufReader::new(limited_file).lines();
-    let mut entries = VecDeque::with_capacity(LOG_HISTORY_ENTRY_LIMIT);
-
-    while let Some(line) = lines.next_line().await? {
-        if entries.len() == LOG_HISTORY_ENTRY_LIMIT {
-            entries.pop_front();
-        }
-        entries.push_back(line);
-    }
-
-    Ok(entries.into_iter().collect())
-}
-
-/// Initializes the process-global logger before any log macro is used.
+/// Initializes the process-global logger with compatibility defaults.
 pub async fn init(log_file_path: Option<String>) -> Result<()> {
-    init_with_level(log_file_path, Level::Info).await
+    init_with_options(log_file_path, Level::Info, LogFormat::Line).await
 }
 
-/// Initializes logging with the startup threshold resolved by the owning process role.
+/// Initializes logging with a threshold and compatibility line output.
 pub async fn init_with_level(log_file_path: Option<String>, level: Level) -> Result<()> {
+    init_with_options(log_file_path, level, LogFormat::Line).await
+}
+
+/// Initializes logging after the owning process role resolves startup options.
+pub async fn init_with_options(
+    log_file_path: Option<String>,
+    level: Level,
+    format: LogFormat,
+) -> Result<()> {
     if LOGGER.get().is_some() {
         return Ok(());
     }
-
     set_level(level);
-
     let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
-    let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
-    let logger = Logger::new(log_file_path.map(PathBuf::from)).await?;
+    let logger = Logger::new(log_file_path.map(PathBuf::from), format).await?;
+    let file_logging_enabled = logger.log_file.is_some();
+    let (live_entries, _) = broadcast::channel(LIVE_LOG_CAPACITY);
     let handle = LoggerHandle {
         records,
-        commands,
         dropped_records: Arc::new(AtomicU64::new(0)),
+        replay: Arc::new(Mutex::new(ReplayState {
+            history: VecDeque::with_capacity(LOG_HISTORY_ENTRY_LIMIT),
+            live_entries,
+        })),
+        file_logging_enabled,
     };
     if LOGGER.set(handle).is_err() {
         return Ok(());
     }
-
-    tokio::spawn(logger.run(record_receiver, command_receiver));
+    tokio::spawn(logger.run(record_receiver));
     Ok(())
 }
 
-/// Establishes an ordered history/live boundary without blocking normal log producers.
+/// Establishes an ordered snapshot/live boundary without blocking producers.
 pub async fn subscribe() -> Result<LogSubscription, SubscribeError> {
     let logger = LOGGER.get().ok_or(SubscribeError::LoggerClosed)?;
-    let (reply, response) = oneshot::channel();
-    logger
-        .commands
-        .send(LoggerCommand::Subscribe { reply })
-        .await
-        .map_err(|_| SubscribeError::LoggerClosed)?;
-    response.await.map_err(|_| SubscribeError::ResponseDropped)
+    Ok(logger.subscribe())
 }
 
-/// Enqueues an entry immediately so application work never waits for formatting or file output.
+/// Enqueues an ordinary entry immediately.
 pub fn log(level: Level, message: String) {
-    let logger = LOGGER.get().expect("global logger is unavailable");
-    logger.send_record(LogMessage { level, message });
+    LOGGER
+        .get()
+        .expect("global logger is unavailable")
+        .send_record(LogEntry::new(level, bound_message(message), None));
 }
 
-/// Returns whether a producer should construct and enqueue a record at this severity.
+/// Enqueues a failure with its preserved anyhow chain and captured backtrace.
+pub fn log_error(message: String, error: &anyhow::Error) {
+    LOGGER
+        .get()
+        .expect("global logger is unavailable")
+        .send_record(LogEntry::new(
+            Level::Error,
+            bound_message(message),
+            Some(LogErrorDetails::from_error(error)),
+        ));
+}
+
+/// Truncates on a UTF-8 boundary while making diagnostic loss visible.
+fn bound_diagnostic(mut value: String) -> String {
+    if value.len() <= LOG_DIAGNOSTIC_LIMIT {
+        return value;
+    }
+    let mut end = LOG_DIAGNOSTIC_LIMIT.saturating_sub(TRUNCATION_NOTICE.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value.push_str(TRUNCATION_NOTICE);
+    value
+}
+
+/// Bounds human messages before they enter replay or relay memory.
+fn bound_message(value: String) -> String {
+    bound_value(value, LOG_MESSAGE_LIMIT, " [message truncated]")
+}
+
+/// Truncates one UTF-8 value at a visible byte limit.
+fn bound_value(mut value: String, limit: usize, notice: &str) -> String {
+    if value.len() <= limit {
+        return value;
+    }
+    let mut end = limit.saturating_sub(notice.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value.push_str(notice);
+    value
+}
+
+/// Returns whether a producer should construct a record at this severity.
 #[inline]
 pub fn enabled(level: Level) -> bool {
     level as u8 >= LOG_LEVEL.load(Ordering::Relaxed)
 }
 
-/// Returns the current process-wide threshold with one relaxed atomic load.
+/// Returns the current process-wide threshold.
 pub fn level() -> Level {
     Level::from_u8(LOG_LEVEL.load(Ordering::Relaxed))
 }
 
-/// Changes admission for subsequent macro calls without blocking active output or streams.
+/// Changes admission for subsequent macro calls.
 pub fn set_level(level: Level) {
     LOG_LEVEL.store(level as u8, Ordering::Relaxed);
 }
@@ -454,7 +544,7 @@ pub fn resolve_initial_level(
     )
 }
 
-/// Applies startup precedence independently of process environment access so every source is testable.
+/// Isolates level precedence from process environment access for tests.
 fn resolve_level_sources(
     cli: Option<Level>,
     role_env_name: &str,
@@ -472,423 +562,312 @@ fn resolve_level_sources(
     Ok(toml.unwrap_or_default())
 }
 
-/// Formats application log arguments only after callers select the intended severity.
+/// Resolves CLI, role-specific environment, TOML, then the line default.
+pub fn resolve_initial_format(
+    cli: Option<LogFormat>,
+    role_env_name: &str,
+    toml: Option<LogFormat>,
+) -> std::result::Result<LogFormat, String> {
+    resolve_format_sources(
+        cli,
+        role_env_name,
+        std::env::var(role_env_name).ok().as_deref(),
+        toml,
+    )
+}
+
+/// Isolates format precedence from process environment access for tests.
+fn resolve_format_sources(
+    cli: Option<LogFormat>,
+    role_env_name: &str,
+    role_env: Option<&str>,
+    toml: Option<LogFormat>,
+) -> std::result::Result<LogFormat, String> {
+    if let Some(format) = cli {
+        return Ok(format);
+    }
+    if let Some(value) = role_env {
+        return value
+            .parse::<LogFormat>()
+            .map_err(|error| format!("Invalid {role_env_name} value {value:?}: {error}"));
+    }
+    Ok(toml.unwrap_or_default())
+}
+
+/// Formats ordinary application records only when their level is enabled.
 #[macro_export]
 macro_rules! log {
-    ($level:expr, $($arg:tt)*) => {
-        {
-            let level = $level;
-            if $crate::logging::enabled(level) {
-                $crate::logging::log(level, format!($($arg)*));
-            }
+    ($level:expr, $($arg:tt)*) => {{
+        let level = $level;
+        if $crate::logging::enabled(level) {
+            $crate::logging::log(level, format!($($arg)*));
         }
-    };
+    }};
+}
+
+/// Captures failure diagnostics only when error logging is enabled.
+#[macro_export]
+macro_rules! log_error {
+    ($error:expr, $($arg:tt)*) => {{
+        if $crate::logging::enabled($crate::logging::Level::Error) {
+            $crate::logging::log_error(format!($($arg)*), &$error);
+        }
+    }};
+}
+
+/// Migrates failure sites that only retain rendered diagnostics into structured errors.
+#[macro_export]
+macro_rules! log_failure {
+    ($level:expr, $($arg:tt)*) => {{
+        if $crate::logging::enabled($crate::logging::Level::Error) {
+            let message = format!($($arg)*);
+            let diagnostic = anyhow::Error::msg(message.clone());
+            $crate::logging::log_error(message, &diagnostic);
+        }
+    }};
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     use super::*;
-    use crate::test_support::TempDir;
 
-    /// Places logger history beneath the root owned by the current test.
-    fn temporary_log_path(temp_dir: &TempDir) -> PathBuf {
-        temp_dir.path().join("server.log")
-    }
-
-    /// Writes deterministic physical records without involving the process-global logger.
-    async fn write_history(path: &std::path::Path, entries: &[String], final_newline: bool) {
-        let mut contents = entries.join("\n");
-        if final_newline {
-            contents.push('\n');
+    /// Checks Rust sources asynchronously so runtime errors cannot bypass structured diagnostics.
+    async fn assert_no_ordinary_error_macros(path: &std::path::Path) {
+        let mut directories = vec![path.to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            let mut entries = tokio::fs::read_dir(&directory)
+                .await
+                .expect("source directory should be readable");
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .expect("source entry should be readable")
+            {
+                let path = entry.path();
+                if entry
+                    .file_type()
+                    .await
+                    .expect("source type should be readable")
+                    .is_dir()
+                {
+                    directories.push(path);
+                    continue;
+                }
+                if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
+                    || path.ends_with("logging.rs")
+                {
+                    continue;
+                }
+                let source = tokio::fs::read_to_string(&path)
+                    .await
+                    .expect("Rust source should be UTF-8");
+                let compact = source.split_whitespace().collect::<String>();
+                // Ordinary error macros lose chains; runtime failures must use a dedicated error macro.
+                assert!(
+                    !compact.contains("log!(Level::Error,"),
+                    "{} contains an ordinary error-level log macro",
+                    path.display()
+                );
+            }
         }
-        tokio::fs::write(path, contents)
-            .await
-            .expect("test history should be writable");
     }
 
-    /// Starts a directly owned logger because the process-global OnceLock cannot be reset between tests.
-    async fn start_logger(path: Option<PathBuf>) -> (LoggerHandle, tokio::task::JoinHandle<()>) {
-        let logger = Logger::new(path).await.expect("test logger should open");
+    /// Starts an owned logger because the global OnceLock cannot reset between tests.
+    async fn start_logger(format: LogFormat) -> (LoggerHandle, tokio::task::JoinHandle<()>) {
+        let logger = Logger::new(None, format)
+            .await
+            .expect("test logger should open");
         let (records, record_receiver) = mpsc::channel(LOG_RECORD_CAPACITY);
-        let (commands, command_receiver) = mpsc::channel(LOGGER_CONTROL_CAPACITY);
+        let (live_entries, _) = broadcast::channel(LIVE_LOG_CAPACITY);
         let handle = LoggerHandle {
             records,
-            commands,
             dropped_records: Arc::new(AtomicU64::new(0)),
+            replay: Arc::new(Mutex::new(ReplayState {
+                history: VecDeque::with_capacity(LOG_HISTORY_ENTRY_LIMIT),
+                live_entries,
+            })),
+            file_logging_enabled: false,
         };
-        let task = tokio::spawn(logger.run(record_receiver, command_receiver));
+        let task = tokio::spawn(logger.run(record_receiver));
         (handle, task)
     }
 
-    /// Verifies missing parent directories are created so first-boot log paths work.
-    #[tokio::test]
-    async fn creates_missing_log_directory() {
-        let temp_dir = TempDir::create();
-        let path = temp_dir.path().join("nested/agent.log");
-        let logger = Logger::new(Some(path.clone()))
-            .await
-            .expect("logger should create nested parents");
-        drop(logger);
-        assert!(
-            tokio::fs::try_exists(&path).await.expect("exists check"),
-            "opening the logger must create the log file after creating parents"
+    /// Requests an ordered snapshot as a deterministic barrier.
+    async fn snapshot(logger: &LoggerHandle) -> LogSubscription {
+        logger.subscribe()
+    }
+
+    /// Sends one deterministic record through the production queue lane.
+    fn send_log(logger: &LoggerHandle, level: Level, message: String) {
+        logger.send_record(LogEntry::new(level, message, None));
+    }
+
+    /// Protects timestamp shape and structured serialization fields.
+    #[test]
+    fn structured_entry_has_rfc3339_millisecond_timestamp() {
+        let entry = LogEntry::new(Level::Info, "ready".to_string(), None);
+        // Parsing proves the timestamp contains a valid explicit RFC 3339 offset.
+        assert!(chrono::DateTime::parse_from_rfc3339(&entry.timestamp).is_ok());
+        // The fractional component remains exactly milliseconds for stable display.
+        assert!(entry.timestamp.contains('.') && entry.timestamp.len() >= 29);
+        let json = serde_json::to_value(&entry).expect("entry serializes");
+        // Structured output must retain independent message and severity fields.
+        assert_eq!(json["message"], "ready");
+        assert_eq!(json["level"], "info");
+    }
+
+    /// Ensures line output remains compatible while JSON remains one physical line.
+    #[test]
+    fn renderers_escape_multiline_records() {
+        let entry = LogEntry::new(
+            Level::Warning,
+            "first
+second"
+                .to_string(),
+            None,
+        );
+        // Human output preserves embedded line breaks used by existing process-log consumers.
+        assert!(entry.render_line().ends_with(
+            "first
+second"
+        ));
+        let json = serde_json::to_string(&entry).expect("entry serializes");
+        // NDJSON serialization cannot contain a literal embedded newline.
+        assert!(!json.contains('\n'));
+    }
+
+    /// Locks the compatibility timestamp prefix used by existing line-output consumers.
+    #[test]
+    fn line_renderer_uses_the_established_timestamp_shape() {
+        let entry = LogEntry {
+            timestamp: "2026-08-27T12:34:56.789+03:00".to_string(),
+            level: Level::Info,
+            message: "ready".to_string(),
+            error: None,
+        };
+        // Line mode must not expose the structured RFC 3339 separator or offset.
+        assert_eq!(
+            entry.render_line(),
+            "[2026-08-27 12:34:56.789] [INFO] ready"
         );
     }
 
-    /// Requests a subscription as a deterministic barrier for every command queued before it.
-    async fn request_subscription(logger: &LoggerHandle) -> LogSubscription {
-        let (reply, response) = oneshot::channel();
-        logger
-            .commands
-            .send(LoggerCommand::Subscribe { reply })
-            .await
-            .expect("test logger should accept subscription commands");
-        response
-            .await
-            .expect("test logger should answer subscription commands")
-    }
-
-    /// Sends a record through the same command lane used by production log producers.
-    fn send_log(logger: &LoggerHandle, level: Level, message: &str) {
-        logger.send_record(LogMessage {
-            level,
-            message: message.to_string(),
-        });
-    }
-
-    /// Proves overload remains bounded and reports the exact loss after capacity returns.
-    #[test]
-    fn bounded_record_queue_reports_drops_on_recovery() {
-        let (records, mut record_receiver) = mpsc::channel(2);
-        let (commands, _command_receiver) = mpsc::channel(1);
-        let logger = LoggerHandle {
-            records,
-            commands,
-            dropped_records: Arc::new(AtomicU64::new(0)),
-        };
-
-        send_log(&logger, Level::Info, "accepted one");
-        send_log(&logger, Level::Info, "accepted two");
-        send_log(&logger, Level::Info, "dropped");
-        // A full queue must retain only its configured number of allocated records.
-        assert_eq!(logger.records.max_capacity() - logger.records.capacity(), 2);
-        // Every rejected application record must contribute to explicit loss accounting.
-        assert_eq!(logger.dropped_records.load(Ordering::Relaxed), 1);
-
-        let _ = record_receiver
-            .try_recv()
-            .expect("first record should be queued");
-        let _ = record_receiver
-            .try_recv()
-            .expect("second record should be queued");
-        send_log(&logger, Level::Info, "accepted after recovery");
-
-        let notice = record_receiver
-            .try_recv()
-            .expect("drop notice should be queued");
-        // Recovery must report the exact accumulated loss before the next accepted record.
-        assert!(matches!(notice, LogRecord::Dropped(1)));
-        let recovered = record_receiver
-            .try_recv()
-            .expect("post-recovery record should be queued");
-        // Capacity recovery must not discard the record that exposed the loss notice.
-        assert!(matches!(recovered, LogRecord::Message(_)));
-        // Once reported, the loss counter must return to zero for the next overload interval.
-        assert_eq!(logger.dropped_records.load(Ordering::Relaxed), 0);
-    }
-
-    /// Proves subscription control drains a fixed backlog rather than waiting behind later records.
+    /// Protects exact history capacity and chronological eviction without a log file.
     #[tokio::test]
-    async fn subscription_control_is_not_starved_by_record_backlog() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let logger = Logger::new(Some(path.clone()))
-            .await
-            .expect("test logger should open");
-        let (records, record_receiver) = mpsc::channel(2);
-        let (commands, command_receiver) = mpsc::channel(1);
-        let handle = LoggerHandle {
-            records,
-            commands,
-            dropped_records: Arc::new(AtomicU64::new(0)),
-        };
-        send_log(&handle, Level::Info, "backlog one");
-        send_log(&handle, Level::Info, "backlog two");
-        let (reply, response) = oneshot::channel();
-        handle
-            .commands
-            .try_send(LoggerCommand::Subscribe { reply })
-            .expect("control lane should remain available beside a full record lane");
-
-        let task = tokio::spawn(logger.run(record_receiver, command_receiver));
-        let subscription = response
-            .await
-            .expect("prioritized subscription should receive a response");
-        let history = read_latest_entries(&path, subscription.history_end)
-            .await
-            .expect("subscription history should be readable");
-        // Both records visible at control admission must be included in the stable boundary.
-        assert_eq!(history.len(), 2);
-
-        drop(handle);
-        task.await.expect("test logger task should stop cleanly");
+    async fn history_retains_exactly_latest_one_thousand_records() {
+        let (logger, task) = start_logger(LogFormat::Line).await;
+        for index in 0..1_010 {
+            send_log(&logger, Level::Info, format!("record-{index}"));
+        }
+        let subscription = snapshot(&logger).await;
+        // Replay is capped at exactly the documented process-local window.
+        assert_eq!(subscription.entries.len(), LOG_HISTORY_ENTRY_LIMIT);
+        // Chronological eviction removes only the oldest ten records.
+        assert_eq!(subscription.entries[0].message, "record-10");
+        // The newest accepted record remains the final snapshot item.
+        assert_eq!(subscription.entries[999].message, "record-1009");
+        // Replay remains available even when persistence is disabled.
+        assert!(!subscription.file_logging_enabled);
+        drop(logger);
+        task.await.expect("logger stops");
     }
 
-    /// Protects complete chronological snapshots when no eviction is necessary.
+    /// Protects the atomic snapshot/live boundary.
     #[tokio::test]
-    async fn history_returns_all_entries_in_original_order_below_limit() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let expected = vec![
-            "first".to_string(),
-            "second".to_string(),
-            "third".to_string(),
-        ];
-        write_history(&path, &expected, true).await;
-        let cutoff = tokio::fs::metadata(&path)
-            .await
-            .expect("history metadata should exist")
-            .len();
-        let actual = read_latest_entries(&path, cutoff)
-            .await
-            .expect("history should be readable");
-        // Histories below the cap must retain every complete entry in source order.
-        assert_eq!(actual, expected);
-    }
-
-    /// Protects the memory cap while retaining the newest chronological records.
-    #[tokio::test]
-    async fn history_retains_only_latest_five_hundred_entries() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let entries = (1..=510)
-            .map(|index| format!("line-{index:03}"))
-            .collect::<Vec<_>>();
-        write_history(&path, &entries, true).await;
-        let cutoff = tokio::fs::metadata(&path)
-            .await
-            .expect("history metadata should exist")
-            .len();
-        let actual = read_latest_entries(&path, cutoff)
-            .await
-            .expect("history should be readable");
-        // The rolling scanner must never retain more than the browser window.
-        assert_eq!(actual.len(), LOG_HISTORY_ENTRY_LIMIT);
-        // Eviction must discard only the ten oldest records.
-        assert_eq!(actual.first().map(String::as_str), Some("line-011"));
-        // The newest record must remain last after bounded scanning.
-        assert_eq!(actual.last().map(String::as_str), Some("line-510"));
-    }
-
-    /// Protects the exact subscription cutoff from later appends.
-    #[tokio::test]
-    async fn history_cutoff_excludes_later_appends() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        write_history(&path, &["before cutoff".to_string()], true).await;
-        let cutoff = tokio::fs::metadata(&path)
-            .await
-            .expect("history metadata should exist")
-            .len();
-        let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .await
-            .expect("history should reopen");
-        file.write_all(b"after cutoff\n")
-            .await
-            .expect("append should succeed");
-        drop(file);
-        let actual = read_latest_entries(&path, cutoff)
-            .await
-            .expect("history should be readable");
-        // Only records accepted before the stable byte boundary belong in the snapshot.
-        assert_eq!(actual, vec!["before cutoff"]);
-    }
-
-    /// Protects empty persistent history as a valid snapshot.
-    #[tokio::test]
-    async fn history_empty_file_returns_empty_snapshot() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        tokio::fs::write(&path, b"")
-            .await
-            .expect("empty history should be writable");
-        let actual = read_latest_entries(&path, 0)
-            .await
-            .expect("empty history should be readable");
-        // An empty active file must not invent placeholder records.
-        assert!(actual.is_empty());
-    }
-
-    /// Protects an unterminated final physical line from being discarded.
-    #[tokio::test]
-    async fn history_retains_final_entry_without_newline() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let expected = vec!["complete line".to_string(), "final line".to_string()];
-        write_history(&path, &expected, false).await;
-        let cutoff = tokio::fs::metadata(&path)
-            .await
-            .expect("history metadata should exist")
-            .len();
-        let actual = read_latest_entries(&path, cutoff)
-            .await
-            .expect("history should be readable");
-        // A final physical line is still one complete display entry without a delimiter.
-        assert_eq!(actual, expected);
-    }
-
-    /// Protects the queue-position boundary that prevents snapshot/live gaps and duplicates.
-    #[tokio::test]
-    async fn subscription_separates_history_from_later_live_entries() {
-        let temp_dir = TempDir::create();
-        let path = temporary_log_path(&temp_dir);
-        let (commands, task) = start_logger(Some(path.clone())).await;
-        send_log(&commands, Level::Info, "first history entry");
-        send_log(&commands, Level::Warning, "second history entry");
-
-        let mut subscription = request_subscription(&commands).await;
-        send_log(&commands, Level::Error, "later live entry");
-        let live_entry = subscription
+    async fn subscription_separates_snapshot_from_live_records() {
+        let (logger, task) = start_logger(LogFormat::Line).await;
+        send_log(&logger, Level::Info, "history".to_string());
+        let mut subscription = snapshot(&logger).await;
+        send_log(&logger, Level::Error, "live".to_string());
+        let live = subscription
             .receiver
             .recv()
             .await
-            .expect("accepted later entry should be broadcast");
-
-        let mut file = tokio::fs::File::open(&path)
-            .await
-            .expect("test history file should open");
-        let mut historical_bytes = vec![0; subscription.history_end as usize];
-        file.read_exact(&mut historical_bytes)
-            .await
-            .expect("the stable history prefix should remain readable");
-        let historical =
-            String::from_utf8(historical_bytes).expect("logger output should be UTF-8");
-
-        // Both writes queued before subscription must be included in its stable prefix.
-        assert!(historical.contains("first history entry"));
-        // Queue ordering must include the second pre-subscription record as well.
-        assert!(historical.contains("second history entry"));
-        // A post-subscription write must not leak into bytes before the returned cutoff.
-        assert!(!historical.contains("later live entry"));
-        // The same post-cutoff record must arrive through the live receiver instead.
-        assert!(live_entry.contains("later live entry"));
-
-        drop(commands);
-        task.await.expect("test logger task should stop cleanly");
+            .expect("live record arrives");
+        // Pre-subscription records appear once in the snapshot.
+        assert_eq!(subscription.entries[0].message, "history");
+        // Post-subscription records appear once on the live receiver.
+        assert_eq!(live.message, "live");
+        drop(logger);
+        task.await.expect("logger stops");
     }
 
-    /// Proves disabled macro arguments are not evaluated or formatted on the hot path.
+    /// Protects visible UTF-8-safe diagnostic truncation.
+    #[test]
+    fn diagnostic_truncation_is_bounded_and_visible() {
+        let value = bound_diagnostic("é".repeat(LOG_DIAGNOSTIC_LIMIT));
+        // The diagnostic cannot exceed its relay-safe byte allocation.
+        assert!(value.len() <= LOG_DIAGNOSTIC_LIMIT);
+        // Operators can distinguish truncation from a complete diagnostic.
+        assert!(value.ends_with(TRUNCATION_NOTICE));
+    }
+
+    /// Protects context/source ordering and explicit unavailable-backtrace representation.
+    #[test]
+    fn error_details_preserve_anyhow_chain() {
+        let error = anyhow::anyhow!("inner cause").context("outer context");
+        let details = LogErrorDetails::from_error(&error);
+        // Context remains first so the dialog starts with the failed operation.
+        assert!(details.chain.starts_with("outer context"));
+        // The typed source remains available separately within the full chain.
+        assert!(details.chain.contains("Caused by: inner cause"));
+        // Disabled capture is represented as absence rather than diagnostic boilerplate.
+        if error.backtrace().status() == std::backtrace::BacktraceStatus::Disabled {
+            assert!(details.backtrace.is_none());
+        }
+    }
+
+    /// Protects level and format parsing plus startup precedence.
+    #[test]
+    fn startup_sources_follow_documented_precedence() {
+        // CLI format wins over role environment and TOML.
+        assert_eq!(
+            resolve_format_sources(
+                Some(LogFormat::Json),
+                "FORMAT",
+                Some("line"),
+                Some(LogFormat::Line)
+            ),
+            Ok(LogFormat::Json)
+        );
+        // Role environment wins over TOML.
+        assert_eq!(
+            resolve_format_sources(None, "FORMAT", Some("json"), Some(LogFormat::Line)),
+            Ok(LogFormat::Json)
+        );
+        // TOML wins over the line default.
+        assert_eq!(
+            resolve_format_sources(None, "FORMAT", None, Some(LogFormat::Json)),
+            Ok(LogFormat::Json)
+        );
+        // Invalid high-priority input fails rather than falling through.
+        assert!(resolve_format_sources(None, "FORMAT", Some("pretty"), None).is_err());
+        // Existing warning aliases and level ordering remain compatible.
+        assert_eq!("warn".parse::<Level>(), Ok(Level::Warning));
+    }
+
+    /// Proves disabled macro arguments are not evaluated.
     #[test]
     fn disabled_macro_does_not_evaluate_arguments() {
         let evaluations = std::cell::Cell::new(0);
         set_level(Level::Error);
         crate::log!(Level::Debug, "unused {}", {
-            evaluations.set(evaluations.get() + 1);
+            evaluations.set(1);
             "argument"
         });
         set_level(Level::Info);
-
-        // A disabled event must do only the atomic comparison and skip every format argument.
+        // Disabled records must avoid argument formatting and side effects.
         assert_eq!(evaluations.get(), 0);
     }
 
-    /// Protects canonical level spelling, warning compatibility, and threshold ordering.
-    #[test]
-    fn levels_parse_display_and_order_consistently() {
-        // Legacy `warn` remains accepted while APIs emit the clearer canonical spelling.
-        assert_eq!("warn".parse::<Level>(), Ok(Level::Warning));
-        assert_eq!(Level::Warning.to_string(), "warning");
-        // Increasing enum order is what makes the atomic hot-path comparison sufficient.
-        assert!(Level::Trace < Level::Debug && Level::Info < Level::Error);
-        // Invalid startup values must fail rather than silently reverting to info.
-        assert!("verbose".parse::<Level>().is_err());
-    }
-
-    /// Protects the startup contract shared by both server and standalone-agent entry points.
-    #[test]
-    fn startup_level_sources_follow_documented_precedence() {
-        // Explicit CLI state must win even when every lower-priority source is present.
-        assert_eq!(
-            resolve_level_sources(
-                Some(Level::Error),
-                "REDOOR_SERVER_LOG_LEVEL",
-                Some("trace"),
-                Some(Level::Warning),
-            ),
-            Ok(Level::Error),
-        );
-        // The role-specific server or agent variable must override TOML.
-        assert_eq!(
-            resolve_level_sources(
-                None,
-                "REDOOR_AGENT_LOG_LEVEL",
-                Some("trace"),
-                Some(Level::Warning),
-            ),
-            Ok(Level::Trace),
-        );
-        // TOML supplies the configured initial value before the info default is considered.
-        assert_eq!(
-            resolve_level_sources(None, "REDOOR_AGENT_LOG_LEVEL", None, Some(Level::Warning)),
-            Ok(Level::Warning),
-        );
-        // Both process roles remain at info when no startup source is configured.
-        assert_eq!(
-            resolve_level_sources(None, "REDOOR_SERVER_LOG_LEVEL", None, None),
-            Ok(Level::Info),
-        );
-        // Invalid high-priority input must fail instead of falling through to a lower source.
-        assert!(
-            resolve_level_sources(None, "REDOOR_AGENT_LOG_LEVEL", Some("verbose"), None).is_err(),
-        );
-    }
-
-    /// Protects live viewing as a useful fallback when persistent logging is unavailable.
+    /// Guards structured diagnostics as the only runtime error-severity producer path.
     #[tokio::test]
-    async fn no_file_mode_still_delivers_live_entries() {
-        let (commands, task) = start_logger(None).await;
-        let mut subscription = request_subscription(&commands).await;
-        send_log(&commands, Level::Info, "memory-only live entry");
-        let live_entry = subscription
-            .receiver
-            .recv()
-            .await
-            .expect("accepted memory-only entry should be broadcast");
-
-        // No-file mode must clearly tell subscribers that persistent history is unavailable.
-        assert!(subscription.log_file_path.is_none());
-        // Without a file there can be no historical byte prefix to scan.
-        assert_eq!(subscription.history_end, 0);
-        // Live viewing remains useful even when persistent logging is disabled.
-        assert!(live_entry.contains("memory-only live entry"));
-
-        drop(commands);
-        task.await.expect("test logger task should stop cleanly");
-    }
-
-    /// Protects logger responsiveness when a browser cannot keep up with accepted records.
-    #[tokio::test]
-    async fn bounded_broadcast_lags_without_blocking_logger_commands() {
-        let (commands, task) = start_logger(None).await;
-        let mut subscription = request_subscription(&commands).await;
-        for index in 0..=LIVE_LOG_CAPACITY {
-            send_log(&commands, Level::Info, &format!("burst entry {index}"));
-        }
-        let after_burst = request_subscription(&commands).await;
-
-        let lag = subscription.receiver.recv().await;
-        // Falling behind must be observable instead of allocating an unbounded client queue.
-        assert!(matches!(lag, Err(broadcast::error::RecvError::Lagged(1))));
-        // Receiving the barrier proves a lagging subscriber did not block logger command progress.
-        assert_eq!(after_burst.history_end, 0);
-
-        drop(commands);
-        task.await.expect("test logger task should stop cleanly");
+    async fn runtime_sources_do_not_use_ordinary_error_macro() {
+        assert_no_ordinary_error_macros(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .as_path(),
+        )
+        .await;
     }
 }

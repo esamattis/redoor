@@ -44,6 +44,8 @@ import type { RestartResponse } from "#bindings/RestartResponse";
 import type { UpgradeAgentResponse } from "#bindings/UpgradeAgentResponse";
 import type { UpgradeAgentRequest } from "#bindings/UpgradeAgentRequest";
 import type { LogEvent } from "#bindings/LogEvent";
+import type { LogEntry } from "#bindings/LogEntry";
+import type { LogErrorDetails } from "#bindings/LogErrorDetails";
 import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
@@ -119,6 +121,8 @@ export type {
     UpgradeAgentResponse,
     UpgradeAgentRequest,
     LogEvent,
+    LogEntry,
+    LogErrorDetails,
     AgentConnectionStatus,
     StartAgentResponse,
     RetryAgentStartResponse,

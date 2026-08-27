@@ -180,7 +180,7 @@ impl SessionRuntime {
                     })
                     .await
                 {
-                    log!(
+                    crate::log_failure!(
                         Level::Error,
                         "Failed to queue explicit agent cleanup: agent_id={}, socket_id={}, error={}",
                         agent_id,
@@ -204,7 +204,7 @@ impl SessionRuntime {
                     }))
                     .await
                 {
-                    log!(
+                    crate::log_failure!(
                         Level::Error,
                         "Failed to queue transfer readiness: agent_id={}, request_id={}, error={}",
                         agent_id,
@@ -259,7 +259,7 @@ impl SessionRuntime {
                 })
                 .await
         {
-            log!(
+            crate::log_failure!(
                 Level::Error,
                 "Failed to queue disconnected agent cleanup: agent_id={}, socket_id={}, error={}",
                 agent_id,
@@ -286,11 +286,11 @@ impl SessionRuntime {
                         .await
                 }
                 Err(error) => {
-                    log!(
+                    crate::log_failure!(
                         Level::Error,
-                        "Failed to deserialize WebSocket message: {}, raw text: {}",
-                        error,
-                        text
+                        "Failed to deserialize WebSocket message: {1}, raw text: {0}",
+                        text,
+                        error
                     );
                 }
             },

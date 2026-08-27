@@ -43,7 +43,7 @@ use std::path::PathBuf;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-use redoor::{Level, log};
+use redoor::{Level, log, log_error};
 
 use crate::server_address::ServerAddress;
 use provision::{default_remote_bin, ensure_remote_binary, sniff_remote};
@@ -264,7 +264,7 @@ impl PreparedSshBackedAgent {
                 remote_port,
                 child.id()
             ),
-            Err(error) => log!(
+            Err(error) => redoor::log_failure!(
                 Level::Error,
                 "Prepared SSH spawn failed: target={}, remote_port={}, error={:#}",
                 self.host.target(),
@@ -375,13 +375,16 @@ impl PreparedSshBackedAgent {
                 remote_port,
                 child.id()
             ),
-            Err(error) => log!(
-                Level::Error,
-                "Managed SSH spawn_managed failed: target={}, remote_port={}, error={:#}",
-                self.host.target(),
-                remote_port,
-                error
-            ),
+            Err(error) => {
+                let diagnostic =
+                    anyhow::Error::new(std::io::Error::new(error.kind(), error.to_string()));
+                log_error!(
+                    diagnostic,
+                    "Managed SSH spawn failed: target={}, remote_port={}",
+                    self.host.target(),
+                    remote_port
+                );
+            }
         }
         result
     }
@@ -399,6 +402,8 @@ impl PreparedSshBackedAgent {
             "agent".to_string(),
             server_url.clone(),
             "--exit-on-stdin-eof".to_string(),
+            "--log-format".to_string(),
+            "line".to_string(),
             "--name".to_string(),
             self.agent_name.clone(),
         ];
@@ -498,7 +503,7 @@ pub(crate) async fn prepare_ssh_backed_agent(
             prepared.destination_host,
             prepared.destination_port
         ),
-        Err(error) => log!(
+        Err(error) => redoor::log_failure!(
             Level::Error,
             "Managed SSH prepare failed: target={}, elapsed={:?}, error={:#}",
             config.target,
@@ -879,7 +884,10 @@ pub(crate) async fn start_relay(
             {
                 Ok(value) => prepared = Some(value),
                 Err(error) => {
-                    log!(Level::Error, "Relay preparation failed: {error:#}");
+                    log_error!(
+                        anyhow::Error::msg(error.to_string()),
+                        "Relay preparation failed"
+                    );
                     wait_for_relay_retry(backoff).await;
                     backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
                     continue;
@@ -898,7 +906,7 @@ pub(crate) async fn start_relay(
                 Level::Warning,
                 "Relay SSH session exited; relay will retry: remote_port={remote_port}, status={status}"
             ),
-            Err(error) => log!(
+            Err(error) => redoor::log_failure!(
                 Level::Error,
                 "Relay SSH attempt failed; relay will retry: {error:#}"
             ),

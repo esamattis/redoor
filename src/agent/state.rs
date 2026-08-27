@@ -1,7 +1,7 @@
 use clap::Args;
 use redoor::{
     log_protocol::LogStreamId,
-    logging::Level,
+    logging::{Level, LogFormat},
     streaming,
     terminal_protocol::TerminalId,
     types::{AgentId, RequestId},
@@ -55,6 +55,9 @@ pub(crate) struct AgentArgs {
     /// Initial threshold. CLI overrides role environment, TOML, and the info default.
     #[arg(long = "log-level")]
     pub(crate) log_level: Option<Level>,
+    /// Process output format. CLI overrides role environment, TOML, and line.
+    #[arg(long = "log-format")]
+    pub(crate) log_format: Option<LogFormat>,
     /// Home directory opened by the UI without limiting filesystem access.
     /// Overrides `REDOOR_AGENT_HOME` and `[agent].home`.
     #[arg(long, env = "REDOOR_AGENT_HOME", alias = "dir", short_alias = 'd')]

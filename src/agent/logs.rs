@@ -7,7 +7,7 @@ use futures_util::{
 use redoor::{
     Level, log,
     log_protocol::{LogAgentHandshake, LogEvent, LogStreamId},
-    logging::{self, LogSubscription},
+    logging::{self, LogEntry, LogSubscription},
 };
 use tokio::{
     net::TcpStream,
@@ -75,21 +75,6 @@ pub(crate) async fn connect_and_run(
     result
 }
 
-/// Reads the stable history boundary without exposing file details in protocol events.
-async fn read_subscription_history(subscription: &LogSubscription) -> std::io::Result<LogEvent> {
-    let Some(path) = subscription.log_file_path.as_deref() else {
-        return Ok(LogEvent::Snapshot {
-            entries: Vec::new(),
-            file_logging_enabled: false,
-        });
-    };
-    let entries = logging::read_latest_entries(path, subscription.history_end).await?;
-    Ok(LogEvent::Snapshot {
-        entries,
-        file_logging_enabled: true,
-    })
-}
-
 /// Detects server/browser teardown so dropping the opposite branch releases backpressure promptly.
 async fn wait_for_disconnect(stream: &mut LogStream) {
     while let Some(frame) = stream.next().await {
@@ -133,7 +118,7 @@ async fn send_snapshot_or_disconnect(
 /// Forwards bounded logger records and terminates after one lag notification.
 async fn forward_live_entries(
     sink: &mut LogSink,
-    receiver: &mut broadcast::Receiver<String>,
+    receiver: &mut broadcast::Receiver<LogEntry>,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
@@ -163,27 +148,8 @@ async fn run_log_stream(
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
-    let history = tokio::select! {
-        _ = cancel.changed() => return Ok(()),
-        _ = wait_for_disconnect(&mut stream) => return Ok(()),
-        result = read_subscription_history(&subscription) => result,
-    };
-    let snapshot = match history {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            log!(Level::Error, "Failed to read agent log history: {error:#}");
-            let _ = send_snapshot_or_disconnect(
-                &mut sink,
-                &mut stream,
-                &mut cancel,
-                &LogEvent::Error {
-                    message: "Failed to read log history".to_string(),
-                },
-            )
-            .await;
-            return Ok(());
-        }
-    };
+    let snapshot =
+        LogEvent::bounded_snapshot(subscription.entries, subscription.file_logging_enabled);
 
     if !send_snapshot_or_disconnect(&mut sink, &mut stream, &mut cancel, &snapshot).await? {
         return Ok(());

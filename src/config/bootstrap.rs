@@ -109,6 +109,7 @@ agent_token = {agent_token}
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
+# log_format = "line" # use "json" for newline-delimited JSON output
 
 [[agents]]
 # local agent that runs on the same computer as the server

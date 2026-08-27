@@ -1,6 +1,5 @@
 use redoor::atomic_rename::{AtomicRenameOutcome, rename_without_replacement};
 use redoor::commands::CopyExistingMode;
-use redoor::{Level, log};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -179,7 +178,7 @@ async fn publish_over_existing_with_backup(
         Ok(()) => {
             if let Err(error) = remove_existing_path(&backup_path).await {
                 // The new destination is already published; keep the successful result and surface cleanup loss in logs.
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Failed to remove destination backup after override: backup={}, error={}",
                     backup_path.display(),
@@ -191,7 +190,7 @@ async fn publish_over_existing_with_backup(
         Err(_) => {
             if let Err(error) = tokio::fs::rename(&backup_path, final_path).await {
                 // Both publish and restore failed; the prior content may only exist at the backup path.
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Failed to restore destination backup after override publish failure: backup={}, destination={}, error={}",
                     backup_path.display(),

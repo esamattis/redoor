@@ -73,22 +73,15 @@ test.describe.serial("Agent logs", () => {
         const logRegion = page.getByRole("log", {
             name: `${context.agentName} log entries`,
         });
-        // The newest seeded history record must survive the bounded scan.
-        await expect(logRegion).toContainText("[agent-history-fixture] 510");
-        // The oldest fixture must be evicted rather than loading the complete file.
+        // Agent startup records must replay from process memory rather than parsed file history.
+        await expect(logRegion).toContainText("Starting agent");
+        // File-only fixtures from before startup must not appear in process-local replay.
         await expect(logRegion).not.toContainText(
             "[agent-history-fixture] 001",
         );
-        const historyText = (await logRegion.textContent()) ?? "";
-        const fixtures = Array.from(
-            historyText.matchAll(/\[agent-history-fixture\] (\d{3})/g),
-        );
-        // Multiple fixture records are necessary to make chronology observable.
-        expect(fixtures.length).toBeGreaterThan(1);
-        // Retained records must remain oldest-to-newest in DOM order.
-        expect(Number(fixtures.at(-1)?.[1])).toBeGreaterThan(
-            Number(fixtures[0]?.[1]),
-        );
+        const infoSeverity = logRegion.getByLabel("Severity: Info").first();
+        // Severity remains independently accessible from timestamp and message text.
+        await expect(infoSeverity).toBeVisible();
 
         const autoScroll = page.getByRole("checkbox", { name: "Auto-scroll" });
         // Agent logs should follow the newest entry by default just like server logs.

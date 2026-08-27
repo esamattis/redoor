@@ -7,9 +7,8 @@ use axum::{
 };
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 use redoor::{
-    Level, actors,
+    actors,
     commands::{Command, CommandResult, CreateOneTimeTokenResponse, ErrorResponse},
-    log,
     types::{AgentId, RequestId},
 };
 use serde::Deserialize;
@@ -82,7 +81,7 @@ impl Drop for DownloadCancelGuard {
                 })
                 .await
             {
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Failed to queue dropped download cleanup: agent_id={}, request_id={}, error={}",
                     agent_id,

@@ -361,8 +361,12 @@ impl CommandHandler {
                 );
             }
             Err(tokio::sync::TryAcquireError::Closed) => {
-                crate::log!(
-                    Level::Error,
+                let error = anyhow::anyhow!(
+                    "move source quarantine cleanup is unavailable for {}",
+                    quarantine_path.display()
+                );
+                crate::log_error!(
+                    error,
                     "Move source quarantine cleanup unavailable; leaving path for later recovery: {}",
                     quarantine_path.display()
                 );
@@ -790,7 +794,7 @@ fn spawn_move_source_cleanup<F>(
     tokio::spawn(async move {
         let _cleanup_permit = cleanup_permit;
         if let Err(error) = cleanup.await {
-            crate::log!(
+            crate::log_failure!(
                 Level::Error,
                 "Failed to clean quarantined move source: path={}, error={}",
                 quarantine_path.display(),

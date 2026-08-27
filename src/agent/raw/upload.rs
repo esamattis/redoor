@@ -153,7 +153,7 @@ impl RawUploadWorker {
             && let Err(error) = tokio::fs::set_permissions(&temp_path, permissions).await
         {
             let error_message = format!("Failed to preserve uploaded file permissions: {error}");
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Upload permission restore failed: request_id={}, path={}, temp_path={}, error={}",
                 request_id,
@@ -182,7 +182,7 @@ impl RawUploadWorker {
             place_temp_at_destination(&temp_path, Path::new(&final_path), on_existing, false).await
         {
             let error_message = format!("Failed to finalize uploaded file: {}", error);
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "Upload place failed: request_id={}, path={}, temp_path={}, error={}",
                 request_id,
@@ -280,7 +280,7 @@ impl RawUploadWorker {
 
             if let Err(error) = self.session.file.write_all(&chunk.data).await {
                 let error_message = format!("Failed to write upload chunk: {}", error);
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Upload write failed: request_id={}, path={}, error={}",
                     self.request_id,
@@ -301,7 +301,7 @@ impl RawUploadWorker {
 
             if let Err(error) = self.session.file.flush().await {
                 let error_message = format!("Failed to flush uploaded file: {}", error);
-                log!(
+                redoor::log_failure!(
                     Level::Error,
                     "Upload flush failed: request_id={}, path={}, error={}",
                     self.request_id,

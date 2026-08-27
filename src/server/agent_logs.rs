@@ -249,7 +249,10 @@ async fn forward_agent_events(
         };
         match frame.map_err(|_| ())? {
             WsMessage::Text(text) => {
-                serde_json::from_str::<LogEvent>(&text).map_err(|_| ())?;
+                let event = serde_json::from_str::<LogEvent>(&text).map_err(|_| ())?;
+                if !event.diagnostics_are_bounded() {
+                    return Err(());
+                }
                 browser.send(WsMessage::Text(text)).await.map_err(|_| ())?;
             }
             WsMessage::Ping(bytes) => browser.send(WsMessage::Ping(bytes)).await.map_err(|_| ())?,

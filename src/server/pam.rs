@@ -142,7 +142,7 @@ unsafe extern "C" fn conversation(
 ) -> c_int {
     unsafe {
         if num_msg <= 0 || msg.is_null() || resp.is_null() {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "PAM conversation rejected: num_msg={num_msg}, msg_null={}, resp_null={}",
                 msg.is_null(),
@@ -154,7 +154,7 @@ unsafe extern "C" fn conversation(
         // appdata_ptr holds a pointer to our password CString bytes.
         let password_ptr = appdata_ptr as *const c_char;
         if password_ptr.is_null() {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "PAM conversation rejected: password appdata pointer is null"
             );
@@ -166,7 +166,7 @@ unsafe extern "C" fn conversation(
             as *mut PamResponse;
 
         if responses.is_null() {
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "PAM conversation rejected: failed to allocate {} response slots",
                 num_msg
@@ -185,7 +185,7 @@ unsafe extern "C" fn conversation(
                 // Give PAM a copy of the password; PAM takes ownership of this buffer.
                 (*r).resp = libc::strdup(password_ptr);
                 if (*r).resp.is_null() {
-                    log!(
+                    redoor::log_failure!(
                         Level::Error,
                         "PAM conversation rejected: strdup failed for password response index {i}"
                     );
@@ -266,7 +266,7 @@ impl PamApi {
 
         if status != PAM_SUCCESS {
             let message = pam_error_message(self, pamh, status);
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "pam_start failed for user {}: {message}",
                 user.name
@@ -325,7 +325,7 @@ impl PamApi {
         let end_status = unsafe { (self.0.pam_end)(pamh, status) };
         if end_status != PAM_SUCCESS {
             // pamh is invalid after pam_end; report the numeric code only.
-            log!(
+            redoor::log_failure!(
                 Level::Error,
                 "pam_end failed after login verification for user {}: status={end_status}",
                 user.name

@@ -66,7 +66,7 @@ impl AgentConnection {
                 }
             }
             Err(error) => {
-                log!(
+                crate::log_failure!(
                     Level::Error,
                     "Failed to serialize message for agent: socket_id={}, error={}",
                     self.socket_id,

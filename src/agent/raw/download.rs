@@ -3,7 +3,7 @@ use super::{
     send_framed_stream_bytes,
 };
 use redoor::{
-    Level, log,
+    Level, log, log_error,
     streaming::{self, StreamChunkFrameRequest},
     types::{ChunkIndex, RequestId},
 };
@@ -116,8 +116,8 @@ impl RawDownloadWorker {
 
                 if let Some(start) = self.range_start {
                     if let Err(error) = file.seek(std::io::SeekFrom::Start(start)).await {
-                        log!(Level::Error, "Failed to seek file: {error:#}");
                         let error_msg = format!("Failed to seek file: {error:#}");
+                        log_error!(anyhow::Error::new(error), "Failed to seek file");
                         let _ = self
                             .send_chunk(
                                 StreamChunkFrameRequest::new(self.request_id, error_msg.as_bytes())
@@ -200,8 +200,8 @@ impl RawDownloadWorker {
                                 }
                             }
                             Err(error) => {
-                                log!(Level::Error, "Failed to read file: {error:#}");
                                 let error_msg = format!("Failed to read file: {error:#}");
+                                log_error!(anyhow::Error::new(error), "Failed to read file");
                                 let _ = self
                                     .send_chunk(
                                         StreamChunkFrameRequest::new(
@@ -250,8 +250,8 @@ impl RawDownloadWorker {
                 self.cleanup().await;
             }
             Err(error) => {
-                log!(Level::Error, "Failed to open file: {error:#}");
                 let error_msg = format!("Failed to open file: {error:#}");
+                log_error!(anyhow::Error::new(error), "Failed to open file");
                 let _ = self
                     .send_chunk(
                         StreamChunkFrameRequest::new(self.request_id, error_msg.as_bytes())

@@ -51,6 +51,7 @@ Required when running `redoor server`. Optional in agent-only configs.
 | `bind` | string | `127.0.0.1` | Listen address. Use `0.0.0.0` only when intentionally exposing beyond localhost. Override with `--bind`. |
 | `log` | string | platform default\* | Server log file path. Override with `--log` / `REDOOR_SERVER_LOG`. |
 | `log_level` | string | `info` | Initial threshold: `trace`, `debug`, `info`, `warning`, or `error`. Override with `--log-level` or `REDOOR_SERVER_LOG_LEVEL`. Runtime UI/API changes last only until restart. |
+| `log_format` | string | `line` | Process stdout/file format: `line` or newline-delimited `json`. Override with `--log-format` or `REDOOR_SERVER_LOG_FORMAT`. Browser streams are always structured. |
 | `username` | string | see auth below | Browser UI login username. Non-empty when set. |
 | `password` | string | see auth below | Browser UI login password. Non-empty when set. |
 | `cookie_secure` | bool | `false` | When `true`, session cookies are marked `Secure` (use behind HTTPS). |
@@ -74,6 +75,7 @@ bind = "127.0.0.1"
 cookie_secure = false
 # log = "log/server.log"
 # log_level = "info"
+# log_format = "line"
 username = "admin"
 password = "long-private-password"
 ```
@@ -89,6 +91,7 @@ Used by a standalone `redoor agent` process (and by systemd/launchd agent units)
 | `home` | string | process user home directory | Home directory opened in the UI; does not limit filesystem access. Override with `--home` / `REDOOR_AGENT_HOME`. |
 | `log` | string | platform default\* | Agent log file path. Override with `--log` / `REDOOR_AGENT_LOG`. |
 | `log_level` | string | `info` | Initial threshold. Override with `--log-level` or `REDOOR_AGENT_LOG_LEVEL`. Runtime changes are not written to TOML. |
+| `log_format` | string | `line` | Process stdout/file format: `line` or newline-delimited `json`. Override with `--log-format` or `REDOOR_AGENT_LOG_FORMAT`. |
 
 \*Default log path: `~/.local/share/redoor/agent.log` (non-root) or `/var/log/redoor/agent.log` (root).
 
@@ -101,7 +104,10 @@ name = "macbook"
 home = "/home/me/projects"
 log = "log/agent.log"
 log_level = "info"
+log_format = "line"
 ```
+
+CLI values take precedence over role-specific environment variables, which take precedence over TOML. Server-managed local and SSH agents are explicitly launched with `line` output. Log format does not change the structured WebSocket records shown in the browser.
 
 ## `[[agents]]`
 

@@ -562,11 +562,12 @@ async fn run_started_cycle(
             .await
         }
         Err(error) => {
-            log!(
+            let diagnostic = anyhow::Error::msg(error.clone());
+            crate::log_failure!(
                 Level::Error,
                 "Watchdog spawn failed: key={}, error={}",
                 watchdog.key(),
-                error
+                diagnostic
             );
             publish_issue(watchdog, attempt_generation, error);
             CycleResult {

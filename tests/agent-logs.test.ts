@@ -10,10 +10,16 @@ import WebSocket from "ws";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { ApiError, type Agent, type ApiClient, type LogEvent } from "#ui/api-client";
+import {
+    ApiError,
+    type Agent,
+    type ApiClient,
+    type LogEvent,
+} from "#ui/api-client";
 import {
     ProcessManager,
     TempFileManager,
+    getAvailablePort,
     startServerAndAgent,
     waitForValue,
     webSocketDataToString,
@@ -111,7 +117,8 @@ async function waitForClose(socket: WebSocket): Promise<void> {
 async function waitForPing(socket: WebSocket): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(
-            () => reject(new Error("idle log websocket did not receive a ping")),
+            () =>
+                reject(new Error("idle log websocket did not receive a ping")),
             // The suite sets REDOOR_WEBSOCKET_KEEPALIVE=200ms, so a live ping arrives far sooner than production's 10s.
             2_000,
         );
@@ -186,13 +193,13 @@ describe.sequential("dedicated agent log tunnel", () => {
             serverLogs.events,
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Routing REST command:"),
+                event.entry.message.includes("Routing REST command:"),
             "enabled server trace command marker",
         );
         const serverTraceEntries = serverLogs.events.filter(
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Routing REST command:"),
+                event.entry.message.includes("Routing REST command:"),
         );
         // Only the command sent after enabling trace may reach the live stream.
         expect(serverTraceEntries).toHaveLength(1);
@@ -222,13 +229,13 @@ describe.sequential("dedicated agent log tunnel", () => {
             observingAgentLogs.events,
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Agent log stream started:"),
+                event.entry.message.includes("Agent log stream started:"),
             "enabled agent stream-start marker",
         );
         const agentInfoEntries = observingAgentLogs.events.filter(
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Agent log stream started:"),
+                event.entry.message.includes("Agent log stream started:"),
         );
         // The observer and suppressed stream started below the error threshold; only the trace-era stream is emitted.
         expect(agentInfoEntries).toHaveLength(1);
@@ -258,6 +265,48 @@ describe.sequential("dedicated agent log tunnel", () => {
         expect(status).toBe(401);
     });
 
+    it("uses CLI log format over environment and TOML", async () => {
+        const port = await getAvailablePort();
+        const config = tempFiles.create(
+            `agent_token = "format-test-token"
+
+[server]
+port = ${port}
+username = "format-user"
+password = "format-password"
+log_format = "line"
+`,
+            { suffix: ".toml" },
+        );
+        const pid = processManager.spawn(
+            join(import.meta.dirname, "../target/debug/redoor"),
+            ["server", "--config", config, "--log-format", "json"],
+            { env: { REDOOR_SERVER_LOG_FORMAT: "line" } },
+        );
+        onTestFinished(() => processManager.kill(pid));
+        const output = await waitForValue({
+            predicate: async () => {
+                const lines = processManager
+                    .getStdout(pid)
+                    .split("\n")
+                    .filter(Boolean);
+                return lines.find((line) => line.startsWith("{"));
+            },
+            description: "newline-delimited JSON server output",
+        });
+        const record: {
+            timestamp: string;
+            level: string;
+            message: string;
+            error: unknown;
+        } = JSON.parse(output);
+        // CLI JSON wins over both the role environment and TOML line settings.
+        expect(record).toMatchObject({ level: "info", error: null });
+        // Every NDJSON line contains the same structured fields sent to browser streams.
+        expect(record.timestamp).toMatch(/T.*(?:Z|[+-]\d{2}:\d{2})$/);
+        expect(record.message.length).toBeGreaterThan(0);
+    });
+
     it("delivers history before live entries and reconnects with a fresh snapshot", async () => {
         const first = await openLogSocket();
         const snapshot = await waitForEvent(
@@ -269,11 +318,11 @@ describe.sequential("dedicated agent log tunnel", () => {
         expect(
             snapshot.type === "snapshot" && snapshot.file_logging_enabled,
         ).toBe(true);
-        // Startup and control-connection records prove the snapshot came from the agent file.
+        // Startup and control-connection records prove replay comes from this agent process.
         expect(
             snapshot.type === "snapshot" &&
                 snapshot.entries.some((entry) =>
-                    entry.includes("Agent connected:"),
+                    entry.message.includes("Agent connected:"),
                 ),
         ).toBe(true);
 
@@ -281,7 +330,7 @@ describe.sequential("dedicated agent log tunnel", () => {
             first.events,
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Agent log stream started:"),
+                event.entry.message.includes("Agent log stream started:"),
             "live stream-start entry",
         );
         // Arrival order must put the replacement snapshot before every live marker.
@@ -335,7 +384,10 @@ describe.sequential("dedicated agent log tunnel", () => {
             }),
         ]);
 
-        await Promise.all([waitForPing(uiSocket), waitForPing(serverLogsSocket)]);
+        await Promise.all([
+            waitForPing(uiSocket),
+            waitForPing(serverLogsSocket),
+        ]);
 
         // The refresh socket must stay open without requiring a router event.
         expect(uiSocket.readyState).toBe(WebSocket.OPEN);
@@ -349,13 +401,24 @@ describe.sequential("dedicated agent log tunnel", () => {
             opened.events,
             (event) =>
                 event.type === "entry" &&
-                event.entry.includes("Agent log stream started:"),
+                event.entry.message.includes("Agent log stream started:"),
             "stream identifier marker",
         );
         if (started.type !== "entry") {
             throw new Error("stream start event had an unexpected shape");
         }
-        const id = started.entry.match(/log_stream_id=([0-9a-f-]+)/)?.[1];
+        // The relay must preserve independent structured fields instead of rendering prefixes.
+        expect(started.entry).toMatchObject({
+            level: "info",
+            error: null,
+        });
+        // An explicit offset and millisecond precision make timestamps portable across viewers.
+        expect(started.entry.timestamp).toMatch(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})$/,
+        );
+        const id = started.entry.message.match(
+            /log_stream_id=([0-9a-f-]+)/,
+        )?.[1];
         // Lifecycle correlation requires the same non-secret identifier at both relay ends.
         expect(id).toBeDefined();
         if (!id) {
@@ -419,7 +482,9 @@ describe.sequential("dedicated agent log tunnel", () => {
         });
         // Router inventory must stop advertising a live agent after authoritative socket loss.
         expect(disconnected.status).not.toBe("connected");
-        const unavailable = await testAgent.getLoggingLevel().catch((error) => error);
+        const unavailable = await testAgent
+            .getLoggingLevel()
+            .catch((error) => error);
         // A disconnected update/read must fail rather than displaying a value from server state.
         expect(unavailable).toBeInstanceOf(ApiError);
         if (unavailable instanceof ApiError) {

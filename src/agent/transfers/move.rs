@@ -465,7 +465,7 @@ async fn finish_atomic_override(source: PathBuf, dest: PathBuf) -> Result<(), Lo
 
     if let Err(error) = remove_existing_path(&cleanup_path).await {
         // The move is complete and the source name is gone; hidden cleanup must not report it as failed.
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Failed to remove displaced destination after atomic move: path={}, error={}",
             cleanup_path.display(),
@@ -486,7 +486,7 @@ async fn restore_after_hide_failure(source: &Path, dest: &Path) {
     let restore_result = exchange_existing_paths(source, dest).await;
     if !matches!(restore_result, Ok(AtomicRenameOutcome::Renamed)) {
         // The destination is already published, so preserve the rollback failure for diagnosis.
-        log!(
+        redoor::log_failure!(
             Level::Error,
             "Failed to restore atomic move after hiding displaced destination failed: source={}, destination={}, result={:?}",
             source.display(),

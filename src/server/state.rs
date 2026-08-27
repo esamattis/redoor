@@ -5,7 +5,7 @@ use clap::Args;
 use redoor::actors;
 use redoor::commands::ServerAuthMode;
 use redoor::log_registry::LogRegistry;
-use redoor::logging::Level;
+use redoor::logging::{Level, LogFormat};
 use redoor::one_time_token_registry::OneTimeTokenRegistry;
 use redoor::terminal_registry::TerminalRegistry;
 use redoor::watchdog::WatchdogRegistry;
@@ -70,6 +70,9 @@ pub(crate) struct CoordinatorArgs {
     /// Initial threshold. CLI overrides role environment, TOML, and the info default.
     #[arg(long = "log-level")]
     pub(crate) log_level: Option<Level>,
+    /// Process output format. CLI overrides role environment, TOML, and line.
+    #[arg(long = "log-format")]
+    pub(crate) log_format: Option<LogFormat>,
     /// Path to the TOML config file. When omitted, Redoor loads or creates
     /// `/etc/<app-name>/config.toml` as root, otherwise `~/.config/<app-name>/config.toml`.
     /// Top-level `agent_token` is required; `[server]` holds listener/auth

@@ -19,9 +19,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use redoor::{
-    Level,
     commands::{ErrorResponse, LoginRequest, LoginResponse, LogoutResponse},
-    log,
+    log_error,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -386,11 +385,11 @@ impl AuthState {
                 {
                     Ok(Ok(valid)) => valid,
                     Ok(Err(error)) => {
-                        log!(Level::Error, "PAM authentication failed: {error:#}");
+                        log_error!(error, "PAM authentication failed");
                         false
                     }
                     Err(error) => {
-                        log!(Level::Error, "PAM authentication task failed: {error:#}");
+                        log_error!(anyhow::Error::new(error), "PAM authentication task failed");
                         false
                     }
                 }
@@ -610,7 +609,7 @@ pub(crate) async fn login_handler(
         Ok(session_id) => session_id,
         Err(error) => {
             // Keep IO/path details off the wire; operators still see them in server logs.
-            log!(Level::Error, "Failed to create session: {error:#}");
+            log_error!(error, "Failed to create session");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -647,7 +646,7 @@ pub(crate) async fn logout_handler(
     headers: HeaderMap,
 ) -> Response {
     if let Err(error) = state.auth.delete_session(&headers).await {
-        log!(Level::Error, "Failed to delete session: {error:#}");
+        log_error!(error, "Failed to delete session");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

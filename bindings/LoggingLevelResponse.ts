@@ -2,6 +2,6 @@
 import type { Level } from "./Level";
 
 /**
- * Returns the process-authoritative threshold after a read or successful update.
+ * Returns the authoritative threshold after a read or successful update.
  */
 export type LoggingLevelResponse = { level: Level, };
