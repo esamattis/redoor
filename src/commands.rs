@@ -1,3 +1,4 @@
+mod content_grep;
 mod file_search;
 mod git;
 mod handler;
@@ -144,6 +145,20 @@ pub enum Command {
         #[serde(default)]
         include_hidden: bool,
         /// Git ignore rules are enabled by default so searches match repository expectations.
+        #[serde(default = "default_true")]
+        respect_gitignore: bool,
+    },
+    /// Searches physical file lines without making the server read remote content.
+    ContentGrep {
+        path: String,
+        query: String,
+        /// Keeps the whole operation, including exclusive-slot waiting, agent-local and bounded.
+        #[serde(default = "default_file_search_timeout_seconds")]
+        timeout_seconds: u64,
+        /// Hidden directories are opt-in to avoid unexpectedly scanning cache trees.
+        #[serde(default)]
+        include_hidden: bool,
+        /// Repository ignore rules are enabled by default to match recursive filename search.
         #[serde(default = "default_true")]
         respect_gitignore: bool,
     },
@@ -302,6 +317,15 @@ impl Command {
                     "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
                 )
             }
+            Self::ContentGrep {
+                path,
+                query,
+                timeout_seconds,
+                include_hidden,
+                respect_gitignore,
+            } => format!(
+                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
+            ),
             Self::RawDownload {
                 path,
                 range_start,
@@ -426,6 +450,31 @@ pub struct FileSearchEntry {
 pub struct FileSearchResponse {
     pub results: Vec<FileSearchEntry>,
     pub timed_out: bool,
+    #[ts(type = "number")]
+    pub duration_ms: u64,
+}
+
+/// Identifies one matching physical line while keeping response text bounded.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContentGrepMatch {
+    pub path: String,
+    #[ts(type = "number")]
+    pub line_number: u64,
+    pub line: String,
+    pub line_truncated: bool,
+}
+
+/// Returns matches completed before the grep deadline or supersession signal.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContentGrepResponse {
+    pub results: Vec<ContentGrepMatch>,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub truncated: bool,
+    #[ts(type = "number")]
+    pub omitted_long_lines: u64,
     #[ts(type = "number")]
     pub duration_ms: u64,
 }
@@ -744,6 +793,7 @@ pub enum CommandResult {
     LsDirectory(LsDirectoryResult),
     LsFile(LsFileResult),
     FileSearch(FileSearchResponse),
+    ContentGrep(ContentGrepResponse),
     RawDownload {
         path: String,
     },
@@ -1369,6 +1419,13 @@ impl CommandResult {
                 "ok FileSearch results={} timed_out={}",
                 result.results.len(),
                 result.timed_out
+            ),
+            Self::ContentGrep(result) => format!(
+                "ok ContentGrep results={} timed_out={} cancelled={} truncated={}",
+                result.results.len(),
+                result.timed_out,
+                result.cancelled,
+                result.truncated
             ),
             Self::RawDownload { path } => format!("ok RawDownload path={path}"),
             Self::TarDownload { path } => format!("ok TarDownload path={path}"),

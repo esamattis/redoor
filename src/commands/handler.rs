@@ -4,8 +4,8 @@ use super::{
     AgentDetailsResponse, AgentId, AgentInfoResult, Command, CommandErrorKind, CommandResult,
     DirectorySizeError, DirectorySizeResponse, EchoRequest, EchoResult, LsDirectoryResult, LsEntry,
     LsFileResult, MoveMetadataResult, MoveSourceIdentity, UnixTimestampSeconds,
-    agent_loaded_config_path, current_binary_identity, current_exe_path, external_ip, file_search,
-    git, metadata,
+    agent_loaded_config_path, content_grep, current_binary_identity, current_exe_path, external_ip,
+    file_search, git, metadata,
 };
 use crate::logging::Level;
 use std::future::Future;
@@ -59,6 +59,22 @@ impl CommandHandler {
                 respect_gitignore,
             } => {
                 file_search::execute(
+                    path,
+                    query,
+                    timeout_seconds,
+                    include_hidden,
+                    respect_gitignore,
+                )
+                .await
+            }
+            Command::ContentGrep {
+                path,
+                query,
+                timeout_seconds,
+                include_hidden,
+                respect_gitignore,
+            } => {
+                content_grep::execute(
                     path,
                     query,
                     timeout_seconds,
@@ -372,6 +388,32 @@ impl CommandHandler {
             include_hidden,
             respect_gitignore,
             cancel_receiver,
+        )
+        .await
+    }
+
+    /// Runs content grep with its independent latest-request cancellation and exclusive slot.
+    pub async fn execute_content_grep(
+        &self,
+        path: String,
+        query: String,
+        timeout_seconds: u64,
+        include_hidden: bool,
+        respect_gitignore: bool,
+        coordination: (
+            watch::Receiver<bool>,
+            std::sync::Arc<tokio::sync::Semaphore>,
+        ),
+    ) -> CommandResult {
+        let (cancel_receiver, permit) = coordination;
+        content_grep::execute_with_cancellation(
+            path,
+            query,
+            timeout_seconds,
+            include_hidden,
+            respect_gitignore,
+            cancel_receiver,
+            permit,
         )
         .await
     }

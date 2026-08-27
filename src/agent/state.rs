@@ -409,6 +409,10 @@ pub(crate) struct AgentState {
     pub(crate) active_log_streams: ActiveLogStreams,
     /// Supersedes recursive traversal without serializing unrelated control commands.
     active_file_search_cancel: Option<watch::Sender<bool>>,
+    /// Coordinates grep supersession independently from recursive filename search.
+    active_content_grep_cancel: Option<watch::Sender<bool>>,
+    /// Guarantees canceled grep work releases the slot before its replacement starts scanning.
+    content_grep_permit: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl AgentState {
@@ -442,6 +446,8 @@ impl AgentState {
             active_terminals: ActiveTerminals::new(),
             active_log_streams: ActiveLogStreams::new(),
             active_file_search_cancel: None,
+            active_content_grep_cancel: None,
+            content_grep_permit: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -457,6 +463,27 @@ impl AgentState {
     /// Stops recursive traversal when its owning agent connection is discarded.
     pub(crate) fn cancel_file_search(&mut self) {
         if let Some(cancel_sender) = self.active_file_search_cancel.take() {
+            let _ = cancel_sender.send(true);
+        }
+    }
+
+    /// Cancels every older grep and returns the independent token and shared exclusive slot.
+    pub(crate) fn begin_content_grep(
+        &mut self,
+    ) -> (
+        watch::Receiver<bool>,
+        std::sync::Arc<tokio::sync::Semaphore>,
+    ) {
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        if let Some(previous) = self.active_content_grep_cancel.replace(cancel_sender) {
+            let _ = previous.send(true);
+        }
+        (cancel_receiver, self.content_grep_permit.clone())
+    }
+
+    /// Stops grep slot holders and waiters when the owning control connection is discarded.
+    pub(crate) fn cancel_content_grep(&mut self) {
+        if let Some(cancel_sender) = self.active_content_grep_cancel.take() {
             let _ = cancel_sender.send(true);
         }
     }
@@ -534,6 +561,34 @@ mod tests {
         // Replacement must publish cancellation before the new traversal can be spawned.
         assert!(*first.borrow());
         // The replacement remains active rather than inheriting the old cancellation state.
+        assert!(!*second.borrow());
+    }
+
+    /// Ensures grep supersession is independent and shares one exclusive scan slot.
+    #[test]
+    fn beginning_content_grep_cancels_only_previous_grep() {
+        let mut state = AgentState::new(
+            AgentId::from("test-agent"),
+            "test-agent".to_string(),
+            super::super::connection::AgentConnection::new(
+                "ws://localhost/ws".to_string(),
+                None,
+                false,
+            )
+            .unwrap(),
+            "/tmp".to_string(),
+            "token".to_string(),
+            super::super::trash::TrashService::for_tests(),
+        );
+        let file_search = state.begin_file_search();
+        let (first, first_permit) = state.begin_content_grep();
+        let (second, second_permit) = state.begin_content_grep();
+        // A replacement grep must synchronously stale both active and queued predecessors.
+        assert!(*first.borrow());
+        // Filename traversal cancellation is deliberately a separate operation family.
+        assert!(!*file_search.borrow());
+        // Every generation contends for the same one-operation grep slot.
+        assert!(std::sync::Arc::ptr_eq(&first_permit, &second_permit));
         assert!(!*second.borrow());
     }
 

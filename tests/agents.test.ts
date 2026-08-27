@@ -16,6 +16,7 @@ import {
     isLsFileResponse,
 } from "#ui/api-client";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
+import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import fs from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -42,11 +43,28 @@ const fileSearchResponseSchema: z.ZodType<FileSearchResponse> = z.object({
     duration_ms: z.number().int().nonnegative(),
 });
 
+const contentGrepResponseSchema: z.ZodType<ContentGrepResponse> = z.object({
+    results: z.array(
+        z.object({
+            path: z.string(),
+            line_number: z.number().int().positive(),
+            line: z.string(),
+            line_truncated: z.boolean(),
+        }),
+    ),
+    timed_out: z.boolean(),
+    cancelled: z.boolean(),
+    truncated: z.boolean(),
+    omitted_long_lines: z.number().int().nonnegative(),
+    duration_ms: z.number().int().nonnegative(),
+});
+
 const processManager = new ProcessManager();
 const tempFiles = new TempFileManager();
 const agentCwd = tempFiles.tempDirectory({ suffix: "-agent-cwd" });
 
 let serverPid: number;
+let agentPid: number;
 let apiClient: ApiClient;
 let wsUrl: string;
 
@@ -58,6 +76,7 @@ beforeAll(async () => {
     });
 
     serverPid = started.serverPid;
+    agentPid = started.agentPid;
     apiClient = started.apiClient;
     wsUrl = started.wsUrl;
 }, 30000);
@@ -124,6 +143,18 @@ function getAgentSearchUrl(agent: Agent, root: string, query: string): URL {
     const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
     const url = new URL(
         `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
+        apiClient.baseUrl,
+    );
+    url.searchParams.set("query", query);
+    return url;
+}
+
+/** Builds a grep URL for validation and latest-wins requests that need the raw response. */
+function getAgentGrepUrl(agent: Agent, root: string, query: string): URL {
+    const encodedRoot = encodeFilesystemPath(root);
+    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
+    const url = new URL(
+        `/api/v1/agents/${encodeURIComponent(agent.id)}/grep${rootSuffix}`,
         apiClient.baseUrl,
     );
     url.searchParams.set("query", query);
@@ -523,11 +554,7 @@ describe("Agents API", () => {
             ".cache",
             "hidden-target.txt",
         );
-        const gitTarget = path.join(
-            searchRoot,
-            ".git",
-            "hidden-target.txt",
-        );
+        const gitTarget = path.join(searchRoot, ".git", "hidden-target.txt");
         await fs.mkdir(path.dirname(hiddenTarget));
         await fs.mkdir(path.dirname(gitTarget));
         await fs.writeFile(hiddenTarget, "hidden", "utf-8");
@@ -610,6 +637,208 @@ describe("Agents API", () => {
                 entry.name.startsWith("bounded-search-result-"),
             ),
         ).toBe(true);
+    });
+
+    it("should recursively grep physical lines with bounded text and traversal options", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-content-grep" });
+        const visible = path.join(grepRoot, "visible.txt");
+        const hidden = path.join(grepRoot, ".cache", "hidden.txt");
+        const ignored = path.join(grepRoot, "ignored.txt");
+        const binary = path.join(grepRoot, "binary.bin");
+        await fs.mkdir(path.dirname(hidden));
+        await fs.writeFile(
+            visible,
+            `first Needle\r\n${"x".repeat(600)} Needle\nfinal`,
+        );
+        await fs.writeFile(hidden, "hidden Needle");
+        await fs.writeFile(ignored, "ignored Needle");
+        await fs.writeFile(binary, Buffer.from("early Needle\nlate\0binary"));
+        await fs.writeFile(path.join(grepRoot, ".gitignore"), "ignored.txt\n");
+
+        const defaultResult = contentGrepResponseSchema.parse(
+            await testAgent.grepContent(grepRoot, "(?i)needle", {
+                timeoutSeconds: 5,
+                includeHidden: false,
+                respectGitignore: true,
+            }),
+        );
+        // Defaults must skip ignored, hidden-directory, and binary content while retaining visible matches.
+        expect(defaultResult.results.map((entry) => entry.path)).toEqual([
+            visible,
+            visible,
+        ]);
+        // CRLF is normalized and physical line numbers remain one-based.
+        expect(defaultResult.results[0]).toMatchObject({
+            line_number: 1,
+            line: "first Needle",
+            line_truncated: false,
+        });
+        const truncatedLine = defaultResult.results.find(
+            (entry) => entry.line_number === 2,
+        );
+        // Long response text is capped without omitting a still-bounded physical line.
+        expect(truncatedLine?.line.length).toBe(500);
+        expect(truncatedLine?.line_truncated).toBe(true);
+        // Completing the small tree proves the response is final rather than deadline-partial.
+        expect(defaultResult).toMatchObject({
+            timed_out: false,
+            cancelled: false,
+            truncated: false,
+        });
+
+        const inclusiveResult = await testAgent.grepContent(
+            grepRoot,
+            "Needle",
+            {
+                timeoutSeconds: 5,
+                includeHidden: true,
+                respectGitignore: false,
+            },
+        );
+        // Explicit options expose ordinary hidden and ignored files but `.git` and binary files remain excluded.
+        expect(
+            new Set(inclusiveResult.results.map((entry) => entry.path)),
+        ).toEqual(new Set([visible, hidden, ignored]));
+    });
+
+    it("should report grep result and oversized-line caps", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-bounded-grep" });
+        const target = path.join(grepRoot, "many.txt");
+        await fs.writeFile(
+            target,
+            `${Array.from({ length: 101 }, (_, index) => `match ${index}`).join("\n")}\n${"x".repeat(1024 * 1024 + 1)}\n`,
+        );
+
+        const result = await testAgent.grepContent(grepRoot, "match", {
+            timeoutSeconds: 5,
+            includeHidden: false,
+            respectGitignore: true,
+        });
+        // The hard result ceiling bounds retained and serialized match state.
+        expect(result.results).toHaveLength(100);
+        // A discovered 101st match tells callers the otherwise complete response was clipped.
+        expect(result.truncated).toBe(true);
+        // Oversized physical lines are drained and counted rather than allocated or matched.
+        expect(result.omitted_long_lines).toBe(1);
+    });
+
+    it("should validate grep timeout and regular expressions", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const timeoutUrl = getAgentGrepUrl(testAgent, agentCwd, "target");
+        timeoutUrl.searchParams.set("timeout", "61");
+        const timeoutResponse = await fetch(timeoutUrl, {
+            headers: testAgent.getAuthHeaders(),
+        });
+        // REST validation rejects deadlines outside the documented caller-selected range.
+        expect(timeoutResponse.status).toBe(400);
+
+        const regexResponse = await fetch(
+            getAgentGrepUrl(testAgent, agentCwd, "("),
+            { headers: testAgent.getAuthHeaders() },
+        );
+        // Regex compilation errors are stable invalid-input responses rather than agent failures.
+        expect(regexResponse.status).toBe(400);
+        // The error body should identify the expression problem for API consumers.
+        await expect(regexResponse.json()).resolves.toMatchObject({
+            error: expect.stringContaining(
+                "Invalid content grep regular expression",
+            ),
+        });
+    });
+
+    it("should return a deadline-partial grep response", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-timed-grep" });
+        const chunk = "x".repeat(1024 * 1024 + 1);
+        for (let index = 0; index < 128; index += 1) {
+            await fs.writeFile(
+                path.join(grepRoot, `large-${index}.txt`),
+                chunk,
+            );
+        }
+
+        const result = await testAgent.grepContent(grepRoot, "no-match", {
+            timeoutSeconds: 1,
+            includeHidden: false,
+            respectGitignore: true,
+        });
+        // The agent deadline returns bounded state rather than turning a long scan into an HTTP error.
+        expect(result).toMatchObject({
+            timed_out: true,
+            cancelled: false,
+        });
+        // No-match input confirms any retained result still satisfies the expression after interruption.
+        expect(result.results).toEqual([]);
+    });
+
+    it("should cancel an older grep while unrelated control commands remain responsive", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-latest-grep" });
+        const chunk = "x".repeat(1024 * 1024 + 1);
+        await Promise.all(
+            Array.from({ length: 64 }, (_, index) =>
+                fs.writeFile(path.join(grepRoot, `large-${index}.txt`), chunk),
+            ),
+        );
+        const agentProcess = processManager.getProcess(agentPid);
+        if (!agentProcess) {
+            throw new Error("Agent process not found");
+        }
+        const firstUrl = getAgentGrepUrl(
+            testAgent,
+            grepRoot,
+            "first-query-with-no-match",
+        );
+        const firstRequest = fetch(firstUrl, {
+            headers: testAgent.getAuthHeaders(),
+        });
+        await waitForLogMessage(
+            agentProcess,
+            new RegExp(
+                `Content grep scan started: path=${grepRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+            ),
+        );
+
+        const detailsResult = await Promise.race([
+            testAgent.getDetails().then((details) => ({ details })),
+            new Promise<{ timedOut: true }>((resolve) => {
+                setTimeout(() => resolve({ timedOut: true }), 3000);
+            }),
+        ]);
+        // A details command completing before grep termination proves control handling is not serialized behind scanning.
+        expect(detailsResult).toMatchObject({ details: { id: testAgent.id } });
+
+        const filenameSearch = searchAgentFiles(testAgent, grepRoot, {
+            query: "large",
+        });
+        const firstCompletion = await Promise.race([
+            firstRequest.then(() => "grep" as const),
+            filenameSearch.then(() => "filename-search" as const),
+        ]);
+        // Independent cancellation state lets filename search finish without superseding the active content grep.
+        expect(firstCompletion).toBe("filename-search");
+
+        const replacement = await testAgent.grepContent(
+            grepRoot,
+            "replacement",
+            {
+                timeoutSeconds: 5,
+                includeHidden: false,
+                respectGitignore: true,
+            },
+        );
+        const firstResponse = contentGrepResponseSchema.parse(
+            await (await firstRequest).json(),
+        );
+        // Latest-grep-wins returns a bounded terminal response to the superseded caller.
+        expect(firstResponse).toMatchObject({
+            cancelled: true,
+            timed_out: false,
+        });
+        // The newest request acquires the one grep slot after its predecessor releases it.
+        expect(replacement.cancelled).toBe(false);
     });
 
     it("should replace existing agent when same name reconnects", async () => {

@@ -48,6 +48,8 @@ async-compression = { version = "0.4.43", features = ["tokio", "gzip"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 similar = "3.1.2"
 ignore = "0.4.33"
+grep-matcher = "0.1.8"
+grep-regex = "0.1.14"
 gix = { version = "0.87.0", default-features = false, features = ["status", "parallel", "sha1"] }
 # Names status-walk enums returned by gix without enabling any additional Git capabilities.
 gix-dir = "0.29.0"

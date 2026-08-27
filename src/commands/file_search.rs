@@ -11,12 +11,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncReadExt, BufReader},
     sync::watch,
 };
 
 /// Bounds both response size and memory retained while traversing a large tree.
 const RESULT_LIMIT: usize = 100;
+/// Prevents repository-controlled ignore rules from allocating an unbounded physical line.
+const MAX_GITIGNORE_LINE_BYTES: usize = 64 * 1024;
 
 /// Separates fuzzy terms from path fragments that must be skipped during traversal.
 struct SearchExpression {
@@ -80,20 +82,20 @@ struct RankedEntry {
 
 /// Identifies directory targets so following user-navigable symlinks cannot create traversal cycles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct DirectoryIdentity {
+pub(super) struct DirectoryIdentity {
     device: u64,
     inode: u64,
 }
 
 /// Keeps the identity with each open iterator so only active traversal cycles are suppressed.
-struct TraversedDirectory {
-    entries: tokio::fs::ReadDir,
-    identity: Option<DirectoryIdentity>,
-    gitignore: Option<Gitignore>,
+pub(super) struct TraversedDirectory {
+    pub(super) entries: tokio::fs::ReadDir,
+    pub(super) identity: Option<DirectoryIdentity>,
+    pub(super) gitignore: Option<Gitignore>,
 }
 
 /// Uses filesystem identity rather than path spelling because multiple symlinks can reach one directory.
-fn directory_identity(metadata: &std::fs::Metadata) -> DirectoryIdentity {
+pub(super) fn directory_identity(metadata: &std::fs::Metadata) -> DirectoryIdentity {
     DirectoryIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
@@ -532,6 +534,43 @@ mod tests {
         // Disabling ignore checks exposes every otherwise matching path.
         assert_eq!(disabled_response.results.len(), 3);
     }
+
+    /// Ensures one hostile ignore rule cannot grow memory or hide valid rules that follow it.
+    #[tokio::test]
+    async fn oversized_gitignore_lines_are_skipped() {
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        let mut rules = vec![b'x'; MAX_GITIGNORE_LINE_BYTES + 1];
+        rules.extend_from_slice(b"\nignored-target.txt\n");
+        tokio::fs::write(root.join(".gitignore"), rules)
+            .await
+            .expect("bounded ignore fixture should be written");
+        tokio::fs::write(root.join("ignored-target.txt"), b"target")
+            .await
+            .expect("ignored target should be written");
+        tokio::fs::write(root.join("visible-target.txt"), b"target")
+            .await
+            .expect("visible target should be written");
+
+        let result = execute(
+            root.to_string_lossy().into_owned(),
+            "target".to_string(),
+            5,
+            false,
+            true,
+        )
+        .await;
+        let CommandResult::FileSearch(response) = result else {
+            panic!("a search after an oversized ignore rule should succeed");
+        };
+        // The valid rule after the skipped physical line still excludes its target.
+        assert_eq!(response.results.len(), 1);
+        // The unrelated target proves the oversized rule did not abort ignore parsing or traversal.
+        assert_eq!(response.results[0].name, "visible-target.txt");
+    }
 }
 
 /// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
@@ -670,28 +709,68 @@ async fn collect_matches(
 }
 
 /// Loads one directory's rules asynchronously while tolerating missing or partially invalid files.
-async fn load_gitignore(directory: &Path, enabled: bool) -> Option<Gitignore> {
+pub(super) async fn load_gitignore(directory: &Path, enabled: bool) -> Option<Gitignore> {
     if !enabled {
         return None;
     }
     let ignore_path = directory.join(".gitignore");
     let file = tokio::fs::File::open(&ignore_path).await.ok()?;
-    let mut lines = BufReader::new(file).lines();
+    let mut reader = BufReader::new(file);
     let mut builder = GitignoreBuilder::new(directory);
+    let mut line = Vec::with_capacity(1024);
     let mut first_line = true;
-    while let Ok(Some(mut line)) = lines.next_line().await {
-        if first_line {
-            line = line.trim_start_matches('\u{feff}').to_string();
+    let mut oversized = false;
+    loop {
+        let Ok(byte) = reader.read_u8().await else {
+            if !oversized && !line.is_empty() {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                let rule = String::from_utf8_lossy(&line);
+                let rule = if first_line {
+                    rule.trim_start_matches('\u{feff}')
+                } else {
+                    &rule
+                };
+                let _ = builder.add_line(Some(ignore_path.clone()), rule);
+            }
+            break;
+        };
+        if byte == b'\n' {
+            if !oversized {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                let rule = String::from_utf8_lossy(&line);
+                let rule = if first_line {
+                    rule.trim_start_matches('\u{feff}')
+                } else {
+                    &rule
+                };
+                // Git accepts valid rules even when another physical line cannot be represented.
+                let _ = builder.add_line(Some(ignore_path.clone()), rule);
+            }
+            line.clear();
+            oversized = false;
             first_line = false;
+        } else if !oversized {
+            if line.len() < MAX_GITIGNORE_LINE_BYTES {
+                line.push(byte);
+            } else {
+                line.clear();
+                oversized = true;
+            }
         }
-        // Git accepts the valid rules in a file even when another line is malformed.
-        let _ = builder.add_line(Some(ignore_path.clone()), &line);
     }
     builder.build().ok()
 }
 
 /// Applies the nearest matching rule first because deeper `.gitignore` files override ancestors.
-fn is_ignored(directories: &[TraversedDirectory], path: &Path, is_directory: bool) -> bool {
+pub(super) fn is_ignored(
+    directories: &[TraversedDirectory],
+    path: &Path,
+    is_directory: bool,
+) -> bool {
     for gitignore in directories
         .iter()
         .rev()

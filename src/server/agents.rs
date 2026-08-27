@@ -17,11 +17,13 @@ use super::{
     agent_helpers::get_agent_details, responses::command_error_status, state::ServerState,
 };
 
+mod content_grep;
 mod directory_size;
 mod files;
 mod open_path;
 mod upgrade;
 
+pub(crate) use content_grep::content_grep_handler;
 pub(crate) use directory_size::directory_size_handler;
 pub(crate) use files::{
     echo_agent_handler, file_search_agent_handler, ls_agent_handler, metadata_agent_handler,

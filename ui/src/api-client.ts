@@ -48,6 +48,8 @@ import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
+import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
+import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { DiffEndpoint } from "#bindings/DiffEndpoint";
 import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
 import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
@@ -125,6 +127,8 @@ export type {
     RenamePathResponse,
     FileSearchResponse,
     FileSearchEntry,
+    ContentGrepMatch,
+    ContentGrepResponse,
     DiffEndpoint,
     DiffFilesRequest,
     DiffFilesResponse,
@@ -486,6 +490,40 @@ export class Agent {
             options.respectGitignore.toString(),
         );
         return apiRequest<FileSearchResponse>(
+            url.toString(),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /** Greps physical lines below one directory while allowing callers to abandon the REST wait. */
+    async grepContent(
+        path: string,
+        query: string,
+        options: {
+            timeoutSeconds: number;
+            includeHidden: boolean;
+            respectGitignore: boolean;
+            signal?: AbortSignal;
+        },
+    ): Promise<ContentGrepResponse> {
+        const url = new URL(
+            `${this.baseUrl}${appendFilesystemPath(
+                `/api/v1/agents/${encodeURIComponent(this.info.id)}/grep`,
+                path,
+            )}`,
+        );
+        url.searchParams.set("query", query);
+        url.searchParams.set("timeout", options.timeoutSeconds.toString());
+        url.searchParams.set(
+            "include_hidden",
+            options.includeHidden.toString(),
+        );
+        url.searchParams.set(
+            "respect_gitignore",
+            options.respectGitignore.toString(),
+        );
+        return apiRequest<ContentGrepResponse>(
             url.toString(),
             { signal: options.signal },
             this.requestContext,

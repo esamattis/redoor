@@ -111,6 +111,7 @@ impl AgentRuntime {
         self.state.active_terminals.clear();
         self.state.active_log_streams.clear();
         self.state.cancel_file_search();
+        self.state.cancel_content_grep();
         self.stop_command_tasks().await;
 
         log!(
@@ -293,6 +294,7 @@ impl AgentRuntime {
                 self.state.active_terminals.clear();
                 self.state.active_log_streams.clear();
                 self.state.cancel_file_search();
+                self.state.cancel_content_grep();
                 self.stop_command_tasks().await;
                 self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
             }

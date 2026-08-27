@@ -1,0 +1,431 @@
+use super::{
+    CommandErrorKind, CommandResult, ContentGrepMatch, ContentGrepResponse,
+    file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
+};
+use grep_matcher::Matcher;
+use grep_regex::RegexMatcherBuilder;
+use std::{
+    collections::HashSet,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::{Semaphore, watch},
+};
+
+/// Bounds the JSON response and all retained matching-line state.
+const RESULT_LIMIT: usize = 100;
+/// Prevents one pathological physical line from growing an agent task without bound.
+const MAX_PHYSICAL_LINE_BYTES: usize = 1024 * 1024;
+/// Keeps each returned result useful while bounding serialization and transport work.
+const MAX_RETURNED_LINE_BYTES: usize = 500;
+/// Bounds synchronous regex compilation before the matcher can yield back to Tokio.
+const MAX_QUERY_BYTES: usize = 4096;
+
+/// Accumulates scan state that remains valid when a deadline interrupts traversal.
+struct GrepOutput {
+    results: Vec<ContentGrepMatch>,
+    truncated: bool,
+    omitted_long_lines: u64,
+}
+
+impl GrepOutput {
+    /// Allocates only the documented result cap up front.
+    fn new() -> Self {
+        Self {
+            results: Vec::with_capacity(RESULT_LIMIT),
+            truncated: false,
+            omitted_long_lines: 0,
+        }
+    }
+}
+
+/// Runs grep without runtime coordination for direct command-dispatch callers and unit tests.
+pub(super) async fn execute(
+    path: String,
+    query: String,
+    timeout_seconds: u64,
+    include_hidden: bool,
+    respect_gitignore: bool,
+) -> CommandResult {
+    let (_cancel_sender, cancel_receiver) = watch::channel(false);
+    execute_with_cancellation(
+        path,
+        query,
+        timeout_seconds,
+        include_hidden,
+        respect_gitignore,
+        cancel_receiver,
+        Arc::new(Semaphore::new(1)),
+    )
+    .await
+}
+
+/// Includes exclusive-slot waiting in the deadline so queued requests always return promptly.
+pub(super) async fn execute_with_cancellation(
+    path: String,
+    query: String,
+    timeout_seconds: u64,
+    include_hidden: bool,
+    respect_gitignore: bool,
+    mut cancel_receiver: watch::Receiver<bool>,
+    permit: Arc<Semaphore>,
+) -> CommandResult {
+    if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
+        return CommandResult::error(
+            CommandErrorKind::InvalidInput,
+            format!("Content grep query must be between 1 and {MAX_QUERY_BYTES} bytes"),
+        );
+    }
+
+    let started_at = Instant::now();
+    let mut output = GrepOutput::new();
+    let (timed_out, cancelled, io_result) = {
+        let operation = async {
+            let _permit = permit
+                .acquire_owned()
+                .await
+                .map_err(|_| std::io::Error::other("Content grep coordinator is unavailable"))?;
+            let matcher = RegexMatcherBuilder::new()
+                .unicode(false)
+                .build(&query)
+                .map_err(|error| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Invalid content grep regular expression: {error}"),
+                    )
+                })?;
+            #[cfg(not(test))]
+            crate::log!(
+                crate::logging::Level::Info,
+                "Content grep scan started: path={path}"
+            );
+            collect_matches(
+                Path::new(&path),
+                &matcher,
+                include_hidden,
+                respect_gitignore,
+                &mut output,
+            )
+            .await
+        };
+        tokio::pin!(operation);
+        let deadline = tokio::time::sleep(Duration::from_secs(timeout_seconds));
+        tokio::pin!(deadline);
+
+        if *cancel_receiver.borrow() {
+            (false, true, None)
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel_receiver.changed() => (false, true, None),
+                _ = &mut deadline => (true, false, None),
+                result = &mut operation => (false, false, Some(result)),
+            }
+        }
+    };
+    if let Some(Err(error)) = io_result {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            return CommandResult::error(CommandErrorKind::InvalidInput, error.to_string());
+        }
+        return CommandResult::io_error("Failed to grep directory", error);
+    }
+
+    CommandResult::ContentGrep(ContentGrepResponse {
+        results: output.results,
+        timed_out,
+        cancelled,
+        truncated: output.truncated,
+        omitted_long_lines: output.omitted_long_lines,
+        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+/// Traverses incrementally with the same hidden, ignore, and symlink-cycle policy as filename search.
+async fn collect_matches(
+    root: &Path,
+    matcher: &impl Matcher,
+    include_hidden: bool,
+    respect_gitignore: bool,
+    output: &mut GrepOutput,
+) -> std::io::Result<()> {
+    let root_entries = tokio::fs::read_dir(root).await?;
+    let root_identity = tokio::fs::metadata(root)
+        .await
+        .ok()
+        .as_ref()
+        .map(directory_identity);
+    let mut active_directories = HashSet::new();
+    if let Some(identity) = root_identity {
+        active_directories.insert(identity);
+    }
+    let mut directories = vec![TraversedDirectory {
+        entries: root_entries,
+        identity: root_identity,
+        gitignore: load_gitignore(root, respect_gitignore).await,
+    }];
+
+    while let Some(directory) = directories.last_mut() {
+        let entry = match directory.entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                if let Some(identity) = directory.identity {
+                    active_directories.remove(&identity);
+                }
+                directories.pop();
+                continue;
+            }
+            // One unreadable child must not discard useful results from its siblings.
+            Err(_) => continue,
+        };
+        let entry_path = entry.path();
+        let entry_name = entry.file_name();
+        if entry_name == ".git" {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        let is_hidden = entry_name.to_string_lossy().starts_with('.');
+        if is_hidden && !include_hidden && file_type.is_dir() {
+            continue;
+        }
+        let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
+            tokio::fs::metadata(&entry_path).await.ok()
+        } else {
+            None
+        };
+        let is_directory = file_type.is_dir()
+            || followed_metadata
+                .as_ref()
+                .is_some_and(std::fs::Metadata::is_dir);
+        if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
+            continue;
+        }
+        if is_hidden && !include_hidden && is_directory {
+            continue;
+        }
+
+        if !is_directory
+            && (file_type.is_file()
+                || followed_metadata
+                    .as_ref()
+                    .is_some_and(std::fs::Metadata::is_file))
+        {
+            scan_file(&entry_path, matcher, output).await;
+            if output.truncated {
+                break;
+            }
+        }
+
+        let child_identity = followed_metadata.as_ref().map(directory_identity);
+        let creates_cycle = child_identity
+            .as_ref()
+            .is_some_and(|identity| active_directories.contains(identity));
+        if is_directory
+            && !creates_cycle
+            && let Ok(child_directory) = tokio::fs::read_dir(&entry_path).await
+        {
+            if let Some(identity) = child_identity {
+                active_directories.insert(identity);
+            }
+            directories.push(TraversedDirectory {
+                entries: child_directory,
+                identity: child_identity,
+                gitignore: load_gitignore(&entry_path, respect_gitignore).await,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Buffers only one bounded line and publishes file matches only after ruling out a late NUL byte.
+async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput) {
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return;
+    };
+    let mut reader = BufReader::with_capacity(8192, file);
+    let mut line = Vec::new();
+    let mut line_number = 1_u64;
+    let mut oversized = false;
+    let mut file_matches = Vec::new();
+    let mut omitted_long_lines = 0_u64;
+
+    loop {
+        let buffer = match reader.fill_buf().await {
+            Ok(buffer) => buffer,
+            Err(_) => return,
+        };
+        if buffer.is_empty() {
+            if oversized {
+                omitted_long_lines = omitted_long_lines.saturating_add(1);
+            } else if !line.is_empty() {
+                retain_line_match(path, line_number, &line, matcher, &mut file_matches);
+            }
+            break;
+        }
+        if buffer.contains(&0) {
+            // Any tentative matches belong to a binary file and must never enter the response.
+            return;
+        }
+        let consumed = buffer.len();
+        for byte in buffer {
+            if *byte == b'\n' {
+                if oversized {
+                    omitted_long_lines = omitted_long_lines.saturating_add(1);
+                } else {
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    retain_line_match(path, line_number, &line, matcher, &mut file_matches);
+                }
+                line.clear();
+                oversized = false;
+                line_number = line_number.saturating_add(1);
+            } else if !oversized {
+                if line.len() < MAX_PHYSICAL_LINE_BYTES {
+                    line.push(*byte);
+                } else {
+                    line.clear();
+                    oversized = true;
+                }
+            }
+        }
+        reader.consume(consumed);
+    }
+
+    output.omitted_long_lines = output.omitted_long_lines.saturating_add(omitted_long_lines);
+    for matched_line in file_matches {
+        if output.results.len() == RESULT_LIMIT {
+            output.truncated = true;
+            break;
+        }
+        output.results.push(matched_line);
+    }
+}
+
+/// Converts arbitrary matching bytes safely only after the byte-oriented regular expression succeeds.
+fn retain_line_match(
+    path: &Path,
+    line_number: u64,
+    line: &[u8],
+    matcher: &impl Matcher,
+    matches: &mut Vec<ContentGrepMatch>,
+) {
+    if matches.len() > RESULT_LIMIT || !matcher.is_match(line).unwrap_or(false) {
+        return;
+    }
+    let returned_length = line.len().min(MAX_RETURNED_LINE_BYTES);
+    matches.push(ContentGrepMatch {
+        path: path.to_string_lossy().into_owned(),
+        line_number,
+        line: String::from_utf8_lossy(&line[..returned_length]).into_owned(),
+        line_truncated: line.len() > MAX_RETURNED_LINE_BYTES,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    /// Covers line boundaries, CRLF normalization, response truncation, long-line omission, and late binary detection.
+    #[tokio::test]
+    async fn grep_is_bounded_and_discards_binary_file_matches() {
+        let temp = TempDir::create();
+        let root = temp.path().join("grep-root");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        tokio::fs::write(
+            root.join("text.txt"),
+            format!(
+                "first target\r\n{}target\nfinal target",
+                "x".repeat(MAX_RETURNED_LINE_BYTES)
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("text fixture should be written");
+        let mut oversized = vec![b'x'; MAX_PHYSICAL_LINE_BYTES + 1];
+        oversized.extend_from_slice(b"target\n");
+        tokio::fs::write(root.join("long.txt"), oversized)
+            .await
+            .expect("oversized fixture should be written");
+        tokio::fs::write(root.join("binary.bin"), b"target\nclean\0later")
+            .await
+            .expect("binary fixture should be written");
+
+        let result = execute(
+            root.to_string_lossy().into_owned(),
+            "target".to_string(),
+            5,
+            false,
+            true,
+        )
+        .await;
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("valid grep should return its dedicated response");
+        };
+        // A NUL discovered after an apparent match must suppress the whole binary file.
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|entry| !entry.path.ends_with("binary.bin"))
+        );
+        // CRLF and an unterminated final line are both physical lines with one-based positions.
+        assert_eq!(
+            response
+                .results
+                .iter()
+                .map(|entry| entry.line_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        // The long but permitted matching line is shortened only in the returned payload.
+        assert!(response.results[1].line_truncated);
+        // A physical line over the scan bound is drained and reported instead of matched.
+        assert_eq!(response.omitted_long_lines, 1);
+    }
+
+    /// Ensures malformed and empty expressions fail before any filesystem access occurs.
+    #[tokio::test]
+    async fn invalid_expressions_are_invalid_input() {
+        for query in ["", "(", &"x".repeat(MAX_QUERY_BYTES + 1)] {
+            let result = execute("/missing".to_string(), query.to_string(), 5, false, true).await;
+            // Validation must win over the deliberately missing traversal root.
+            assert!(matches!(
+                result,
+                CommandResult::Error {
+                    kind: CommandErrorKind::InvalidInput,
+                    ..
+                }
+            ));
+        }
+    }
+
+    /// Proves supersession has a distinct response flag rather than masquerading as a deadline.
+    #[tokio::test]
+    async fn cancellation_returns_bounded_partial_response() {
+        let (sender, receiver) = watch::channel(false);
+        sender.send(true).expect("receiver should remain active");
+        let result = execute_with_cancellation(
+            "/missing".to_string(),
+            "target".to_string(),
+            5,
+            false,
+            true,
+            receiver,
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("cancellation should remain a grep response");
+        };
+        // Latest-wins cancellation is observable independently from a caller deadline.
+        assert!(response.cancelled && !response.timed_out);
+    }
+}

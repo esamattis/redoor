@@ -38,6 +38,11 @@ struct CommandMessageContext {
     active_downloads: ActiveDownloads,
     /// Dedicated traversal cancellation retained for the file-search command.
     file_search_cancel: Option<watch::Receiver<bool>>,
+    /// Dedicated latest-wins token and exclusive slot retained only for content grep.
+    content_grep_context: Option<(
+        watch::Receiver<bool>,
+        std::sync::Arc<tokio::sync::Semaphore>,
+    )>,
     /// Control-generation cancellation used by temp-owning local operations.
     command_cancel: Option<watch::Receiver<bool>>,
     /// Immutable platform trash service resolved at process startup.
@@ -56,6 +61,7 @@ async fn handle_command_message(
         agent_id,
         active_downloads,
         file_search_cancel,
+        content_grep_context,
         command_cancel,
         trash,
     } = context;
@@ -330,6 +336,49 @@ async fn handle_command_message(
                 .send_command_response(&write_text, &agent_id, request_id, result)
                 .await;
         }
+        Command::ContentGrep {
+            path,
+            query,
+            timeout_seconds,
+            include_hidden,
+            respect_gitignore,
+        } => {
+            let result = match content_grep_context {
+                Some((cancel_receiver, permit)) => {
+                    CommandHandler::new()
+                        .execute_content_grep(
+                            path,
+                            query,
+                            timeout_seconds,
+                            include_hidden,
+                            respect_gitignore,
+                            (cancel_receiver, permit),
+                        )
+                        .await
+                }
+                None => {
+                    CommandHandler::new()
+                        .execute(Command::ContentGrep {
+                            path,
+                            query,
+                            timeout_seconds,
+                            include_hidden,
+                            respect_gitignore,
+                        })
+                        .await
+                }
+            };
+            log!(
+                Level::Info,
+                "Command complete: agent_id={}, request_id={}, result={}",
+                agent_id,
+                request_id,
+                result.summary()
+            );
+            AgentActor
+                .send_command_response(&write_text, &agent_id, request_id, result)
+                .await;
+        }
         other => {
             let result = CommandHandler::new().execute(other).await;
             log!(
@@ -425,6 +474,11 @@ impl AgentActor {
                     } else {
                         None
                     };
+                    let content_grep_context = if matches!(&command, Command::ContentGrep { .. }) {
+                        Some(state.begin_content_grep())
+                    } else {
+                        None
+                    };
 
                     let started_upload = self
                         .start_upload_session(
@@ -491,6 +545,7 @@ impl AgentActor {
                                         agent_id,
                                         active_downloads,
                                         file_search_cancel,
+                                        content_grep_context,
                                         command_cancel: Some(cancel),
                                         trash,
                                     },
@@ -511,6 +566,7 @@ impl AgentActor {
                                             agent_id,
                                             active_downloads,
                                             file_search_cancel,
+                                            content_grep_context,
                                             command_cancel: None,
                                             trash,
                                         },
