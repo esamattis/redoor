@@ -126,6 +126,115 @@ describe("Raw Upload API", () => {
         expect(fs.statSync(uploadedFilePath).mode & 0o777).toBe(0o751);
     });
 
+    it("should replace a valid symlink without inspecting or mutating its target", async () => {
+        const directory = tempFiles.tempDirectory({ suffix: "-valid-symlink" });
+        const targetPath = path.join(directory, "target.txt");
+        const linkPath = path.join(directory, "link.txt");
+        const controlPath = path.join(directory, "control.txt");
+        fs.writeFileSync(targetPath, "target content");
+        fs.chmodSync(targetPath, 0o701);
+        fs.symlinkSync("target.txt", linkPath);
+
+        await testAgent.upload(
+            controlPath,
+            new File(["control"], "control.txt"),
+        );
+        const newFileMode = fs.statSync(controlPath).mode & 0o777;
+        await testAgent.upload(linkPath, new File(["replacement"], "link.txt"));
+
+        // Upload publication must replace the symlink entry with a regular file.
+        expect(fs.lstatSync(linkPath).isFile()).toBe(true);
+        // Symlink replacement must use normal new-file mode rather than target metadata.
+        expect(fs.statSync(linkPath).mode & 0o777).toBe(newFileMode);
+        // The target bytes must remain untouched when only the link entry was selected.
+        expect(fs.readFileSync(targetPath, "utf8")).toBe("target content");
+        // The target mode must likewise remain untouched by replacement permission handling.
+        expect(fs.statSync(targetPath).mode & 0o777).toBe(0o701);
+    });
+
+    it("should replace a dangling symlink without creating its target", async () => {
+        const directory = tempFiles.tempDirectory({
+            suffix: "-dangling-symlink",
+        });
+        const missingTarget = path.join(directory, "missing.txt");
+        const linkPath = path.join(directory, "link.txt");
+        fs.symlinkSync("missing.txt", linkPath);
+
+        await testAgent.upload(linkPath, new File(["replacement"], "link.txt"));
+
+        // A dangling link entry must become the uploaded regular file.
+        expect(fs.lstatSync(linkPath).isFile()).toBe(true);
+        // No-follow metadata and publication must not create the absent target.
+        expect(fs.existsSync(missingTarget)).toBe(false);
+        // The selected pathname must contain the replacement payload.
+        expect(fs.readFileSync(linkPath, "utf8")).toBe("replacement");
+    });
+
+    it("should replace a symlink whose target metadata is inaccessible", async () => {
+        const directory = tempFiles.tempDirectory({
+            suffix: "-inaccessible-symlink",
+        });
+        const targetDirectory = path.join(directory, "private");
+        const targetPath = path.join(targetDirectory, "target.txt");
+        const linkPath = path.join(directory, "link.txt");
+        const controlPath = path.join(directory, "control.txt");
+        fs.mkdirSync(targetDirectory);
+        fs.writeFileSync(targetPath, "private target");
+        fs.chmodSync(targetPath, 0o701);
+        fs.symlinkSync("private/target.txt", linkPath);
+        await testAgent.upload(
+            controlPath,
+            new File(["control"], "control.txt"),
+        );
+        const newFileMode = fs.statSync(controlPath).mode & 0o777;
+        fs.chmodSync(targetDirectory, 0o000);
+        onTestFinished(() => fs.chmodSync(targetDirectory, 0o700));
+
+        await testAgent.upload(linkPath, new File(["replacement"], "link.txt"));
+        fs.chmodSync(targetDirectory, 0o700);
+
+        // Publication must require access only to the selected link entry and its parent.
+        expect(fs.lstatSync(linkPath).isFile()).toBe(true);
+        // A non-root agent would fail here if permission capture followed the inaccessible target.
+        expect(fs.readFileSync(linkPath, "utf8")).toBe("replacement");
+        // Root must also avoid inheriting the target mode when it can bypass directory permissions.
+        expect(fs.statSync(linkPath).mode & 0o777).toBe(newFileMode);
+        // Replacing the link entry must leave its inaccessible target bytes untouched.
+        expect(fs.readFileSync(targetPath, "utf8")).toBe("private target");
+        // No-follow replacement must not chmod the inaccessible target either.
+        expect(fs.statSync(targetPath).mode & 0o777).toBe(0o701);
+    });
+
+    it("should replace only the selected hard-link directory entry", async () => {
+        const selectedPath = tempFiles.create("shared old", { suffix: ".txt" });
+        const peerPath = `${selectedPath}-peer`;
+        fs.chmodSync(selectedPath, 0o751);
+        fs.linkSync(selectedPath, peerPath);
+        const before = fs.statSync(peerPath, { bigint: true });
+
+        await testAgent.upload(
+            selectedPath,
+            new File(["selected new"], "selected.txt"),
+        );
+        const selectedAfter = fs.statSync(selectedPath, { bigint: true });
+        const peerAfter = fs.statSync(peerPath, { bigint: true });
+
+        // Replacement must assign a new inode only to the selected pathname.
+        expect(selectedAfter.ino).not.toBe(before.ino);
+        // The peer must remain attached to the original inode.
+        expect(peerAfter.ino).toBe(before.ino);
+        // The peer bytes must remain unchanged by publication at another name.
+        expect(fs.readFileSync(peerPath, "utf8")).toBe("shared old");
+        // The prior inode's ownership and mode must remain untouched.
+        expect([peerAfter.uid, peerAfter.gid, peerAfter.mode]).toEqual([
+            before.uid,
+            before.gid,
+            before.mode,
+        ]);
+        // Regular-entry mode capture must still apply that old mode to the replacement inode.
+        expect(Number(selectedAfter.mode & 0o777n)).toBe(0o751);
+    });
+
     it("should upload empty file via raw endpoint", async () => {
         const uploadedFilePath = tempFiles.tempFile({ suffix: ".txt" });
 

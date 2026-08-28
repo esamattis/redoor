@@ -9,7 +9,7 @@ use redoor::{
 };
 use std::path::{Path, PathBuf};
 use tokio::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::AsyncWriteExt,
     sync::{mpsc, watch},
 };
@@ -39,6 +39,39 @@ fn temp_upload_path(path: &str) -> PathBuf {
     match destination.parent() {
         Some(parent) => parent.join(temp_name),
         None => PathBuf::from(format!("./{}", temp_name)),
+    }
+}
+
+/// Reserves a new sibling temp entry without following a colliding symlink.
+async fn create_upload_temp(path: &str) -> std::io::Result<(PathBuf, File)> {
+    for _ in 0..16 {
+        let temp_path = temp_upload_path(path);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .await
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "Failed to reserve a unique upload temp file",
+    ))
+}
+
+/// Copies mode only from a regular destination entry and never from a symlink target.
+async fn existing_destination_permissions(
+    path: &Path,
+) -> std::io::Result<Option<std::fs::Permissions>> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(metadata.permissions())),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -369,10 +402,8 @@ impl AgentActor {
             return;
         }
 
-        let temp_path = temp_upload_path(&path);
-        let existing_permissions = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => Some(metadata.permissions()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        let existing_permissions = match existing_destination_permissions(Path::new(&path)).await {
+            Ok(permissions) => permissions,
             Err(error) => {
                 self.send_command_response(
                     write,
@@ -388,8 +419,8 @@ impl AgentActor {
                 return;
             }
         };
-        match File::create(&temp_path).await {
-            Ok(file) => {
+        match create_upload_temp(&path).await {
+            Ok((temp_path, file)) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
                 let (cancel_sender, cancel_receiver) = watch::channel(false);
                 log!(
@@ -442,5 +473,76 @@ impl AgentActor {
                 .await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[tokio::test]
+    async fn permission_capture_uses_destination_entry_without_following_symlinks() {
+        let temp = TempDir::create();
+        let target = temp.path().join("target");
+        let peer = temp.path().join("peer");
+        let valid_link = temp.path().join("valid-link");
+        let dangling_link = temp.path().join("dangling-link");
+        tokio::fs::write(&target, b"target").await.unwrap();
+        tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o751))
+            .await
+            .unwrap();
+        tokio::fs::hard_link(&target, &peer).await.unwrap();
+        symlink(&target, &valid_link).unwrap();
+        symlink("missing", &dangling_link).unwrap();
+
+        let regular = existing_destination_permissions(&target)
+            .await
+            .unwrap()
+            .unwrap();
+        let hard_link = existing_destination_permissions(&peer)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A regular entry keeps its own previous mode for replacement publication.
+        assert_eq!(regular.mode() & 0o777, 0o751);
+        // A hard-link name directly identifies a regular entry and supplies the same mode.
+        assert_eq!(hard_link.mode() & 0o777, 0o751);
+        // A valid symlink must not leak its target mode into the replacement file.
+        assert!(
+            existing_destination_permissions(&valid_link)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // A dangling symlink is still an entry and must likewise provide no target metadata.
+        assert!(
+            existing_destination_permissions(&dangling_link)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn temp_creation_reserves_a_new_regular_sibling() {
+        let temp = TempDir::create();
+        let destination = temp.path().join("destination");
+
+        let (temp_path, file) = create_upload_temp(&destination.to_string_lossy())
+            .await
+            .unwrap();
+        drop(file);
+
+        // The reserved temp entry must be a newly created regular file.
+        assert!(
+            tokio::fs::symlink_metadata(&temp_path)
+                .await
+                .unwrap()
+                .is_file()
+        );
+        tokio::fs::remove_file(temp_path).await.unwrap();
     }
 }

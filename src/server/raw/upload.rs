@@ -10,7 +10,7 @@ use headers::HeaderMap;
 use redoor::{
     actors,
     commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
-    streaming::StreamChunkFrameRequest,
+    streaming::{StreamChunkFrameRequest, StreamChunkFrames},
     types::{AgentId, ChunkIndex, RequestId},
 };
 
@@ -49,6 +49,63 @@ pub(crate) struct AgentUpload {
     completion_receiver:
         tokio::sync::oneshot::Receiver<Result<CommandResult, actors::router::RouterError>>,
     cancel_guard: UploadCancelGuard,
+    is_edit: bool,
+}
+
+/// Parses the required byte count shared by streamed write endpoints.
+pub(crate) fn required_content_length(
+    headers: &HeaderMap,
+    operation: &str,
+) -> Result<u64, Box<Response>> {
+    let Some(header_value) = headers.get(axum::http::header::CONTENT_LENGTH) else {
+        return Err(Box::new(
+            (
+                StatusCode::LENGTH_REQUIRED,
+                Json(ErrorResponse {
+                    error: format!("Content-Length header is required for {operation}"),
+                }),
+            )
+                .into_response(),
+        ));
+    };
+    let total_bytes = header_value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    total_bytes.ok_or_else(|| {
+        Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid Content-Length header".to_string(),
+                }),
+            )
+                .into_response(),
+        )
+    })
+}
+
+/// Streams one Axum request body into the bounded router-to-agent transfer path.
+pub(crate) async fn forward_request_body(
+    body: Body,
+    upload: &mut AgentUpload,
+) -> Result<(), Box<Response>> {
+    let mut body_stream = body.into_data_stream();
+    while let Some(next_chunk) = body_stream.next().await {
+        let data = next_chunk.map_err(|error| {
+            Box::new(
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Failed to read request body: {error}"),
+                    }),
+                )
+                    .into_response(),
+            )
+        })?;
+        upload.send(&data).await.map_err(Box::new)?;
+    }
+    Ok(())
 }
 
 impl AgentUpload {
@@ -60,6 +117,7 @@ impl AgentUpload {
         path: String,
         total_bytes: u64,
     ) -> Result<Self, AgentUploadStartError> {
+        let is_edit = matches!(command, Command::EditFile { .. });
         let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let request_id = match state
@@ -145,6 +203,7 @@ impl AgentUpload {
             chunk_index: ChunkIndex::new(0),
             completion_receiver,
             cancel_guard,
+            is_edit,
         })
     }
 
@@ -153,8 +212,10 @@ impl AgentUpload {
         self.bytes_written += data.len() as u64;
         if self.bytes_written > self.total_bytes {
             let message = format!(
-                "Upload exceeded Content-Length header: expected {} bytes, received {}",
-                self.total_bytes, self.bytes_written
+                "{} exceeded Content-Length header: expected {} bytes, received {}",
+                self.operation_name(),
+                self.total_bytes,
+                self.bytes_written
             );
             let result = forward_split_stream_chunk(
                 &self.state,
@@ -180,28 +241,34 @@ impl AgentUpload {
         .await
     }
 
-    /// Sends the terminal marker and waits for permission restoration and atomic rename.
+    /// Hands edit terminal ownership to the router, then awaits destination completion.
     pub(crate) async fn finish(mut self) -> Result<(CommandResult, u64), Response> {
         if self.bytes_written != self.total_bytes {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: format!(
-                        "Upload stream ended before completion: expected {} bytes, received {}",
-                        self.total_bytes, self.bytes_written
+                        "{} stream ended before completion: expected {} bytes, received {}",
+                        self.operation_name(),
+                        self.total_bytes,
+                        self.bytes_written
                     ),
                 }),
             )
                 .into_response());
         }
-        forward_split_stream_chunk(
-            &self.state,
-            &self.agent_id,
-            &mut self.chunk_index,
-            StreamChunkFrameRequest::new(self.request_id, &[]),
-        )
-        .await?;
-        self.cancel_guard.disarm();
+        if self.is_edit {
+            self.commit_edit().await?;
+        } else {
+            forward_split_stream_chunk(
+                &self.state,
+                &self.agent_id,
+                &mut self.chunk_index,
+                StreamChunkFrameRequest::new(self.request_id, &[]),
+            )
+            .await?;
+            self.cancel_guard.disarm();
+        }
         match self.completion_receiver.await {
             Ok(Ok(completion)) => Ok((completion, self.bytes_written)),
             Ok(Err(error)) => Err(router_error_response(error)),
@@ -218,6 +285,65 @@ impl AgentUpload {
     /// Returns the destination for response mapping without exposing transfer internals.
     pub(crate) fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Names the semantic operation in transport errors without changing shared streaming logic.
+    fn operation_name(&self) -> &'static str {
+        if self.is_edit { "File edit" } else { "Upload" }
+    }
+
+    /// Atomically publishes the edit boundary with router ownership of its terminal frame.
+    async fn commit_edit(&mut self) -> Result<(), Response> {
+        let mut frames = StreamChunkFrames::new(
+            StreamChunkFrameRequest::new(self.request_id, &[])
+                .starting_chunk_index(self.chunk_index),
+        );
+        let terminal = frames
+            .next()
+            .expect("an empty terminal request always emits one frame");
+        self.chunk_index = frames.next_chunk_index();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.state
+            .router_ref
+            .send_async(actors::router::RouterMsg::CommitDirectUpload(
+                actors::router::CommitDirectUploadRequest {
+                    agent_id: self.agent_id.clone(),
+                    request_id: self.request_id,
+                    chunk: terminal,
+                    reply,
+                },
+            ))
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to hand off edit commit: {error:?}"),
+                    }),
+                )
+                    .into_response()
+            })?;
+
+        // Once queued, router-owned work either delivers the terminal or starts worker cleanup.
+        self.cancel_guard.disarm();
+        match tokio::time::timeout(std::time::Duration::from_millis(30000), response).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(error))) => Err(router_error_response(error)),
+            Ok(Err(_)) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Edit commit handoff channel closed".to_string(),
+                }),
+            )
+                .into_response()),
+            Err(_) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Timed out waiting for edit commit handoff".to_string(),
+                }),
+            )
+                .into_response()),
+        }
     }
 }
 
@@ -340,39 +466,9 @@ pub(crate) async fn raw_agent_put_handler(
 ) -> impl IntoResponse {
     let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
-    let total_bytes = match headers.get(axum::http::header::CONTENT_LENGTH) {
-        Some(header_value) => match header_value.to_str() {
-            Ok(value) => match value.parse::<u64>() {
-                Ok(total_bytes) => total_bytes,
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Invalid Content-Length header".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            },
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Invalid Content-Length header".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        },
-        None => {
-            return (
-                StatusCode::LENGTH_REQUIRED,
-                Json(ErrorResponse {
-                    error: "Content-Length header is required for uploads".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    let total_bytes = match required_content_length(&headers, "uploads") {
+        Ok(total_bytes) => total_bytes,
+        Err(response) => return *response,
     };
 
     let resolved_path = path;
@@ -395,24 +491,8 @@ pub(crate) async fn raw_agent_put_handler(
         }
     };
 
-    let mut body_stream = body.into_data_stream();
-    while let Some(next_chunk) = body_stream.next().await {
-        let data = match next_chunk {
-            Ok(data) => data,
-            Err(error) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Failed to read request body: {}", error),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-
-        if let Err(response) = upload.send(&data).await {
-            return response;
-        }
+    if let Err(response) = forward_request_body(body, &mut upload).await {
+        return *response;
     }
     let response_path = upload.path().to_string();
     match upload.finish().await {

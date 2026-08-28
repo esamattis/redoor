@@ -20,6 +20,7 @@ use super::{
     },
     auth::{login_handler, logout_handler, require_authentication},
     diffs::diff_files_handler,
+    file_edit::file_edit_handler,
     files::{create_directory_handler, raw_agent_delete_handler, rename_path_handler},
     git::{git_context_handler, git_diff_handler, git_status_handler},
     logging_levels::{
@@ -201,6 +202,11 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(raw_agent_handler)
                 .put(raw_agent_put_handler)
                 .delete(raw_agent_delete_handler),
+        )
+        .route("/api/v1/agents/{agent}/edit", put(file_edit_handler))
+        .route(
+            "/api/v1/agents/{agent}/edit/{*path}",
+            put(file_edit_handler),
         )
         .route(
             "/api/v1/agents/{agent}/mkdir",

@@ -318,6 +318,18 @@ pub struct SendStreamChunkRequest {
     pub reply: RouterReply<Result<(), RouterError>>,
 }
 
+/// Transfers terminal edit delivery to the router while publishing the commit boundary.
+pub struct CommitDirectUploadRequest {
+    /// Agent receiving the edit bytes.
+    pub agent_id: AgentId,
+    /// Active direct edit request entering commit.
+    pub request_id: RequestId,
+    /// Terminal frame whose delivery authorizes the agent-side inode rewrite.
+    pub chunk: crate::streaming::StreamChunk,
+    /// Completes after the terminal frame was accepted or its failure cleanup was started.
+    pub reply: RouterReply<Result<(), RouterError>>,
+}
+
 /// Starts a local or remote copy operation managed by the router.
 pub struct StartCopyRequest {
     /// Source agent that provides the file or directory contents.
@@ -413,6 +425,7 @@ pub enum RouterMsg {
     ExecuteStreamCommandRest(ExecuteStreamRequest),
     StartUploadStreamRest(StartUploadRequest),
     SendStreamChunkToAgent(SendStreamChunkRequest),
+    CommitDirectUpload(CommitDirectUploadRequest),
     CancelTransfer {
         agent_id: AgentId,
         request_id: RequestId,

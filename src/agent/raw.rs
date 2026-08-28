@@ -1,4 +1,5 @@
 mod download;
+mod edit;
 mod upload;
 
 use redoor::{

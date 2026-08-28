@@ -241,6 +241,14 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                         ready: true,
                         canceled_by_rest: false,
                         explicitly_canceled: false,
+                        kind: match request.content_kind {
+                            super::super::state::CopyContentKind::RawFile => {
+                                super::super::state::DirectUploadKind::RawUpload
+                            }
+                            super::super::state::CopyContentKind::TarDirectory => {
+                                super::super::state::DirectUploadKind::TarUpload
+                            }
+                        },
                     },
                 );
 
@@ -337,6 +345,14 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                     ready: false,
                     canceled_by_rest: false,
                     explicitly_canceled: false,
+                    kind: match request.content_kind {
+                        super::super::state::CopyContentKind::RawFile => {
+                            super::super::state::DirectUploadKind::RawUpload
+                        }
+                        super::super::state::CopyContentKind::TarDirectory => {
+                            super::super::state::DirectUploadKind::TarUpload
+                        }
+                    },
                 },
             );
 

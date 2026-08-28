@@ -154,6 +154,46 @@ pub struct DirectUpload {
     pub(crate) canceled_by_rest: bool,
     /// Distinguishes an explicit user action from an implicit disconnected HTTP producer.
     pub(crate) explicitly_canceled: bool,
+    /// Defines public progress semantics and the only accepted successful result.
+    pub(crate) kind: DirectUploadKind,
+}
+
+/// Distinguishes direct inbound byte streams that share transport but not publication semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectUploadKind {
+    RawUpload,
+    TarUpload,
+    EditFile,
+}
+
+impl DirectUploadKind {
+    /// Derives direct-write semantics from the command sent to the destination agent.
+    pub(crate) fn from_command(command: &Command) -> Option<Self> {
+        match command {
+            Command::RawUpload { .. } => Some(Self::RawUpload),
+            Command::TarUpload { .. } => Some(Self::TarUpload),
+            Command::EditFile { .. } => Some(Self::EditFile),
+            _ => None,
+        }
+    }
+
+    /// Selects the direction exposed through transfer progress APIs.
+    pub(crate) fn direction(self) -> crate::commands::TransferDirection {
+        match self {
+            Self::RawUpload | Self::TarUpload => crate::commands::TransferDirection::Upload,
+            Self::EditFile => crate::commands::TransferDirection::Edit,
+        }
+    }
+
+    /// Ensures one stream cannot be completed by another write operation's response.
+    pub(crate) fn completion_matches(self, result: &CommandResult) -> bool {
+        matches!(
+            (self, result),
+            (Self::RawUpload, CommandResult::RawUpload)
+                | (Self::TarUpload, CommandResult::TarUpload)
+                | (Self::EditFile, CommandResult::EditFile)
+        )
+    }
 }
 
 #[derive(Default)]

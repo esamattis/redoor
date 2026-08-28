@@ -22,7 +22,10 @@ use super::{
 
 mod upload;
 
-pub(crate) use upload::{AgentUpload, AgentUploadStartError, raw_agent_put_handler};
+pub(crate) use upload::{
+    AgentUpload, AgentUploadStartError, forward_request_body, raw_agent_put_handler,
+    required_content_length,
+};
 
 /// Records the bytes one token-authorized HTTP body handed off, including partial bodies on drop.
 struct OneTimeDownloadProgress {

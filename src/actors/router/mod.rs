@@ -9,12 +9,12 @@ mod ui;
 
 pub use error::RouterError;
 pub use messages::{
-    ApplyManagedLifecycleRequest, CancelPublicTransferError, ExecuteCommandRequest,
-    ExecuteStreamRequest, OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
-    RegisterManagedAgentRequest, RegisterTransferConnectionRequest, RegisterUiSubscriberRequest,
-    RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg,
-    SendStreamChunkRequest, StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
-    UnregisterManagedAgentRequest, UploadStartOutcome,
+    ApplyManagedLifecycleRequest, CancelPublicTransferError, CommitDirectUploadRequest,
+    ExecuteCommandRequest, ExecuteStreamRequest, OpenAgentLogStreamRequest, OpenTerminalRequest,
+    RegisterAgentRequest, RegisterManagedAgentRequest, RegisterTransferConnectionRequest,
+    RegisterUiSubscriberRequest, RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest,
+    RouterMsg, SendStreamChunkRequest, StartCopyRequest, StartUploadRequest,
+    TransferProgressUpdateRequest, UnregisterManagedAgentRequest, UploadStartOutcome,
 };
 pub use state::CopyContentKind;
 pub use state::CopyOperation;
@@ -321,6 +321,9 @@ impl RouterState {
                 RouterMsg::SendStreamChunkToAgent(request) => {
                     transfers::upload::route_chunk(&mut self, &router_handle, request);
                 }
+                RouterMsg::CommitDirectUpload(request) => {
+                    transfers::upload::commit(&mut self, &router_handle, request);
+                }
                 RouterMsg::CancelTransfer {
                     agent_id,
                     request_id,
@@ -364,7 +367,7 @@ impl RouterState {
 mod tests {
     use super::*;
     use crate::actors::router::messages::AgentListEntry;
-    use crate::commands::Command;
+    use crate::commands::{Command, CommandResult};
     use crate::streaming::{StreamChunk, StreamPayloadKind};
     use crate::types::{AgentId, SocketId};
     use axum::extract::ws::Message as WsMessage;
@@ -429,7 +432,7 @@ mod tests {
             .expect("transfer registration rpc succeeded")
             .expect("valid transfer token accepted");
 
-        let (completion_tx, _completion_rx) = oneshot::channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let router_for_start = router_ref.clone();
         let upload_start = tokio::spawn(async move {
@@ -437,12 +440,11 @@ mod tests {
                 .request(1_000, |reply| {
                     RouterMsg::StartUploadStreamRest(StartUploadRequest {
                         agent_id: AgentId::from("agent-1"),
-                        command: Command::RawUpload {
+                        command: Command::EditFile {
                             path: "/tmp/file.bin".to_string(),
-                            on_existing: crate::commands::CopyExistingMode::Override,
                         },
                         path: "/tmp/file.bin".to_string(),
-                        total_bytes: 32,
+                        total_bytes: 8,
                         completion_sender: completion_tx,
                         ready_sender: ready_tx,
                         reply,
@@ -583,6 +585,85 @@ mod tests {
             blocked_result.is_ok(),
             "the queued upload chunk should still succeed once the binary lane has capacity again"
         );
+
+        let (commit_reply, commit_response) = oneshot::channel();
+        router_ref
+            .send_async(RouterMsg::CommitDirectUpload(CommitDirectUploadRequest {
+                agent_id: AgentId::from("agent-1"),
+                request_id,
+                chunk: StreamChunk {
+                    request_id,
+                    chunk_index: crate::types::ChunkIndex::new(2),
+                    is_last: true,
+                    is_error: false,
+                    payload_kind: StreamPayloadKind::RawFile,
+                    data: Vec::new(),
+                },
+                reply: commit_reply,
+            }))
+            .await
+            .expect("edit commit ownership queued");
+        // Simulate the HTTP task disappearing immediately after the mailbox accepted ownership.
+        drop(commit_response);
+
+        let progress = router_ref
+            .request(1_000, |reply| RouterMsg::GetTransferProgress { reply })
+            .await
+            .expect("live edit progress query succeeded");
+        let live_edit = progress
+            .transfers
+            .iter()
+            .find(|transfer| transfer.request_id == request_id.as_transfer_id())
+            .expect("live edit progress retained while terminal delivery is blocked");
+        // This observes the actual boundary window, not merely the completed terminal row.
+        assert!(matches!(
+            live_edit.state,
+            crate::commands::TransferProgressState::Active
+        ));
+        // Terminal ownership must disable cancellation before the blocked binary send completes.
+        assert!(!live_edit.cancelable);
+
+        let second_frame = binary_rx.recv().await.expect("second binary frame queued");
+        // Draining the held data frame gives the router-owned terminal send lane capacity.
+        assert!(matches!(second_frame, WsMessage::Binary(_)));
+        let terminal_frame = timeout(Duration::from_secs(1), binary_rx.recv())
+            .await
+            .expect("router-owned terminal should not depend on the dropped HTTP task")
+            .expect("terminal binary frame queued");
+        let WsMessage::Binary(terminal_bytes) = terminal_frame else {
+            panic!("edit terminal must use the binary transfer lane");
+        };
+        let terminal = StreamChunk::from_bytes(&terminal_bytes).expect("terminal frame decodes");
+        // Empty last-frame delivery proves the router retained terminal ownership after caller drop.
+        assert!(terminal.is_last && terminal.data.is_empty());
+
+        router_ref
+            .send_async(RouterMsg::RouteResponse(RouteResponse {
+                agent_id: AgentId::from("agent-1"),
+                request_id,
+                result: CommandResult::EditFile,
+            }))
+            .await
+            .expect("edit completion queued");
+        // Final response must still reach the upload owner and release router transfer state.
+        assert!(matches!(
+            completion_rx.await.expect("edit completion delivered"),
+            Ok(CommandResult::EditFile)
+        ));
+        let progress = router_ref
+            .request(1_000, |reply| RouterMsg::GetTransferProgress { reply })
+            .await
+            .expect("completed edit progress query succeeded");
+        let completed_edit = progress
+            .transfers
+            .iter()
+            .find(|transfer| transfer.request_id == request_id.as_transfer_id())
+            .expect("completed edit remains in transfer history");
+        // Completion after caller loss proves no active non-cancelable router transfer was stranded.
+        assert!(matches!(
+            completed_edit.state,
+            crate::commands::TransferProgressState::Completed
+        ));
 
         router_ref
             .send(RouterMsg::Shutdown)

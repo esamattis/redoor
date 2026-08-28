@@ -5,6 +5,7 @@ mod agent_transfers;
 mod agents;
 mod auth;
 mod diffs;
+mod file_edit;
 mod files;
 mod git;
 mod logging_levels;

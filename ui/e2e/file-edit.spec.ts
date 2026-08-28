@@ -508,12 +508,55 @@ test.describe.serial("File Edit View", () => {
         ).toBeEnabled();
         await page.getByRole("button", { name: "Save file" }).click();
 
-        // Status feedback confirms the upload completed in the UI.
+        // Status feedback confirms the inode-preserving edit completed in the UI.
         await expect(page.getByLabel("File edit status")).toHaveText("Saved");
-        // Polling the filesystem verifies the PUT actually replaced remote bytes.
+        // Polling the filesystem verifies the edit PUT rewrote the remote bytes.
         await expect
             .poll(async () => fs.readFile(filePath, "utf8"))
             .toBe("saved from ui");
+    });
+
+    test("should save through a relative symlink with the dedicated edit endpoint", async ({
+        page,
+    }) => {
+        const targetPath = path.join(ctx.testDirPath, "symlink-target.txt");
+        const linkPath = path.join(ctx.testDirPath, "symlink-editor.txt");
+        await fs.writeFile(targetPath, "symlink original");
+        await fs.symlink("symlink-target.txt", linkPath);
+        const editPath = `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/edit/${encodeFilesystemPath(linkPath)}`;
+        const rawPath = `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/raw/${encodeFilesystemPath(linkPath)}`;
+        const putPaths: string[] = [];
+        page.on("request", (request) => {
+            if (request.method() === "PUT") {
+                putPaths.push(new URL(request.url()).pathname);
+            }
+        });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(linkPath)}`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expectEditorText(editor, "symlink original");
+        await fillEditor(editor, "saved through symlink");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+        await page.getByRole("button", { name: "Save file" }).click();
+
+        // Existing editor feedback must report successful completion through the link.
+        await expect(page.getByLabel("File edit status")).toHaveText("Saved");
+        // The target receives the new bytes because editor saves follow symlinks.
+        await expect
+            .poll(async () => fs.readFile(targetPath, "utf8"))
+            .toBe("saved through symlink");
+        // The selected link entry must survive with its original relative text.
+        await expect
+            .poll(async () => fs.readlink(linkPath))
+            .toBe("symlink-target.txt");
+        // Save must use the dedicated edit endpoint rather than raw replacement upload.
+        expect(putPaths).toContain(editPath);
+        // No raw PUT may occur because that would replace the symlink entry.
+        expect(putPaths).not.toContain(rawPath);
     });
 
     test("should replace-navigate unsupported binaries to details", async ({
@@ -645,9 +688,9 @@ test.describe.serial("File Edit View", () => {
         ).toBeEnabled();
         await page.keyboard.press("ControlOrMeta+s");
 
-        // Status feedback confirms Mod-s used the same upload path as the button.
+        // Status feedback confirms Mod-s used the same edit path as the button.
         await expect(page.getByLabel("File edit status")).toHaveText("Saved");
-        // Polling the filesystem verifies the shortcut actually replaced remote bytes.
+        // Polling the filesystem verifies the shortcut rewrote the remote bytes.
         await expect
             .poll(async () => fs.readFile(filePath, "utf8"))
             .toBe("saved with shortcut");

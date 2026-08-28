@@ -16,6 +16,7 @@ import type { TransferProgressState } from "#bindings/TransferProgressState";
 import type { CancelTransferResponse } from "#bindings/CancelTransferResponse";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
+import type { FileEditResponse } from "#bindings/FileEditResponse";
 import type { TrashListResponse } from "#bindings/TrashListResponse";
 import type { EmptyTrashResponse } from "#bindings/EmptyTrashResponse";
 import type { RestoreTrashItemRequest } from "#bindings/RestoreTrashItemRequest";
@@ -81,8 +82,12 @@ import {
     withAuthentication,
     type RequestContext,
 } from "#ui/api-transport";
+import * as apiPaths from "#ui/api-paths";
+
+const { appendFilesystemPath, encodeFilesystemPath, getBrowserUrl } = apiPaths;
 
 export { ApiError } from "#ui/api-transport";
+export { encodeFilesystemPath, getBrowserUrl };
 
 export type {
     LsDirectoryResponse,
@@ -165,25 +170,6 @@ type MoveFileResponseJson = {
 };
 
 export type LsResponse = LsDirectoryResponse | LsFileResponse;
-
-/** Encodes each filesystem component while preserving `/` as a URL path separator. */
-export function encodeFilesystemPath(path: string): string {
-    if (!path.startsWith("/")) {
-        throw new Error("Filesystem path must be absolute");
-    }
-    return path.slice(1).split("/").map(encodeURIComponent).join("/");
-}
-
-/** Appends a filesystem path without leaving a trailing slash for the implicit root. */
-function appendFilesystemPath(route: string, path: string): string {
-    const encodedPath = encodeFilesystemPath(path);
-    return encodedPath ? `${route}/${encodedPath}` : route;
-}
-
-/** Builds a browser route whose filesystem components remain visible as URL segments. */
-export function getBrowserUrl(agentId: string, path: string): string {
-    return `/agents/${encodeURIComponent(agentId)}/browser/${encodeFilesystemPath(path)}`;
-}
 
 export function isLsDirectoryResponse(
     response: LsResponse,
@@ -653,6 +639,16 @@ export class Agent {
         );
         await requireSuccessfulResponse(response, this.requestContext);
         return response;
+    }
+
+    /** Rewrites one existing file inode through the dedicated editor endpoint. */
+    async editFile(path: string, file: File): Promise<FileEditResponse> {
+        const route = `/api/v1/agents/${encodeURIComponent(this.info.id)}/edit`;
+        return apiRequest<FileEditResponse>(
+            `${this.baseUrl}${appendFilesystemPath(route, path)}`,
+            { method: "PUT", body: file },
+            this.requestContext,
+        );
     }
 
     async deleteFile(

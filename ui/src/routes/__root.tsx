@@ -785,6 +785,11 @@ function getTransferSummary(transfers: TransferProgressEntry[]) {
             "uploading",
         ],
         [
+            activeTransfers.filter((transfer) => transfer.direction === "edit")
+                .length,
+            "editing",
+        ],
+        [
             activeTransfers.filter((transfer) => transfer.direction === "copy")
                 .length,
             "copying",

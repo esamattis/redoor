@@ -42,6 +42,11 @@ pub(crate) enum AgentCommandError {
         kind: redoor::commands::CommandErrorKind,
         message: String,
     },
+    #[error("{message}")]
+    EditFile {
+        kind: redoor::commands::CommandErrorKind,
+        message: String,
+    },
 }
 
 impl AgentCommandError {
@@ -52,6 +57,7 @@ impl AgentCommandError {
             Self::LocalMove(error) => error.kind(),
             Self::TarUpload(error) => error.kind(),
             Self::RawUpload { kind, .. } => kind.clone(),
+            Self::EditFile { kind, .. } => kind.clone(),
         }
     }
 
@@ -61,6 +67,17 @@ impl AgentCommandError {
         message: impl Into<String>,
     ) -> Self {
         Self::RawUpload {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Builds one edit boundary error while retaining its stable HTTP classification.
+    pub(crate) fn edit_file(
+        kind: redoor::commands::CommandErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::EditFile {
             kind,
             message: message.into(),
         }

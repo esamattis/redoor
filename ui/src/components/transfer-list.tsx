@@ -7,6 +7,7 @@ import {
     AlertCircle,
     MoveRight,
     CircleX,
+    FilePenLine,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ApiClient, type TransferProgressEntry } from "#ui/api-client";
@@ -315,6 +316,49 @@ function TransferCancellationToast(props: {
     );
 }
 
+/** Gives every transfer semantic its own stable label and visual treatment. */
+function TransferDirectionBadge(props: { transfer: TransferProgressEntry }) {
+    const direction = props.transfer.direction;
+    const color =
+        direction === "upload"
+            ? "bg-blue-500/15 text-blue-300"
+            : direction === "edit"
+              ? "bg-amber-500/15 text-amber-300"
+              : "bg-emerald-500/15 text-emerald-300";
+    const icon =
+        direction === "upload" ? (
+            <ArrowUpFromLine className="h-3.5 w-3.5" />
+        ) : direction === "edit" ? (
+            <FilePenLine className="h-3.5 w-3.5" />
+        ) : direction === "download" ? (
+            <ArrowDownToLine className="h-3.5 w-3.5" />
+        ) : direction === "move" ? (
+            <MoveRight className="h-3.5 w-3.5" />
+        ) : (
+            <Copy className="h-3.5 w-3.5" />
+        );
+    const label =
+        direction === "upload"
+            ? "Upload"
+            : direction === "edit"
+              ? "Edit"
+              : direction === "download"
+                ? "Download"
+                : props.transfer.atomic
+                  ? "atomic move"
+                  : direction === "move"
+                    ? "Move"
+                    : "Copy";
+    return (
+        <span
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${color}`}
+        >
+            {icon}
+            {label}
+        </span>
+    );
+}
+
 export function TransferList(props: {
     api: ApiClient;
     agents: Awaited<ReturnType<ApiClient["listAgents"]>>;
@@ -385,33 +429,9 @@ export function TransferList(props: {
                                     </div>
                                 </td>
                                 <td className="whitespace-nowrap p-3">
-                                    <span
-                                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
-                                            transfer.direction === "upload"
-                                                ? "bg-blue-500/15 text-blue-300"
-                                                : "bg-emerald-500/15 text-emerald-300"
-                                        }`}
-                                    >
-                                        {transfer.direction === "upload" ? (
-                                            <ArrowUpFromLine className="h-3.5 w-3.5" />
-                                        ) : transfer.direction ===
-                                          "download" ? (
-                                            <ArrowDownToLine className="h-3.5 w-3.5" />
-                                        ) : transfer.direction === "move" ? (
-                                            <MoveRight className="h-3.5 w-3.5" />
-                                        ) : (
-                                            <Copy className="h-3.5 w-3.5" />
-                                        )}
-                                        {transfer.direction === "upload"
-                                            ? "Upload"
-                                            : transfer.direction === "download"
-                                              ? "Download"
-                                              : transfer.atomic
-                                                ? "atomic move"
-                                                : transfer.direction === "move"
-                                                  ? "Move"
-                                                  : "Copy"}
-                                    </span>
+                                    <TransferDirectionBadge
+                                        transfer={transfer}
+                                    />
                                 </td>
                                 <td className="max-w-xs p-3">
                                     {hasEndpoints ? (

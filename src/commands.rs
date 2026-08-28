@@ -180,6 +180,10 @@ pub enum Command {
         #[serde(default = "CopyExistingMode::override_mode")]
         on_existing: CopyExistingMode,
     },
+    /// Rewrites one existing regular-file inode after staging the complete body.
+    EditFile {
+        path: String,
+    },
     TarUpload {
         path: String,
         /// Controls replacement when the destination already exists.
@@ -344,6 +348,7 @@ impl Command {
             Self::RawUpload { path, on_existing } => {
                 format!("RawUpload path={path} on_existing={on_existing:?}")
             }
+            Self::EditFile { path } => format!("EditFile path={path}"),
             Self::TarUpload { path, on_existing } => {
                 format!("TarUpload path={path} on_existing={on_existing:?}")
             }
@@ -765,6 +770,7 @@ pub enum CommandErrorKind {
     NotADirectory,
     IsDirectory,
     AlreadyExists,
+    Conflict,
     InvalidInput,
     ServiceUnavailable,
     Internal,
@@ -801,6 +807,7 @@ pub enum CommandResult {
         path: String,
     },
     RawUpload,
+    EditFile,
     TarUpload,
     LocalCopyFile,
     LocalCopyDirectory,
@@ -1172,6 +1179,15 @@ pub struct RawUploadResponse {
     pub bytes_written: u64,
 }
 
+/// Confirms that an editor body was committed to the selected existing inode.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FileEditResponse {
+    pub path: String,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RawDeleteResponse {
@@ -1373,6 +1389,7 @@ pub struct TransferProgressEntry {
 #[serde(rename_all = "snake_case")]
 pub enum TransferDirection {
     Upload,
+    Edit,
     Download,
     Copy,
     Move,
@@ -1430,6 +1447,7 @@ impl CommandResult {
             Self::RawDownload { path } => format!("ok RawDownload path={path}"),
             Self::TarDownload { path } => format!("ok TarDownload path={path}"),
             Self::RawUpload => "ok RawUpload".to_string(),
+            Self::EditFile => "ok EditFile".to_string(),
             Self::TarUpload => "ok TarUpload".to_string(),
             Self::LocalCopyFile => "ok LocalCopyFile".to_string(),
             Self::LocalCopyDirectory => "ok LocalCopyDirectory".to_string(),

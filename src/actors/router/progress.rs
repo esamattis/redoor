@@ -1,5 +1,5 @@
 use super::RouterError;
-use super::state::{DirectDownload, DirectUpload, RouterState};
+use super::state::{DirectDownload, DirectUpload, DirectUploadKind, RouterState};
 use super::ui;
 use crate::commands::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
@@ -43,6 +43,8 @@ pub(crate) struct UploadStartContext {
     /// Readiness acknowledgement held until the destination worker is ready.
     pub(crate) ready_sender:
         tokio::sync::oneshot::Sender<Result<super::messages::UploadStartOutcome, RouterError>>,
+    /// Controls completion matching and the public transfer direction.
+    pub(crate) kind: DirectUploadKind,
 }
 
 /// Inputs needed to register a new copy transfer in progress tracking.
@@ -153,7 +155,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             path: context.path,
             source: None,
             dest: None,
-            direction: TransferDirection::Upload,
+            direction: context.kind.direction(),
             total_bytes: context.total_bytes,
             transferred_bytes: 0,
             started_at: now,
@@ -173,6 +175,7 @@ pub(crate) fn record_upload_start(state: &mut RouterState, context: UploadStartC
             ready: false,
             canceled_by_rest: false,
             explicitly_canceled: false,
+            kind: context.kind,
         },
     );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
@@ -298,7 +301,10 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         progress.error = None;
         updated = true;
-        routes_changed = matches!(progress.direction, TransferDirection::Upload);
+        routes_changed = matches!(
+            progress.direction,
+            TransferDirection::Upload | TransferDirection::Edit
+        );
     }
     if updated {
         ui::notify_transfer_refresh_immediately(state);
@@ -339,7 +345,11 @@ pub(crate) fn mark_transfer_errored(
     error_message: String,
 ) {
     let mut updated = false;
+    let mut routes_changed = false;
     if let Some(progress) = state.progress.entries.get_mut(&transfer_id) {
+        // An edit becomes non-cancelable immediately before terminal delivery authorizes rewrite.
+        routes_changed =
+            matches!(progress.direction, TransferDirection::Edit) && !progress.cancelable;
         progress.state = TransferProgressState::Errored;
         progress.cancelable = false;
         progress.ended_at = Some(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
@@ -352,6 +362,9 @@ pub(crate) fn mark_transfer_errored(
     }
     if updated {
         ui::notify_transfer_refresh_immediately(state);
+        if routes_changed {
+            ui::notify_routes_changed(state);
+        }
     }
 }
 
@@ -560,6 +573,98 @@ mod tests {
             progress_entry.total_bytes, 16,
             "a partial last-chunk count must not rewrite a known file size"
         );
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    #[tokio::test]
+    async fn completed_edits_refresh_browser_routes() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        let transfer_id = TransferId::new(10);
+        state.progress.entries.insert(
+            transfer_id,
+            TransferProgressEntry {
+                request_id: transfer_id,
+                agent_id: AgentId::from("agent-1"),
+                path: "/tmp/file.txt".to_string(),
+                source: None,
+                dest: None,
+                direction: TransferDirection::Edit,
+                total_bytes: 4,
+                transferred_bytes: 4,
+                started_at: UnixTimestampSeconds::new(1),
+                ended_at: None,
+                state: TransferProgressState::Active,
+                cancelable: false,
+                error: None,
+                atomic: false,
+            },
+        );
+
+        mark_transfer_completed(&mut state, transfer_id);
+
+        // Completion must immediately refresh transfer state before route consumers reload data.
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(UiEvent::TransfersChanged)
+        ));
+        // An inode rewrite changes visible file metadata/content and must invalidate browser routes.
+        assert!(matches!(ui_rx.recv().await, Some(UiEvent::RoutesChanged)));
+
+        state.ui.refresh_check_task.abort();
+    }
+
+    #[tokio::test]
+    async fn errored_edits_after_commit_refresh_browser_routes() {
+        let refresh_check_task = tokio::spawn(async {});
+        let mut state = RouterState::new(
+            refresh_check_task,
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        let transfer_id = TransferId::new(11);
+        state.progress.entries.insert(
+            transfer_id,
+            TransferProgressEntry {
+                request_id: transfer_id,
+                agent_id: AgentId::from("agent-1"),
+                path: "/tmp/file.txt".to_string(),
+                source: None,
+                dest: None,
+                direction: TransferDirection::Edit,
+                total_bytes: 4,
+                transferred_bytes: 4,
+                started_at: UnixTimestampSeconds::new(1),
+                ended_at: None,
+                state: TransferProgressState::Active,
+                cancelable: false,
+                error: None,
+                atomic: false,
+            },
+        );
+
+        mark_transfer_errored(
+            &mut state,
+            transfer_id,
+            "commit failed after truncation".to_string(),
+        );
+
+        // Error state remains immediately visible in the persistent transfer UI.
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(UiEvent::TransfersChanged)
+        ));
+        // A non-cancelable edit may have changed bytes, so browser data must be invalidated.
+        assert!(matches!(ui_rx.recv().await, Some(UiEvent::RoutesChanged)));
 
         state.ui.refresh_check_task.abort();
     }

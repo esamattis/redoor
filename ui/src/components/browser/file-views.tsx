@@ -340,7 +340,7 @@ export function FileEditView(props: {
     const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
     const saveMutation = useMutation({
         mutationFn: (nextContent: string) =>
-            props.agent.upload(
+            props.agent.editFile(
                 props.filePath,
                 new globalThis.File([nextContent], props.fileName, {
                     type: props.mimeType || "text/plain",
@@ -348,7 +348,7 @@ export function FileEditView(props: {
             ),
         onSuccess: (_, nextContent) => {
             queryClient.setQueryData(fileQuery.queryKey, nextContent);
-            // Keep a newer draft so a save cannot wipe keystrokes typed during the upload.
+            // Keep a newer draft so a save cannot wipe keystrokes typed during the edit.
             setDraft((current) =>
                 current === null || current === nextContent ? null : current,
             );

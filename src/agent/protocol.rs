@@ -433,11 +433,14 @@ impl AgentActor {
                     );
                     let is_upload = matches!(
                         command,
-                        Command::RawUpload { .. } | Command::TarUpload { .. }
+                        Command::RawUpload { .. }
+                            | Command::EditFile { .. }
+                            | Command::TarUpload { .. }
                     );
                     let requires_transfer = matches!(
                         command,
                         Command::RawUpload { .. }
+                            | Command::EditFile { .. }
                             | Command::TarUpload { .. }
                             | Command::RawDownload { .. }
                             | Command::TarDownload { .. }
@@ -752,6 +755,19 @@ impl AgentActor {
                     request_id,
                     path,
                     on_existing,
+                )
+                .await;
+                self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)
+                    .await;
+                true
+            }
+            Command::EditFile { path } => {
+                self.start_file_edit_session(
+                    active_uploads.clone(),
+                    write,
+                    agent_id,
+                    request_id,
+                    path,
                 )
                 .await;
                 self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)
