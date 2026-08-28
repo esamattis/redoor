@@ -119,7 +119,7 @@ function AgentBoundary() {
     return <AgentLifecycle agent={data.agent} />;
 }
 
-/** Starts direct status-route visits idempotently and redirects successful startup to files. */
+/** Presents explicit managed lifecycle controls and redirects successful startup to files. */
 function AgentLifecycle(props: { agent: Agent }) {
     const router = useRouter();
     const startStates = useAtomValue(agentStartStatesAtom);
@@ -190,7 +190,6 @@ function AgentLifecycle(props: { agent: Agent }) {
             await router.invalidate();
         },
     });
-    const start = startMutation.mutate;
     const shutdownError = shutdownMutation.isError
         ? shutdownMutation.error instanceof Error
             ? shutdownMutation.error.message
@@ -203,24 +202,6 @@ function AgentLifecycle(props: { agent: Agent }) {
         setIsShutdownOpen(false);
         shutdownMutation.reset();
     };
-
-    React.useEffect(() => {
-        if (
-            props.agent.managed &&
-            (props.agent.status === "stopped" ||
-                props.agent.status === "disconnected") &&
-            state?.starting !== true &&
-            state?.error === undefined
-        ) {
-            start();
-        }
-    }, [
-        props.agent.managed,
-        props.agent.status,
-        start,
-        state?.error,
-        state?.starting,
-    ]);
 
     return (
         <div className="flex h-full items-center justify-center p-8">
@@ -272,22 +253,32 @@ function AgentLifecycle(props: { agent: Agent }) {
                 ) : null}
                 {props.agent.managed ? (
                     <div className="mt-6 flex justify-center gap-3">
-                        <Button
-                            type="button"
-                            onClick={() => retryMutation.mutate()}
-                            isLoading={retryMutation.isPending}
-                        >
-                            Retry Start
-                        </Button>
                         {shouldAppearStarting ? (
+                            <>
+                                <Button
+                                    type="button"
+                                    onClick={() => retryMutation.mutate()}
+                                    isLoading={retryMutation.isPending}
+                                >
+                                    Retry Start
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => setIsShutdownOpen(true)}
+                                >
+                                    Shutdown
+                                </Button>
+                            </>
+                        ) : (
                             <Button
                                 type="button"
-                                variant="secondary"
-                                onClick={() => setIsShutdownOpen(true)}
+                                onClick={() => startMutation.mutate()}
+                                isLoading={startMutation.isPending}
                             >
-                                Shutdown
+                                Connect
                             </Button>
-                        ) : null}
+                        )}
                     </div>
                 ) : null}
                 <ConfirmationDialog

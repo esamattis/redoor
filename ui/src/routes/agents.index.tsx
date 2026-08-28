@@ -1,7 +1,9 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useSetAtom } from "jotai";
 import { MoreHorizontal, Pencil, Play, Power, FolderOpen } from "lucide-react";
+import { agentStartStatesAtom } from "#ui/agent-start-state";
 import type { Agent, BinaryIdentity } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import {
@@ -25,6 +27,7 @@ type MutationState = Record<string, "start" | "shutdown" | undefined>;
 function AgentManagement() {
     const router = useRouter();
     const queryClient = useQueryClient();
+    const setStartStates = useSetAtom(agentStartStatesAtom);
     const { api } = RootRoute.useRouteContext();
     const { agents, serverInfo } = RootRoute.useLoaderData();
     const serverBinary = React.useMemo(
@@ -83,8 +86,13 @@ function AgentManagement() {
                 [agent.id]: undefined,
             }));
         },
-        onSuccess: async () => {
+        onSuccess: async (_data, agent) => {
             setShutdownAgent(null);
+            setStartStates((states) => {
+                const next = { ...states };
+                delete next[agent.id];
+                return next;
+            });
             await router.invalidate();
         },
         onError: (error, agent) => {

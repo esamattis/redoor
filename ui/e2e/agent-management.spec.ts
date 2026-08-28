@@ -120,12 +120,18 @@ test.describe.serial("Agent management", () => {
         await page.getByLabel("Home directory").fill("/tmp");
         await page.getByRole("button", { name: "Add managed agent" }).click();
 
-        // Submission dynamically adds and opens the managed tab without a server restart.
+        // Submission dynamically adds and opens the dormant managed tab without a server restart.
         await expect(
             page.getByRole("link", {
                 name: new RegExp(`^${CREATED_LOCAL_AGENT}, `),
             }),
         ).toBeVisible({ timeout: 15_000 });
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
         await expect(
             page.getByRole("link", {
                 name: `${CREATED_LOCAL_AGENT}, connected`,
@@ -285,14 +291,17 @@ test.describe.serial("Agent management", () => {
         ).toBeDisabled();
         await page.getByRole("button", { name: "Add managed agent" }).click();
 
-        // Submission dynamically adds and opens the managed tab without a server restart.
+        // Submission dynamically adds and opens the dormant managed tab without a server restart.
         await expect(
             page.getByRole("link", {
                 name: new RegExp(`^${CREATED_SSH_AGENT}, `),
             }),
         ).toBeVisible({ timeout: 15_000 });
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
 
-        // The starting screen must show sticky SSH steps instead of a generic loading sentence.
+        // Explicit connection must show sticky SSH steps instead of a generic loading sentence.
         await expect(
             page.getByRole("heading", {
                 name: `Starting ${CREATED_SSH_AGENT}`,
@@ -364,6 +373,9 @@ test.describe.serial("Agent management", () => {
         await page
             .getByRole("link", { name: `${originalName}, stopped` })
             .click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
         await expect(
             page.getByRole("link", { name: `${originalName}, connected` }),
         ).toBeVisible({ timeout: 60_000 });
@@ -391,7 +403,10 @@ test.describe.serial("Agent management", () => {
         await page
             .getByRole("link", { name: `${RUNNING_EDIT_AGENT}, stopped` })
             .click();
-        // Starting the renamed tab proves the edited configuration remains operational.
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+        // Explicitly starting the renamed tab proves the edited configuration remains operational.
         await expect(
             page.getByRole("link", {
                 name: `${RUNNING_EDIT_AGENT}, connected`,
@@ -424,6 +439,9 @@ test.describe.serial("Agent management", () => {
         ).toBeEnabled();
         await page.getByLabel("SSH password", { exact: true }).fill(password);
         await page.getByRole("button", { name: "Add managed agent" }).click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
 
         // Password auth must prepare and connect without a TTY or ssh-agent key.
         await expect(
@@ -459,6 +477,9 @@ test.describe.serial("Agent management", () => {
         await page.getByRole("radio", { name: "Use ssh password" }).check();
         await page.getByLabel("SSH password", { exact: true }).fill(password);
         await page.getByRole("button", { name: "Add managed agent" }).click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
         await expect(
             page.getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,
@@ -512,6 +533,9 @@ test.describe.serial("Agent management", () => {
             .getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, stopped`,
             })
+            .click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
             .click();
         // Live auth must now succeed as the key user after the password is removed.
         await expect(
@@ -584,6 +608,9 @@ test.describe.serial("Agent management", () => {
                 name: `${CREATED_SSH_PASSWORD_CHANGE_AGENT}, stopped`,
             })
             .click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
         // The corrected secret must authenticate as redoor-password after the edit.
         await expect(
             page.getByRole("link", {
@@ -621,6 +648,9 @@ test.describe.serial("Agent management", () => {
             .getByRole("link", {
                 name: `${CREATED_SSH_MISSING_PASSWORD_AGENT}, stopped`,
             })
+            .click();
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
             .click();
 
         const lifecycleAlert = page.getByRole("alert").filter({
@@ -715,9 +745,11 @@ test.describe.serial("Agent management", () => {
         const continued = new Promise<void>((resolve) => {
             markContinued = resolve;
         });
+        let startRequests = 0;
         await page.route(
             `**/api/v1/agents/${VALID_AGENT}/start`,
             async (route) => {
+                startRequests += 1;
                 await gate;
                 await route.continue();
                 markContinued?.();
@@ -728,10 +760,23 @@ test.describe.serial("Agent management", () => {
             .getByRole("link", { name: `${VALID_AGENT}, stopped` })
             .click();
 
-        // Immediate navigation guarantees users see progress even when local registration is fast.
+        // Selection must only open the lifecycle route and leave the dormant watchdog untouched.
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible();
+        expect(startRequests).toBe(0);
+        expect((await getAgent(page.request, VALID_AGENT)).status).toBe(
+            "stopped",
+        );
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+
+        // Explicit connection guarantees immediate progress even when local registration is fast.
         await expect(
             page.getByRole("heading", { name: `Starting ${VALID_AGENT}` }),
         ).toBeVisible();
+        expect(startRequests).toBe(1);
         if (!releaseStart) {
             throw new Error("Start route was not intercepted");
         }
@@ -810,15 +855,17 @@ test.describe.serial("Agent management", () => {
     test("surfaces failing managed connection issues without blocking the UI", async ({
         page,
     }) => {
-        await page.goto(`${WEB_BASE_URL}/agents`);
-        const row = page.getByRole("row", { name: `Agent ${FAILING_AGENT}` });
-        await row
-            .getByRole("button", { name: `Open actions for ${FAILING_AGENT}` })
-            .click();
-        await page
-            .getByRole("dialog", { name: `${FAILING_AGENT} actions` })
-            .getByRole("button", { name: "Start", exact: true })
-            .click();
+        await page.goto(`${WEB_BASE_URL}/agents/${FAILING_AGENT}`);
+        const connectButton = page.getByRole("button", {
+            name: "Connect",
+            exact: true,
+        });
+        // Opening a dormant managed agent must not express desired-running intent.
+        await expect(connectButton).toBeVisible();
+        expect((await getAgent(page.request, FAILING_AGENT)).status).toBe(
+            "stopped",
+        );
+        await connectButton.click();
 
         await expect
             .poll(
@@ -830,34 +877,49 @@ test.describe.serial("Agent management", () => {
                 },
             )
             .not.toBeNull();
-        // The actionable supervisor issue remains inline while desired-running retries continue.
-        await expect(row.getByRole("alert")).not.toBeEmpty();
-        await page
-            .getByRole("link", { name: `${FAILING_AGENT}, starting` })
-            .click();
+        // The actionable supervisor issue remains visible after the first explicit attempt fails.
+        await expect(page.getByRole("alert")).not.toBeEmpty();
         await expect(
             page.getByRole("heading", { name: `Starting ${FAILING_AGENT}` }),
         ).toBeVisible();
         const retryButton = page.getByRole("button", { name: "Retry Start" });
         // Desired-running state must not disable the explicit attempt replacement control.
         await expect(retryButton).toBeEnabled();
-        const retryUrl = `${WEB_BASE_URL}/api/v1/agents/${FAILING_AGENT}/retry-start`;
-        const [retryResponse] = await Promise.all([
-            page.waitForResponse(
-                (response) =>
-                    response.url() === retryUrl &&
-                    response.request().method() === "POST",
-            ),
-            retryButton.click(),
-        ]);
-        // A successful response proves the UI issued the dedicated atomic retry request.
-        expect(retryResponse.ok()).toBe(true);
-        await expect(retryButton).toBeEnabled();
-        // Retry keeps intentional shutdown available while the fresh attempt is still starting.
+        // The failed initial attempt must keep intentional shutdown available.
         await expect(
             page.getByRole("button", { name: "Shutdown", exact: true }),
         ).toBeEnabled();
         // An unrelated navigation remains responsive while the failing child cycles.
+        await page
+            .getByRole("button", { name: "Shutdown", exact: true })
+            .click();
+        await page
+            .getByRole("dialog", { name: `Shut down ${FAILING_AGENT}?` })
+            .getByRole("button", { name: "Shutdown", exact: true })
+            .click();
+        // Shutdown must settle the failed first connection without navigation reviving it.
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(
+            page.getByRole("link", { name: `${FAILING_AGENT}, stopped` }),
+        ).toHaveAttribute("aria-current", "page");
+        expect((await getAgent(page.request, FAILING_AGENT)).status).toBe(
+            "stopped",
+        );
+        const retryWindowStartedAt = Date.now();
+        await expect
+            .poll(
+                async () => {
+                    const agent = await getAgent(page.request, FAILING_AGENT);
+                    return Date.now() - retryWindowStartedAt >= 2_000
+                        ? agent.status
+                        : "observing";
+                },
+                { timeout: 5_000 },
+            )
+            // Remaining stopped beyond the first backoff proves shutdown canceled reconnecting.
+            .toBe("stopped");
         await page
             .getByRole("navigation", { name: "Application" })
             .getByRole("link", { name: "Server home" })

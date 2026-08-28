@@ -1,6 +1,5 @@
-import { Link, useRouter } from "@tanstack/react-router";
-import { useMutation } from "@tanstack/react-query";
-import { useAtomValue, useSetAtom } from "jotai";
+import { Link } from "@tanstack/react-router";
+import { useAtomValue } from "jotai";
 import { Bookmark, HardDrive, Pencil, X } from "lucide-react";
 import type * as React from "react";
 
@@ -9,10 +8,6 @@ import {
     agentTabLocationsAtom,
     getAgentTabLocation,
 } from "#ui/agent-tab-locations";
-import {
-    agentStartStatesAtom,
-    getStartErrorMessage,
-} from "#ui/agent-start-state";
 import { SideMenu } from "#ui/components/side-menu";
 import { AddButton } from "#ui/components/add-button";
 import { IconButton } from "#ui/components/icon-button";
@@ -49,45 +44,14 @@ export function AgentNavigation(props: {
     );
 }
 
-/** Preserves remembered filesystem destinations and managed startup while selecting agents. */
+/** Preserves remembered filesystem destinations while keeping agent selection side-effect free. */
 function AgentMenu(props: {
     agents: Agent[];
     pathname: string;
     onClose: () => void;
 }) {
     const agentTabLocations = useAtomValue(agentTabLocationsAtom);
-    const setStartStates = useSetAtom(agentStartStatesAtom);
     const [userState, setUserState] = useUserState();
-    const router = useRouter();
-    const startMutation = useMutation({
-        mutationFn: (agent: Agent) => agent.start(),
-        onMutate: (agent) => {
-            setStartStates((states) => ({
-                ...states,
-                [agent.id]: {
-                    starting: true,
-                    error: null,
-                    autoRedirect: true,
-                },
-            }));
-            props.onClose();
-            void router.navigate({
-                to: "/agents/$agentId",
-                params: { agentId: agent.id },
-            });
-        },
-        onSuccess: () => router.invalidate(),
-        onError: (error, agent) => {
-            setStartStates((states) => ({
-                ...states,
-                [agent.id]: {
-                    starting: false,
-                    error: getStartErrorMessage(error),
-                    autoRedirect: true,
-                },
-            }));
-        },
-    });
 
     return (
         <nav aria-label="Agents" className="flex min-h-0 flex-1 flex-col">
@@ -123,10 +87,6 @@ function AgentMenu(props: {
                                   agent.getBrowserUrl(agent.cwd),
                               )
                             : agentPrefix;
-                        const shouldStart =
-                            agent.managed &&
-                            (agent.status === "stopped" ||
-                                agent.status === "disconnected");
                         const bookmarks = userState.bookmarks.filter(
                             (bookmark) => bookmark.agentId === agent.id,
                         );
@@ -137,14 +97,7 @@ function AgentMenu(props: {
                                 >
                                     <Link
                                         to={target}
-                                        onClick={(event) => {
-                                            if (shouldStart) {
-                                                event.preventDefault();
-                                                startMutation.mutate(agent);
-                                            } else {
-                                                props.onClose();
-                                            }
-                                        }}
+                                        onClick={props.onClose}
                                         aria-label={`${agent.name}, ${agent.status}`}
                                         aria-current={
                                             isActive ? "page" : undefined

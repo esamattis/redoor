@@ -469,6 +469,11 @@ async fn run_supervisor(
         }
         let mut backoff = INITIAL_BACKOFF;
         loop {
+            // Shutdown changes intent before queue processing so a stale Start command
+            // cannot revive preparation while its shutdown acknowledgement is pending.
+            if !watchdog.snapshot().desired_running {
+                break;
+            }
             watchdog.publish_update(|snapshot| {
                 snapshot.desired_running = true;
                 snapshot.status = AgentConnectionStatus::Starting;
@@ -1253,11 +1258,19 @@ mod tests {
     #[tokio::test]
     async fn spawn_errors_are_visible_and_shutdown_interrupts_backoff() {
         crate::logging::init(None).await.unwrap();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let observed_spawns = spawn_count.clone();
         let registry = WatchdogRegistry::new();
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "broken".into(),
-                SpawnFn::new(|_status| async { Err("missing executable".to_string()) }),
+                SpawnFn::new(move |_status| {
+                    let observed_spawns = observed_spawns.clone();
+                    async move {
+                        observed_spawns.fetch_add(1, Ordering::SeqCst);
+                        Err("missing executable".to_string())
+                    }
+                }),
                 &registry,
                 callback(),
             )
@@ -1276,6 +1289,8 @@ mod tests {
         handle.shutdown().await.expect("backoff interrupted");
         // Shutdown must win over a pending retry timer.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+        // Acknowledgement cancels the failed attempt instead of letting its backoff respawn it.
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -201,8 +201,15 @@ test.describe("First-run demo", () => {
                 page.getByRole("heading", { name: "Server", exact: true }),
             ).toBeVisible();
 
-            // Clicking the stopped local tab triggers lazy start and opens its browser root.
+            // Clicking the stopped local tab only opens its lifecycle view.
             await page.getByRole("link", { name: "local, stopped" }).click();
+            await expect(
+                page.getByRole("button", { name: "Connect", exact: true }),
+            ).toBeVisible();
+            // First-run agents follow the same explicit lifecycle contract as configured agents.
+            await page
+                .getByRole("button", { name: "Connect", exact: true })
+                .click();
             await expect(
                 page.getByRole("heading", { name: "Starting local" }),
             ).toBeVisible();
