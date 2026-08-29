@@ -288,6 +288,12 @@ test.describe.serial("File Browser Navigation", () => {
         page,
     }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        let pathSearchRequests = 0;
+        page.on("request", (request) => {
+            if (new URL(request.url()).pathname.includes("/search/")) {
+                pathSearchRequests += 1;
+            }
+        });
         await page.goto(directoryUrl);
 
         const filterInput = page.getByRole("searchbox", {
@@ -305,6 +311,11 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("link", { name: "file1.txt", exact: true }),
         ).not.toBeVisible();
+        // File-list filtering never starts recursive transport or exposes its removed controls.
+        expect(pathSearchRequests).toBe(0);
+        await expect(
+            page.getByRole("button", { name: "Search recursively" }),
+        ).toHaveCount(0);
 
         await filterInput.press("Enter");
 
@@ -338,17 +349,14 @@ test.describe.serial("File Browser Navigation", () => {
         const filterInput = page.getByRole("searchbox", {
             name: "Filter files",
         });
-        // The visible hint makes both search shortcuts discoverable before they are used.
+        // The visible hint advertises the only shortcut owned by local filtering.
         await expect(filterInput).toHaveAttribute(
             "placeholder",
-            "Filter files (f, s for recursive)",
+            "Filter files (f)",
         );
         await page.keyboard.press("f");
         // The local filter shortcut moves focus without changing its search mode.
         await expect(filterInput).toBeFocused();
-        await expect(
-            page.getByRole("button", { name: "Search recursively" }),
-        ).toHaveAttribute("aria-pressed", "false");
 
         await page.keyboard.type("f");
         // Character shortcuts stay inactive while typing into an input.
@@ -358,23 +366,6 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(filterInput).not.toBeFocused();
         await filterInput.fill("");
         await page.keyboard.press("Escape");
-        await page.keyboard.press("s");
-        // Recursive search is enabled before its shortcut focuses the query input.
-        await expect(
-            page.getByRole("button", { name: "Search recursively" }),
-        ).toHaveAttribute("aria-pressed", "true");
-        await expect(filterInput).toBeFocused();
-        await page.keyboard.press("Escape");
-        // The first Escape only releases the active search input.
-        await expect(
-            page.getByRole("button", { name: "Search recursively" }),
-        ).toHaveAttribute("aria-pressed", "true");
-        await expect(filterInput).not.toBeFocused();
-        await page.keyboard.press("Escape");
-        // A second Escape leaves recursive mode while retaining the query.
-        await expect(
-            page.getByRole("button", { name: "Search recursively" }),
-        ).toHaveAttribute("aria-pressed", "false");
 
         const firstFileEntry = page.getByRole("link", {
             name: "subdir1",
@@ -457,51 +448,6 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(page.locator("main tbody tr")).toHaveCount(5);
     });
 
-    test("should navigate recursive results and leave search with a second Escape", async ({
-        page,
-    }) => {
-        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
-        await page.goto(directoryUrl);
-        const filterInput = page.getByRole("searchbox", {
-            name: "Filter files",
-        });
-        const recursiveToggle = page.getByRole("button", {
-            name: "Search recursively",
-        });
-
-        await recursiveToggle.click();
-        await filterInput.fill("nested");
-        await expect(
-            page.getByText(/^Found 3 results in \d+ms$/),
-        ).toBeVisible();
-        const firstResult = page.getByRole("link").filter({
-            hasText: "nested1.txt",
-        });
-        const secondResult = page.getByRole("link").filter({
-            hasText: "nested2.txt",
-        });
-        await page.keyboard.press("Escape");
-
-        // The first Escape leaves recursive search and its results intact for keyboard navigation.
-        await expect(filterInput).not.toBeFocused();
-        await expect(filterInput).toHaveValue("nested");
-        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "true");
-        await page.keyboard.press("j");
-        await expect(firstResult).toBeFocused();
-        await page.keyboard.press("j");
-        await expect(secondResult).toBeFocused();
-        await page.keyboard.press("k");
-        await expect(firstResult).toBeFocused();
-
-        await page.keyboard.press("Escape");
-
-        // The second Escape returns to local filtering without discarding the query.
-        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "false");
-        await expect(filterInput).toHaveValue("nested");
-        await expect(page.locator("main tbody")).toHaveCount(1);
-        await expect(page.locator("main tbody tr")).toHaveCount(0);
-    });
-
     test("should start tab traversal in the application sidebar", async ({
         page,
     }) => {
@@ -521,162 +467,6 @@ test.describe.serial("File Browser Navigation", () => {
 
         // Global traversal skips branding but includes the persistent sidebar before agent tabs.
         await expect(homeLink).toBeFocused();
-    });
-
-    test("should recursively search from the current directory", async ({
-        page,
-    }) => {
-        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
-        const searchRequests: Array<URL> = [];
-        page.on("request", (request) => {
-            const url = new URL(request.url());
-            if (url.pathname.includes(`/agents/${ctx.agentId}/search`)) {
-                searchRequests.push(url);
-            }
-        });
-        await page.goto(directoryUrl);
-
-        const filterInput = page.getByRole("searchbox", {
-            name: "Filter files",
-        });
-        const timeoutInput = page.getByRole("spinbutton", {
-            name: "Search timeout in seconds",
-        });
-        const hiddenToggle = page.getByRole("button", {
-            name: "Search hidden directories",
-        });
-        const gitignoreToggle = page.getByRole("button", {
-            name: "Respect .gitignore files",
-        });
-        // Recursive-only controls do not occupy the local-filter toolbar.
-        await expect(timeoutInput).toHaveCount(0);
-        await expect(hiddenToggle).toHaveCount(0);
-        await expect(gitignoreToggle).toHaveCount(0);
-        await filterInput.fill("nested3txt");
-
-        // Local filtering cannot discover a file below a child directory.
-        await expect(page.locator("main tbody tr")).toHaveCount(0);
-
-        const recursiveToggle = page.getByRole("button", {
-            name: "Search recursively",
-        });
-        await recursiveToggle.focus();
-        // Focus lands on the native button rather than a tooltip-only wrapper.
-        await expect(recursiveToggle).toBeFocused();
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to search recursively (s)",
-        );
-        await page.keyboard.press("Enter");
-        // Native button activation with Enter enables recursive searching.
-        await expect(recursiveToggle).toHaveAttribute("aria-pressed", "true");
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to search only this directory",
-        );
-        // Recursive searches reveal their optional controls with safe defaults.
-        await expect(timeoutInput).toHaveValue("5");
-        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "false");
-        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "true");
-        await timeoutInput.focus();
-        // The tooltip explains both the unit and accepted range at the control.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Maximum recursive search duration in seconds (1-60)",
-        );
-        await timeoutInput.fill("12");
-        await timeoutInput.focus();
-        await page.keyboard.press("Tab");
-        // Tooltip wrappers do not add a dead tab stop before the native toggle button.
-        await expect(hiddenToggle).toBeFocused();
-        // The tooltip describes the behavior of the next activation, not the current state.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to search from hidden directories",
-        );
-        await page.keyboard.press("Enter");
-        // Native button activation with Enter enables hidden-directory traversal.
-        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to exclude hidden directories from search",
-        );
-        await page.keyboard.press("Tab");
-        // Tab reaches the next native toggle without stopping on a tooltip wrapper.
-        await expect(gitignoreToggle).toBeFocused();
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to search files ignored by .gitignore",
-        );
-        await page.keyboard.press("Space");
-        // Native button activation with Space disables .gitignore filtering.
-        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Click to exclude files ignored by .gitignore from search",
-        );
-        await filterInput.fill("nested");
-        await filterInput.fill("nested3txt");
-
-        const nestedResult = page
-            .getByRole("link")
-            .filter({ hasText: "nested3.txt" });
-        // A nested match proves the checked mode uses the recursive API rather than the loaded listing.
-        await expect(nestedResult).toBeVisible();
-        // Settled results report both the bounded count and agent-side search duration.
-        await expect(page.getByText(/^Found 1 result in \d+ms$/)).toBeVisible();
-        await page.getByText("1", { exact: true }).hover();
-        // The count explains that recursive search returns a bounded result set.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "100 is the maximum number of results a search can return.",
-        );
-        await page.getByText(/^\d+ms$/).hover();
-        // Duration is measured beside the filesystem rather than around the REST request.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Search duration was measured on the agent.",
-        );
-        // The dedicated result renderer exposes the full path and does not reuse directory table rows.
-        await expect(
-            page.getByText(
-                path.join(ctx.testDirPath, "subdir2", "deep", "nested3.txt"),
-                { exact: true },
-            ),
-        ).toBeVisible();
-        await expect(page.locator("main tbody")).toHaveCount(0);
-        // Inputs inside one throttle window collapse into one request carrying the final keystrokes.
-        expect(searchRequests).toHaveLength(1);
-        expect(searchRequests[0]?.searchParams.get("query")).toBe("nested3txt");
-        // The chosen duration is sent with every recursive search request.
-        expect(searchRequests[0]?.searchParams.get("timeout")).toBe("12");
-        // Hidden-directory traversal is explicit rather than enabled by default.
-        expect(searchRequests[0]?.searchParams.get("include_hidden")).toBe(
-            "true",
-        );
-        // Git ignore checking is default-on but can be disabled for exhaustive searches.
-        expect(searchRequests[0]?.searchParams.get("respect_gitignore")).toBe(
-            "false",
-        );
-
-        let notifyRequestStarted: (() => void) | undefined;
-        let releaseRequest: (() => void) | undefined;
-        const requestStarted = new Promise<void>((resolve) => {
-            notifyRequestStarted = resolve;
-        });
-        const requestRelease = new Promise<void>((resolve) => {
-            releaseRequest = resolve;
-        });
-        await page.route("**/api/v1/agents/*/search/**", async (route) => {
-            notifyRequestStarted?.();
-            await requestRelease;
-            await route.continue();
-        });
-
-        await filterInput.fill("nested1txt");
-        await requestStarted;
-
-        // Keeping the old match visible while transport is pending prevents result-list flashing.
-        await expect(nestedResult).toBeVisible();
-        await expect(
-            page.getByText("Updating results...", { exact: true }),
-        ).toBeVisible();
-        releaseRequest?.();
-        // The replacement result appearing proves retained rows do not block the eventual update.
-        await expect(
-            page.getByRole("link").filter({ hasText: "nested1.txt" }),
-        ).toBeVisible();
     });
 
     test("should show directory details from the view query", async ({

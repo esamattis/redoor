@@ -1,11 +1,12 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { ContentSearchDialog } from "#ui/components/content-search-dialog";
+import { SearchDialog } from "#ui/components/search-dialog";
 import { RouteError } from "#ui/components/route-error";
 
 export type AgentSearch = {
     q?: string;
+    mode?: "content";
     timeout?: number;
     hidden?: boolean;
     gitignore?: boolean;
@@ -35,9 +36,13 @@ const optionalBooleanSchema = z
 /** Keeps presence meaningful because an empty q still opens and focuses the dialog. */
 const searchQuerySchema = z.string().optional().catch(undefined);
 
+/** Treats a missing mode as path search while rejecting stale shared URL values. */
+const searchModeSchema = z.literal("content").optional().catch(undefined);
+
 export const Route = createFileRoute("/agents/$agentId")({
     validateSearch: (search): AgentSearch => ({
         q: searchQuerySchema.parse(search.q),
+        mode: searchModeSchema.parse(search.mode),
         timeout: searchTimeoutSchema.parse(search.timeout),
         hidden: optionalBooleanSchema.parse(search.hidden),
         gitignore: optionalBooleanSchema.parse(search.gitignore),
@@ -69,7 +74,7 @@ function AgentRouteLayout() {
     return (
         <>
             <Outlet />
-            <ContentSearchDialog agent={data.agent} />
+            <SearchDialog agent={data.agent} />
         </>
     );
 }

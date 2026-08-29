@@ -116,6 +116,7 @@ ${props.selection.text}
                         }
                         const params = new URLSearchParams(location.searchStr);
                         params.set("q", props.selection.text);
+                        params.set("mode", "content");
                         params.set("gitroot", "true");
                         void navigate({
                             to: `${location.pathname}?${params.toString()}${location.hash}`,

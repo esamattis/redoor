@@ -1,5 +1,4 @@
 import React from "react";
-import { useQuery } from "@tanstack/react-query";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import {
@@ -9,11 +8,6 @@ import {
     Download,
     File,
     Folder,
-    FolderSearch,
-    GitBranch,
-    Eye,
-    EyeOff,
-    LoaderCircle,
     Search,
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
@@ -29,8 +23,6 @@ import { DialogActions } from "#ui/components/dialog-actions";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
-import { ToggleButton } from "#ui/components/toggle-button";
-import type { FileSearchEntry, FileSearchResponse } from "#ui/api-client";
 import {
     selectedFileKeysAtom,
     toggleSelectedFileAtom,
@@ -44,10 +36,8 @@ import {
     joinBrowserPath,
 } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
-import { fileSearchQueryOptions } from "#ui/queries";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
-import { useUserState } from "#ui/user-state";
 import {
     buildUnarchiveCommand,
     getArchiveInfo,
@@ -59,24 +49,11 @@ import { requestTerminalCreationAtom } from "#ui/bottom-drawer-state";
 /** Identifies the destination that should restore filter focus after Enter navigation. */
 const filterFocusPathAtom = atom<string | null>(null);
 
-type FileSearchState =
-    | { status: "idle" }
-    | {
-          status: "searching" | "success";
-          query: string;
-          results: Array<FileSearchEntry>;
-          timedOut: boolean;
-          durationMs: number;
-      }
-    | { status: "error"; query: string; message: string };
-
 /** Handles shortcuts that only exist while the file list is mounted. */
 function useFileListShortcuts(props: {
     filterInputRef: React.RefObject<HTMLInputElement | null>;
     filter: string;
     setFilter: React.Dispatch<React.SetStateAction<string>>;
-    searchRecursively: boolean;
-    setSearchRecursively: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
     React.useEffect(() => {
         /** Keeps file-browser shortcuts from replacing text entered into form controls. */
@@ -86,9 +63,7 @@ function useFileListShortcuts(props: {
             }
 
             if (event.key === "Escape") {
-                if (props.searchRecursively) {
-                    props.setSearchRecursively(false);
-                } else if (props.filter !== "") {
+                if (props.filter !== "") {
                     props.setFilter("");
                 }
                 return;
@@ -99,63 +74,14 @@ function useFileListShortcuts(props: {
                 props.filterInputRef.current?.focus();
                 return;
             }
-            if (event.key === "s") {
-                event.preventDefault();
-                props.setSearchRecursively(true);
-                props.filterInputRef.current?.focus();
-                return;
-            }
         };
 
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [
-        props.filterInputRef,
-        props.filter,
-        props.setFilter,
-        props.searchRecursively,
-        props.setSearchRecursively,
-    ]);
+    }, [props.filterInputRef, props.filter, props.setFilter]);
 }
 
-/** Maps Query's transport state into the existing recursive-search presentation. */
-function getFileSearchState(props: {
-    filter: string;
-    query: string;
-    search: ReturnType<typeof useQuery<FileSearchResponse>>;
-}): FileSearchState {
-    if (props.filter.trim() === "") {
-        return { status: "idle" };
-    }
-    if (props.search.isError) {
-        return {
-            status: "error",
-            query: props.query,
-            message:
-                props.search.error instanceof Error
-                    ? props.search.error.message
-                    : "File search failed",
-        };
-    }
-    if (props.search.data) {
-        return {
-            status: props.search.isFetching ? "searching" : "success",
-            query: props.query,
-            results: props.search.data.results,
-            timedOut: props.search.data.timed_out,
-            durationMs: props.search.data.duration_ms,
-        };
-    }
-    return {
-        status: "searching",
-        query: props.query,
-        results: [],
-        timedOut: false,
-        durationMs: 0,
-    };
-}
-
-/** Switches between immediate directory filtering and remote recursive search. */
+/** Filters only the loaded directory entries so recursive search remains in the shared dialog. */
 export function FileList(props: {
     agent: Agent;
     agentId: string;
@@ -170,12 +96,6 @@ export function FileList(props: {
     const [filterFocusPath, setFilterFocusPath] = useAtom(filterFocusPathAtom);
     const filterInputRef = React.useRef<HTMLInputElement>(null);
     const [filter, setFilter] = React.useState("");
-    const [searchRecursively, setSearchRecursively] = React.useState(false);
-    const [userState, setUserState] = useUserState();
-    const searchTimeoutSeconds = userState.recursiveSearchTimeoutSeconds;
-    const includeHiddenDirectories = userState.recursiveSearchIncludeHidden;
-    const respectGitignore = userState.recursiveSearchRespectGitignore;
-    const [debouncedFilter, setDebouncedFilter] = React.useState("");
     const [sort, setSort] = React.useState<{
         column: FileSortColumn;
         direction: FileSortDirection;
@@ -189,25 +109,10 @@ export function FileList(props: {
               return compareFileEntries(left, right, sort);
           })
         : filteredFiles;
-    const recursiveSearch = useQuery(
-        fileSearchQueryOptions(agent, props.directoryPath, {
-            query: searchRecursively ? debouncedFilter : "",
-            timeoutSeconds: searchTimeoutSeconds,
-            includeHidden: includeHiddenDirectories,
-            respectGitignore,
-        }),
-    );
-    const searchState = getFileSearchState({
-        filter,
-        query: debouncedFilter,
-        search: recursiveSearch,
-    });
     useFileListShortcuts({
         filterInputRef,
         filter,
         setFilter,
-        searchRecursively,
-        setSearchRecursively,
     });
 
     const changeSort = (column: FileSortColumn) => {
@@ -229,15 +134,6 @@ export function FileList(props: {
         setFilterFocusPath(null);
     }, [filterFocusPath, props.directoryPath, setFilterFocusPath]);
 
-    React.useEffect(() => {
-        if (!searchRecursively) {
-            setDebouncedFilter("");
-            return;
-        }
-        const timer = window.setTimeout(() => setDebouncedFilter(filter), 200);
-        return () => window.clearTimeout(timer);
-    }, [filter, searchRecursively]);
-
     const handleFilterKeyDown = async (
         event: React.KeyboardEvent<HTMLInputElement>,
     ) => {
@@ -245,13 +141,9 @@ export function FileList(props: {
             return;
         }
 
-        const destinationPath = searchRecursively
-            ? searchState.status === "success"
-                ? searchState.results[0]?.path
-                : undefined
-            : filteredFiles[0]
-              ? joinBrowserPath(props.directoryPath, filteredFiles[0].name)
-              : undefined;
+        const destinationPath = filteredFiles[0]
+            ? joinBrowserPath(props.directoryPath, filteredFiles[0].name)
+            : undefined;
         if (!destinationPath) {
             return;
         }
@@ -277,57 +169,26 @@ export function FileList(props: {
                         value={filter}
                         onChange={(event) => setFilter(event.target.value)}
                         onKeyDown={handleFilterKeyDown}
-                        placeholder="Filter files (f, s for recursive)"
+                        placeholder="Filter files (f)"
                         className="w-full bg-slate-900 py-1.5 pl-9 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500 sm:py-2"
                     />
                 </label>
-                <RecursiveSearchControls
-                    active={searchRecursively}
-                    timeoutSeconds={searchTimeoutSeconds}
-                    includeHiddenDirectories={includeHiddenDirectories}
-                    respectGitignore={respectGitignore}
-                    onActiveChange={setSearchRecursively}
-                    onTimeoutChange={(recursiveSearchTimeoutSeconds) =>
-                        setUserState((current) => ({
-                            ...current,
-                            recursiveSearchTimeoutSeconds,
-                        }))
-                    }
-                    onIncludeHiddenChange={(recursiveSearchIncludeHidden) =>
-                        setUserState((current) => ({
-                            ...current,
-                            recursiveSearchIncludeHidden,
-                        }))
-                    }
-                    onRespectGitignoreChange={(
-                        recursiveSearchRespectGitignore,
-                    ) =>
-                        setUserState((current) => ({
-                            ...current,
-                            recursiveSearchRespectGitignore,
-                        }))
-                    }
-                />
             </div>
-            {searchRecursively ? (
-                <FileSearchResults agent={agent} state={searchState} />
-            ) : (
-                <FileTable
-                    agent={props.agent}
-                    agentId={props.agentId}
-                    agentName={props.agentName}
-                    directoryPath={props.directoryPath}
-                    files={displayedFiles}
-                    sort={sort}
-                    onSort={changeSort}
-                />
-            )}
+            <FileTable
+                agent={props.agent}
+                agentId={props.agentId}
+                agentName={props.agentName}
+                directoryPath={props.directoryPath}
+                files={displayedFiles}
+                sort={sort}
+                onSort={changeSort}
+            />
             <FilesystemFooter mountPoint={props.mountPoint} />
         </div>
     );
 }
 
-/** Keeps current filesystem capacity visible below local and recursive file results. */
+/** Keeps current filesystem capacity visible below local file results. */
 function FilesystemFooter(props: { mountPoint: MountPoint | null }) {
     const mountPoint = props.mountPoint;
     const availableBytes = mountPoint?.available_bytes ?? null;
@@ -356,98 +217,6 @@ function FilesystemFooter(props: { mountPoint: MountPoint | null }) {
                 </span>
             </span>
         </footer>
-    );
-}
-
-/** Keeps optional recursive-search controls compact and absent from local filtering mode. */
-function RecursiveSearchControls(props: {
-    active: boolean;
-    timeoutSeconds: number;
-    includeHiddenDirectories: boolean;
-    respectGitignore: boolean;
-    onActiveChange: React.Dispatch<React.SetStateAction<boolean>>;
-    onTimeoutChange: (timeoutSeconds: number) => void;
-    onIncludeHiddenChange: (includeHiddenDirectories: boolean) => void;
-    onRespectGitignoreChange: (respectGitignore: boolean) => void;
-}) {
-    return (
-        <>
-            {props.active && (
-                <>
-                    <Tooltip content="Maximum recursive search duration in seconds (1-60)">
-                        <label>
-                            <span className="sr-only">
-                                Search timeout in seconds
-                            </span>
-                            <InputControl
-                                type="number"
-                                aria-label="Search timeout in seconds"
-                                min={1}
-                                max={60}
-                                value={props.timeoutSeconds}
-                                onChange={(event) => {
-                                    const value = event.target.valueAsNumber;
-                                    if (Number.isInteger(value)) {
-                                        props.onTimeoutChange(
-                                            Math.min(60, Math.max(1, value)),
-                                        );
-                                    }
-                                }}
-                                className="w-16 bg-slate-900 px-2 text-sm focus:ring-1 focus:ring-blue-500"
-                            />
-                        </label>
-                    </Tooltip>
-                    <ToggleButton
-                        label="Search hidden directories"
-                        pressed={props.includeHiddenDirectories}
-                        tooltip={
-                            props.includeHiddenDirectories
-                                ? "Click to exclude hidden directories from search"
-                                : "Click to search from hidden directories"
-                        }
-                        onClick={() =>
-                            props.onIncludeHiddenChange(
-                                !props.includeHiddenDirectories,
-                            )
-                        }
-                    >
-                        {props.includeHiddenDirectories ? (
-                            <Eye className="h-4 w-4" />
-                        ) : (
-                            <EyeOff className="h-4 w-4" />
-                        )}
-                    </ToggleButton>
-                    <ToggleButton
-                        label="Respect .gitignore files"
-                        pressed={props.respectGitignore}
-                        tooltip={
-                            props.respectGitignore
-                                ? "Click to search files ignored by .gitignore"
-                                : "Click to exclude files ignored by .gitignore from search"
-                        }
-                        onClick={() =>
-                            props.onRespectGitignoreChange(
-                                !props.respectGitignore,
-                            )
-                        }
-                    >
-                        <GitBranch className="h-4 w-4" />
-                    </ToggleButton>
-                </>
-            )}
-            <ToggleButton
-                label="Search recursively"
-                pressed={props.active}
-                tooltip={
-                    props.active
-                        ? "Click to search only this directory"
-                        : "Click to search recursively (s)"
-                }
-                onClick={() => props.onActiveChange((current) => !current)}
-            >
-                <FolderSearch className="h-4 w-4" />
-            </ToggleButton>
-        </>
     );
 }
 
@@ -571,112 +340,6 @@ function SortableFileColumnHeader(props: {
                 <SortIcon className="h-3.5 w-3.5" />
             </button>
         </th>
-    );
-}
-
-/** Renders recursive matches independently from metadata-rich directory entries. */
-function FileSearchResults(props: { agent: Agent; state: FileSearchState }) {
-    const resultsRef = React.useRef<HTMLUListElement>(null);
-    const getEntries = React.useEffectEvent(() =>
-        Array.from(
-            resultsRef.current?.querySelectorAll<HTMLElement>(
-                '[data-keyboard-focus-entry="true"]',
-            ) ?? [],
-        ),
-    );
-    useArrayKeyboardFocus(getEntries);
-
-    if (props.state.status === "idle") {
-        return (
-            <div className="px-5 py-10 text-center text-sm text-slate-500">
-                Type a file or directory name to search below this directory.
-            </div>
-        );
-    }
-    if (props.state.status === "error") {
-        return (
-            <div
-                role="alert"
-                className="bg-red-950/30 px-4 py-3 text-sm text-red-300"
-            >
-                {props.state.message}
-            </div>
-        );
-    }
-
-    return (
-        <div>
-            <p
-                role={props.state.status === "searching" ? "status" : undefined}
-                className="flex h-9 items-center gap-2 border-b border-slate-800 bg-slate-950/40 px-4 text-xs text-slate-400"
-            >
-                {props.state.status === "searching" ? (
-                    <>
-                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-blue-400" />
-                        Updating results...
-                    </>
-                ) : (
-                    <span>
-                        Found{" "}
-                        <Tooltip content="100 is the maximum number of results a search can return.">
-                            <span>{props.state.results.length}</span>
-                        </Tooltip>{" "}
-                        {props.state.results.length === 1
-                            ? "result"
-                            : "results"}{" "}
-                        in{" "}
-                        <Tooltip content="Search duration was measured on the agent.">
-                            <span>{props.state.durationMs}ms</span>
-                        </Tooltip>
-                    </span>
-                )}
-            </p>
-            {props.state.timedOut && (
-                <p className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-xs text-amber-300">
-                    Search deadlined. Increase the search duration to see more.
-                </p>
-            )}
-            {props.state.status === "searching" &&
-            props.state.results.length === 0 ? (
-                <p className="px-5 py-10 text-center text-sm text-slate-500">
-                    Searching recursively...
-                </p>
-            ) : props.state.results.length === 0 ? (
-                <p className="px-5 py-10 text-center text-sm text-slate-500">
-                    No recursive matches found for &quot;{props.state.query}
-                    &quot;.
-                </p>
-            ) : (
-                <ul ref={resultsRef} className="divide-y divide-slate-800/70">
-                    {props.state.results.map((entry) => {
-                        const isDirectory = entry.type === "directory";
-                        return (
-                            <li key={entry.path}>
-                                <Link
-                                    to={props.agent.getBrowserUrl(entry.path)}
-                                    data-keyboard-focus-entry="true"
-                                    className="group flex items-start gap-2 px-2 py-1.5 transition-colors hover:bg-white/5 sm:gap-3 sm:px-3 sm:py-2"
-                                >
-                                    {isDirectory ? (
-                                        <Folder className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
-                                    ) : (
-                                        <File className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
-                                    )}
-                                    <span className="min-w-0">
-                                        <span className="block font-medium text-blue-400 group-hover:underline">
-                                            {entry.name}
-                                        </span>
-                                        <span className="block truncate font-mono text-xs text-slate-500">
-                                            {entry.path}
-                                        </span>
-                                    </span>
-                                </Link>
-                            </li>
-                        );
-                    })}
-                </ul>
-            )}
-        </div>
     );
 }
 

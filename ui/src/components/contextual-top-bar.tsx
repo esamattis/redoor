@@ -18,7 +18,7 @@ import {
 } from "#ui/components/browser/navigation";
 import { ThemeToggle } from "#ui/components/theme-toggle";
 import { usePersistentSideMenus } from "#ui/side-menu-state";
-import { ContentSearchButton } from "#ui/components/content-search-button";
+import { SearchButton } from "#ui/components/search-button";
 
 export type AgentViewContext =
     | { kind: "agent"; agent: Agent }
@@ -66,7 +66,7 @@ export function ContextualTopBar(props: {
                 <ContextualViewSwitch context={props.context} />
             </div>
             {props.context && !isFilesystemContext ? (
-                <ContentSearchButton className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100" />
+                <SearchButton className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100" />
             ) : null}
             <ThemeToggle />
             {isPersistent ? null : (

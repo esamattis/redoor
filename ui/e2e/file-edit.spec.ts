@@ -803,17 +803,26 @@ gamma
         await expect(page.getByRole("tooltip")).toHaveText(
             "Search the selected text from the git repository root when the file is in a worktree.",
         );
+        const grepRequest = page.waitForRequest((request) =>
+            new URL(request.url()).pathname.includes("/grep/"),
+        );
         await searchSelectionButton.click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent content",
+            name: "Search agent",
         });
         // The URL-owned dialog must open with the editor selection and git-root scope requested.
-        await expect(dialog.getByLabel("Search content")).toHaveValue(
+        await expect(
+            dialog.getByRole("searchbox", { name: "Search file contents" }),
+        ).toHaveValue("search-selection-token");
+        await expect(page).toHaveURL(/[?&]q=search-selection-token/);
+        await expect(page).toHaveURL(/[?&]mode=content/);
+        await expect(page).toHaveURL(/[?&]gitroot=true/);
+        const requestUrl = new URL((await grepRequest).url());
+        // The grep request proves editor selection bypasses the default path mode.
+        expect(requestUrl.searchParams.get("query")).toBe(
             "search-selection-token",
         );
-        await expect(page).toHaveURL(/[?&]q=search-selection-token/);
-        await expect(page).toHaveURL(/[?&]gitroot=true/);
     });
 
     test("should open shell-style files in the file editor", async ({

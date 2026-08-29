@@ -113,20 +113,21 @@ test.describe.serial("User state", () => {
         ).toHaveAttribute("aria-pressed", "false");
     });
 
-    test("should persist recursive search settings on the server", async ({
+    test("should persist recursive search settings from the shared dialog", async ({
         page,
     }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
-        await page.getByRole("button", { name: "Search recursively" }).click();
+        await page.getByRole("button", { name: "Search agent" }).click();
 
-        const timeoutInput = page.getByRole("spinbutton", {
+        const dialog = page.getByRole("dialog", { name: "Search agent" });
+        const timeoutInput = dialog.getByRole("spinbutton", {
             name: "Search timeout in seconds",
         });
-        const hiddenToggle = page.getByRole("button", {
-            name: "Search hidden directories",
+        const hiddenToggle = dialog.getByRole("button", {
+            name: "Include hidden files and directories",
         });
-        const gitignoreToggle = page.getByRole("button", {
+        const gitignoreToggle = dialog.getByRole("button", {
             name: "Respect .gitignore files",
         });
         await timeoutInput.fill("23");
@@ -145,9 +146,8 @@ test.describe.serial("User state", () => {
             });
 
         await page.reload();
-        await page.getByRole("button", { name: "Search recursively" }).click();
 
-        // Reload restores each option while leaving recursive mode opt-in.
+        // Reload restores each option in the URL-owned path-search dialog.
         await expect(timeoutInput).toHaveValue("23");
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
         await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
