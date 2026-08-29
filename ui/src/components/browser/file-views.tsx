@@ -1,6 +1,6 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useBlocker } from "@tanstack/react-router";
+import { getRouteApi, useBlocker, useLocation } from "@tanstack/react-router";
 import {
     ClipboardCopy,
     Download,
@@ -36,6 +36,8 @@ import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
 import { useUserState } from "#ui/user-state";
 
+const agentRoute = getRouteApi("/agents/$agentId");
+
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
     statusMessage: string | null;
@@ -53,6 +55,8 @@ function FileEditActions(props: {
     selection: EditorSelection | null;
     onSave: () => void;
 }) {
+    const navigate = agentRoute.useNavigate();
+    const location = useLocation();
     const copyMutation = useMutation({
         mutationFn: async () => {
             if (props.selection === null) {
@@ -97,6 +101,31 @@ ${props.selection.text}
                 >
                     <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
                     <span className="hidden sm:inline">Copy reference</span>
+                </Button>
+            </Tooltip>
+            <Tooltip content="Search the selected text from the git repository root when the file is in a worktree.">
+                <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-label="Search selected text"
+                    disabled={props.selection === null}
+                    onClick={() => {
+                        if (props.selection === null) {
+                            return;
+                        }
+                        const params = new URLSearchParams(location.searchStr);
+                        params.set("q", props.selection.text);
+                        params.set("gitroot", "true");
+                        void navigate({
+                            to: `${location.pathname}?${params.toString()}${location.hash}`,
+                            replace: true,
+                        });
+                    }}
+                    className="h-9 w-9 rounded-md p-0 font-semibold sm:w-auto sm:px-3.5"
+                >
+                    <Search className="h-4 w-4" aria-hidden="true" />
+                    <span className="hidden sm:inline">Search selection</span>
                 </Button>
             </Tooltip>
             {props.statusMessage ? (

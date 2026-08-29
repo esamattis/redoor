@@ -74,14 +74,20 @@ test.describe.serial("File Edit View", () => {
         const copyReferenceButton = page.getByRole("button", {
             name: "Copy selection with file reference",
         });
+        const searchSelectionButton = page.getByRole("button", {
+            name: "Search selected text",
+        });
         const copyReferenceBox = await copyReferenceButton.boundingBox();
+        const searchSelectionBox = await searchSelectionButton.boundingBox();
         expect(saveBox).not.toBeNull();
         expect(bookmarkBox).not.toBeNull();
         expect(copyReferenceBox).not.toBeNull();
+        expect(searchSelectionBox).not.toBeNull();
         if (
             saveBox === null ||
             bookmarkBox === null ||
-            copyReferenceBox === null
+            copyReferenceBox === null ||
+            searchSelectionBox === null
         ) {
             throw new Error("expected editor action measurements");
         }
@@ -89,7 +95,10 @@ test.describe.serial("File Edit View", () => {
         expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
         // Copy reference follows Bookmark and stays unavailable without selected editor text.
         expect(copyReferenceBox.x).toBeGreaterThan(bookmarkBox.x);
+        // Search selection follows Copy reference so the same selection can be grepped from git root.
+        expect(searchSelectionBox.x).toBeGreaterThan(copyReferenceBox.x);
         await expect(copyReferenceButton).toBeDisabled();
+        await expect(searchSelectionButton).toBeDisabled();
         const editorOptions = await openEditorOptions(page);
         await expect(
             editorOptions.getByRole("button", { name: "Reload", exact: true }),
@@ -764,6 +773,47 @@ gamma
         await expect(page.getByRole("status")).toHaveText(
             "Copied selection with file reference",
         );
+    });
+
+    test("should search selected editor text from the git repository root", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "search-selection.txt");
+        await fs.writeFile(filePath, "search-selection-token");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor");
+        const searchSelectionButton = page.getByRole("button", {
+            name: "Search selected text",
+        });
+        await expect(editor).toHaveText("search-selection-token");
+        await expect(searchSelectionButton).toBeDisabled();
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+a");
+
+        // A non-empty CodeMirror selection enables the adjacent agent content search action.
+        await expect(page.getByLabel("Editor selected text")).toHaveText(
+            "search-selection-token",
+        );
+        await expect(searchSelectionButton).toBeEnabled();
+        await searchSelectionButton.hover();
+        // The tooltip explains that gitroot=true uses the worktree root when one exists.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Search the selected text from the git repository root when the file is in a worktree.",
+        );
+        await searchSelectionButton.click();
+
+        const dialog = page.getByRole("dialog", {
+            name: "Search agent content",
+        });
+        // The URL-owned dialog must open with the editor selection and git-root scope requested.
+        await expect(dialog.getByLabel("Search content")).toHaveValue(
+            "search-selection-token",
+        );
+        await expect(page).toHaveURL(/[?&]q=search-selection-token/);
+        await expect(page).toHaveURL(/[?&]gitroot=true/);
     });
 
     test("should open shell-style files in the file editor", async ({
