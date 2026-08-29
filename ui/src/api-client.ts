@@ -494,6 +494,7 @@ export class Agent {
             timeoutSeconds: number;
             includeHidden: boolean;
             respectGitignore: boolean;
+            fixedString: boolean;
             signal?: AbortSignal;
         },
     ): Promise<ContentGrepResponse> {
@@ -503,16 +504,13 @@ export class Agent {
                 path,
             )}`,
         );
-        url.searchParams.set("query", query);
-        url.searchParams.set("timeout", options.timeoutSeconds.toString());
-        url.searchParams.set(
-            "include_hidden",
-            options.includeHidden.toString(),
-        );
-        url.searchParams.set(
-            "respect_gitignore",
-            options.respectGitignore.toString(),
-        );
+        url.search = new URLSearchParams({
+            query,
+            timeout: options.timeoutSeconds.toString(),
+            include_hidden: options.includeHidden.toString(),
+            respect_gitignore: options.respectGitignore.toString(),
+            fixed_string: options.fixedString.toString(),
+        }).toString();
         return apiRequest<ContentGrepResponse>(
             url.toString(),
             { signal: options.signal },

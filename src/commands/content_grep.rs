@@ -42,37 +42,36 @@ impl GrepOutput {
     }
 }
 
+/// Bundles grep controls so dispatch stays under clippy's argument cap as options grow.
+pub struct ContentGrepRequest {
+    pub path: String,
+    pub query: String,
+    pub timeout_seconds: u64,
+    pub include_hidden: bool,
+    pub respect_gitignore: bool,
+    pub fixed_string: bool,
+}
+
 /// Runs grep without runtime coordination for direct command-dispatch callers and unit tests.
-pub(super) async fn execute(
-    path: String,
-    query: String,
-    timeout_seconds: u64,
-    include_hidden: bool,
-    respect_gitignore: bool,
-) -> CommandResult {
+pub(super) async fn execute(request: ContentGrepRequest) -> CommandResult {
     let (_cancel_sender, cancel_receiver) = watch::channel(false);
-    execute_with_cancellation(
+    execute_with_cancellation(request, cancel_receiver, Arc::new(Semaphore::new(1))).await
+}
+
+/// Includes exclusive-slot waiting in the deadline so queued requests always return promptly.
+pub(super) async fn execute_with_cancellation(
+    request: ContentGrepRequest,
+    mut cancel_receiver: watch::Receiver<bool>,
+    permit: Arc<Semaphore>,
+) -> CommandResult {
+    let ContentGrepRequest {
         path,
         query,
         timeout_seconds,
         include_hidden,
         respect_gitignore,
-        cancel_receiver,
-        Arc::new(Semaphore::new(1)),
-    )
-    .await
-}
-
-/// Includes exclusive-slot waiting in the deadline so queued requests always return promptly.
-pub(super) async fn execute_with_cancellation(
-    path: String,
-    query: String,
-    timeout_seconds: u64,
-    include_hidden: bool,
-    respect_gitignore: bool,
-    mut cancel_receiver: watch::Receiver<bool>,
-    permit: Arc<Semaphore>,
-) -> CommandResult {
+        fixed_string,
+    } = request;
     if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
         return CommandResult::error(
             CommandErrorKind::InvalidInput,
@@ -90,6 +89,7 @@ pub(super) async fn execute_with_cancellation(
                 .map_err(|_| std::io::Error::other("Content grep coordinator is unavailable"))?;
             let matcher = RegexMatcherBuilder::new()
                 .unicode(false)
+                .fixed_strings(fixed_string)
                 .build(&query)
                 .map_err(|error| {
                     std::io::Error::new(
@@ -331,6 +331,22 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
 
+    /// Builds the common unit-test request so fixtures only vary path, query, and match mode.
+    fn test_request(
+        path: impl Into<String>,
+        query: impl Into<String>,
+        fixed_string: bool,
+    ) -> ContentGrepRequest {
+        ContentGrepRequest {
+            path: path.into(),
+            query: query.into(),
+            timeout_seconds: 5,
+            include_hidden: false,
+            respect_gitignore: true,
+            fixed_string,
+        }
+    }
+
     /// Covers line boundaries, CRLF normalization, response truncation, long-line omission, and late binary detection.
     #[tokio::test]
     async fn grep_is_bounded_and_discards_binary_file_matches() {
@@ -358,13 +374,11 @@ mod tests {
             .await
             .expect("binary fixture should be written");
 
-        let result = execute(
+        let result = execute(test_request(
             root.to_string_lossy().into_owned(),
-            "target".to_string(),
-            5,
+            "target",
             false,
-            true,
-        )
+        ))
         .await;
         let CommandResult::ContentGrep(response) = result else {
             panic!("valid grep should return its dedicated response");
@@ -395,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_expressions_are_invalid_input() {
         for query in ["", "(", &"x".repeat(MAX_QUERY_BYTES + 1)] {
-            let result = execute("/missing".to_string(), query.to_string(), 5, false, true).await;
+            let result = execute(test_request("/missing", query, false)).await;
             // Validation must win over the deliberately missing traversal root.
             assert!(matches!(
                 result,
@@ -413,11 +427,7 @@ mod tests {
         let (sender, receiver) = watch::channel(false);
         sender.send(true).expect("receiver should remain active");
         let result = execute_with_cancellation(
-            "/missing".to_string(),
-            "target".to_string(),
-            5,
-            false,
-            true,
+            test_request("/missing", "target", false),
             receiver,
             Arc::new(Semaphore::new(1)),
         )
@@ -427,5 +437,54 @@ mod tests {
         };
         // Latest-wins cancellation is observable independently from a caller deadline.
         assert!(response.cancelled && !response.timed_out);
+    }
+
+    /// Proves metacharacters stay literal when callers opt out of regex compilation.
+    #[tokio::test]
+    async fn fixed_string_matches_metacharacters_literally() {
+        let temp = TempDir::create();
+        let root = temp.path().join("literal-grep");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        tokio::fs::write(root.join("text.txt"), b"foo(bar\nneedle\n")
+            .await
+            .expect("text fixture should be written");
+
+        let regex_dot = execute(test_request(
+            root.to_string_lossy().into_owned(),
+            "nee.le",
+            false,
+        ))
+        .await;
+        let CommandResult::ContentGrep(regex_response) = regex_dot else {
+            panic!("regex grep should return its dedicated response");
+        };
+        // A regex dot must still match the adjacent characters in default mode.
+        assert_eq!(regex_response.results.len(), 1);
+
+        let literal_dot = execute(test_request(
+            root.to_string_lossy().into_owned(),
+            "nee.le",
+            true,
+        ))
+        .await;
+        let CommandResult::ContentGrep(literal_response) = literal_dot else {
+            panic!("literal grep should return its dedicated response");
+        };
+        // The same query must fail as a substring because the file has no literal period.
+        assert!(literal_response.results.is_empty());
+
+        let literal_parens = execute(test_request(
+            root.to_string_lossy().into_owned(),
+            "foo(bar",
+            true,
+        ))
+        .await;
+        let CommandResult::ContentGrep(paren_response) = literal_parens else {
+            panic!("literal grep should return its dedicated response");
+        };
+        // Unbalanced parentheses are valid needles once regex compilation is skipped.
+        assert_eq!(paren_response.results.len(), 1);
     }
 }

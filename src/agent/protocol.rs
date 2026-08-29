@@ -5,7 +5,7 @@ use super::{
 };
 use redoor::{
     Level,
-    commands::{Command, CommandErrorKind, CommandHandler, CommandResult},
+    commands::{Command, CommandErrorKind, CommandHandler, CommandResult, ContentGrepRequest},
     log, log_error, streaming,
     types::{AgentId, Message, RequestId},
 };
@@ -342,16 +342,20 @@ async fn handle_command_message(
             timeout_seconds,
             include_hidden,
             respect_gitignore,
+            fixed_string,
         } => {
             let result = match content_grep_context {
                 Some((cancel_receiver, permit)) => {
                     CommandHandler::new()
                         .execute_content_grep(
-                            path,
-                            query,
-                            timeout_seconds,
-                            include_hidden,
-                            respect_gitignore,
+                            ContentGrepRequest {
+                                path,
+                                query,
+                                timeout_seconds,
+                                include_hidden,
+                                respect_gitignore,
+                                fixed_string,
+                            },
                             (cancel_receiver, permit),
                         )
                         .await
@@ -364,6 +368,7 @@ async fn handle_command_message(
                             timeout_seconds,
                             include_hidden,
                             respect_gitignore,
+                            fixed_string,
                         })
                         .await
                 }

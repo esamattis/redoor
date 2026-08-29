@@ -27,6 +27,9 @@ pub(crate) struct ContentGrepQuery {
     include_hidden: bool,
     #[serde(default = "default_true")]
     respect_gitignore: bool,
+    /// Literal matching is opt-in so existing callers keep regex semantics.
+    #[serde(default)]
+    fixed_string: bool,
 }
 
 /// Keeps omitted deadlines useful for interactive callers.
@@ -69,6 +72,7 @@ pub(crate) async fn content_grep_handler(
                     timeout_seconds: search.timeout,
                     include_hidden: search.include_hidden,
                     respect_gitignore: search.respect_gitignore,
+                    fixed_string: search.fixed_string,
                 },
                 reply,
             })

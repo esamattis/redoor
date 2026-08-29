@@ -73,14 +73,16 @@ impl CommandHandler {
                 timeout_seconds,
                 include_hidden,
                 respect_gitignore,
+                fixed_string,
             } => {
-                content_grep::execute(
+                content_grep::execute(content_grep::ContentGrepRequest {
                     path,
                     query,
                     timeout_seconds,
                     include_hidden,
                     respect_gitignore,
-                )
+                    fixed_string,
+                })
                 .await
             }
             Command::RawDownload {
@@ -403,27 +405,14 @@ impl CommandHandler {
     /// Runs content grep with its independent latest-request cancellation and exclusive slot.
     pub async fn execute_content_grep(
         &self,
-        path: String,
-        query: String,
-        timeout_seconds: u64,
-        include_hidden: bool,
-        respect_gitignore: bool,
+        request: content_grep::ContentGrepRequest,
         coordination: (
             watch::Receiver<bool>,
             std::sync::Arc<tokio::sync::Semaphore>,
         ),
     ) -> CommandResult {
         let (cancel_receiver, permit) = coordination;
-        content_grep::execute_with_cancellation(
-            path,
-            query,
-            timeout_seconds,
-            include_hidden,
-            respect_gitignore,
-            cancel_receiver,
-            permit,
-        )
-        .await
+        content_grep::execute_with_cancellation(request, cancel_receiver, permit).await
     }
 
     /// Returns directory entries or file metadata from the requested path.

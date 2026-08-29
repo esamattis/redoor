@@ -661,6 +661,7 @@ describe("Agents API", () => {
                 timeoutSeconds: 5,
                 includeHidden: false,
                 respectGitignore: true,
+                fixedString: false,
             }),
         );
         // Defaults must skip ignored, hidden-directory, and binary content while retaining visible matches.
@@ -694,6 +695,7 @@ describe("Agents API", () => {
                 timeoutSeconds: 5,
                 includeHidden: true,
                 respectGitignore: false,
+                fixedString: false,
             },
         );
         // Explicit options expose ordinary hidden and ignored files but `.git` and binary files remain excluded.
@@ -715,6 +717,7 @@ describe("Agents API", () => {
             timeoutSeconds: 5,
             includeHidden: false,
             respectGitignore: true,
+            fixedString: false,
         });
         // The hard result ceiling bounds retained and serialized match state.
         expect(result.results).toHaveLength(100);
@@ -748,6 +751,44 @@ describe("Agents API", () => {
         });
     });
 
+    it("should grep a query as a literal string when requested", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-literal-grep" });
+        const target = path.join(grepRoot, "text.txt");
+        await fs.writeFile(target, "needle\nfoo(bar\n");
+
+        const regexResult = await testAgent.grepContent(grepRoot, "nee.le", {
+            timeoutSeconds: 5,
+            includeHidden: false,
+            respectGitignore: true,
+            fixedString: false,
+        });
+        // Default regex mode still treats `.` as any character.
+        expect(regexResult.results.map((entry) => entry.line)).toEqual([
+            "needle",
+        ]);
+
+        const literalDot = await testAgent.grepContent(grepRoot, "nee.le", {
+            timeoutSeconds: 5,
+            includeHidden: false,
+            respectGitignore: true,
+            fixedString: true,
+        });
+        // The same query must not match when the period is required in the file.
+        expect(literalDot.results).toEqual([]);
+
+        const literalParens = await testAgent.grepContent(grepRoot, "foo(bar", {
+            timeoutSeconds: 5,
+            includeHidden: false,
+            respectGitignore: true,
+            fixedString: true,
+        });
+        // Unbalanced parentheses are a valid needle once regex compilation is skipped.
+        expect(literalParens.results.map((entry) => entry.line)).toEqual([
+            "foo(bar",
+        ]);
+    });
+
     it("should return a deadline-partial grep response", async () => {
         const testAgent = await getConnectedTestAgent();
         const grepRoot = tempFiles.tempDirectory({ suffix: "-timed-grep" });
@@ -763,6 +804,7 @@ describe("Agents API", () => {
             timeoutSeconds: 1,
             includeHidden: false,
             respectGitignore: true,
+            fixedString: false,
         });
         // The agent deadline returns bounded state rather than turning a long scan into an HTTP error.
         expect(result).toMatchObject({
@@ -827,6 +869,7 @@ describe("Agents API", () => {
                 timeoutSeconds: 5,
                 includeHidden: false,
                 respectGitignore: true,
+                fixedString: false,
             },
         );
         const firstResponse = contentGrepResponseSchema.parse(

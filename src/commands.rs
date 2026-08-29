@@ -10,6 +10,7 @@ use crate::types::{AgentId, SocketId, TransferId, UnixTimestampMillis, UnixTimes
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use content_grep::ContentGrepRequest;
 pub use handler::CommandHandler;
 pub use identity::{
     BinaryIdentity, ServerBuildMode, agent_loaded_config_path, current_binary_identity,
@@ -161,6 +162,9 @@ pub enum Command {
         /// Repository ignore rules are enabled by default to match recursive filename search.
         #[serde(default = "default_true")]
         respect_gitignore: bool,
+        /// Literal matching is opt-in so existing callers keep regex semantics.
+        #[serde(default)]
+        fixed_string: bool,
     },
     RawDownload {
         path: String,
@@ -327,8 +331,9 @@ impl Command {
                 timeout_seconds,
                 include_hidden,
                 respect_gitignore,
+                fixed_string,
             } => format!(
-                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
+                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} fixed_string={fixed_string}"
             ),
             Self::RawDownload {
                 path,
