@@ -5,6 +5,7 @@ import { Eye, EyeOff, GitBranch, Regex } from "lucide-react";
 
 import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
+import type { GitContextResponse } from "#bindings/GitContextResponse";
 import {
     isLsDirectoryResponse,
     isLsFileResponse,
@@ -12,30 +13,51 @@ import {
 } from "#ui/api-client";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { Button } from "#ui/components/button";
+import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { InputControl } from "#ui/components/input-control";
 import { ToggleButton } from "#ui/components/toggle-button";
+import { Tooltip } from "#ui/components/tooltip";
 import { contentGrepQueryOptions } from "#ui/queries";
 import { useUserState } from "#ui/user-state";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 
 const agentRoute = getRouteApi("/agents/$agentId");
 
+/** Reads worktree root from already-loaded browser git context so search never probes git again. */
+function gitRootFromContext(gitContext: GitContextResponse | undefined) {
+    return gitContext?.status === "inside_worktree"
+        ? gitContext.repository_root
+        : null;
+}
+
 /** Derives grep scope from canonical browser loader metadata without another filesystem request. */
-function useContentSearchDirectory(agent: Agent): string | null {
+function useContentSearchScope(agent: Agent): {
+    directory: string | null;
+    gitRoot: string | null;
+} {
     return useMatches({
         select: (matches) => {
             const browserMatch = matches.find(
                 (match) => match.routeId === "/agents/$agentId/browser/$",
             );
             const lsResult = browserMatch?.loaderData?.lsResult;
+            const gitRoot = gitRootFromContext(
+                browserMatch?.loaderData?.gitContext,
+            );
             if (lsResult && isLsDirectoryResponse(lsResult)) {
-                return lsResult.path;
+                return { directory: lsResult.path, gitRoot };
             }
             if (lsResult && isLsFileResponse(lsResult)) {
-                return getImmediateParentPath(lsResult.path) ?? "/";
+                return {
+                    directory: getImmediateParentPath(lsResult.path) ?? "/",
+                    gitRoot,
+                };
             }
-            return agent.status === "connected" ? agent.cwd : null;
+            return {
+                directory: agent.status === "connected" ? agent.cwd : null,
+                gitRoot: null,
+            };
         },
     });
 }
@@ -45,7 +67,7 @@ export function ContentSearchDialog(props: { agent: Agent }) {
     const search = agentRoute.useSearch();
     const navigate = agentRoute.useNavigate();
     const location = useLocation();
-    const directory = useContentSearchDirectory(props.agent);
+    const { directory, gitRoot } = useContentSearchScope(props.agent);
     const [userState] = useUserState();
     const isOpen = search.q !== undefined;
     const query = search.q ?? "";
@@ -56,6 +78,8 @@ export function ContentSearchDialog(props: { agent: Agent }) {
     const respectGitignore =
         search.gitignore ?? userState.recursiveSearchRespectGitignore;
     const regex = search.regex ?? false;
+    const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
+    const grepDirectory = searchFromGitRoot ? gitRoot : directory;
     const [debouncedQuery, setDebouncedQuery] = React.useState(query);
     const resultsRef = React.useRef<HTMLDivElement>(null);
 
@@ -87,8 +111,8 @@ export function ContentSearchDialog(props: { agent: Agent }) {
     }, [isOpen, location.pathname, location.searchStr, navigate]);
 
     const grep = useQuery({
-        ...contentGrepQueryOptions(props.agent, directory ?? "", {
-            query: isOpen && directory ? debouncedQuery : "",
+        ...contentGrepQueryOptions(props.agent, grepDirectory ?? "", {
+            query: isOpen && grepDirectory ? debouncedQuery : "",
             timeoutSeconds,
             includeHidden,
             respectGitignore,
@@ -97,7 +121,7 @@ export function ContentSearchDialog(props: { agent: Agent }) {
         enabled:
             isOpen &&
             props.agent.status === "connected" &&
-            directory !== null &&
+            grepDirectory !== null &&
             debouncedQuery.trim() !== "",
     });
     const getResults = React.useCallback(
@@ -135,6 +159,7 @@ export function ContentSearchDialog(props: { agent: Agent }) {
             hidden: undefined,
             gitignore: undefined,
             regex: undefined,
+            gitroot: undefined,
         });
 
     /** Pushes a clean file destination after preserving the final query on the current entry. */
@@ -150,8 +175,8 @@ export function ContentSearchDialog(props: { agent: Agent }) {
             isOpen={isOpen}
             title="Search agent content"
             description={
-                directory
-                    ? `Searching in ${directory}`
+                grepDirectory
+                    ? `Searching in ${grepDirectory}`
                     : "Search is unavailable while this agent is disconnected."
             }
             closeAriaLabel="Close content search"
@@ -165,6 +190,8 @@ export function ContentSearchDialog(props: { agent: Agent }) {
                     includeHidden={includeHidden}
                     respectGitignore={respectGitignore}
                     regex={regex}
+                    gitRoot={gitRoot}
+                    searchFromGitRoot={searchFromGitRoot}
                     disabled={directory === null}
                     onUpdate={updateSearch}
                 />
@@ -212,6 +239,8 @@ function SearchControls(props: {
     includeHidden: boolean;
     respectGitignore: boolean;
     regex: boolean;
+    gitRoot: string | null;
+    searchFromGitRoot: boolean;
     disabled: boolean;
     onUpdate: (
         changes: Record<string, string | number | boolean | undefined>,
@@ -281,6 +310,21 @@ function SearchControls(props: {
             >
                 <Regex className="h-4 w-4" />
             </ToggleButton>
+            {props.gitRoot ? (
+                <Tooltip content="Search the entire Git repository instead of the current directory">
+                    <Checkbox
+                        checked={props.searchFromGitRoot}
+                        role="checkbox"
+                        label="Search from git root"
+                        title={false}
+                        onCheckedChange={(checked) =>
+                            void props.onUpdate({ gitroot: checked })
+                        }
+                    >
+                        Search from git root
+                    </Checkbox>
+                </Tooltip>
+            ) : null}
         </div>
     );
 }

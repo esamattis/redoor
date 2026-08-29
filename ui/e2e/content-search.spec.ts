@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { $ } from "zx";
 
 import {
     encodeFilesystemPath,
@@ -12,9 +14,29 @@ import {
 
 test.describe.serial("Agent content search", () => {
     let ctx: TestContext;
+    let gitRootRepositoryPath: string;
+    let gitRootNestedPath: string;
+    let gitRootOutsidePath: string;
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("content-search");
+        gitRootRepositoryPath = path.join(ctx.testDirPath, "git-root-search");
+        gitRootNestedPath = path.join(gitRootRepositoryPath, "nested");
+        gitRootOutsidePath = path.join(
+            os.tmpdir(),
+            `redoor-content-search-outside-${process.pid}`,
+        );
+        await fs.mkdir(gitRootNestedPath, { recursive: true });
+        await fs.mkdir(gitRootOutsidePath, { recursive: true });
+        await fs.writeFile(
+            path.join(gitRootRepositoryPath, "root-only.txt"),
+            "git-root-unique-value\n",
+        );
+        await fs.writeFile(
+            path.join(gitRootNestedPath, "nested.txt"),
+            "nested-unique-value\n",
+        );
+        await $`git -C ${gitRootRepositoryPath} init`;
         await fs.writeFile(
             path.join(ctx.testDirPath, "search-target.txt"),
             `first line
@@ -39,6 +61,7 @@ last line`,
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+        await fs.rm(gitRootOutsidePath, { force: true, recursive: true });
     });
 
     test("opens from shared entry points and restores results after navigation", async ({
@@ -313,6 +336,49 @@ last line`,
                 name: /Open .*ignored-search\.txt at line 1/,
             }),
         ).toBeVisible();
+    });
+
+    test("searches from the git root using already loaded worktree context", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(gitRootNestedPath)}?q=git-root-unique-value`,
+        );
+        const dialog = page.getByRole("dialog", {
+            name: "Search agent content",
+        });
+        const gitRootCheckbox = dialog.getByRole("checkbox", {
+            name: "Search from git root",
+        });
+        // Nested worktree views expose the git-root control from loader git context.
+        await expect(gitRootCheckbox).toBeVisible();
+        await expect(gitRootCheckbox).toHaveAttribute("aria-checked", "false");
+        await expect(dialog).toContainText(`Searching in ${gitRootNestedPath}`);
+        // Default scope stays on the browsed directory so sibling root files are excluded.
+        await expect(dialog.getByText("0 results.")).toBeVisible();
+
+        await gitRootCheckbox.click();
+        await expect(page).toHaveURL(/gitroot=true/);
+        await expect(dialog).toContainText(
+            `Searching in ${gitRootRepositoryPath}`,
+        );
+        await expect(gitRootCheckbox).toHaveAttribute("aria-checked", "true");
+        await expect(
+            dialog.getByRole("button", {
+                name: /Open .*root-only\.txt at line 1/,
+            }),
+        ).toBeVisible();
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(gitRootOutsidePath)}?q=`,
+        );
+        // Paths outside a worktree must not offer git-root search because no extra git lookup is allowed.
+        await expect(
+            dialog.getByRole("checkbox", { name: "Search from git root" }),
+        ).toHaveCount(0);
+        await expect(dialog).toContainText(
+            `Searching in ${gitRootOutsidePath}`,
+        );
     });
 });
 

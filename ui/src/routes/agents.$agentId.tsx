@@ -10,6 +10,7 @@ export type AgentSearch = {
     hidden?: boolean;
     gitignore?: boolean;
     regex?: boolean;
+    gitroot?: boolean;
 };
 
 /** Restricts grep timeout URLs to the same safe range accepted by recursive search. */
@@ -41,6 +42,7 @@ export const Route = createFileRoute("/agents/$agentId")({
         hidden: optionalBooleanSchema.parse(search.hidden),
         gitignore: optionalBooleanSchema.parse(search.gitignore),
         regex: optionalBooleanSchema.parse(search.regex),
+        gitroot: optionalBooleanSchema.parse(search.gitroot),
     }),
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;
