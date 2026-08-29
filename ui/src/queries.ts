@@ -51,6 +51,29 @@ export const queryKeys = {
             search.includeHidden,
             search.respectGitignore,
         ] as const,
+    contentGrep: (
+        agentId: string,
+        path: string,
+        search: {
+            query: string;
+            timeoutSeconds: number;
+            includeHidden: boolean;
+            respectGitignore: boolean;
+            regex: boolean;
+        },
+    ) =>
+        [
+            ...queryKeys.all,
+            "agents",
+            agentId,
+            "content-grep",
+            path,
+            search.query,
+            search.timeoutSeconds,
+            search.includeHidden,
+            search.respectGitignore,
+            search.regex,
+        ] as const,
 };
 
 /** Shares the retained agent inventory between navigation and status refreshes. */
@@ -177,6 +200,33 @@ export function fileSearchQueryOptions(
                 timeoutSeconds: search.timeoutSeconds,
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
+                signal,
+            }),
+        enabled: search.query.trim() !== "",
+        placeholderData: keepPreviousData,
+    });
+}
+
+/** Cancels superseded content searches and keeps prior matches visible while replacing them. */
+export function contentGrepQueryOptions(
+    agent: Agent,
+    path: string,
+    search: {
+        query: string;
+        timeoutSeconds: number;
+        includeHidden: boolean;
+        respectGitignore: boolean;
+        regex: boolean;
+    },
+) {
+    return queryOptions({
+        queryKey: queryKeys.contentGrep(agent.id, path, search),
+        queryFn: ({ signal }) =>
+            agent.grepContent(path, search.query, {
+                timeoutSeconds: search.timeoutSeconds,
+                includeHidden: search.includeHidden,
+                respectGitignore: search.respectGitignore,
+                fixedString: !search.regex,
                 signal,
             }),
         enabled: search.query.trim() !== "",

@@ -19,7 +19,7 @@ export function Dialog(props: {
     isBusy?: boolean;
     errorMessage?: string | null;
     role?: "dialog" | "alertdialog";
-    size?: "default" | "wide";
+    size?: "default" | "wide" | "search";
     children: React.ReactNode;
     onClose: () => void;
     /**
@@ -61,7 +61,9 @@ export function Dialog(props: {
             className={
                 isAnchored
                     ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
-                    : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 text-left shadow-2xl shadow-black/40"
+                    : props.size === "search"
+                      ? "flex h-dvh w-full flex-col bg-[#11141b] p-4 text-left shadow-2xl shadow-black/40 sm:h-[min(90dvh,56rem)] sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
+                      : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 text-left shadow-2xl shadow-black/40"
             }
             style={
                 isAnchored && anchorPosition
@@ -153,7 +155,7 @@ export function Dialog(props: {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
-            className={`m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "wide" ? "max-w-4xl" : "max-w-md"}`}
+            className={`m-auto touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "search" ? "h-dvh max-h-dvh w-full max-w-none sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl" : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${props.size === "wide" ? "max-w-4xl" : "max-w-md"}`}`}
             onCancel={(event) => {
                 event.preventDefault();
                 if (!props.isBusy) {

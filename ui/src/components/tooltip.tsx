@@ -171,7 +171,7 @@ export function Tooltip(props: TooltipProps) {
             ref={tooltipRef}
             id={tooltipId}
             role="tooltip"
-            className="pointer-events-none fixed z-50 w-max max-w-[calc(100vw-1rem)] rounded-md bg-slate-100 px-3 py-2 text-xs font-medium text-slate-950 shadow-lg shadow-black/30"
+            className="pointer-events-none fixed z-[80] w-max max-w-[calc(100vw-1rem)] rounded-md bg-slate-100 px-3 py-2 text-xs font-medium text-slate-950 shadow-lg shadow-black/30"
             style={
                 position
                     ? { top: position.top, left: position.left }
@@ -257,7 +257,12 @@ export function Tooltip(props: TooltipProps) {
             {child}
 
             {tooltip && globalThis.document
-                ? createPortal(tooltip, globalThis.document.body)
+                ? createPortal(
+                      tooltip,
+                      triggerRef.current?.closest<HTMLElement>(
+                          "[role='dialog'], [role='alertdialog']",
+                      ) ?? globalThis.document.body,
+                  )
                 : null}
         </span>
     );

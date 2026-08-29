@@ -17,6 +17,7 @@ import { Button } from "#ui/components/button";
 import { InputControl } from "#ui/components/input-control";
 import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
+import { ContentSearchButton } from "#ui/components/content-search-button";
 import {
     getBrowserPathHref,
     type PathLoadError,
@@ -47,6 +48,7 @@ export function BrowserPageHeader(props: {
                             <Home className="h-4 w-4" aria-hidden="true" />
                         </Link>
                     </Tooltip>
+                    <ContentSearchButton className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100" />
                     {props.navigation}
                     <Breadcrumbs
                         agent={props.agent}

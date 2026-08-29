@@ -18,6 +18,7 @@ import {
 } from "#ui/components/browser/navigation";
 import { ThemeToggle } from "#ui/components/theme-toggle";
 import { usePersistentSideMenus } from "#ui/side-menu-state";
+import { ContentSearchButton } from "#ui/components/content-search-button";
 
 export type AgentViewContext =
     | { kind: "agent"; agent: Agent }
@@ -39,6 +40,8 @@ export function ContextualTopBar(props: {
     onOpenAgentMenu: () => void;
 }) {
     const isPersistent = usePersistentSideMenus();
+    const isFilesystemContext =
+        props.context?.kind === "directory" || props.context?.kind === "file";
     return (
         <header
             aria-label="View navigation"
@@ -62,6 +65,9 @@ export function ContextualTopBar(props: {
             <div className="flex min-w-0 flex-1 self-stretch items-end overflow-x-auto overscroll-x-contain">
                 <ContextualViewSwitch context={props.context} />
             </div>
+            {props.context && !isFilesystemContext ? (
+                <ContentSearchButton className="rounded p-2 text-slate-400 hover:bg-white/5 hover:text-slate-100" />
+            ) : null}
             <ThemeToggle />
             {isPersistent ? null : (
                 <IconButton

@@ -176,14 +176,14 @@ function useAgentViewContext(
                 agent: activeAgent,
             } satisfies AgentViewContext;
         }
-        if (activeAgent.status !== "connected" || activeAgent.cwd === null) {
-            return null;
-        }
         if (pathname === agentPath) {
             return {
                 kind: "agent",
                 agent: activeAgent,
             } satisfies AgentViewContext;
+        }
+        if (activeAgent.status !== "connected" || activeAgent.cwd === null) {
+            return null;
         }
         if (pathname === `${agentPath}/logs`) {
             return {
