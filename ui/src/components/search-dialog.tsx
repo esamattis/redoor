@@ -37,6 +37,7 @@ import { ToggleButton } from "#ui/components/toggle-button";
 import { Tooltip } from "#ui/components/tooltip";
 import { contentGrepQueryOptions, fileSearchQueryOptions } from "#ui/queries";
 import { useUserState } from "#ui/user-state";
+import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 
 const agentRoute = getRouteApi("/agents/$agentId");
@@ -111,17 +112,24 @@ export function SearchDialog(props: { agent: Agent }) {
     }, [query]);
 
     React.useEffect(() => {
-        /** Cmd/Ctrl+K remains available in text controls to match platform search conventions. */
+        /** Cmd/Ctrl+K stays available in text controls; unmodified s does not intercept typing. */
         const openSearch = (event: KeyboardEvent) => {
-            if (
-                isOpen ||
-                event.key.toLowerCase() !== "k" ||
-                event.altKey ||
-                event.shiftKey ||
-                (!event.metaKey && !event.ctrlKey)
-            ) {
+            if (isOpen) {
                 return;
             }
+
+            const isCommandK =
+                event.key.toLowerCase() === "k" &&
+                !event.altKey &&
+                !event.shiftKey &&
+                (event.metaKey || event.ctrlKey);
+            const isUnmodifiedS =
+                event.key === "s" && !shouldIgnoreKeyboardShortcut(event);
+
+            if (!isCommandK && !isUnmodifiedS) {
+                return;
+            }
+
             event.preventDefault();
             const params = new URLSearchParams(location.searchStr);
             params.set("q", "");

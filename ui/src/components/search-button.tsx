@@ -13,7 +13,7 @@ export function SearchButton(props: { className?: string }) {
         <IconButton
             type="button"
             label="Search agent"
-            tooltip="Search agent (Cmd/Ctrl+K)"
+            tooltip="Search agent (s, Cmd/Ctrl+K)"
             onClick={() => {
                 const params = new URLSearchParams(location.searchStr);
                 params.set("q", "");

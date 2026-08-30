@@ -276,7 +276,7 @@ last line`,
         // The launcher advertises the cross-platform chord rather than hiding the workflow.
         await expect(
             page.getByRole("tooltip", {
-                name: "Search agent (Cmd/Ctrl+K)",
+                name: "Search agent (s, Cmd/Ctrl+K)",
             }),
         ).toBeVisible();
         await launcher.click();
