@@ -48,7 +48,7 @@ export function BrowserPageHeader(props: {
                             <Home className="h-4 w-4" aria-hidden="true" />
                         </Link>
                     </Tooltip>
-                    <SearchButton className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100" />
+                    <SearchButton className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 [&_svg]:h-4 [&_svg]:w-4" />
                     {props.navigation}
                     <Breadcrumbs
                         agent={props.agent}
