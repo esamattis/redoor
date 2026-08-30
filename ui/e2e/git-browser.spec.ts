@@ -22,6 +22,8 @@ test.describe.serial("Git browser", () => {
     let largePath: string;
     let deletedPath: string;
     let outsidePath: string;
+    let autoLoadRepositoryPath: string;
+    let clickLoadRepositoryPath: string;
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("git-browser");
@@ -35,6 +37,14 @@ test.describe.serial("Git browser", () => {
         outsidePath = path.join(
             os.tmpdir(),
             `redoor-git-browser-outside-${process.pid}`,
+        );
+        autoLoadRepositoryPath = path.join(
+            ctx.testDirPath,
+            "auto-load-repository",
+        );
+        clickLoadRepositoryPath = path.join(
+            ctx.testDirPath,
+            "click-load-repository",
         );
 
         await fs.mkdir(path.join(repositoryPath, "clean"), { recursive: true });
@@ -70,12 +80,125 @@ test.describe.serial("Git browser", () => {
         await fs.writeFile(binaryPath, Buffer.from([0, 1, 2, 3]));
         await fs.writeFile(largePath, "L".repeat(2 * 1024 * 1024 + 1));
         await fs.rm(deletedPath);
+        await fs.mkdir(autoLoadRepositoryPath, { recursive: true });
+        for (let index = 0; index < 49; index += 1) {
+            await fs.writeFile(
+                path.join(autoLoadRepositoryPath, `changed-${index}.txt`),
+                `baseline
+`,
+            );
+        }
+        await $`git -C ${autoLoadRepositoryPath} init`;
+        await $`git -C ${autoLoadRepositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${autoLoadRepositoryPath} config user.name Playwright`;
+        await $`git -C ${autoLoadRepositoryPath} add .`;
+        await $`git -C ${autoLoadRepositoryPath} commit -m baseline`;
+        for (let index = 0; index < 49; index += 1) {
+            await fs.writeFile(
+                path.join(autoLoadRepositoryPath, `changed-${index}.txt`),
+                `changed
+`,
+            );
+        }
+        await fs.mkdir(clickLoadRepositoryPath, { recursive: true });
+        for (let index = 0; index < 50; index += 1) {
+            await fs.writeFile(
+                path.join(clickLoadRepositoryPath, `changed-${index}.txt`),
+                `baseline
+`,
+            );
+        }
+        await $`git -C ${clickLoadRepositoryPath} init`;
+        await $`git -C ${clickLoadRepositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${clickLoadRepositoryPath} config user.name Playwright`;
+        await $`git -C ${clickLoadRepositoryPath} add .`;
+        await $`git -C ${clickLoadRepositoryPath} commit -m baseline`;
+        for (let index = 0; index < 50; index += 1) {
+            await fs.writeFile(
+                path.join(clickLoadRepositoryPath, `changed-${index}.txt`),
+                `changed
+`,
+            );
+        }
         await fs.mkdir(outsidePath, { recursive: true });
     });
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
         await fs.rm(outsidePath, { force: true, recursive: true });
+    });
+
+    test("automatically loads fewer than 50 diffs but requires a click at 50", async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 360, height: 300 });
+        const diffRequests: string[] = [];
+        page.on("request", (request) => {
+            if (
+                request.method() === "POST" &&
+                new URL(request.url()).pathname.endsWith("/git/diff")
+            ) {
+                diffRequests.push(request.postData() ?? "");
+            }
+        });
+        const autoLoadUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(autoLoadRepositoryPath)}?view=git`;
+        await page.goto(autoLoadUrl);
+        const autoLoadButton = page.getByRole("button", {
+            name: "Load all diffs",
+        });
+        // The batch must not load until its control reaches the viewport.
+        await expect(autoLoadButton).not.toBeInViewport();
+        expect(
+            diffRequests.some((body) => body.includes(autoLoadRepositoryPath)),
+        ).toBe(false);
+        const autoDiffRequest = page.waitForRequest(
+            (request) =>
+                request.method() === "POST" &&
+                request.url().endsWith("/git/diff") &&
+                request.postData()?.includes(autoLoadRepositoryPath) === true,
+        );
+        await autoLoadButton.scrollIntoViewIfNeeded();
+        await autoDiffRequest;
+        // Forty-nine files activate from intersection without changing route state.
+        await expect(
+            page.getByRole("region", { name: /Git diff for/ }),
+        ).toHaveCount(49);
+        await expect(page).toHaveURL(autoLoadUrl);
+
+        const clickLoadUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(clickLoadRepositoryPath)}?view=git`;
+        await page.goto(`${clickLoadUrl}&diff=true`);
+        // Legacy query state is removed and cannot eagerly activate the batch.
+        await expect(page).toHaveURL(clickLoadUrl);
+        const clickLoadButton = page.getByRole("button", {
+            name: "Load all diffs",
+        });
+        await clickLoadButton.scrollIntoViewIfNeeded();
+        await expect(clickLoadButton).toBeInViewport();
+        await page.evaluate(
+            () =>
+                new Promise<void>((resolve) =>
+                    requestAnimationFrame(() =>
+                        requestAnimationFrame(() => resolve()),
+                    ),
+                ),
+        );
+        // Exactly 50 files remain idle after intersection.
+        expect(
+            diffRequests.some((body) => body.includes(clickLoadRepositoryPath)),
+        ).toBe(false);
+        const clickDiffRequest = page.waitForRequest(
+            (request) =>
+                request.method() === "POST" &&
+                request.url().endsWith("/git/diff") &&
+                request.postData()?.includes(clickLoadRepositoryPath) === true,
+        );
+        await clickLoadButton.click();
+        await clickDiffRequest;
+        // Explicit activation loads all 50 while preserving the URL.
+        await expect(
+            page.getByRole("region", { name: /Git diff for/ }),
+        ).toHaveCount(50);
+        await expect(page).toHaveURL(clickLoadUrl);
     });
 
     test("browses status, file comparisons, refreshes, and explicit diff states", async ({
@@ -119,13 +242,16 @@ test.describe.serial("Git browser", () => {
             page.getByRole("link", { name: "ignored.txt", exact: true }),
         ).toHaveCount(0);
 
-        await page.getByRole("link", { name: "Load all diffs" }).click();
-        // The directory action remains a normal link whose search flag drives loader prefetching.
-        await expect(page).toHaveURL(/\bview=git\b.*\bdiff=true\b/);
+        const directoryUrl = page.url();
+        await page
+            .getByRole("heading", { name: /Untracked files/ })
+            .scrollIntoViewIfNeeded();
         const directoryDiffs = page.getByRole("region", {
             name: /Git diff for/,
         });
         await expect(directoryDiffs).toHaveCount(5);
+        // Small batches activate in place without adding route search state.
+        await expect(page).toHaveURL(directoryUrl);
         // Diff box titles open the file edit view without using the status list.
         await expect(
             page

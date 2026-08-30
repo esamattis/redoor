@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu } from "#ui/components/action-menu";
+import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
@@ -162,23 +163,69 @@ function GitStatusSection(props: {
     );
 }
 
-/** Groups directory status into the same concepts users see in a normal Git workflow. */
-export function GitDirectoryView(props: {
-    agent: Agent;
-    path: string;
-    showDiffs: boolean;
+/** Keeps viewport activation scoped to one directory while preserving click fallback support. */
+function useGitDiffActivation(props: {
+    directoryKey: string;
+    changedFileCount: number;
 }) {
+    const [activatedDirectory, setActivatedDirectory] = React.useState<
+        string | null
+    >(null);
+    const loadButtonRef = React.useRef<HTMLDivElement>(null);
+    const active = activatedDirectory === props.directoryKey;
+    const shouldAutoLoad =
+        props.changedFileCount > 0 && props.changedFileCount < 50;
+
+    React.useEffect(() => {
+        const loadButton = loadButtonRef.current;
+        if (
+            active ||
+            !shouldAutoLoad ||
+            loadButton === null ||
+            !("IntersectionObserver" in window)
+        ) {
+            return;
+        }
+
+        const observer = new window.IntersectionObserver(
+            (entries) => {
+                if (!entries.some((entry) => entry.isIntersecting)) {
+                    return;
+                }
+                setActivatedDirectory(props.directoryKey);
+                observer.disconnect();
+            },
+            { root: null, rootMargin: "0px", threshold: 0 },
+        );
+        observer.observe(loadButton);
+        return () => observer.disconnect();
+    }, [active, props.directoryKey, shouldAutoLoad]);
+
+    return {
+        active,
+        loadButtonRef,
+        activate: () => setActivatedDirectory(props.directoryKey),
+    };
+}
+
+/** Groups directory status into the same concepts users see in a normal Git workflow. */
+export function GitDirectoryView(props: { agent: Agent; path: string }) {
+    const directoryKey = `${props.agent.id}:${props.path}`;
     const statusQuery = useQuery(
         gitStatusQueryOptions(props.agent, props.path),
     );
     const groups = groupGitStatusEntries(statusQuery.data?.entries ?? []);
+    const diffActivation = useGitDiffActivation({
+        directoryKey,
+        changedFileCount: groups.diffEntries.length,
+    });
     const diffQuery = useQuery({
         ...gitDiffQueryOptions(
             props.agent,
             groups.diffEntries.map((entry) => entry.path),
             "full",
         ),
-        enabled: props.showDiffs && groups.diffEntries.length > 0,
+        enabled: diffActivation.active && groups.diffEntries.length > 0,
     });
     if (statusQuery.isPending) {
         return (
@@ -200,7 +247,7 @@ export function GitDirectoryView(props: {
 
     const status = statusQuery.data;
     const { conflicts, staged, unstaged, untracked, diffEntries } = groups;
-    const diffAnchorByPath = props.showDiffs
+    const diffAnchorByPath = diffActivation.active
         ? new Map(
               diffEntries.map((entry, index) => [
                   entry.path,
@@ -266,14 +313,16 @@ export function GitDirectoryView(props: {
                     entries={untracked}
                     diffAnchorByPath={diffAnchorByPath}
                 />
-                {status.entries.length > 0 && !props.showDiffs ? (
-                    <Link
-                        to={props.agent.getBrowserUrl(props.path)}
-                        search={{ view: "git", diff: true }}
-                        className="w-fit rounded-md border border-blue-400/40 bg-blue-500/15 px-3 py-2 text-sm font-semibold text-blue-200 transition-colors hover:border-blue-300/60 hover:bg-blue-500/25"
-                    >
-                        Load all diffs
-                    </Link>
+                {status.entries.length > 0 && !diffActivation.active ? (
+                    <div ref={diffActivation.loadButtonRef} className="w-fit">
+                        <Button
+                            type="button"
+                            size="sm"
+                            onClick={diffActivation.activate}
+                        >
+                            Load all diffs
+                        </Button>
+                    </div>
                 ) : null}
                 {status.truncated ? (
                     <p
@@ -291,7 +340,7 @@ export function GitDirectoryView(props: {
                         were omitted.
                     </p>
                 ) : null}
-                {props.showDiffs && diffEntries.length > 0 ? (
+                {diffActivation.active && diffEntries.length > 0 ? (
                     <div className="grid gap-4">
                         {diffQuery.isPending ? (
                             <p role="status" className="text-sm text-slate-400">

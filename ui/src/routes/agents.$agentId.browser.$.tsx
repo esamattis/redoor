@@ -26,11 +26,7 @@ import {
     FileDetailView,
 } from "#ui/components/browser/metadata";
 import { SyncView } from "#ui/components/browser/sync";
-import {
-    GitDirectoryView,
-    GitFileView,
-    groupGitStatusEntries,
-} from "#ui/components/browser/git";
+import { GitDirectoryView, GitFileView } from "#ui/components/browser/git";
 import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
 import {
     getImmediateParentPath,
@@ -51,7 +47,6 @@ import type { MountPoint } from "#bindings/MountPoint";
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync" | "git";
-    diff?: boolean;
     line?: number;
 };
 
@@ -87,10 +82,9 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             search.view === "git"
                 ? search.view
                 : undefined,
-        diff: search.diff === true || search.diff === "true" ? true : undefined,
         line: browserLineSchema.parse(search.line),
     }),
-    loaderDeps: ({ search }) => ({ view: search.view, diff: search.diff }),
+    loaderDeps: ({ search }) => ({ view: search.view }),
     loader: async ({ context, deps, params, parentMatchPromise, location }) => {
         const agentMatch = await parentMatchPromise;
         const agentLoaderData = agentMatch.loaderData;
@@ -112,6 +106,23 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 to: "/agents/$agentId/browser/$",
                 params,
                 search: { view: "sync" },
+                replace: true,
+            });
+        }
+
+        const rawSearch = new URLSearchParams(
+            location.searchStr.startsWith("?")
+                ? location.searchStr.slice(1)
+                : location.searchStr,
+        );
+        if (rawSearch.has("diff")) {
+            throw redirect({
+                to: "/agents/$agentId/browser/$",
+                params,
+                search: {
+                    view: deps.view,
+                    line: lineFromLocationSearch(location.searchStr),
+                },
                 replace: true,
             });
         }
@@ -177,21 +188,10 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 gitContext.status === "inside_worktree"
             ) {
                 if (isLsDirectoryResponse(lsResult)) {
-                    const status = await context.queryClient.fetchQuery({
+                    await context.queryClient.fetchQuery({
                         ...gitStatusQueryOptions(agent, lsResult.path),
                         staleTime: 0,
                     });
-                    if (deps.diff === true) {
-                        const files = groupGitStatusEntries(
-                            status.entries,
-                        ).diffEntries.map((entry) => entry.path);
-                        if (files.length > 0) {
-                            await context.queryClient.fetchQuery({
-                                ...gitDiffQueryOptions(agent, files, "full"),
-                                staleTime: 0,
-                            });
-                        }
-                    }
                 } else {
                     await context.queryClient.fetchQuery({
                         ...gitDiffQueryOptions(agent, [lsResult.path], "full"),
@@ -402,7 +402,6 @@ function FileBrowser() {
                 lsResult={lsResult}
                 mountPoints={data.mountPoints}
                 view={search.view}
-                showDiffs={search.diff === true}
                 gitAvailable={gitAvailable}
             />
         );
@@ -505,7 +504,6 @@ function DirectoryBrowserPage(props: {
     lsResult: LsDirectoryResponse;
     mountPoints: MountPoint[];
     view?: "details" | "edit" | "diff" | "sync" | "git";
-    showDiffs: boolean;
     gitAvailable: boolean;
 }) {
     const [userState, setUserState] = useUserState();
@@ -546,11 +544,7 @@ function DirectoryBrowserPage(props: {
             gitAvailable={props.gitAvailable}
         >
             {activeView === "git" ? (
-                <GitDirectoryView
-                    agent={props.agent}
-                    path={lsResult.path}
-                    showDiffs={props.showDiffs}
-                />
+                <GitDirectoryView agent={props.agent} path={lsResult.path} />
             ) : activeView === "details" ? (
                 <DirectoryDetailView
                     agent={props.agent}
