@@ -74,6 +74,8 @@ impl CommandHandler {
                 include_hidden,
                 respect_gitignore,
                 fixed_string,
+                before_context,
+                after_context,
             } => {
                 content_grep::execute(content_grep::ContentGrepRequest {
                     path,
@@ -82,6 +84,8 @@ impl CommandHandler {
                     include_hidden,
                     respect_gitignore,
                     fixed_string,
+                    before_context,
+                    after_context,
                 })
                 .await
             }

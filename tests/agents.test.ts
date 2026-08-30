@@ -49,8 +49,23 @@ const contentGrepResponseSchema: z.ZodType<ContentGrepResponse> = z.object({
             line_number: z.number().int().positive(),
             line: z.string(),
             line_truncated: z.boolean(),
+            before_context: z.array(
+                z.object({
+                    line_number: z.number().int().positive(),
+                    line: z.string(),
+                    line_truncated: z.boolean(),
+                }),
+            ),
+            after_context: z.array(
+                z.object({
+                    line_number: z.number().int().positive(),
+                    line: z.string(),
+                    line_truncated: z.boolean(),
+                }),
+            ),
         }),
     ),
+    context_supported: z.boolean(),
     timed_out: z.boolean(),
     cancelled: z.boolean(),
     truncated: z.boolean(),
@@ -724,7 +739,49 @@ describe("Agents API", () => {
         expect(result.omitted_long_lines).toBe(1);
     });
 
-    it("should validate grep timeout and regular expressions", async () => {
+    it("should return before and after context for each grep match", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const grepRoot = tempFiles.tempDirectory({ suffix: "-context-grep" });
+        const target = path.join(grepRoot, "context.txt");
+        await fs.writeFile(
+            target,
+            "zero\none\nfirst match\nbetween\nsecond match\nfive\n",
+        );
+
+        const result = await testAgent.grepContent(grepRoot, "match", {
+            timeoutSeconds: 5,
+            includeHidden: false,
+            respectGitignore: true,
+            fixedString: true,
+            beforeContext: 2,
+            afterContext: 20,
+        });
+        const [firstMatch, secondMatch] = result.results;
+        if (firstMatch === undefined || secondMatch === undefined) {
+            throw new Error("Expected both context grep matches");
+        }
+        // Context is attached independently to each match rather than merged into shared blocks.
+        expect(firstMatch.before_context).toEqual([
+            { line_number: 1, line: "zero", line_truncated: false },
+            { line_number: 2, line: "one", line_truncated: false },
+        ]);
+        // A matching line can also appear as context when it falls inside another match's window.
+        expect(firstMatch.after_context).toEqual([
+            { line_number: 4, line: "between", line_truncated: false },
+            {
+                line_number: 5,
+                line: "second match",
+                line_truncated: false,
+            },
+            { line_number: 6, line: "five", line_truncated: false },
+        ]);
+        // The second match gets its own preceding context, including the first match.
+        expect(secondMatch.before_context.map((line) => line.line_number)).toEqual([3, 4]);
+        // The file boundary naturally clips the maximum accepted context window.
+        expect(secondMatch.after_context.map((line) => line.line)).toEqual(["five"]);
+    });
+
+    it("should validate grep timeout, context, and regular expressions", async () => {
         const testAgent = await getConnectedTestAgent();
         const timeoutUrl = getAgentGrepUrl();
         const timeoutResponse = await fetch(timeoutUrl, {
@@ -742,6 +799,38 @@ describe("Agents API", () => {
         });
         // REST validation rejects deadlines outside the documented caller-selected range.
         expect(timeoutResponse.status).toBe(400);
+
+        const contextResponse = await fetch(getAgentGrepUrl(), {
+            method: "POST",
+            headers: {
+                ...testAgent.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                agent: testAgent.id,
+                path: agentCwd,
+                query: "target",
+                before_context: 21,
+            }),
+        });
+        // Context limits prevent one match from expanding into an unbounded response.
+        expect(contextResponse.status).toBe(400);
+
+        const afterContextResponse = await fetch(getAgentGrepUrl(), {
+            method: "POST",
+            headers: {
+                ...testAgent.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                agent: testAgent.id,
+                path: agentCwd,
+                query: "target",
+                after_context: 21,
+            }),
+        });
+        // Both context directions enforce the same response-size bound.
+        expect(afterContextResponse.status).toBe(400);
 
         const regexResponse = await fetch(
             getAgentGrepUrl(),

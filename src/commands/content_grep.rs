@@ -1,12 +1,13 @@
 use super::{
-    CommandErrorKind, CommandResult, ContentGrepMatch, ContentGrepResponse,
+    CommandErrorKind, CommandResult, ContentGrepContextLine, ContentGrepMatch, ContentGrepResponse,
+    MAX_GREP_CONTEXT_LINES,
     file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
     metadata::has_common_binary_magic,
 };
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -53,6 +54,8 @@ pub struct ContentGrepRequest {
     pub include_hidden: bool,
     pub respect_gitignore: bool,
     pub fixed_string: bool,
+    pub before_context: u64,
+    pub after_context: u64,
 }
 
 /// Runs grep without runtime coordination for direct command-dispatch callers and unit tests.
@@ -74,6 +77,8 @@ pub(super) async fn execute_with_cancellation(
         include_hidden,
         respect_gitignore,
         fixed_string,
+        before_context,
+        after_context,
     } = request;
     if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
         return CommandResult::error(
@@ -81,6 +86,16 @@ pub(super) async fn execute_with_cancellation(
             format!("Content grep query must be between 1 and {MAX_QUERY_BYTES} bytes"),
         );
     }
+    if before_context > MAX_GREP_CONTEXT_LINES || after_context > MAX_GREP_CONTEXT_LINES {
+        return CommandResult::error(
+            CommandErrorKind::InvalidInput,
+            format!(
+                "Content grep context must be between 0 and {MAX_GREP_CONTEXT_LINES} lines per direction"
+            ),
+        );
+    }
+    let before_context = usize::try_from(before_context).unwrap_or(0);
+    let after_context = usize::try_from(after_context).unwrap_or(0);
 
     let started_at = Instant::now();
     let mut output = GrepOutput::new();
@@ -110,6 +125,8 @@ pub(super) async fn execute_with_cancellation(
                 &matcher,
                 include_hidden,
                 respect_gitignore,
+                before_context,
+                after_context,
                 &mut output,
             )
             .await
@@ -138,6 +155,7 @@ pub(super) async fn execute_with_cancellation(
 
     CommandResult::ContentGrep(ContentGrepResponse {
         results: output.results,
+        context_supported: true,
         timed_out,
         cancelled,
         truncated: output.truncated,
@@ -152,6 +170,8 @@ async fn collect_matches(
     matcher: &impl Matcher,
     include_hidden: bool,
     respect_gitignore: bool,
+    before_context: usize,
+    after_context: usize,
     output: &mut GrepOutput,
 ) -> std::io::Result<()> {
     let root_entries = tokio::fs::read_dir(root).await?;
@@ -222,7 +242,7 @@ async fn collect_matches(
                 .as_ref()
                 .is_some_and(|metadata| metadata.len() <= MAX_SCANNED_FILE_BYTES)
         {
-            scan_file(&entry_path, matcher, output).await;
+            scan_file(&entry_path, matcher, before_context, after_context, output).await;
             if output.truncated {
                 break;
             }
@@ -250,7 +270,13 @@ async fn collect_matches(
 }
 
 /// Buffers one bounded line and rejects binary prefixes before retaining any tentative matches.
-async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput) {
+async fn scan_file(
+    path: &Path,
+    matcher: &impl Matcher,
+    before_context: usize,
+    after_context: usize,
+    output: &mut GrepOutput,
+) {
     let Ok(file) = tokio::fs::File::open(path).await else {
         return;
     };
@@ -258,9 +284,9 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
     let mut line = Vec::new();
     let mut line_number = 1_u64;
     let mut oversized = false;
-    let mut file_matches = Vec::new();
     let mut omitted_long_lines = 0_u64;
     let mut is_first_chunk = true;
+    let mut state = FileGrepState::new(path, matcher, before_context, after_context);
 
     loop {
         let buffer = match reader.fill_buf().await {
@@ -270,8 +296,9 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
         if buffer.is_empty() {
             if oversized {
                 omitted_long_lines = omitted_long_lines.saturating_add(1);
+                state.retain_physical_line(line_number, None);
             } else if !line.is_empty() {
-                retain_line_match(path, line_number, &line, matcher, &mut file_matches);
+                state.retain_physical_line(line_number, Some(&line));
             }
             break;
         }
@@ -290,11 +317,12 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
             if *byte == b'\n' {
                 if oversized {
                     omitted_long_lines = omitted_long_lines.saturating_add(1);
+                    state.retain_physical_line(line_number, None);
                 } else {
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
-                    retain_line_match(path, line_number, &line, matcher, &mut file_matches);
+                    state.retain_physical_line(line_number, Some(&line));
                 }
                 line.clear();
                 oversized = false;
@@ -312,7 +340,7 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
     }
 
     output.omitted_long_lines = output.omitted_long_lines.saturating_add(omitted_long_lines);
-    for matched_line in file_matches {
+    for matched_line in state.matches {
         if output.results.len() == RESULT_LIMIT {
             output.truncated = true;
             break;
@@ -321,24 +349,88 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
     }
 }
 
-/// Converts arbitrary matching bytes safely only after the byte-oriented regular expression succeeds.
-fn retain_line_match(
-    path: &Path,
-    line_number: u64,
-    line: &[u8],
-    matcher: &impl Matcher,
-    matches: &mut Vec<ContentGrepMatch>,
-) {
-    if matches.len() > RESULT_LIMIT || !matcher.is_match(line).unwrap_or(false) {
-        return;
+/// Keeps context queues private to one file so tentative binary-file matches remain discardable.
+struct FileGrepState<'a, M> {
+    path: &'a Path,
+    matcher: &'a M,
+    before_context: usize,
+    after_context: usize,
+    previous_lines: VecDeque<Option<ContentGrepContextLine>>,
+    pending_after: VecDeque<usize>,
+    matches: Vec<ContentGrepMatch>,
+}
+
+impl<'a, M: Matcher> FileGrepState<'a, M> {
+    /// Allocates only the caller-selected context window before scanning starts.
+    fn new(path: &'a Path, matcher: &'a M, before_context: usize, after_context: usize) -> Self {
+        Self {
+            path,
+            matcher,
+            before_context,
+            after_context,
+            previous_lines: VecDeque::with_capacity(before_context),
+            pending_after: VecDeque::new(),
+            matches: Vec::new(),
+        }
     }
+
+    /// Retains bounded context while oversized placeholders preserve physical-line distance.
+    fn retain_physical_line(&mut self, line_number: u64, line: Option<&[u8]>) {
+        let context_line = if self.before_context > 0 || !self.pending_after.is_empty() {
+            line.map(|line| bounded_context_line(line_number, line))
+        } else {
+            None
+        };
+        for index in self.pending_after.iter().copied() {
+            let matched_line_number = self.matches[index].line_number;
+            if line_number.saturating_sub(matched_line_number) <= self.after_context as u64
+                && let Some(context_line) = &context_line
+            {
+                self.matches[index].after_context.push(context_line.clone());
+            }
+        }
+        while self.pending_after.front().is_some_and(|index| {
+            line_number.saturating_sub(self.matches[*index].line_number)
+                >= self.after_context as u64
+        }) {
+            self.pending_after.pop_front();
+        }
+
+        if let Some(line) = line
+            && self.matches.len() <= RESULT_LIMIT
+            && self.matcher.is_match(line).unwrap_or(false)
+        {
+            let returned_length = line.len().min(MAX_RETURNED_LINE_BYTES);
+            self.matches.push(ContentGrepMatch {
+                path: self.path.to_string_lossy().into_owned(),
+                line_number,
+                line: String::from_utf8_lossy(&line[..returned_length]).into_owned(),
+                line_truncated: line.len() > MAX_RETURNED_LINE_BYTES,
+                before_context: self.previous_lines.iter().flatten().cloned().collect(),
+                after_context: Vec::with_capacity(self.after_context),
+            });
+            if self.after_context > 0 {
+                self.pending_after.push_back(self.matches.len() - 1);
+            }
+        }
+
+        if self.before_context > 0 {
+            if self.previous_lines.len() == self.before_context {
+                self.previous_lines.pop_front();
+            }
+            self.previous_lines.push_back(context_line);
+        }
+    }
+}
+
+/// Converts arbitrary file bytes to the same bounded representation used for matching lines.
+fn bounded_context_line(line_number: u64, line: &[u8]) -> ContentGrepContextLine {
     let returned_length = line.len().min(MAX_RETURNED_LINE_BYTES);
-    matches.push(ContentGrepMatch {
-        path: path.to_string_lossy().into_owned(),
+    ContentGrepContextLine {
         line_number,
         line: String::from_utf8_lossy(&line[..returned_length]).into_owned(),
         line_truncated: line.len() > MAX_RETURNED_LINE_BYTES,
-    });
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +451,8 @@ mod tests {
             include_hidden: false,
             respect_gitignore: true,
             fixed_string,
+            before_context: 0,
+            after_context: 0,
         }
     }
 
@@ -417,6 +511,99 @@ mod tests {
         // The long but permitted matching line is shortened only in the returned payload.
         assert!(response.results[1].line_truncated);
         // A physical line over the scan bound is drained and reported instead of matched.
+        assert_eq!(response.omitted_long_lines, 1);
+    }
+
+    /// Verifies each match receives its own bounded physical-line window without crossing file edges.
+    #[tokio::test]
+    async fn grep_retains_per_match_context() {
+        let temp = TempDir::create();
+        let root = temp.path().join("context-grep");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        tokio::fs::write(
+            root.join("text.txt"),
+            b"zero\none\nfirst target\nbetween\nsecond target\nfive\n",
+        )
+        .await
+        .expect("context fixture should be written");
+        let mut request = test_request(root.to_string_lossy().into_owned(), "target", false);
+        request.before_context = 2;
+        request.after_context = 2;
+
+        let result = execute(request).await;
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("context grep should return its dedicated response");
+        };
+        // Per-match context intentionally duplicates the line shared by overlapping windows.
+        assert_eq!(
+            response.results[0]
+                .before_context
+                .iter()
+                .map(|line| (line.line_number, line.line.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "zero"), (2, "one")]
+        );
+        // Following context includes another matching line because context is based on physical distance.
+        assert_eq!(
+            response.results[0]
+                .after_context
+                .iter()
+                .map(|line| (line.line_number, line.line.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(4, "between"), (5, "second target")]
+        );
+        // The second result has an independent window clipped naturally at the end of the file.
+        assert_eq!(
+            response.results[1]
+                .before_context
+                .iter()
+                .map(|line| line.line_number)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(response.results[1].after_context[0].line, "five");
+    }
+
+    /// Covers context normalization, unavailable oversized lines, EOF, and late binary rejection.
+    #[tokio::test]
+    async fn grep_context_preserves_physical_distances_and_text_rules() {
+        let temp = TempDir::create();
+        let root = temp.path().join("context-edge-grep");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        let mut text = b"first\r\n\n".to_vec();
+        text.extend(std::iter::repeat_n(b'x', MAX_PHYSICAL_LINE_BYTES + 1));
+        text.extend_from_slice(b"\ntarget\r\nlast");
+        tokio::fs::write(root.join("text.txt"), text)
+            .await
+            .expect("text fixture should be written");
+        tokio::fs::write(root.join("binary.bin"), b"before\ntarget\nafter\0binary")
+            .await
+            .expect("binary fixture should be written");
+        let mut request = test_request(root.to_string_lossy().into_owned(), "target", false);
+        request.before_context = 3;
+        request.after_context = 1;
+
+        let result = execute(request).await;
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("context grep should return its dedicated response");
+        };
+        // Tentative matches and their retained context must still be discarded after a late NUL.
+        assert_eq!(response.results.len(), 1);
+        // The oversized third physical line is unavailable without extending context past the requested distance.
+        assert_eq!(
+            response.results[0]
+                .before_context
+                .iter()
+                .map(|line| (line.line_number, line.line.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "first"), (2, "")]
+        );
+        // CRLF is stripped from context and an unterminated final line remains available.
+        assert_eq!(response.results[0].after_context[0].line, "last");
         assert_eq!(response.omitted_long_lines, 1);
     }
 

@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use content_grep::ContentGrepRequest;
+
+/// Bounds per-match context so the fixed result ceiling also bounds response memory.
+pub const MAX_GREP_CONTEXT_LINES: u64 = 20;
 pub use handler::CommandHandler;
 pub use identity::{
     BinaryIdentity, ServerBuildMode, agent_loaded_config_path, current_binary_identity,
@@ -165,6 +168,12 @@ pub enum Command {
         /// Literal matching is opt-in so existing callers keep regex semantics.
         #[serde(default)]
         fixed_string: bool,
+        /// Preceding physical lines are opt-in and bounded to keep each match response small.
+        #[serde(default)]
+        before_context: u64,
+        /// Following physical lines are opt-in and bounded to keep each match response small.
+        #[serde(default)]
+        after_context: u64,
     },
     RawDownload {
         path: String,
@@ -332,8 +341,10 @@ impl Command {
                 include_hidden,
                 respect_gitignore,
                 fixed_string,
+                before_context,
+                after_context,
             } => format!(
-                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} fixed_string={fixed_string}"
+                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} fixed_string={fixed_string} before_context={before_context} after_context={after_context}"
             ),
             Self::RawDownload {
                 path,
@@ -480,7 +491,17 @@ pub struct FileSearchResponse {
     pub duration_ms: u64,
 }
 
-/// Identifies one matching physical line while keeping response text bounded.
+/// Identifies one bounded context line adjacent to a grep match.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContentGrepContextLine {
+    #[ts(type = "number")]
+    pub line_number: u64,
+    pub line: String,
+    pub line_truncated: bool,
+}
+
+/// Identifies one matching physical line and its independently retained context.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ContentGrepMatch {
@@ -489,6 +510,12 @@ pub struct ContentGrepMatch {
     pub line_number: u64,
     pub line: String,
     pub line_truncated: bool,
+    // Defaults preserve ordinary grep responses from agents predating context support.
+    #[serde(default)]
+    pub before_context: Vec<ContentGrepContextLine>,
+    // Defaults preserve ordinary grep responses from agents predating context support.
+    #[serde(default)]
+    pub after_context: Vec<ContentGrepContextLine>,
 }
 
 /// Identifies an agent path and bounded content-search controls without URL-sized query data.
@@ -507,6 +534,12 @@ pub struct GrepRequest {
     pub respect_gitignore: bool,
     #[serde(default)]
     pub fixed_string: bool,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub before_context: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub after_context: u64,
 }
 
 /// Returns matches completed before the grep deadline or supersession signal.
@@ -514,6 +547,9 @@ pub struct GrepRequest {
 #[ts(export)]
 pub struct ContentGrepResponse {
     pub results: Vec<ContentGrepMatch>,
+    // Distinguishes an old agent's absent context from a genuinely empty context window.
+    #[serde(default)]
+    pub context_supported: bool,
     pub timed_out: bool,
     pub cancelled: bool,
     pub truncated: bool,
@@ -1661,6 +1697,23 @@ mod tests {
             }
             _ => panic!("Expected TarDownload"),
         }
+    }
+
+    #[test]
+    fn older_content_grep_response_defaults_context_capability() {
+        let result: CommandResult = serde_json::from_str(
+            r#"{"type":"ContentGrep","results":[{"path":"/tmp/file","line_number":1,"line":"match","line_truncated":false}],"timed_out":false,"cancelled":false,"truncated":false,"omitted_long_lines":0,"duration_ms":1}"#,
+        )
+        .expect("older grep response should deserialize");
+
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("Expected ContentGrep");
+        };
+        // A missing capability identifies a connected agent that predates context support.
+        assert!(!response.context_supported);
+        // Defaulted arrays keep ordinary zero-context grep usable during a rolling upgrade.
+        assert!(response.results[0].before_context.is_empty());
+        assert!(response.results[0].after_context.is_empty());
     }
 
     #[tokio::test]

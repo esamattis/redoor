@@ -97,8 +97,6 @@ export type {
     MetadataResponse,
     CreateOneTimeTokenResponse,
     DirectorySizeResponse,
-};
-export type {
     RawDeleteResponse,
     TrashListResponse,
     EmptyTrashResponse,
@@ -494,6 +492,8 @@ export class Agent {
             includeHidden: boolean;
             respectGitignore: boolean;
             fixedString: boolean;
+            beforeContext?: number;
+            afterContext?: number;
             signal?: AbortSignal;
         },
     ): Promise<ContentGrepResponse> {
@@ -505,6 +505,8 @@ export class Agent {
             include_hidden: options.includeHidden,
             respect_gitignore: options.respectGitignore,
             fixed_string: options.fixedString,
+            before_context: options.beforeContext ?? 0,
+            after_context: options.afterContext ?? 0,
         };
         return apiRequest<ContentGrepResponse>(
             `${this.baseUrl}/api/v1/grep`,

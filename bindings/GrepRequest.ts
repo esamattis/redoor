@@ -4,4 +4,4 @@ import type { AgentId } from "./AgentId";
 /**
  * Identifies an agent path and bounded content-search controls without URL-sized query data.
  */
-export type GrepRequest = { agent: AgentId, path: string, query: string, timeout: number, include_hidden: boolean, respect_gitignore: boolean, fixed_string: boolean, };
+export type GrepRequest = { agent: AgentId, path: string, query: string, timeout: number, include_hidden: boolean, respect_gitignore: boolean, fixed_string: boolean, before_context: number, after_context: number, };

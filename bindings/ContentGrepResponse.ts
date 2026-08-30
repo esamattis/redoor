@@ -4,4 +4,4 @@ import type { ContentGrepMatch } from "./ContentGrepMatch";
 /**
  * Returns matches completed before the grep deadline or supersession signal.
  */
-export type ContentGrepResponse = { results: Array<ContentGrepMatch>, timed_out: boolean, cancelled: boolean, truncated: boolean, omitted_long_lines: number, duration_ms: number, };
+export type ContentGrepResponse = { results: Array<ContentGrepMatch>, context_supported: boolean, timed_out: boolean, cancelled: boolean, truncated: boolean, omitted_long_lines: number, duration_ms: number, };

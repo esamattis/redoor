@@ -343,6 +343,8 @@ async fn handle_command_message(
             include_hidden,
             respect_gitignore,
             fixed_string,
+            before_context,
+            after_context,
         } => {
             let result = match content_grep_context {
                 Some((cancel_receiver, permit)) => {
@@ -355,6 +357,8 @@ async fn handle_command_message(
                                 include_hidden,
                                 respect_gitignore,
                                 fixed_string,
+                                before_context,
+                                after_context,
                             },
                             (cancel_receiver, permit),
                         )
@@ -369,6 +373,8 @@ async fn handle_command_message(
                             include_hidden,
                             respect_gitignore,
                             fixed_string,
+                            before_context,
+                            after_context,
                         })
                         .await
                 }

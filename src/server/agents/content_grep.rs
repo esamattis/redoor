@@ -4,7 +4,7 @@ use crate::server::{
 use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
 use redoor::{
     actors,
-    commands::{Command, CommandResult, ErrorResponse, GrepRequest},
+    commands::{Command, CommandResult, ErrorResponse, GrepRequest, MAX_GREP_CONTEXT_LINES},
 };
 
 /// Route: `POST /api/v1/grep`
@@ -21,12 +21,26 @@ pub(crate) async fn content_grep_handler(
         )
             .into_response();
     }
+    if search.before_context > MAX_GREP_CONTEXT_LINES
+        || search.after_context > MAX_GREP_CONTEXT_LINES
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Content grep context must be between 0 and {MAX_GREP_CONTEXT_LINES} lines per direction"
+                ),
+            }),
+        )
+            .into_response();
+    }
 
     let path = match require_absolute_path(search.path) {
         Ok(path) => path,
         Err(response) => return *response,
     };
     let agent_id = search.agent;
+    let context_requested = search.before_context > 0 || search.after_context > 0;
     let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
         .router_ref
@@ -40,12 +54,26 @@ pub(crate) async fn content_grep_handler(
                     include_hidden: search.include_hidden,
                     respect_gitignore: search.respect_gitignore,
                     fixed_string: search.fixed_string,
+                    before_context: search.before_context,
+                    after_context: search.after_context,
                 },
                 reply,
             })
         })
         .await
     {
+        Ok(CommandResult::ContentGrep(result))
+            if context_requested && !result.context_supported =>
+        {
+            (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "The connected agent does not support content grep context; upgrade the agent"
+                        .to_string(),
+                }),
+            )
+                .into_response()
+        }
         Ok(CommandResult::ContentGrep(result)) => (StatusCode::OK, Json(result)).into_response(),
         Ok(CommandResult::Error { kind, message }) => (
             command_error_status(&kind),
