@@ -139,12 +139,8 @@ test.describe.serial("Recent editor files", () => {
         if (buttonBox === null || panelBox === null) {
             throw new Error("expected recent files anchor measurements");
         }
-        // The compact panel is end-aligned to the button that opened it.
-        expect(
-            Math.abs(
-                panelBox.x + panelBox.width - (buttonBox.x + buttonBox.width),
-            ),
-        ).toBeLessThanOrEqual(1);
+        // More room is available to the right, so the panel extends that way.
+        expect(Math.abs(panelBox.x - buttonBox.x)).toBeLessThanOrEqual(1);
         await expect(dialog.getByRole("link")).toHaveCount(10);
         await expect(
             dialog.getByRole("link", {

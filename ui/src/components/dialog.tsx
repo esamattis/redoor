@@ -23,8 +23,8 @@ export type DialogProps = {
     children: React.ReactNode;
     onClose: () => void;
     /**
-     * Optional trigger element. When present the panel is positioned below it
-     * (end-aligned) rather than as a centered modal.
+     * Optional trigger element. When present the panel extends toward the
+     * roomier viewport sides rather than rendering as a centered modal.
      */
     anchorRef?: React.RefObject<HTMLElement | null>;
     /**
@@ -303,7 +303,7 @@ function useDialogBehavior(props: {
     return anchorPosition;
 }
 
-/** Keeps menus on screen without covering the click or trigger that opened them. */
+/** Extends toward the roomier sides while keeping menus within viewport edges. */
 function getAnchoredDialogPosition(args: {
     panel: HTMLDivElement | null;
     point?: { x: number; y: number };
@@ -318,22 +318,20 @@ function getAnchoredDialogPosition(args: {
     }
 
     const anchorRect = args.anchor?.getBoundingClientRect();
-    let top = args.point ? args.point.y : (anchorRect?.bottom ?? 0) + gap;
-    let left = args.point
-        ? args.point.x
-        : (anchorRect?.right ?? 0) - panelWidth;
-
-    if (
-        panelHeight > 0 &&
-        top + panelHeight > window.innerHeight - viewportPadding
-    ) {
-        const flippedTop = args.point
-            ? args.point.y - panelHeight
-            : (anchorRect?.top ?? 0) - gap - panelHeight;
-        if (flippedTop >= viewportPadding) {
-            top = flippedTop;
-        }
-    }
+    const belowEdge = args.point
+        ? args.point.y
+        : (anchorRect?.bottom ?? 0) + gap;
+    const aboveEdge = args.point ? args.point.y : (anchorRect?.top ?? 0) - gap;
+    const availableBelow = window.innerHeight - viewportPadding - belowEdge;
+    const availableAbove = aboveEdge - viewportPadding;
+    let top =
+        availableAbove > availableBelow ? aboveEdge - panelHeight : belowEdge;
+    const leftEdge = args.point ? args.point.x : (anchorRect?.left ?? 0);
+    const rightEdge = args.point ? args.point.x : (anchorRect?.right ?? 0);
+    const availableLeft = leftEdge - viewportPadding;
+    const availableRight = window.innerWidth - viewportPadding - rightEdge;
+    let left =
+        availableRight > availableLeft ? leftEdge : rightEdge - panelWidth;
 
     left = Math.min(left, window.innerWidth - panelWidth - viewportPadding);
     left = Math.max(viewportPadding, left);
