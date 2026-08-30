@@ -102,11 +102,23 @@ last line`,
             "nested-path-search",
             "nested-path-target.txt",
         );
-        const pathResult = dialog.getByRole("button", {
+        const pathResult = dialog.getByRole("link", {
             name: `Open path ${nestedPath}`,
         });
         // Path mode recursively discovers files that are absent from the loaded directory listing.
         await expect(pathResult).toBeVisible();
+        await expect(pathResult).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}`,
+        );
+        const [pathResultBounds, pathTextBounds] = await Promise.all([
+            pathResult.boundingBox(),
+            pathResult.getByText(nestedPath, { exact: true }).boundingBox(),
+        ]);
+        // The path begins beside the leading icon instead of inheriting centered button content.
+        expect(
+            (pathTextBounds?.x ?? 0) - (pathResultBounds?.x ?? 0),
+        ).toBeLessThan(60);
         const pathRequest = requests.find((request) =>
             request.pathname.includes("/api/v1/find"),
         );
@@ -131,10 +143,15 @@ last line`,
         await dialog
             .getByRole("checkbox", { name: "Search file contents" })
             .click();
-        const contentResult = dialog.getByRole("button", {
+        const contentResult = dialog.getByRole("link", {
             name: `Open ${nestedPath} at line 1`,
         });
         await expect(contentResult).toBeVisible();
+        // A real destination href preserves native middle-click and context-menu navigation.
+        await expect(contentResult).toHaveAttribute(
+            "href",
+            `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}?line=1`,
+        );
         const searchRequestCount = requests.filter((request) =>
             request.pathname.includes("/api/v1/find"),
         ).length;
@@ -146,7 +163,7 @@ last line`,
             .getByRole("searchbox", { name: "Search file contents" })
             .fill("unique-search-value");
         await expect(
-            dialog.getByRole("button", {
+            dialog.getByRole("link", {
                 name: /Open .*search-target\.txt at line 2/,
             }),
         ).toBeVisible();
@@ -309,14 +326,14 @@ last line`,
             .poll(() => page.evaluate(() => history.length))
             .toBe(historyLength);
 
-        const result = dialog.getByRole("button", {
+        const result = dialog.getByRole("link", {
             name: /Open .*search-target\.txt at line 2/,
         });
         // Grep results expose their one-based line destination.
         await expect(result).toBeVisible();
         // Superseding an in-flight query must not leave stale matches in the result set.
         await expect(
-            dialog.getByRole("button", { name: /Open .*file1\.txt/ }),
+            dialog.getByRole("link", { name: /Open .*file1\.txt/ }),
         ).toHaveCount(0);
         await expect.poll(() => firstRequestFailed).toBe(true);
         releaseFirstRequest?.();
@@ -435,7 +452,7 @@ last line`,
         // Hidden and timeout state is URL authoritative and represented by replace navigation.
         await expect(page).toHaveURL(/hidden=true/);
         await expect(
-            dialog.getByRole("button", {
+            dialog.getByRole("link", {
                 name: /Open .*\.hidden-search\/target\.txt at line 1/,
             }),
         ).toBeVisible();
@@ -451,7 +468,7 @@ last line`,
             .getByRole("button", { name: "Use regular expressions" })
             .click();
         await expect(
-            dialog.getByRole("button", {
+            dialog.getByRole("link", {
                 name: /Open .*search-target\.txt at line 2/,
             }),
         ).toBeVisible();
@@ -466,7 +483,7 @@ last line`,
             .click();
         // Disabling ignore handling makes the ignored fixture searchable.
         await expect(
-            dialog.getByRole("button", {
+            dialog.getByRole("link", {
                 name: /Open .*ignored-search\.txt at line 1/,
             }),
         ).toBeVisible();
@@ -498,7 +515,7 @@ last line`,
         );
         await expect(gitRootCheckbox).toHaveAttribute("aria-checked", "true");
         await expect(
-            dialog.getByRole("button", {
+            dialog.getByRole("link", {
                 name: /Open .*root-only\.txt at line 1/,
             }),
         ).toBeVisible();

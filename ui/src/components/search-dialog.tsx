@@ -1,6 +1,11 @@
 import * as React from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { getRouteApi, useLocation, useMatches } from "@tanstack/react-router";
+import {
+    getRouteApi,
+    Link,
+    useLocation,
+    useMatches,
+} from "@tanstack/react-router";
 import { Eye, EyeOff, File, Folder, GitBranch, Regex } from "lucide-react";
 
 import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
@@ -14,7 +19,6 @@ import {
     type Agent,
 } from "#ui/api-client";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
-import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { InputControl } from "#ui/components/input-control";
@@ -151,11 +155,7 @@ export function SearchDialog(props: { agent: Agent }) {
     const getResults = React.useCallback(
         () =>
             resultsRef.current
-                ? [
-                      ...resultsRef.current.querySelectorAll<HTMLElement>(
-                          "button",
-                      ),
-                  ]
+                ? [...resultsRef.current.querySelectorAll<HTMLElement>("a")]
                 : [],
         [],
     );
@@ -193,16 +193,6 @@ export function SearchDialog(props: { agent: Agent }) {
         setUserState((current) => ({ ...current, ...preferenceChanges }));
         void updateSearch(changes);
     };
-
-    /** Opens a path result directly without carrying modal state into the destination. */
-    const openPathResult = (result: FileSearchEntry) =>
-        navigate({ to: props.agent.getBrowserUrl(result.path) });
-
-    /** Opens a grep match at its one-based line destination. */
-    const openContentResult = (result: ContentGrepMatch) =>
-        navigate({
-            to: `${props.agent.getBrowserUrl(result.path)}?line=${result.line_number}`,
-        });
 
     return (
         <Dialog
@@ -254,14 +244,14 @@ export function SearchDialog(props: { agent: Agent }) {
                               <ContentResult
                                   key={`${result.path}:${result.line_number}:${result.line}`}
                                   result={result}
-                                  onOpen={openContentResult}
+                                  href={`${props.agent.getBrowserUrl(result.path)}?line=${result.line_number}`}
                               />
                           ))
                         : pathSearch.data?.results.map((result) => (
                               <PathResult
                                   key={result.path}
                                   result={result}
-                                  onOpen={openPathResult}
+                                  href={props.agent.getBrowserUrl(result.path)}
                               />
                           ))}
                 </div>
@@ -405,16 +395,11 @@ function SearchControls(props: {
 }
 
 /** Presents one fuzzy path match with enough context to distinguish duplicate names. */
-function PathResult(props: {
-    result: FileSearchEntry;
-    onOpen: (result: FileSearchEntry) => void;
-}) {
+function PathResult(props: { result: FileSearchEntry; href: string }) {
     const ResultIcon = props.result.type === "directory" ? Folder : File;
     return (
-        <Button
-            type="button"
-            variant="subtle"
-            onClick={() => props.onOpen(props.result)}
+        <Link
+            to={props.href}
             className="flex w-full items-start gap-3 rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open path ${props.result.path}`}
         >
@@ -427,20 +412,15 @@ function PathResult(props: {
                     {props.result.path}
                 </span>
             </span>
-        </Button>
+        </Link>
     );
 }
 
 /** Presents a grep match with its line preview and exact navigation destination. */
-function ContentResult(props: {
-    result: ContentGrepMatch;
-    onOpen: (result: ContentGrepMatch) => void;
-}) {
+function ContentResult(props: { result: ContentGrepMatch; href: string }) {
     return (
-        <Button
-            type="button"
-            variant="subtle"
-            onClick={() => props.onOpen(props.result)}
+        <Link
+            to={props.href}
             className="block w-full rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open ${props.result.path} at line ${props.result.line_number}`}
         >
@@ -451,7 +431,7 @@ function ContentResult(props: {
                 {props.result.line}
                 {props.result.line_truncated ? "…" : ""}
             </span>
-        </Button>
+        </Link>
     );
 }
 
