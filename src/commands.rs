@@ -323,6 +323,19 @@ pub enum Command {
         old: String,
         new: String,
     },
+    /// Changes owner and/or group of an existing path, following the same inode `ls` displays.
+    ChownPath {
+        path: String,
+        owner: Option<String>,
+        group: Option<String>,
+    },
+    /// Replaces the ordinary rwx bits of an existing path without clearing setuid/setgid/sticky.
+    ChmodPath {
+        path: String,
+        permissions: u32,
+    },
+    /// Enumerates host user and group names for root-only ownership editors.
+    ListAccounts,
     Metadata {
         path: String,
     },
@@ -479,6 +492,13 @@ impl Command {
             Self::RenamePath { dir, old, new } => {
                 format!("RenamePath dir={dir} old={old} new={new}")
             }
+            Self::ChownPath { path, owner, group } => {
+                format!("ChownPath path={path} owner={owner:?} group={group:?}")
+            }
+            Self::ChmodPath { path, permissions } => {
+                format!("ChmodPath path={path} permissions={permissions:#o}")
+            }
+            Self::ListAccounts => "ListAccounts".to_string(),
             Self::Metadata { path } => format!("Metadata path={path}"),
             Self::DirectorySize {
                 path,
@@ -978,6 +998,9 @@ pub enum CommandResult {
     },
     CreateDirectory,
     RenamePath,
+    ChownPath(ChownPathResponse),
+    ChmodPath(ChmodPathResponse),
+    ListAccounts(AgentAccountsResponse),
     Metadata(MetadataResponse),
     DirectorySize(DirectorySizeResponse),
     GitContext(GitContextResponse),
@@ -1165,6 +1188,13 @@ pub struct AgentInfoResponse {
     pub supports_move_to_trash: bool,
     /// Whether the latest agent session can also list and restore trash entries.
     pub supports_trash: bool,
+    /// Effective UID from the latest registration so chmod gating does not need a details round-trip.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub uid: Option<u32>,
+    /// Whether the latest session's effective UID is root. False until first connect or for older agents.
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 /// Confirms that a managed supervisor accepted an idempotent start request.
@@ -1274,6 +1304,12 @@ pub struct AgentDetailsResponse {
     /// Current filesystems are optional on the wire so newer servers can still inspect older agents.
     #[serde(default)]
     pub mount_points: Vec<MountPoint>,
+    /// Effective UID of the connected agent process; defaults for older agents that omit it.
+    #[serde(default)]
+    pub uid: u32,
+    /// Whether the connected agent process is running as root; defaults false for older agents.
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 /// Describes one mounted filesystem for capacity checks and direct browser navigation.
@@ -1417,6 +1453,70 @@ pub struct RenamePathRequest {
 pub struct RenamePathResponse {
     pub source_path: String,
     pub dest_path: String,
+}
+
+/// Accepts name or numeric owner/group strings for an existing-entry chown.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChownPathRequest {
+    /// User name or decimal UID; omitted when only the group should change.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Group name or decimal GID; omitted when only the owner should change.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+/// Returns the followed inode's ownership so UID/GID stay in sync after a name mapping.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChownPathResponse {
+    pub path: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// Carries the ordinary 9-bit mode the details grid can display and mutate.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChmodPathRequest {
+    pub permissions: u32,
+}
+
+/// Returns the applied rwx bits so symbolic, octal, and grid views update together.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChmodPathResponse {
+    pub path: String,
+    pub permissions: u32,
+}
+
+/// One NSS user that a root details view can select as an owner.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentAccountUser {
+    pub name: String,
+    pub uid: u32,
+}
+
+/// One NSS group that a root details view can select as a group.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentAccountGroup {
+    pub name: String,
+    pub gid: u32,
+}
+
+/// Host account catalog fetched on demand so connect metadata stays small.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentAccountsResponse {
+    pub users: Vec<AgentAccountUser>,
+    pub groups: Vec<AgentAccountGroup>,
+    /// True when NSS returned more accounts than the agent is willing to serialize.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1613,6 +1713,24 @@ impl CommandResult {
             Self::RestoreTrash { path } => format!("ok RestoreTrash path={path}"),
             Self::CreateDirectory => "ok CreateDirectory".to_string(),
             Self::RenamePath => "ok RenamePath".to_string(),
+            Self::ChownPath(result) => {
+                format!(
+                    "ok ChownPath path={} uid={} gid={}",
+                    result.path, result.uid, result.gid
+                )
+            }
+            Self::ChmodPath(result) => {
+                format!(
+                    "ok ChmodPath path={} permissions={:#o}",
+                    result.path, result.permissions
+                )
+            }
+            Self::ListAccounts(result) => format!(
+                "ok ListAccounts users={} groups={} truncated={}",
+                result.users.len(),
+                result.groups.len(),
+                result.truncated
+            ),
             Self::Metadata(_) => "ok Metadata".to_string(),
             Self::DirectorySize(result) => format!("ok DirectorySize size={}", result.size),
             Self::GitContext(GitContextResponse::OutsideWorktree) => {
@@ -1974,6 +2092,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_chmod_path_preserves_special_bits() {
+        let handler = CommandHandler::new();
+        let temp = TempDir::create();
+        let path = temp.path().join("mode.txt");
+        tokio::fs::write(&path, "mode")
+            .await
+            .expect("chmod fixture should be created");
+        let mut permissions = tokio::fs::metadata(&path)
+            .await
+            .expect("chmod fixture metadata should be readable")
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o4644);
+        tokio::fs::set_permissions(&path, permissions)
+            .await
+            .expect("setuid fixture mode should apply");
+
+        let result = handler
+            .execute(Command::ChmodPath {
+                path: path.to_string_lossy().to_string(),
+                permissions: 0o600,
+            })
+            .await;
+
+        match result {
+            CommandResult::ChmodPath(response) => {
+                assert_eq!(
+                    response.permissions, 0o600,
+                    "the response must echo the ordinary bits the grid requested"
+                );
+                let mode = tokio::fs::metadata(&path)
+                    .await
+                    .expect("chmod result metadata should be readable")
+                    .permissions();
+                let mode = std::os::unix::fs::PermissionsExt::mode(&mode);
+                assert_eq!(
+                    mode & 0o777,
+                    0o600,
+                    "disk rwx bits must match the requested ordinary mode"
+                );
+                assert_eq!(
+                    mode & 0o7000,
+                    0o4000,
+                    "setuid must survive an ordinary-mode chmod"
+                );
+            }
+            other => panic!("Expected ChmodPath, got {}", other.summary()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chown_path_rejects_non_root() {
+        if nix::unistd::Uid::effective().is_root() {
+            return;
+        }
+        let handler = CommandHandler::new();
+        let temp = TempDir::create();
+        let path = temp.path().join("owned.txt");
+        tokio::fs::write(&path, "owned")
+            .await
+            .expect("chown fixture should be created");
+
+        let result = handler
+            .execute(Command::ChownPath {
+                path: path.to_string_lossy().to_string(),
+                owner: Some(String::from("0")),
+                group: None,
+            })
+            .await;
+
+        match result {
+            CommandResult::Error {
+                kind: CommandErrorKind::PermissionDenied,
+                ..
+            } => {}
+            other => panic!(
+                "non-root chown must be PermissionDenied, got {}",
+                other.summary()
+            ),
+        }
+    }
+
+    #[tokio::test]
     async fn test_get_agent_details_command() {
         let handler = CommandHandler::new();
         let result = handler.execute(Command::GetAgentDetails).await;
@@ -1997,6 +2197,16 @@ mod tests {
                 assert!(!details.arch.is_empty(), "ARCH should not be empty");
                 assert!(!details.hostname.is_empty(), "Hostname should not be empty");
                 assert!(!details.username.is_empty(), "Username should not be empty");
+                assert_eq!(
+                    details.uid,
+                    nix::unistd::Uid::effective().as_raw(),
+                    "details uid must come from Uid::effective rather than $USER"
+                );
+                assert_eq!(
+                    details.is_root,
+                    nix::unistd::Uid::effective().is_root(),
+                    "details root identity must come from Uid::effective rather than username"
+                );
                 assert!(
                     details.mount_points.iter().any(|mount| mount.path == "/"),
                     "the filesystem root should be present in mount details"

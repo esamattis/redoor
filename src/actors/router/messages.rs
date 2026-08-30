@@ -52,6 +52,10 @@ pub struct RegisterAgentRequest {
     pub supports_trash: bool,
     /// Advertises move-to-trash support independently of inventory and restore.
     pub supports_move_to_trash: bool,
+    /// Effective UID from registration so inventory can gate chmod without a details request.
+    pub uid: Option<u32>,
+    /// Whether the registered process's effective UID is root.
+    pub is_root: bool,
     /// Lets the router reject a managed registration whose shutdown won after socket parsing.
     pub watchdog: Option<crate::watchdog::WatchdogHandle>,
     /// Fences router commit against retry invalidating the parsed registration.
@@ -95,6 +99,10 @@ pub struct AgentListEntry {
     pub supports_trash: bool,
     /// Latest registration's support for moving entries to platform trash.
     pub supports_move_to_trash: bool,
+    /// Latest registration's effective UID; absent until first connect or for older agents.
+    pub uid: Option<u32>,
+    /// Latest registration's root identity; false until first connect.
+    pub is_root: bool,
 }
 
 /// Registers a configured entry before any process can be started.

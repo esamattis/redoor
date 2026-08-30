@@ -13,10 +13,11 @@ use super::{
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agent_transfers::agent_transfer_websocket_handler,
     agents::{
-        content_grep_handler, directory_size_handler, echo_agent_handler,
-        file_search_agent_handler, get_agent_details_handler, list_agents_handler,
-        ls_agent_handler, metadata_agent_handler, open_path_agent_handler, restart_agent_handler,
-        server_info_handler, shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
+        accounts_handler, chmod_path_handler, chown_path_handler, content_grep_handler,
+        directory_size_handler, echo_agent_handler, file_search_agent_handler,
+        get_agent_details_handler, list_agents_handler, ls_agent_handler, metadata_agent_handler,
+        open_path_agent_handler, restart_agent_handler, server_info_handler,
+        shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
     diffs::diff_files_handler,
@@ -206,6 +207,17 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             post(create_directory_handler),
         )
         .route("/api/v1/agents/{agent}/rename", post(rename_path_handler))
+        .route("/api/v1/agents/{agent}/accounts", get(accounts_handler))
+        .route("/api/v1/agents/{agent}/chown", post(chown_path_handler))
+        .route(
+            "/api/v1/agents/{agent}/chown/{*path}",
+            post(chown_path_handler),
+        )
+        .route("/api/v1/agents/{agent}/chmod", post(chmod_path_handler))
+        .route(
+            "/api/v1/agents/{agent}/chmod/{*path}",
+            post(chmod_path_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/trash",
             get(list_trash_handler).delete(empty_trash_handler),

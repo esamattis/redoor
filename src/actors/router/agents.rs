@@ -37,6 +37,8 @@ impl AgentConnection {
             supports_native_open: request.supports_native_open,
             supports_trash: request.supports_trash,
             supports_move_to_trash: request.supports_move_to_trash,
+            uid: request.uid,
+            is_root: request.is_root,
         }
     }
 
@@ -145,6 +147,8 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     let supports_native_open = connection.supports_native_open;
     let supports_trash = connection.supports_trash;
     let supports_move_to_trash = connection.supports_move_to_trash;
+    let uid = connection.uid;
+    let is_root = connection.is_root;
     let transfer_token = connection.transfer_token.clone();
     let transfer_open_sender = connection.outgoing_priority.clone();
     state.agents.by_id.insert(agent_id.clone(), connection);
@@ -170,6 +174,8 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
             supports_native_open: false,
             supports_trash: false,
             supports_move_to_trash: false,
+            uid: None,
+            is_root: false,
         });
     known.name = name;
     known.default_directory = Some(default_directory);
@@ -190,6 +196,8 @@ fn commit_registration(state: &mut RouterState, request: RegisterAgentRequest) {
     known.supports_native_open = supports_native_open;
     known.supports_trash = supports_trash;
     known.supports_move_to_trash = supports_move_to_trash;
+    known.uid = uid;
+    known.is_root = is_root;
     ui::notify_agents_changed(state);
 
     if let Ok(message) = serde_json::to_string(&Message::TransferSocketOpen {
@@ -459,6 +467,8 @@ pub(crate) fn register_managed(state: &mut RouterState, request: RegisterManaged
             supports_native_open: false,
             supports_trash: false,
             supports_move_to_trash: false,
+            uid: None,
+            is_root: false,
         },
     );
     ui::notify_agents_changed(state);
@@ -607,6 +617,8 @@ pub(crate) fn list_agents(state: &RouterState) -> Vec<AgentListEntry> {
             supports_native_open: info.supports_native_open,
             supports_trash: info.supports_trash,
             supports_move_to_trash: info.supports_move_to_trash,
+            uid: info.uid,
+            is_root: info.is_root,
         })
         .collect()
 }
@@ -732,6 +744,8 @@ mod tests {
             supports_native_open: true,
             supports_trash: true,
             supports_move_to_trash: true,
+            uid: Some(1000),
+            is_root: false,
             watchdog: None,
             watchdog_attempt_generation: None,
         };
@@ -1062,6 +1076,8 @@ mod tests {
                 supports_native_open: true,
                 supports_trash: true,
                 supports_move_to_trash: true,
+                uid: Some(1000),
+                is_root: false,
                 watchdog: None,
                 watchdog_attempt_generation: None,
             },

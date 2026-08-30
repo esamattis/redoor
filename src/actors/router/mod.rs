@@ -161,6 +161,11 @@ impl RouterState {
                     details.hostname = agent_connection.hostname.clone();
                     details.username = agent_connection.username.clone();
                     details.binary = agent_connection.binary.clone();
+                    // Registration is the process-stable identity used by list gating.
+                    if let Some(uid) = agent_connection.uid {
+                        details.uid = uid;
+                    }
+                    details.is_root = agent_connection.is_root;
                     CommandResult::GetAgentDetails(details)
                 }
                 _ => response.result.clone(),
@@ -402,6 +407,8 @@ mod tests {
                 supports_native_open: true,
                 supports_trash: true,
                 supports_move_to_trash: true,
+                uid: Some(1000),
+                is_root: false,
                 watchdog: None,
                 watchdog_attempt_generation: None,
             }))
@@ -567,6 +574,8 @@ mod tests {
                 supports_native_open: true,
                 supports_trash: true,
                 supports_move_to_trash: true,
+                uid: Some(1000),
+                is_root: false,
             }]
         );
 

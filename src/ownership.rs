@@ -1,7 +1,19 @@
 use crate::commands::{CommandErrorKind, CreationOwnershipOptions};
-use nix::unistd::{Group, Uid, User};
+use nix::unistd::{Gid, Group, Uid, User};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use thiserror::Error;
+
+/// Serializes passwd/group access because getpwent/getpwnam share process-global libc state.
+static NSS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Holds the NSS lock even after a previous lookup panicked, so one poison cannot block chown.
+pub(crate) fn with_nss_lock<T>(callback: impl FnOnce() -> T) -> T {
+    let _guard = NSS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    callback()
+}
 
 /// Reports ownership validation, account lookup, and filesystem failures without losing API meaning.
 #[derive(Debug, Error)]
@@ -81,6 +93,40 @@ impl OwnershipPlan {
         let owner = resolve_owner_selection(&options, existing_ids.map(|ids| ids.0)).await?;
         let group = resolve_group_selection(&options, existing_ids.map(|ids| ids.1)).await?;
         Ok(Self { owner, group })
+    }
+
+    /// Resolves only requested names so existing-entry chown never inherits parent ownership.
+    pub async fn for_existing_entry(
+        owner: Option<String>,
+        group: Option<String>,
+    ) -> Result<Self, OwnershipError> {
+        if owner.as_ref().is_some_and(|value| value.trim().is_empty()) {
+            return Err(OwnershipError::InvalidOptions(
+                "Owner cannot be empty".to_string(),
+            ));
+        }
+        if group.as_ref().is_some_and(|value| value.trim().is_empty()) {
+            return Err(OwnershipError::InvalidOptions(
+                "Group cannot be empty".to_string(),
+            ));
+        }
+        let owner = match owner {
+            Some(owner) => OwnershipSelection::Explicit(resolve_owner(&owner).await?),
+            None => OwnershipSelection::Unchanged,
+        };
+        let group = match group {
+            Some(group) => OwnershipSelection::Explicit(resolve_group(&group).await?),
+            None => OwnershipSelection::Unchanged,
+        };
+        Ok(Self { owner, group })
+    }
+
+    /// Converts explicit and unchanged selections without inspecting a parent directory.
+    pub fn resolved(&self) -> ResolvedOwnership {
+        ResolvedOwnership {
+            uid: selection_id(self.owner, None),
+            gid: selection_id(self.group, None),
+        }
     }
 
     /// Reads the immediate parent only when at least one requested dimension inherits from it.
@@ -170,7 +216,7 @@ async fn resolve_owner(owner: &str) -> Result<u32, OwnershipError> {
     }
     let owner = owner.to_string();
     let lookup_name = owner.clone();
-    tokio::task::spawn_blocking(move || User::from_name(&lookup_name))
+    tokio::task::spawn_blocking(move || with_nss_lock(|| User::from_name(&lookup_name)))
         .await
         .map_err(|error| OwnershipError::LookupWorker(error.to_string()))?
         .map_err(|source| OwnershipError::ResolveOwner {
@@ -188,7 +234,7 @@ async fn resolve_group(group: &str) -> Result<u32, OwnershipError> {
     }
     let group = group.to_string();
     let lookup_name = group.clone();
-    tokio::task::spawn_blocking(move || Group::from_name(&lookup_name))
+    tokio::task::spawn_blocking(move || with_nss_lock(|| Group::from_name(&lookup_name)))
         .await
         .map_err(|error| OwnershipError::LookupWorker(error.to_string()))?
         .map_err(|source| OwnershipError::ResolveGroup {
@@ -197,4 +243,26 @@ async fn resolve_group(group: &str) -> Result<u32, OwnershipError> {
         })?
         .map(|entry| entry.gid.as_raw())
         .ok_or(OwnershipError::UnknownGroup(group))
+}
+
+/// Resolves display names off the async runtime so command futures never block on NSS.
+pub async fn names_for_ids(
+    uid: u32,
+    gid: u32,
+) -> Result<(Option<String>, Option<String>), OwnershipError> {
+    tokio::task::spawn_blocking(move || {
+        with_nss_lock(|| {
+            let owner = User::from_uid(Uid::from_raw(uid))
+                .ok()
+                .flatten()
+                .map(|user| user.name);
+            let group = Group::from_gid(Gid::from_raw(gid))
+                .ok()
+                .flatten()
+                .map(|group| group.name);
+            (owner, group)
+        })
+    })
+    .await
+    .map_err(|error| OwnershipError::LookupWorker(error.to_string()))
 }

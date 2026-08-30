@@ -45,4 +45,12 @@ supports_move_to_trash: boolean,
 /**
  * Whether the latest agent session can also list and restore trash entries.
  */
-supports_trash: boolean, };
+supports_trash: boolean, 
+/**
+ * Effective UID from the latest registration so chmod gating does not need a details round-trip.
+ */
+uid: number | null, 
+/**
+ * Whether the latest session's effective UID is root. False until first connect or for older agents.
+ */
+is_root: boolean, };

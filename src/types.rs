@@ -241,6 +241,12 @@ pub enum Message {
         /// Whether this agent can move filesystem entries to its platform trash.
         #[serde(default)]
         supports_move_to_trash: bool,
+        /// Effective UID captured at connect so chmod gating does not depend on `$USER`.
+        #[serde(default)]
+        uid: Option<u32>,
+        /// Root is derived from `Uid::effective()`, never from username, so systemd `User=` is correct.
+        #[serde(default)]
+        is_root: bool,
     },
 
     /// Instructs the authoritative control session to establish its persistent

@@ -462,6 +462,8 @@ impl AgentRuntime {
                 let os = std::env::consts::OS.to_string();
                 let arch = std::env::consts::ARCH.to_string();
                 let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+                // Effective UID is process-stable and correct under systemd User=, unlike `$USER`.
+                let effective_uid = nix::unistd::Uid::effective();
 
                 let register_msg = Message::AgentRegister {
                     agent_id: self.state.agent_id.clone(),
@@ -482,6 +484,8 @@ impl AgentRuntime {
                     supports_trash: self.state.trash.supports_inventory(),
                     // macOS supports the native move without Redoor inventory or restore support.
                     supports_move_to_trash: self.state.trash.supports_move(),
+                    uid: Some(effective_uid.as_raw()),
+                    is_root: effective_uid.is_root(),
                 };
 
                 if let Ok(json) = serde_json::to_string(&register_msg) {

@@ -27,4 +27,12 @@ binary: BinaryIdentity,
 /**
  * Current filesystems are optional on the wire so newer servers can still inspect older agents.
  */
-mount_points: Array<MountPoint>, };
+mount_points: Array<MountPoint>, 
+/**
+ * Effective UID of the connected agent process; defaults for older agents that omit it.
+ */
+uid: number, 
+/**
+ * Whether the connected agent process is running as root; defaults false for older agents.
+ */
+is_root: boolean, };

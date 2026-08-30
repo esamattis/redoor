@@ -76,6 +76,11 @@ import type { GitDiffResponse } from "#bindings/GitDiffResponse";
 import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { DirectorySizeResponse } from "#bindings/DirectorySizeResponse";
+import type { AgentAccountsResponse } from "#bindings/AgentAccountsResponse";
+import type { ChownPathRequest } from "#bindings/ChownPathRequest";
+import type { ChownPathResponse } from "#bindings/ChownPathResponse";
+import type { ChmodPathRequest } from "#bindings/ChmodPathRequest";
+import type { ChmodPathResponse } from "#bindings/ChmodPathResponse";
 import type { Level } from "#bindings/Level";
 import type { LoggingLevelRequest } from "#bindings/LoggingLevelRequest";
 import type { LoggingLevelResponse } from "#bindings/LoggingLevelResponse";
@@ -179,6 +184,27 @@ export class Agent {
         this.requestContext = requestContext;
     }
 
+    /** Builds one agent filesystem REST URL while preserving encoded path separators. */
+    private filesystemUrl(route: string, path: string): string {
+        return `${this.baseUrl}${appendFilesystemPath(
+            `/api/v1/agents/${encodeURIComponent(this.info.id)}/${route}`,
+            path,
+        )}`;
+    }
+
+    /** Posts JSON to an agent route without repeating content-type boilerplate. */
+    private postJson<T, B>(url: string, body: B): Promise<T> {
+        return apiRequest<T>(
+            url,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            },
+            this.requestContext,
+        );
+    }
+
     /** Returns authentication headers for lower-level streaming tests and integrations. */
     getAuthHeaders(): Record<string, string> {
         const sessionCookie = this.requestContext.getSessionCookie?.();
@@ -238,6 +264,16 @@ export class Agent {
     /** Indicates whether this connection can move entries to its platform trash. */
     get supportsMoveToTrash(): boolean {
         return this.info.supports_move_to_trash || this.info.supports_trash;
+    }
+
+    /** Effective UID from registration; null until first connect or for older agents. */
+    get uid(): number | null {
+        return this.info.uid;
+    }
+
+    /** Whether the latest session's effective UID is root. */
+    get isRoot(): boolean {
+        return this.info.is_root;
     }
 
     /** Returns the configured SSH destination for inventory labels. */
@@ -372,10 +408,7 @@ export class Agent {
     /** Asks the agent desktop to open a file or directory with its native application. */
     async openPath(path: string): Promise<OpenPathResponse> {
         return apiRequest<OpenPathResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/open`,
-                path,
-            )}`,
+            this.filesystemUrl("open", path),
             { method: "POST" },
             this.requestContext,
         );
@@ -383,10 +416,7 @@ export class Agent {
 
     async ls(path: string): Promise<LsResponse> {
         return apiRequest<LsResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/ls`,
-                path,
-            )}`,
+            this.filesystemUrl("ls", path),
             undefined,
             this.requestContext,
         );
@@ -395,10 +425,7 @@ export class Agent {
     /** Discovers repository availability and classifies one browser path. */
     async gitContext(path: string): Promise<GitContextResponse> {
         return apiRequest<GitContextResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/context`,
-                path,
-            )}`,
+            this.filesystemUrl("git/context", path),
             undefined,
             this.requestContext,
         );
@@ -407,10 +434,7 @@ export class Agent {
     /** Returns bounded repository status below one literal directory path. */
     async gitStatus(path: string): Promise<GitStatusResponse> {
         return apiRequest<GitStatusResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/git/status`,
-                path,
-            )}`,
+            this.filesystemUrl("git/status", path),
             undefined,
             this.requestContext,
         );
@@ -531,22 +555,40 @@ export class Agent {
     /** Fetches agent-side file sniffing results including the UTF-8 editable gate. */
     async metadata(path: string): Promise<MetadataResponse> {
         return apiRequest<MetadataResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/metadata`,
-                path,
-            )}`,
+            this.filesystemUrl("metadata", path),
             undefined,
             this.requestContext,
         );
     }
 
+    /** Loads host users and groups only when a root details view needs owner/group selects. */
+    async accounts(): Promise<AgentAccountsResponse> {
+        return apiRequest<AgentAccountsResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/accounts`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Changes owner and/or group of one existing path without recursing. */
+    async chown(
+        path: string,
+        request: Partial<ChownPathRequest>,
+    ): Promise<ChownPathResponse> {
+        return this.postJson(this.filesystemUrl("chown", path), request);
+    }
+
+    /** Replaces the ordinary rwx bits of one existing path without recursing. */
+    async chmod(path: string, permissions: number): Promise<ChmodPathResponse> {
+        return this.postJson(this.filesystemUrl("chmod", path), {
+            permissions,
+        } satisfies ChmodPathRequest);
+    }
+
     /** Calculates recursive regular-file bytes only when directory details request it. */
     async calculateDirectorySize(path: string): Promise<DirectorySizeResponse> {
         return apiRequest<DirectorySizeResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/directory-size`,
-                path,
-            )}`,
+            this.filesystemUrl("directory-size", path),
             { method: "POST" },
             this.requestContext,
         );
@@ -557,20 +599,14 @@ export class Agent {
         path: string,
     ): Promise<CreateOneTimeTokenResponse> {
         return apiRequest<CreateOneTimeTokenResponse>(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/one-time-token`,
-                path,
-            )}`,
+            this.filesystemUrl("one-time-token", path),
             { method: "POST" },
             this.requestContext,
         );
     }
 
     getRawUrl(path: string, options?: { download?: boolean }): string {
-        let url = `${this.baseUrl}${appendFilesystemPath(
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/raw`,
-            path,
-        )}`;
+        let url = this.filesystemUrl("raw", path);
         if (options?.download) {
             url += "?download=1";
         }
@@ -636,9 +672,8 @@ export class Agent {
 
     /** Rewrites one existing file inode through the dedicated editor endpoint. */
     async editFile(path: string, file: File): Promise<FileEditResponse> {
-        const route = `/api/v1/agents/${encodeURIComponent(this.info.id)}/edit`;
         return apiRequest<FileEditResponse>(
-            `${this.baseUrl}${appendFilesystemPath(route, path)}`,
+            this.filesystemUrl("edit", path),
             { method: "PUT", body: file },
             this.requestContext,
         );
@@ -682,14 +717,9 @@ export class Agent {
     async restoreTrashItem(
         request: RestoreTrashItemRequest,
     ): Promise<RestoreTrashItemResponse> {
-        return apiRequest<RestoreTrashItemResponse>(
+        return this.postJson(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/trash/restore`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(request),
-            },
-            this.requestContext,
+            request,
         );
     }
 
@@ -698,12 +728,7 @@ export class Agent {
         ownership?: Partial<CreationOwnershipOptions>,
     ): Promise<CreateDirectoryResponse> {
         const url = apiPaths.appendOwnershipOptions(
-            new URL(
-                `${this.baseUrl}${appendFilesystemPath(
-                    `/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir`,
-                    path,
-                )}`,
-            ),
+            new URL(this.filesystemUrl("mkdir", path)),
             ownership,
         );
         const response = await fetch(
@@ -726,20 +751,9 @@ export class Agent {
         newName: string,
     ): Promise<RenamePathResponse> {
         encodeFilesystemPath(dir);
-        const request: RenamePathRequest = {
-            dir,
-            old: oldName,
-            new: newName,
-        };
-
-        return apiRequest<RenamePathResponse>(
+        return this.postJson(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/rename`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(request),
-            },
-            this.requestContext,
+            { dir, old: oldName, new: newName } satisfies RenamePathRequest,
         );
     }
 

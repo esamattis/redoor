@@ -32,6 +32,8 @@ export const queryKeys = {
         [...queryKeys.git(), agentId, "diff", files, mode] as const,
     trash: (agentId: string) =>
         [...queryKeys.all, "agents", agentId, "trash"] as const,
+    accounts: (agentId: string) =>
+        [...queryKeys.all, "agents", agentId, "accounts"] as const,
     fileSearch: (
         agentId: string,
         path: string,
@@ -178,6 +180,15 @@ export function gitDiffQueryOptions(
     return queryOptions({
         queryKey: queryKeys.gitDiff(agent.id, files, mode),
         queryFn: () => agent.gitDiff(files, mode),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Shares one agent-scoped account catalog so path changes reuse the same query. */
+export function agentAccountsQueryOptions(agent: Agent) {
+    return queryOptions({
+        queryKey: queryKeys.accounts(agent.id),
+        queryFn: () => agent.accounts(),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

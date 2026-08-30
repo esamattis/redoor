@@ -882,6 +882,56 @@ log = "${agentLogPath}"
         expect(
             Buffer.from(await connected.raw(`${parentPath}/root-file.txt`)).toString(),
         ).toBe("replacement");
+
+        // List metadata must advertise root from Uid::effective so the UI can show owner selects.
+        expect(connected.isRoot).toBe(true);
+        expect(connected.uid).toBe(0);
+        const accounts = await connected.accounts();
+        // Root and the fixture user must be present so owner-only and group-only chown can use names.
+        expect(accounts.users.some((user) => user.name === "root")).toBe(true);
+        expect(accounts.users.some((user) => user.name === SSH_TEST_USER)).toBe(
+            true,
+        );
+        const targetGroup =
+            accounts.groups.find((group) => group.name === SSH_TEST_USER) ??
+            accounts.groups.find((group) => group.name !== "root");
+        if (targetGroup === undefined) {
+            throw new Error("Root SSH host returned no usable groups");
+        }
+        const missingOwner = `redoor-missing-${process.pid}-${Date.now()}`;
+        await expect(
+            connected.chown(`${parentPath}/root-file.txt`, {
+                owner: missingOwner,
+            }),
+        ).rejects.toThrow(
+            `Owner '${missingOwner}' does not exist on the agent`,
+        );
+        const ownerOnly = await connected.chown(
+            `${parentPath}/root-file.txt`,
+            { owner: SSH_TEST_USER },
+        );
+        const groupOnly = await connected.chown(
+            `${parentPath}/inherited-directory`,
+            { group: targetGroup.name },
+        );
+        // Returned IDs must match disk so UID/GID confirmation fields stay truthful after a name mapping.
+        expect(ownerOnly.owner).toBe(SSH_TEST_USER);
+        expect(ownerOnly.uid).not.toBe(0);
+        expect(groupOnly.group).toBe(targetGroup.name);
+        expect(groupOnly.gid).toBe(targetGroup.gid);
+        const chownListing = await connected.ls(parentPath);
+        if (!("files" in chownListing)) {
+            throw new Error("Root chown fixture parent was not a directory");
+        }
+        expect(
+            chownListing.files.find((entry) => entry.name === "root-file.txt")
+                ?.uid,
+        ).toBe(ownerOnly.uid);
+        expect(
+            chownListing.files.find(
+                (entry) => entry.name === "inherited-directory",
+            )?.gid,
+        ).toBe(groupOnly.gid);
     }, 120_000);
 });
 

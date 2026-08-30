@@ -86,6 +86,8 @@ impl SessionRuntime {
                 supports_native_open,
                 supports_trash,
                 supports_move_to_trash,
+                uid,
+                is_root,
             } => {
                 // Reject impostors before name takeover: an unauthenticated client
                 // that only knows an agent name must not replace a live connection.
@@ -163,6 +165,8 @@ impl SessionRuntime {
                         supports_trash,
                         // Full inventory support from older agents already implies moving support.
                         supports_move_to_trash: supports_move_to_trash || supports_trash,
+                        uid,
+                        is_root,
                         watchdog: self.watchdog.clone(),
                         watchdog_attempt_generation,
                     }));

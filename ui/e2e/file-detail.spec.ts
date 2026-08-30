@@ -98,8 +98,12 @@ test.describe.serial("File Detail View", () => {
         await expect(
             page.getByRole("heading", { name: "Permissions" }),
         ).toBeVisible();
-        // A visible owner read cell proves raw mode bits are translated into understandable access rights.
-        await expect(page.getByLabel("Owner Read: allowed")).toBeVisible();
+        // The e2e agent owns the fixture, so the grid is interactive checkboxes rather than static cells.
+        await expect(
+            page.getByRole("checkbox", { name: "Owner Read" }),
+        ).toBeVisible();
+        // A non-root agent must keep owner/group as confirmation text instead of implying they are editable.
+        await expect(metadata.getByRole("combobox")).toHaveCount(0);
         await expect(page.getByText("Full Path")).toBeVisible();
         await expect(
             page.getByRole("link", { name: "Download", exact: true }),
@@ -119,6 +123,30 @@ test.describe.serial("File Detail View", () => {
         await expect(
             fileView.getByRole("link", { name: "Edit", exact: true }),
         ).toBeVisible();
+    });
+
+    test("should toggle ordinary permission bits from file details", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "file1.txt");
+        await fs.chmod(filePath, 0o644);
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}?view=details`,
+        );
+        const ownerExecute = page.getByRole("checkbox", {
+            name: "Owner Execute",
+        });
+        // Starting unchecked proves the grid reflects the known 0644 fixture rather than a stale mode.
+        await expect(ownerExecute).not.toBeChecked();
+        await ownerExecute.click();
+        // Becoming checked without waiting on a timer proves the in-flight grid follows the new 9-bit mask.
+        await expect(ownerExecute).toBeChecked();
+        await expect
+            .poll(async () => (await fs.stat(filePath)).mode & 0o777)
+            .toBe(0o744);
+        const metadata = page.getByRole("region", { name: "Metadata" });
+        // Owner/group must remain static text on the non-root e2e agent.
+        await expect(metadata.getByRole("combobox")).toHaveCount(0);
     });
 
     test("should display correct file size on detail view", async ({

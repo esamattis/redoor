@@ -323,6 +323,9 @@ describe("Agents API", () => {
         // Verify connected_at is a positive number
         expect(Number.isFinite(result.connected_at)).toBe(true);
         expect(result.connected_at).toBeGreaterThan(0);
+        // Root/uid must come from the connected process so details gating matches list inventory.
+        expect(result.uid).toBe(testAgent.uid);
+        expect(result.is_root).toBe(testAgent.isRoot);
         // Agent and server share one binary in tests, so list/details identity must match server info.
         const serverInfo = await apiClient.getServerInfo();
         expect(result.binary).toEqual({
@@ -1248,6 +1251,8 @@ describe("Agents API", () => {
                 supports_native_open: false,
                 supports_move_to_trash: false,
                 supports_trash: false,
+                uid: null,
+                is_root: false,
             },
             {
                 getSessionCookie: () =>

@@ -36,6 +36,7 @@ import {
     sortFileEntries,
 } from "#ui/components/browser/utils";
 import {
+    agentAccountsQueryOptions,
     browserListingQueryOptions,
     fileContentQueryOptions,
     gitContextQueryOptions,
@@ -220,6 +221,11 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                         fileContentQueryOptions(agent, lsResult.path),
                     );
                 }
+            }
+            if (deps.view === "details" && agent.isRoot) {
+                await context.queryClient.fetchQuery(
+                    agentAccountsQueryOptions(agent),
+                );
             }
             if (
                 deps.view === "git" &&

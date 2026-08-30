@@ -1,11 +1,12 @@
 #[cfg(not(target_os = "android"))]
 use super::MountPoint;
 use super::{
-    AgentDetailsResponse, AgentId, AgentInfoResult, Command, CommandErrorKind, CommandResult,
-    DirectorySizeError, DirectorySizeResponse, EchoRequest, EchoResult, LsDirectoryResult, LsEntry,
-    LsFileResult, MoveMetadataResult, MoveSourceIdentity, UnixTimestampSeconds,
-    agent_loaded_config_path, content_grep, current_binary_identity, current_exe_path, external_ip,
-    file_search, git, metadata,
+    AgentAccountGroup, AgentAccountUser, AgentAccountsResponse, AgentDetailsResponse, AgentId,
+    AgentInfoResult, ChmodPathResponse, ChownPathResponse, Command, CommandErrorKind,
+    CommandResult, DirectorySizeError, DirectorySizeResponse, EchoRequest, EchoResult,
+    LsDirectoryResult, LsEntry, LsFileResult, MoveMetadataResult, MoveSourceIdentity,
+    UnixTimestampSeconds, agent_loaded_config_path, content_grep, current_binary_identity,
+    current_exe_path, external_ip, file_search, git, metadata,
 };
 use crate::logging::Level;
 use std::future::Future;
@@ -129,6 +130,9 @@ impl CommandHandler {
                 self.create_directory(path, ownership).await
             }
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
+            Command::ChownPath { path, owner, group } => self.chown_path(path, owner, group).await,
+            Command::ChmodPath { path, permissions } => self.chmod_path(path, permissions).await,
+            Command::ListAccounts => self.list_accounts().await,
             Command::Metadata { path } => metadata::execute(path).await,
             Command::DirectorySize {
                 path,
@@ -756,8 +760,206 @@ impl CommandHandler {
             // Agent process reports its own baked identity; router may also rewrite from registration.
             binary: current_binary_identity(),
             mount_points,
+            uid: nix::unistd::Uid::effective().as_raw(),
+            is_root: nix::unistd::Uid::effective().is_root(),
         }))
     }
+
+    /// Rejects non-root even for a same-uid no-op because the agent is the trust boundary.
+    async fn chown_path(
+        &self,
+        path: String,
+        owner: Option<String>,
+        group: Option<String>,
+    ) -> CommandResult {
+        if !nix::unistd::Uid::effective().is_root() {
+            return CommandResult::error(
+                CommandErrorKind::PermissionDenied,
+                "Only a root agent can change ownership",
+            );
+        }
+        if owner.is_none() && group.is_none() {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                "Owner or group is required",
+            );
+        }
+        let ownership_plan =
+            match crate::ownership::OwnershipPlan::for_existing_entry(owner, group).await {
+                Ok(plan) => plan,
+                Err(error) => return CommandResult::error(error.kind(), error.to_string()),
+            };
+        match ownership_plan
+            .resolved()
+            .apply(std::path::Path::new(&path))
+            .await
+        {
+            Ok(()) => {}
+            Err(error) => return CommandResult::error(error.kind(), error.to_string()),
+        }
+        match followed_ownership(&path).await {
+            Ok((owner, group, uid, gid)) => CommandResult::ChownPath(ChownPathResponse {
+                path,
+                owner,
+                group,
+                uid,
+                gid,
+            }),
+            Err(error) => CommandResult::io_error(
+                &format!("Failed to read ownership after chown for path {path:?}"),
+                error,
+            ),
+        }
+    }
+
+    /// Replaces only the nine rwx bits so toggling the grid cannot clear setuid/setgid/sticky.
+    async fn chmod_path(&self, path: String, permissions: u32) -> CommandResult {
+        if permissions > 0o777 {
+            return CommandResult::error(
+                CommandErrorKind::InvalidInput,
+                format!("Permissions must be between 0 and 0o777, got {permissions:#o}"),
+            );
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return CommandResult::io_error(
+                    &format!("Failed to read metadata for path {path:?}"),
+                    error,
+                );
+            }
+        };
+        let next_mode = (metadata.mode() & !0o777) | (permissions & 0o777);
+        let mut next_permissions = metadata.permissions();
+        next_permissions.set_mode(next_mode);
+        if let Err(error) = tokio::fs::set_permissions(&path, next_permissions).await {
+            return CommandResult::io_error(
+                &format!("Failed to change permissions for path {path:?}"),
+                error,
+            );
+        }
+        CommandResult::ChmodPath(ChmodPathResponse { path, permissions })
+    }
+
+    /// Loads the user/group catalog only when a root details view needs owner/group selects.
+    async fn list_accounts(&self) -> CommandResult {
+        match tokio::task::spawn_blocking(enumerate_accounts).await {
+            Ok(Ok(response)) => CommandResult::ListAccounts(response),
+            Ok(Err(message)) => CommandResult::error(CommandErrorKind::Internal, message),
+            Err(error) => CommandResult::error(
+                CommandErrorKind::Internal,
+                format!("Account enumeration worker failed: {error}"),
+            ),
+        }
+    }
+}
+
+/// Caps NSS dumps so an LDAP host cannot serialize an unbounded catalog into one REST response.
+const MAX_ENUMERATED_ACCOUNTS: usize = 8192;
+
+/// Closes the passwd iterator even when UTF-8 skipping or the cap aborts enumeration early.
+struct PasswdEnumerationGuard;
+
+impl Drop for PasswdEnumerationGuard {
+    fn drop(&mut self) {
+        unsafe {
+            nix::libc::endpwent();
+        }
+    }
+}
+
+/// Closes the group iterator even when UTF-8 skipping or the cap aborts enumeration early.
+struct GroupEnumerationGuard;
+
+impl Drop for GroupEnumerationGuard {
+    fn drop(&mut self) {
+        unsafe {
+            nix::libc::endgrent();
+        }
+    }
+}
+
+/// Re-reads followed metadata so the chown response matches the inode the details view already shows.
+async fn followed_ownership(
+    path: &str,
+) -> std::io::Result<(Option<String>, Option<String>, u32, u32)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = tokio::fs::metadata(path).await?;
+    let uid = metadata.uid();
+    let gid = metadata.gid();
+    let (owner, group) = crate::ownership::names_for_ids(uid, gid)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok((owner, group, uid, gid))
+}
+
+/// Enumerates NSS users and groups off the async runtime because getpwent/getgrent are blocking.
+fn enumerate_accounts() -> Result<AgentAccountsResponse, String> {
+    crate::ownership::with_nss_lock(enumerate_accounts_locked)
+}
+
+/// Runs only while the process-wide NSS lock is held so getpwent cannot interleave with lookups.
+fn enumerate_accounts_locked() -> Result<AgentAccountsResponse, String> {
+    let mut users = Vec::new();
+    let mut groups = Vec::new();
+    let mut truncated = false;
+
+    unsafe {
+        nix::libc::setpwent();
+        let _passwd_guard = PasswdEnumerationGuard;
+        loop {
+            let passwd = nix::libc::getpwent();
+            if passwd.is_null() {
+                break;
+            }
+            if users.len() >= MAX_ENUMERATED_ACCOUNTS {
+                truncated = true;
+                break;
+            }
+            let name = match std::ffi::CStr::from_ptr((*passwd).pw_name).to_str() {
+                Ok(name) => name.to_string(),
+                // Lossy labels would chown the wrong account, so skip non-UTF-8 names.
+                Err(_) => continue,
+            };
+            users.push(AgentAccountUser {
+                name,
+                uid: (*passwd).pw_uid,
+            });
+        }
+    }
+
+    unsafe {
+        nix::libc::setgrent();
+        let _group_guard = GroupEnumerationGuard;
+        loop {
+            let group = nix::libc::getgrent();
+            if group.is_null() {
+                break;
+            }
+            if groups.len() >= MAX_ENUMERATED_ACCOUNTS {
+                truncated = true;
+                break;
+            }
+            let name = match std::ffi::CStr::from_ptr((*group).gr_name).to_str() {
+                Ok(name) => name.to_string(),
+                Err(_) => continue,
+            };
+            groups.push(AgentAccountGroup {
+                name,
+                gid: (*group).gr_gid,
+            });
+        }
+    }
+
+    users.sort_by(|left, right| left.name.cmp(&right.name));
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(AgentAccountsResponse {
+        users,
+        groups,
+        truncated,
+    })
 }
 
 /// Hides a directory under an unpredictable sibling name without requiring renameat2 support.

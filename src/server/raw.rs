@@ -673,6 +673,8 @@ mod tests {
                 supports_native_open: true,
                 supports_trash: true,
                 supports_move_to_trash: true,
+                uid: Some(1000),
+                is_root: false,
                 watchdog: None,
                 watchdog_attempt_generation: None,
             }))

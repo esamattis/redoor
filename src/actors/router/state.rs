@@ -60,6 +60,10 @@ pub struct AgentConnection {
     pub supports_trash: bool,
     /// Whether this connection can move entries to platform trash.
     pub supports_move_to_trash: bool,
+    /// Effective UID reported at registration for chmod owner comparisons.
+    pub uid: Option<u32>,
+    /// Whether this connection's effective UID is root.
+    pub is_root: bool,
 }
 
 /// Retained UI inventory record for an agent seen during this server process.
@@ -99,6 +103,10 @@ pub struct KnownAgent {
     pub supports_trash: bool,
     /// Last advertised support for moving entries to platform trash.
     pub supports_move_to_trash: bool,
+    /// Last advertised effective UID, retained after disconnect like other capabilities.
+    pub uid: Option<u32>,
+    /// Last advertised root identity, retained after disconnect like other capabilities.
+    pub is_root: bool,
 }
 
 #[derive(Default)]

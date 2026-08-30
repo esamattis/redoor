@@ -1,20 +1,27 @@
 import React from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "@tanstack/react-router";
 import { Check, Copy, Download, File, Folder } from "lucide-react";
 import type {
     Agent,
     LsDirectoryResponse,
     LsFileResponse,
 } from "#ui/api-client";
+import type { AgentAccountGroup } from "#bindings/AgentAccountGroup";
+import type { AgentAccountUser } from "#bindings/AgentAccountUser";
+import type { ChownPathRequest } from "#bindings/ChownPathRequest";
 import { Button } from "#ui/components/button";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
+import { Checkbox } from "#ui/components/checkbox";
 import { IconButton } from "#ui/components/icon-button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/components/browser/utils";
 import { formatSize } from "#ui/utils/path";
+import { Select } from "#ui/components/select";
 import { Tooltip } from "#ui/components/tooltip";
 import { Toast } from "#ui/components/toast";
+import { agentAccountsQueryOptions, queryKeys } from "#ui/queries";
 
 /** Converts permission bits to the compact notation people expect from Unix tools. */
 function formatSymbolicPermissions(permissions: number): string {
@@ -43,6 +50,7 @@ function MetadataItem(props: {
     value: React.ReactNode;
     valueLabel?: string;
     mono?: boolean;
+    truncate?: boolean;
 }) {
     return (
         <div className="rounded-xl border border-slate-800/80 bg-slate-950/35 px-4 py-3.5">
@@ -51,7 +59,7 @@ function MetadataItem(props: {
             </dt>
             <dd
                 aria-label={props.valueLabel}
-                className={`mt-1.5 truncate text-sm font-semibold text-slate-100 ${props.mono ? "font-mono" : ""}`}
+                className={`mt-1.5 text-sm font-semibold text-slate-100 ${props.truncate === false ? "" : "truncate"} ${props.mono ? "font-mono" : ""}`}
             >
                 {props.value}
             </dd>
@@ -60,7 +68,12 @@ function MetadataItem(props: {
 }
 
 /** Makes raw permission bits understandable without requiring users to decode octal values. */
-function PermissionsGrid(props: { permissions: number }) {
+function PermissionsGrid(props: {
+    permissions: number;
+    interactive: boolean;
+    disabled?: boolean;
+    onToggleBit?: (bit: number, enabled: boolean) => void;
+}) {
     const rows = [
         { label: "Owner", bits: [0o400, 0o200, 0o100] },
         { label: "Group", bits: [0o040, 0o020, 0o010] },
@@ -103,6 +116,36 @@ function PermissionsGrid(props: { permissions: number }) {
                                 const isAllowed = Boolean(
                                     props.permissions & bit,
                                 );
+                                if (props.interactive) {
+                                    const label = `${row.label} ${column}`;
+                                    return (
+                                        <td
+                                            key={bit}
+                                            className="px-2 py-2 text-center"
+                                        >
+                                            <Tooltip
+                                                content={`Toggle ${label.toLowerCase()} on this path only.`}
+                                            >
+                                                <Checkbox
+                                                    role="checkbox"
+                                                    label={label}
+                                                    title={false}
+                                                    checked={isAllowed}
+                                                    disabled={props.disabled}
+                                                    onCheckedChange={(
+                                                        checked,
+                                                    ) =>
+                                                        props.onToggleBit?.(
+                                                            bit,
+                                                            checked,
+                                                        )
+                                                    }
+                                                    className="justify-center"
+                                                />
+                                            </Tooltip>
+                                        </td>
+                                    );
+                                }
                                 return (
                                     <td
                                         key={bit}
@@ -127,6 +170,49 @@ function PermissionsGrid(props: { permissions: number }) {
     );
 }
 
+/** Includes the current owner even when NSS omitted a deleted or truncated account. */
+function ownerSelectOptions(
+    metadata: FilesystemMetadata,
+    users: AgentAccountUser[],
+): AgentAccountUser[] {
+    return withCurrentAccount({
+        accounts: users,
+        currentName: metadata.owner,
+        fallback: {
+            name: metadata.owner ?? String(metadata.uid),
+            uid: metadata.uid,
+        },
+    });
+}
+
+/** Includes the current group even when NSS omitted a deleted or truncated account. */
+function groupSelectOptions(
+    metadata: FilesystemMetadata,
+    groups: AgentAccountGroup[],
+): AgentAccountGroup[] {
+    return withCurrentAccount({
+        accounts: groups,
+        currentName: metadata.group,
+        fallback: {
+            name: metadata.group ?? String(metadata.gid),
+            gid: metadata.gid,
+        },
+    });
+}
+
+/** Keeps a deleted or truncated account selectable so the current owner/group is never missing. */
+function withCurrentAccount<T extends { name: string }>(props: {
+    accounts: T[];
+    currentName: string | null;
+    fallback: T;
+}): T[] {
+    const currentName = props.currentName ?? props.fallback.name;
+    if (props.accounts.some((account) => account.name === currentName)) {
+        return props.accounts;
+    }
+    return [props.fallback, ...props.accounts];
+}
+
 /** Describes the ownership and access fields shared by files and directories. */
 type FilesystemMetadata = {
     owner: string | null;
@@ -136,8 +222,239 @@ type FilesystemMetadata = {
     permissions: number;
 };
 
+/** Keeps the symbolic, octal, and 3×3 grid views on one shared 9-bit mask. */
+function PermissionsSection(props: {
+    headingId: string;
+    permissions: number;
+    interactive: boolean;
+    disabled?: boolean;
+    onToggleBit: (bit: number, enabled: boolean) => void;
+}) {
+    const symbolicPermissions = formatSymbolicPermissions(props.permissions);
+    const octalPermissions = `0${props.permissions.toString(8).padStart(3, "0")}`;
+    return (
+        <section aria-labelledby={props.headingId}>
+            <div className="mb-4 flex items-end justify-between gap-4">
+                <div>
+                    <h2
+                        id={props.headingId}
+                        className="text-base font-semibold text-slate-100"
+                    >
+                        Permissions
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                        Access granted by the Unix mode.
+                    </p>
+                </div>
+                <div className="text-right font-mono">
+                    <p className="text-sm font-semibold text-slate-200">
+                        {symbolicPermissions}
+                    </p>
+                    <p className="text-xs text-slate-500">{octalPermissions}</p>
+                </div>
+            </div>
+            <PermissionsGrid
+                permissions={props.permissions}
+                interactive={props.interactive}
+                disabled={props.disabled}
+                onToggleBit={props.onToggleBit}
+            />
+        </section>
+    );
+}
+
+/** Renders a root-only owner or group select without implying recursive chown. */
+function OwnershipSelect(props: {
+    label: "Owner" | "Group";
+    value: string;
+    options: Array<{ name: string }>;
+    disabled?: boolean;
+    onChange: (name: string) => void;
+}) {
+    return (
+        <Tooltip
+            content={`Changes ${props.label.toLowerCase()} of this path only, not recursively.`}
+        >
+            <Select
+                aria-label={props.label}
+                value={props.value}
+                disabled={props.disabled}
+                onChange={(event) => props.onChange(event.target.value)}
+            >
+                {props.options.map((account) => (
+                    <option key={account.name} value={account.name}>
+                        {account.name}
+                    </option>
+                ))}
+            </Select>
+        </Tooltip>
+    );
+}
+
+/** Keeps owner/mode UI on the last successful server values so stale loader props cannot roll them back. */
+function useDetailsOwnershipState(props: {
+    agent: Agent;
+    path: string;
+    metadata: FilesystemMetadata;
+}) {
+    const router = useRouter();
+    const queryClient = useQueryClient();
+    const serverPermissionsRef = React.useRef(props.metadata.permissions);
+    const serverOwnerRef = React.useRef(props.metadata.owner);
+    const serverGroupRef = React.useRef(props.metadata.group);
+    const chmodInFlightRef = React.useRef(false);
+    const chownInFlightRef = React.useRef(false);
+    const [displayedPermissions, setDisplayedPermissions] = React.useState(
+        props.metadata.permissions,
+    );
+    const [displayedOwner, setDisplayedOwner] = React.useState(
+        props.metadata.owner,
+    );
+    const [displayedGroup, setDisplayedGroup] = React.useState(
+        props.metadata.group,
+    );
+    const [displayedUid, setDisplayedUid] = React.useState(props.metadata.uid);
+    const [displayedGid, setDisplayedGid] = React.useState(props.metadata.gid);
+    const [feedback, setFeedback] = React.useState<{
+        tone: "success" | "error";
+        message: string;
+    } | null>(null);
+
+    const accountsQuery = useQuery({
+        ...agentAccountsQueryOptions(props.agent),
+        enabled: props.agent.isRoot,
+    });
+    const displayedMetadata: FilesystemMetadata = {
+        owner: displayedOwner,
+        group: displayedGroup,
+        uid: displayedUid,
+        gid: displayedGid,
+        permissions: displayedPermissions,
+    };
+
+    const refreshDetails = async () => {
+        await queryClient.invalidateQueries({
+            queryKey: [
+                ...queryKeys.all,
+                "agents",
+                props.agent.id,
+                "browser-listing",
+            ],
+        });
+        await router.invalidate();
+    };
+
+    const chownMutation = useMutation({
+        mutationFn: (request: Partial<ChownPathRequest>) =>
+            props.agent.chown(props.path, request),
+        onSuccess: async (response) => {
+            serverOwnerRef.current = response.owner;
+            serverGroupRef.current = response.group;
+            setDisplayedOwner(response.owner);
+            setDisplayedGroup(response.group);
+            setDisplayedUid(response.uid);
+            setDisplayedGid(response.gid);
+            setFeedback({
+                tone: "success",
+                message: "Ownership updated",
+            });
+            await refreshDetails();
+        },
+        onError: (error) => {
+            setDisplayedOwner(serverOwnerRef.current);
+            setDisplayedGroup(serverGroupRef.current);
+            setFeedback({
+                tone: "error",
+                message: getErrorMessage(error, "Could not change ownership"),
+            });
+        },
+        onSettled: () => {
+            chownInFlightRef.current = false;
+        },
+    });
+    const chmodMutation = useMutation({
+        mutationFn: (permissions: number) =>
+            props.agent.chmod(props.path, permissions),
+        onSuccess: async (response) => {
+            serverPermissionsRef.current = response.permissions;
+            setDisplayedPermissions(response.permissions);
+            setFeedback({
+                tone: "success",
+                message: "Permissions updated",
+            });
+            await refreshDetails();
+        },
+        onError: (error) => {
+            setDisplayedPermissions(serverPermissionsRef.current);
+            setFeedback({
+                tone: "error",
+                message: getErrorMessage(error, "Could not change permissions"),
+            });
+        },
+        onSettled: () => {
+            chmodInFlightRef.current = false;
+        },
+    });
+
+    return {
+        displayed: displayedMetadata,
+        canChmod: props.agent.isRoot || props.agent.uid === displayedUid,
+        showOwnerSelect: props.agent.isRoot && accountsQuery.data !== undefined,
+        ownerOptions: ownerSelectOptions(
+            displayedMetadata,
+            accountsQuery.data?.users ?? [],
+        ),
+        groupOptions: groupSelectOptions(
+            displayedMetadata,
+            accountsQuery.data?.groups ?? [],
+        ),
+        chownPending: chownMutation.isPending,
+        chmodPending: chmodMutation.isPending,
+        feedback,
+        dismissFeedback: () => setFeedback(null),
+        accountsError: accountsQuery.isError
+            ? getErrorMessage(
+                  accountsQuery.error,
+                  "Could not load users and groups",
+              )
+            : null,
+        retryAccounts: () => {
+            void accountsQuery.refetch();
+        },
+        togglePermissionBit: (bit: number, enabled: boolean) => {
+            if (chmodInFlightRef.current) {
+                return;
+            }
+            const nextPermissions = enabled
+                ? displayedPermissions | bit
+                : displayedPermissions & ~bit;
+            chmodInFlightRef.current = true;
+            setDisplayedPermissions(nextPermissions);
+            chmodMutation.mutate(nextPermissions);
+        },
+        changeOwner: (owner: string) => {
+            if (chownInFlightRef.current) {
+                return;
+            }
+            chownInFlightRef.current = true;
+            setDisplayedOwner(owner);
+            chownMutation.mutate({ owner });
+        },
+        changeGroup: (group: string) => {
+            if (chownInFlightRef.current) {
+                return;
+            }
+            chownInFlightRef.current = true;
+            setDisplayedGroup(group);
+            chownMutation.mutate({ group });
+        },
+    };
+}
+
 /** Presents shared filesystem identity and Unix access metadata consistently. */
 function FilesystemMetadataSections(props: {
+    agent: Agent;
+    path: string;
     metadata: FilesystemMetadata;
     size?: number;
     sizeLabel?: string;
@@ -145,12 +462,11 @@ function FilesystemMetadataSections(props: {
     entryCount?: number;
     headingPrefix: string;
 }) {
-    const symbolicPermissions = formatSymbolicPermissions(
-        props.metadata.permissions,
-    );
-    const octalPermissions = `0${props.metadata.permissions
-        .toString(8)
-        .padStart(3, "0")}`;
+    const ownership = useDetailsOwnershipState({
+        agent: props.agent,
+        path: props.path,
+        metadata: props.metadata,
+    });
     const headingIdPrefix = props.headingPrefix.toLowerCase();
 
     return (
@@ -189,41 +505,77 @@ function FilesystemMetadataSections(props: {
                     )}
                     <MetadataItem
                         label="Owner"
-                        value={props.metadata.owner || "Unknown"}
+                        truncate={ownership.showOwnerSelect ? false : undefined}
+                        value={
+                            ownership.showOwnerSelect ? (
+                                <OwnershipSelect
+                                    label="Owner"
+                                    value={
+                                        ownership.displayed.owner ??
+                                        String(ownership.displayed.uid)
+                                    }
+                                    options={ownership.ownerOptions}
+                                    disabled={ownership.chownPending}
+                                    onChange={ownership.changeOwner}
+                                />
+                            ) : (
+                                ownership.displayed.owner || "Unknown"
+                            )
+                        }
                     />
                     <MetadataItem
                         label="Group"
-                        value={props.metadata.group || "Unknown"}
+                        truncate={ownership.showOwnerSelect ? false : undefined}
+                        value={
+                            ownership.showOwnerSelect ? (
+                                <OwnershipSelect
+                                    label="Group"
+                                    value={
+                                        ownership.displayed.group ??
+                                        String(ownership.displayed.gid)
+                                    }
+                                    options={ownership.groupOptions}
+                                    disabled={ownership.chownPending}
+                                    onChange={ownership.changeGroup}
+                                />
+                            ) : (
+                                ownership.displayed.group || "Unknown"
+                            )
+                        }
                     />
-                    <MetadataItem label="UID" value={props.metadata.uid} mono />
-                    <MetadataItem label="GID" value={props.metadata.gid} mono />
+                    <MetadataItem
+                        label="UID"
+                        value={ownership.displayed.uid}
+                        mono
+                    />
+                    <MetadataItem
+                        label="GID"
+                        value={ownership.displayed.gid}
+                        mono
+                    />
                 </dl>
             </section>
 
-            <section aria-labelledby={`${headingIdPrefix}-permissions-heading`}>
-                <div className="mb-4 flex items-end justify-between gap-4">
-                    <div>
-                        <h2
-                            id={`${headingIdPrefix}-permissions-heading`}
-                            className="text-base font-semibold text-slate-100"
-                        >
-                            Permissions
-                        </h2>
-                        <p className="mt-1 text-sm text-slate-500">
-                            Access granted by the Unix mode.
-                        </p>
-                    </div>
-                    <div className="text-right font-mono">
-                        <p className="text-sm font-semibold text-slate-200">
-                            {symbolicPermissions}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                            {octalPermissions}
-                        </p>
-                    </div>
-                </div>
-                <PermissionsGrid permissions={props.metadata.permissions} />
-            </section>
+            <PermissionsSection
+                headingId={`${headingIdPrefix}-permissions-heading`}
+                permissions={ownership.displayed.permissions}
+                interactive={ownership.canChmod}
+                disabled={ownership.chmodPending}
+                onToggleBit={ownership.togglePermissionBit}
+            />
+            {ownership.feedback ? (
+                <Toast
+                    tone={ownership.feedback.tone}
+                    onDismiss={ownership.dismissFeedback}
+                >
+                    {ownership.feedback.message}
+                </Toast>
+            ) : null}
+            {ownership.accountsError ? (
+                <Toast tone="error" onDismiss={ownership.retryAccounts}>
+                    {ownership.accountsError}
+                </Toast>
+            ) : null}
         </div>
     );
 }
@@ -346,6 +698,9 @@ export function DirectoryDetailView(props: {
             />
 
             <FilesystemMetadataSections
+                key={props.lsResult.path}
+                agent={props.agent}
+                path={props.lsResult.path}
                 metadata={props.lsResult}
                 size={directorySizeMutation.data?.size}
                 sizeLabel="Directory size value"
@@ -449,6 +804,9 @@ export function FileDetailView(props: {
             />
 
             <FilesystemMetadataSections
+                key={props.lsResult.path}
+                agent={props.agent}
+                path={props.lsResult.path}
                 metadata={props.lsResult}
                 size={props.lsResult.size}
                 headingPrefix="file"
