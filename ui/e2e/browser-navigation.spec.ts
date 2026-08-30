@@ -824,6 +824,32 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should copy the current path from breadcrumbs", async ({
+        page,
+        context,
+    }) => {
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
+            origin: WEB_BASE_URL,
+        });
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        const copyButton = page.getByRole("button", { name: "Copy file path" });
+        await copyButton.hover();
+        // Tooltip names the adjacent path action without replacing the edit control.
+        await expect(page.getByRole("tooltip")).toHaveText("Copy file path");
+        await copyButton.click();
+
+        // Clipboard must receive the same filesystem path shown in breadcrumbs.
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+            .toBe(ctx.testDirPath);
+        // Inline button feedback confirms the async clipboard write completed.
+        await expect(
+            page.getByRole("button", { name: "Copied!" }),
+        ).toBeVisible();
+    });
+
     test("should navigate by editing the breadcrumb path", async ({ page }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         const nestedPath = `${ctx.testDirPath}/subdir2`;

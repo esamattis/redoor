@@ -4,6 +4,7 @@ import {
     ArrowLeft,
     ArrowUp,
     Check,
+    Copy,
     File,
     Files,
     Home,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
+import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { InputControl } from "#ui/components/input-control";
 import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
@@ -385,6 +387,7 @@ function Breadcrumbs(props: {
         props.startEditing === true,
     );
     const [editedPath, setEditedPath] = React.useState(props.path);
+    const { isCopied, copy } = useCopyFeedback(props.path);
 
     const parts = props.path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
@@ -515,6 +518,24 @@ function Breadcrumbs(props: {
                             );
                         })}
                     </nav>
+                    <IconButton
+                        type="button"
+                        onClick={() => {
+                            void copy();
+                        }}
+                        label={isCopied ? "Copied!" : "Copy file path"}
+                        className={
+                            isCopied
+                                ? "shrink-0 rounded-md p-1.5 text-emerald-300"
+                                : "shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-100"
+                        }
+                    >
+                        {isCopied ? (
+                            <Check className="h-3.5 w-3.5" />
+                        ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                        )}
+                    </IconButton>
                     <IconButton
                         type="button"
                         onClick={startEditing}

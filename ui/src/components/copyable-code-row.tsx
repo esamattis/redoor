@@ -26,7 +26,7 @@ async function writeClipboardText(value: string): Promise<void> {
 }
 
 /** Shared clipboard feedback used by the full and compact copyable path controls. */
-function useCopyFeedback(value: string) {
+export function useCopyFeedback(value: string) {
     const [isCopied, setIsCopied] = React.useState(false);
     const [flashKey, setFlashKey] = React.useState(0);
     const resetTimerRef = React.useRef<number | null>(null);
