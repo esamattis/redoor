@@ -30,7 +30,7 @@
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
 - Add comments to test assertions why they are there
 - Add integration tests for all rest api features
-- Always after changes run `pn test` with a timeout of at least 600 seconds so the integration and Playwright tests have enough time to finish
+- Always after changes run `pn test` with a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
 - Always add `| cat` to git commands to avoid getting stuck in interactive pager
 - When making git commits always add description explaining why the change was made, not what it does
