@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { atomWithLocalStorage } from "./utils/local-storage-atom";
 
 /**
  * Represents a path selected in the UI for later copy actions.
@@ -15,7 +16,10 @@ function getSelectedFileKey(file: Pick<SelectedPath, "agentId" | "path">) {
     return `${file.agentId}:${file.path}`;
 }
 
-export const selectedFilesAtom = atom<SelectedPath[]>([]);
+export const selectedFilesAtom = atomWithLocalStorage<SelectedPath[]>(
+    "redoor.selected-files",
+    [],
+);
 
 /**
  * Fast lookup set for checking whether a path is selected.
