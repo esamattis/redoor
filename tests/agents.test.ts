@@ -11,7 +11,6 @@ import { z } from "zod";
 import {
     ApiClient,
     Agent,
-    encodeFilesystemPath,
     isLsDirectoryResponse,
     isLsFileResponse,
 } from "#ui/api-client";
@@ -101,7 +100,7 @@ async function getConnectedTestAgent(): Promise<Agent> {
     return agent;
 }
 
-/** Calls the search route directly so backend coverage does not require adding the UI client yet. */
+/** Calls the search route directly to verify omitted JSON fields retain server defaults. */
 async function searchAgentFiles(
     agent: Agent,
     root: string,
@@ -112,53 +111,35 @@ async function searchAgentFiles(
         respectGitignore?: boolean;
     },
 ): Promise<FileSearchResponse> {
-    const encodedRoot = encodeFilesystemPath(root);
-    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
-    const url = new URL(
-        `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
-        apiClient.baseUrl,
-    );
-    url.searchParams.set("query", search.query);
-    if (search.timeout !== undefined) {
-        url.searchParams.set("timeout", search.timeout.toString());
-    }
-    if (search.includeHidden !== undefined) {
-        url.searchParams.set("include_hidden", search.includeHidden.toString());
-    }
-    if (search.respectGitignore !== undefined) {
-        url.searchParams.set(
-            "respect_gitignore",
-            search.respectGitignore.toString(),
-        );
-    }
-    const response = await fetch(url, { headers: agent.getAuthHeaders() });
+    const url = new URL("/api/v1/find", apiClient.baseUrl);
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            ...agent.getAuthHeaders(),
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            agent: agent.id,
+            path: root,
+            query: search.query,
+            timeout: search.timeout,
+            include_hidden: search.includeHidden,
+            respect_gitignore: search.respectGitignore,
+        }),
+    });
     // Successful transport proves the REST route relayed the command to the connected agent.
     expect(response.status).toBe(200);
     return fileSearchResponseSchema.parse(await response.json());
 }
 
-/** Builds a search URL for validation cases that intentionally do not return a search response. */
-function getAgentSearchUrl(agent: Agent, root: string, query: string): URL {
-    const encodedRoot = encodeFilesystemPath(root);
-    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
-    const url = new URL(
-        `/api/v1/agents/${encodeURIComponent(agent.id)}/search${rootSuffix}`,
-        apiClient.baseUrl,
-    );
-    url.searchParams.set("query", query);
-    return url;
+/** Builds the top-level find URL for direct POST validation requests. */
+function getAgentSearchUrl(): URL {
+    return new URL("/api/v1/find", apiClient.baseUrl);
 }
 
-/** Builds a grep URL for validation and latest-wins requests that need the raw response. */
-function getAgentGrepUrl(agent: Agent, root: string, query: string): URL {
-    const encodedRoot = encodeFilesystemPath(root);
-    const rootSuffix = encodedRoot ? `/${encodedRoot}` : "";
-    const url = new URL(
-        `/api/v1/agents/${encodeURIComponent(agent.id)}/grep${rootSuffix}`,
-        apiClient.baseUrl,
-    );
-    url.searchParams.set("query", query);
-    return url;
+/** Builds the top-level grep URL for direct POST requests that need the raw response. */
+function getAgentGrepUrl(): URL {
+    return new URL("/api/v1/grep", apiClient.baseUrl);
 }
 
 describe("Agents API", () => {
@@ -529,11 +510,20 @@ describe("Agents API", () => {
 
     it("should reject file search timeouts above 60 seconds", async () => {
         const testAgent = await getConnectedTestAgent();
-        const url = getAgentSearchUrl(testAgent, agentCwd, "target");
-        url.searchParams.set("timeout", "61");
+        const url = getAgentSearchUrl();
 
         const response = await fetch(url, {
-            headers: testAgent.getAuthHeaders(),
+            method: "POST",
+            headers: {
+                ...testAgent.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                agent: testAgent.id,
+                path: agentCwd,
+                query: "target",
+                timeout: 61,
+            }),
         });
 
         // Rejecting before command dispatch enforces the API's resource ceiling.
@@ -729,17 +719,37 @@ describe("Agents API", () => {
 
     it("should validate grep timeout and regular expressions", async () => {
         const testAgent = await getConnectedTestAgent();
-        const timeoutUrl = getAgentGrepUrl(testAgent, agentCwd, "target");
-        timeoutUrl.searchParams.set("timeout", "61");
+        const timeoutUrl = getAgentGrepUrl();
         const timeoutResponse = await fetch(timeoutUrl, {
-            headers: testAgent.getAuthHeaders(),
+            method: "POST",
+            headers: {
+                ...testAgent.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                agent: testAgent.id,
+                path: agentCwd,
+                query: "target",
+                timeout: 61,
+            }),
         });
         // REST validation rejects deadlines outside the documented caller-selected range.
         expect(timeoutResponse.status).toBe(400);
 
         const regexResponse = await fetch(
-            getAgentGrepUrl(testAgent, agentCwd, "("),
-            { headers: testAgent.getAuthHeaders() },
+            getAgentGrepUrl(),
+            {
+                method: "POST",
+                headers: {
+                    ...testAgent.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    agent: testAgent.id,
+                    path: agentCwd,
+                    query: "(",
+                }),
+            },
         );
         // Regex compilation errors are stable invalid-input responses rather than agent failures.
         expect(regexResponse.status).toBe(400);
@@ -828,13 +838,18 @@ describe("Agents API", () => {
         if (!agentProcess) {
             throw new Error("Agent process not found");
         }
-        const firstUrl = getAgentGrepUrl(
-            testAgent,
-            grepRoot,
-            "first-query-with-no-match",
-        );
+        const firstUrl = getAgentGrepUrl();
         const firstRequest = fetch(firstUrl, {
-            headers: testAgent.getAuthHeaders(),
+            method: "POST",
+            headers: {
+                ...testAgent.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                agent: testAgent.id,
+                path: grepRoot,
+                query: "first-query-with-no-match",
+            }),
         });
         await waitForLogMessage(
             agentProcess,

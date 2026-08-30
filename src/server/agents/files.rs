@@ -1,46 +1,22 @@
+use crate::server::{
+    agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
+    responses::command_error_status,
+    state::ServerState,
+};
 use axum::{
     Json,
-    extract::{Path, Query, State as AxumState},
+    extract::{Path, State as AxumState},
     http::StatusCode,
     response::IntoResponse,
 };
 use redoor::{
     actors,
     commands::{
-        Command, CommandResult, EchoRequest, EchoResponse, ErrorResponse, LsDirectoryResponse,
-        LsFileResponse,
+        Command, CommandResult, EchoRequest, EchoResponse, ErrorResponse, FindRequest,
+        LsDirectoryResponse, LsFileResponse,
     },
     types::AgentId,
 };
-use serde::Deserialize;
-
-use crate::server::{
-    agent_helpers::{AgentFilePath, absolute_path_from_url},
-    responses::command_error_status,
-    state::ServerState,
-};
-
-/// Carries search controls separately from the absolute search root in the route path.
-#[derive(Deserialize)]
-pub(crate) struct FileSearchQuery {
-    query: String,
-    #[serde(default = "default_file_search_timeout_seconds")]
-    timeout: u64,
-    #[serde(default)]
-    include_hidden: bool,
-    #[serde(default = "default_true")]
-    respect_gitignore: bool,
-}
-
-/// Keeps omitted API timeouts useful while allowing callers to tune expensive searches.
-fn default_file_search_timeout_seconds() -> u64 {
-    5
-}
-
-/// Keeps repository ignore handling enabled when the query parameter is omitted.
-fn default_true() -> bool {
-    true
-}
 
 /// Route: `GET /api/v1/agents/{agent}/ls/{*path}`
 pub(crate) async fn ls_agent_handler(
@@ -110,11 +86,10 @@ pub(crate) async fn ls_agent_handler(
     }
 }
 
-/// Route: `GET /api/v1/agents/{agent}/search/{*path}?query=...`
+/// Route: `POST /api/v1/find`
 pub(crate) async fn file_search_agent_handler(
-    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
-    Query(search): Query<FileSearchQuery>,
     AxumState(state): AxumState<ServerState>,
+    Json(search): Json<FindRequest>,
 ) -> impl IntoResponse {
     if !(1..=60).contains(&search.timeout) {
         return (
@@ -126,8 +101,11 @@ pub(crate) async fn file_search_agent_handler(
             .into_response();
     }
 
-    let path = absolute_path_from_url(path.unwrap_or_default());
-    let agent_id = AgentId::from(agent);
+    let path = match require_absolute_path(search.path) {
+        Ok(path) => path,
+        Err(response) => return *response,
+    };
+    let agent_id = search.agent;
     let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
         .router_ref

@@ -454,6 +454,22 @@ pub struct FileSearchEntry {
     pub file_type: String,
 }
 
+/// Identifies an agent path and bounded filename-search controls without URL-sized query data.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FindRequest {
+    pub agent: AgentId,
+    pub path: String,
+    pub query: String,
+    #[serde(default = "default_file_search_timeout_seconds")]
+    #[ts(type = "number")]
+    pub timeout: u64,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default = "default_true")]
+    pub respect_gitignore: bool,
+}
+
 /// Returns the best paths discovered before traversal completed or reached its deadline.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -473,6 +489,24 @@ pub struct ContentGrepMatch {
     pub line_number: u64,
     pub line: String,
     pub line_truncated: bool,
+}
+
+/// Identifies an agent path and bounded content-search controls without URL-sized query data.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GrepRequest {
+    pub agent: AgentId,
+    pub path: String,
+    pub query: String,
+    #[serde(default = "default_file_search_timeout_seconds")]
+    #[ts(type = "number")]
+    pub timeout: u64,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default = "default_true")]
+    pub respect_gitignore: bool,
+    #[serde(default)]
+    pub fixed_string: bool,
 }
 
 /// Returns matches completed before the grep deadline or supersession signal.

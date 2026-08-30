@@ -51,6 +51,8 @@ import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
+import type { FindRequest } from "#bindings/FindRequest";
+import type { GrepRequest } from "#bindings/GrepRequest";
 import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { DiffEndpoint } from "#bindings/DiffEndpoint";
@@ -463,25 +465,22 @@ export class Agent {
             signal?: AbortSignal;
         },
     ): Promise<FileSearchResponse> {
-        const url = new URL(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/search`,
-                path,
-            )}`,
-        );
-        url.searchParams.set("query", query);
-        url.searchParams.set("timeout", options.timeoutSeconds.toString());
-        url.searchParams.set(
-            "include_hidden",
-            options.includeHidden.toString(),
-        );
-        url.searchParams.set(
-            "respect_gitignore",
-            options.respectGitignore.toString(),
-        );
+        const request: FindRequest = {
+            agent: this.info.id,
+            path,
+            query,
+            timeout: options.timeoutSeconds,
+            include_hidden: options.includeHidden,
+            respect_gitignore: options.respectGitignore,
+        };
         return apiRequest<FileSearchResponse>(
-            url.toString(),
-            { signal: options.signal },
+            `${this.baseUrl}/api/v1/find`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+                signal: options.signal,
+            },
             this.requestContext,
         );
     }
@@ -498,22 +497,23 @@ export class Agent {
             signal?: AbortSignal;
         },
     ): Promise<ContentGrepResponse> {
-        const url = new URL(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/grep`,
-                path,
-            )}`,
-        );
-        url.search = new URLSearchParams({
+        const request: GrepRequest = {
+            agent: this.info.id,
+            path,
             query,
-            timeout: options.timeoutSeconds.toString(),
-            include_hidden: options.includeHidden.toString(),
-            respect_gitignore: options.respectGitignore.toString(),
-            fixed_string: options.fixedString.toString(),
-        }).toString();
+            timeout: options.timeoutSeconds,
+            include_hidden: options.includeHidden,
+            respect_gitignore: options.respectGitignore,
+            fixed_string: options.fixedString,
+        };
         return apiRequest<ContentGrepResponse>(
-            url.toString(),
-            { signal: options.signal },
+            `${this.baseUrl}/api/v1/grep`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+                signal: options.signal,
+            },
             this.requestContext,
         );
     }

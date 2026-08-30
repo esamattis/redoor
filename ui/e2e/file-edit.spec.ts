@@ -804,7 +804,7 @@ gamma
             "Search the selected text from the git repository root when the file is in a worktree.",
         );
         const grepRequest = page.waitForRequest((request) =>
-            new URL(request.url()).pathname.includes("/grep/"),
+            new URL(request.url()).pathname.includes("/api/v1/grep"),
         );
         await searchSelectionButton.click();
 

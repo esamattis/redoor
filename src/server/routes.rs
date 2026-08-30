@@ -140,19 +140,8 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}/open/{*path}",
             post(open_path_agent_handler),
         )
-        .route(
-            "/api/v1/agents/{agent}/search",
-            get(file_search_agent_handler),
-        )
-        .route(
-            "/api/v1/agents/{agent}/search/{*path}",
-            get(file_search_agent_handler),
-        )
-        .route("/api/v1/agents/{agent}/grep", get(content_grep_handler))
-        .route(
-            "/api/v1/agents/{agent}/grep/{*path}",
-            get(content_grep_handler),
-        )
+        .route("/api/v1/find", post(file_search_agent_handler))
+        .route("/api/v1/grep", post(content_grep_handler))
         .route(
             "/api/v1/agents/{agent}/metadata",
             get(metadata_agent_handler),

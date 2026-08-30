@@ -1,52 +1,16 @@
-use axum::{
-    Json,
-    extract::{Path, Query, State as AxumState},
-    http::StatusCode,
-    response::IntoResponse,
+use crate::server::{
+    agent_helpers::require_absolute_path, responses::command_error_status, state::ServerState,
 };
+use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
 use redoor::{
     actors,
-    commands::{Command, CommandResult, ErrorResponse},
-    types::AgentId,
-};
-use serde::Deserialize;
-
-use crate::server::{
-    agent_helpers::{AgentFilePath, absolute_path_from_url},
-    responses::command_error_status,
-    state::ServerState,
+    commands::{Command, CommandResult, ErrorResponse, GrepRequest},
 };
 
-/// Carries bounded grep controls separately from the absolute route path.
-#[derive(Deserialize)]
-pub(crate) struct ContentGrepQuery {
-    query: String,
-    #[serde(default = "default_timeout_seconds")]
-    timeout: u64,
-    #[serde(default)]
-    include_hidden: bool,
-    #[serde(default = "default_true")]
-    respect_gitignore: bool,
-    /// Literal matching is opt-in so existing callers keep regex semantics.
-    #[serde(default)]
-    fixed_string: bool,
-}
-
-/// Keeps omitted deadlines useful for interactive callers.
-fn default_timeout_seconds() -> u64 {
-    5
-}
-
-/// Preserves repository-aware traversal unless a caller explicitly opts out.
-fn default_true() -> bool {
-    true
-}
-
-/// Route: `GET /api/v1/agents/{agent}/grep/{*path}?query=...`
+/// Route: `POST /api/v1/grep`
 pub(crate) async fn content_grep_handler(
-    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
-    Query(search): Query<ContentGrepQuery>,
     AxumState(state): AxumState<ServerState>,
+    Json(search): Json<GrepRequest>,
 ) -> impl IntoResponse {
     if !(1..=60).contains(&search.timeout) {
         return (
@@ -58,8 +22,11 @@ pub(crate) async fn content_grep_handler(
             .into_response();
     }
 
-    let path = absolute_path_from_url(path.unwrap_or_default());
-    let agent_id = AgentId::from(agent);
+    let path = match require_absolute_path(search.path) {
+        Ok(path) => path,
+        Err(response) => return *response,
+    };
+    let agent_id = search.agent;
     let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
         .router_ref

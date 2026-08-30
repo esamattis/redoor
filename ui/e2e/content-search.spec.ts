@@ -78,13 +78,15 @@ last line`,
     }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}?timeout=9&hidden=true&gitignore=false`;
         const requests: URL[] = [];
+        const requestBodies = new Map<URL, string | null>();
         page.on("request", (request) => {
             const url = new URL(request.url());
             if (
-                url.pathname.includes("/search/") ||
-                url.pathname.includes("/grep/")
+                url.pathname.includes("/api/v1/find") ||
+                url.pathname.includes("/api/v1/grep")
             ) {
                 requests.push(url);
+                requestBodies.set(url, request.postData());
             }
         });
         await page.goto(directoryUrl);
@@ -106,17 +108,24 @@ last line`,
         // Path mode recursively discovers files that are absent from the loaded directory listing.
         await expect(pathResult).toBeVisible();
         const pathRequest = requests.find((request) =>
-            request.pathname.includes("/search/"),
+            request.pathname.includes("/api/v1/find"),
         );
-        // The shared dialog forwards URL-owned traversal options to the existing path API.
-        expect(pathRequest?.searchParams.get("timeout")).toBe("9");
-        expect(pathRequest?.searchParams.get("include_hidden")).toBe("true");
-        expect(pathRequest?.searchParams.get("respect_gitignore")).toBe(
-            "false",
+        // The shared dialog forwards URL-owned traversal options in the path API JSON body.
+        expect(pathRequest && requestBodies.get(pathRequest)).toBe(
+            JSON.stringify({
+                agent: ctx.agentId,
+                path: ctx.testDirPath,
+                query: "nested-path-target",
+                timeout: 9,
+                include_hidden: true,
+                respect_gitignore: false,
+            }),
         );
         // Default mode enables only the fuzzy path endpoint.
         expect(
-            requests.some((request) => request.pathname.includes("/grep/")),
+            requests.some((request) =>
+                request.pathname.includes("/api/v1/grep"),
+            ),
         ).toBe(false);
 
         await dialog
@@ -127,10 +136,10 @@ last line`,
         });
         await expect(contentResult).toBeVisible();
         const searchRequestCount = requests.filter((request) =>
-            request.pathname.includes("/search/"),
+            request.pathname.includes("/api/v1/find"),
         ).length;
         const grepRequestCount = requests.filter((request) =>
-            request.pathname.includes("/grep/"),
+            request.pathname.includes("/api/v1/grep"),
         ).length;
 
         await dialog
@@ -143,24 +152,29 @@ last line`,
         ).toBeVisible();
         // Content mode starts only grep requests while the path query remains disabled.
         expect(
-            requests.filter((request) => request.pathname.includes("/search/")),
+            requests.filter((request) =>
+                request.pathname.includes("/api/v1/find"),
+            ),
         ).toHaveLength(searchRequestCount);
         expect(
-            requests.filter((request) => request.pathname.includes("/grep/"))
-                .length,
+            requests.filter((request) =>
+                request.pathname.includes("/api/v1/grep"),
+            ).length,
         ).toBeGreaterThan(grepRequestCount);
 
         await dialog
             .getByRole("checkbox", { name: "Search file contents" })
             .click();
         const grepRequestsAfterSwitch = requests.filter((request) =>
-            request.pathname.includes("/grep/"),
+            request.pathname.includes("/api/v1/grep"),
         ).length;
         await pathInput.fill("nested-path-target");
         await expect(pathResult).toBeVisible();
         // Returning to path mode does not leak another request to the inactive grep endpoint.
         expect(
-            requests.filter((request) => request.pathname.includes("/grep/")),
+            requests.filter((request) =>
+                request.pathname.includes("/api/v1/grep"),
+            ),
         ).toHaveLength(grepRequestsAfterSwitch);
         await pathResult.click();
         await expect(page).toHaveURL(/nested-path-target\.txt$/);
@@ -257,7 +271,7 @@ last line`,
         let maximumActiveRequests = 0;
         let firstRequestFailed = false;
         page.on("request", (request) => {
-            if (!request.url().includes("/grep/")) return;
+            if (!request.url().includes("/api/v1/grep")) return;
             activeRequests += 1;
             maximumActiveRequests = Math.max(
                 maximumActiveRequests,
@@ -265,21 +279,19 @@ last line`,
             );
         });
         page.on("requestfinished", (request) => {
-            if (request.url().includes("/grep/")) activeRequests -= 1;
+            if (request.url().includes("/api/v1/grep")) activeRequests -= 1;
         });
         page.on("requestfailed", (request) => {
-            if (!request.url().includes("/grep/")) return;
+            if (!request.url().includes("/api/v1/grep")) return;
             activeRequests -= 1;
-            if (
-                new URL(request.url()).searchParams.get("query") === "content1"
-            ) {
+            if (request.postData()?.includes('"query":"content1"') === true) {
                 firstRequestFailed = true;
             }
         });
-        await page.route("**/grep/**", async (route) => {
+        await page.route("**/api/v1/grep", async (route) => {
             if (
-                new URL(route.request().url()).searchParams.get("query") !==
-                "content1"
+                route.request().postData()?.includes('"query":"content1"') !==
+                true
             ) {
                 await route.continue();
                 return;
