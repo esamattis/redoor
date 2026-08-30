@@ -387,18 +387,25 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
     >(null);
 
     React.useEffect(() => {
-        /** Opens directory creation from the file list without intercepting text entry. */
+        /** Opens file or directory creation from the file list without intercepting text entry. */
         const handleShortcut = (event: KeyboardEvent) => {
             if (
-                event.key !== "d" ||
                 dialogType !== null ||
                 shouldIgnoreKeyboardShortcut(event)
             ) {
                 return;
             }
 
-            event.preventDefault();
-            setDialogType("directory");
+            if (event.key === "n") {
+                event.preventDefault();
+                setDialogType("file");
+                return;
+            }
+
+            if (event.key === "d") {
+                event.preventDefault();
+                setDialogType("directory");
+            }
         };
 
         window.addEventListener("keydown", handleShortcut);
@@ -414,15 +421,20 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
             >
                 {(close) => (
                     <>
-                        <ActionMenuButton
-                            onClick={() => {
-                                close();
-                                setDialogType("file");
-                            }}
+                        <Tooltip
+                            content="Create a new file (n)"
+                            className="w-full"
                         >
-                            <FilePlus className="h-4 w-4 text-slate-400" />
-                            New file
-                        </ActionMenuButton>
+                            <ActionMenuButton
+                                onClick={() => {
+                                    close();
+                                    setDialogType("file");
+                                }}
+                            >
+                                <FilePlus className="h-4 w-4 text-slate-400" />
+                                New file
+                            </ActionMenuButton>
+                        </Tooltip>
                         <Tooltip
                             content="Create a new directory (d)"
                             className="w-full"
