@@ -356,62 +356,69 @@ code {
     text-decoration: none;
 }
 
-/* Highlight tokens inherit diff row backgrounds while adapting to app theme. */
-.file-diff-html .hljs-keyword,
-.file-diff-html .hljs-type,
-.file-diff-html .hljs-doctag,
-.file-diff-html .hljs-template-tag,
-.file-diff-html .hljs-template-variable,
-.file-diff-html .hljs-variable.language_ {
+/* Highlight tokens inherit their host background while adapting to app theme. */
+.syntax-highlight .hljs-keyword,
+.syntax-highlight .hljs-type,
+.syntax-highlight .hljs-doctag,
+.syntax-highlight .hljs-template-tag,
+.syntax-highlight .hljs-template-variable,
+.syntax-highlight .hljs-variable.language_ {
     color: light-dark(#cf222e, #ff7b72);
 }
 
-.file-diff-html .hljs-title,
-.file-diff-html .hljs-title.class_,
-.file-diff-html .hljs-title.function_ {
+.syntax-highlight .hljs-title,
+.syntax-highlight .hljs-title.class_,
+.syntax-highlight .hljs-title.function_ {
     color: light-dark(#8250df, #d2a8ff);
 }
 
-.file-diff-html .hljs-attr,
-.file-diff-html .hljs-attribute,
-.file-diff-html .hljs-literal,
-.file-diff-html .hljs-meta,
-.file-diff-html .hljs-number,
-.file-diff-html .hljs-operator,
-.file-diff-html .hljs-variable,
-.file-diff-html .hljs-selector-attr,
-.file-diff-html .hljs-selector-class,
-.file-diff-html .hljs-selector-id {
+.syntax-highlight .hljs-attr,
+.syntax-highlight .hljs-attribute,
+.syntax-highlight .hljs-literal,
+.syntax-highlight .hljs-meta,
+.syntax-highlight .hljs-number,
+.syntax-highlight .hljs-operator,
+.syntax-highlight .hljs-variable,
+.syntax-highlight .hljs-selector-attr,
+.syntax-highlight .hljs-selector-class,
+.syntax-highlight .hljs-selector-id {
     color: light-dark(#0550ae, #79c0ff);
 }
 
-.file-diff-html .hljs-regexp,
-.file-diff-html .hljs-string,
-.file-diff-html .hljs-meta .hljs-string {
+.syntax-highlight .hljs-regexp,
+.syntax-highlight .hljs-string,
+.syntax-highlight .hljs-meta .hljs-string {
     color: light-dark(#0a3069, #a5d6ff);
 }
 
-.file-diff-html .hljs-built_in,
-.file-diff-html .hljs-symbol {
+.syntax-highlight .hljs-built_in,
+.syntax-highlight .hljs-symbol {
     color: light-dark(#953800, #ffa657);
 }
 
-.file-diff-html .hljs-comment,
-.file-diff-html .hljs-code,
-.file-diff-html .hljs-formula {
+.syntax-highlight .hljs-comment,
+.syntax-highlight .hljs-code,
+.syntax-highlight .hljs-formula {
     color: light-dark(#6e7781, #8b949e);
 }
 
-.file-diff-html .hljs-name,
-.file-diff-html .hljs-quote,
-.file-diff-html .hljs-selector-tag,
-.file-diff-html .hljs-selector-pseudo {
+.syntax-highlight .hljs-name,
+.syntax-highlight .hljs-quote,
+.syntax-highlight .hljs-selector-tag,
+.syntax-highlight .hljs-selector-pseudo {
     color: light-dark(#116329, #7ee787);
 }
 
-.file-diff-html .hljs-section,
-.file-diff-html .hljs-bullet {
+.syntax-highlight .hljs-section,
+.syntax-highlight .hljs-bullet {
     color: light-dark(#0550ae, #f2cc60);
+}
+
+/* Fenced code uses the pre surface instead of repeating inline-code boxes per line. */
+.syntax-highlight.prose pre code {
+    border-radius: 0;
+    background-color: transparent;
+    padding: 0;
 }
 
 .git-file-diff .d2h-file-wrapper {

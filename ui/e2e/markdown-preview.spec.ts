@@ -23,6 +23,10 @@ test.describe.serial("Markdown preview", () => {
             `# Preview heading
 
 Preview body
+
+${"```typescript"}
+const highlighted = true;
+${"```"}
 `,
         );
     });
@@ -47,6 +51,12 @@ Preview body
             preview.getByRole("heading", { name: "Preview heading" }),
         ).toBeVisible();
         await expect(preview).toContainText("Preview body");
+        const code = preview.locator("pre code");
+        // The real preview must preserve the fenced source while rendering highlighted structure.
+        await expect(code).toContainText("const highlighted = true;");
+        await expect(code.locator("span").first()).toBeVisible();
+        // The pre surface must show through instead of boxing each highlighted line like inline code.
+        await expect(code).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
         // The compact toolbar control remains identifiable without repeating a text label.
         await expect(
             page.getByRole("button", { name: "Preview", exact: true }),
