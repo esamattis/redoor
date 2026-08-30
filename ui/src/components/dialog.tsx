@@ -68,7 +68,7 @@ export function Dialog(props: DialogProps) {
                 isAnchored
                     ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
                     : props.size === "search"
-                      ? "flex h-dvh w-full flex-col bg-[#11141b] p-4 text-left shadow-2xl shadow-black/40 sm:h-[min(90dvh,56rem)] sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
+                      ? "min-h-dvh w-full bg-[#11141b] p-4 text-left shadow-2xl shadow-black/40 sm:min-h-0 sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
                       : "w-full rounded-xl border border-slate-700 bg-[#11141b] p-6 text-left shadow-2xl shadow-black/40"
             }
             style={

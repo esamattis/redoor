@@ -202,15 +202,22 @@ export function SearchDialog(props: { agent: Agent }) {
             isOpen={isOpen}
             title="Search agent"
             description={
-                searchDirectory
-                    ? `Searching in ${searchDirectory}`
-                    : "Search is unavailable while this agent is disconnected."
+                searchDirectory ? (
+                    <span>
+                        Current folder:{" "}
+                        <span className="break-all font-mono text-slate-300">
+                            {searchDirectory}
+                        </span>
+                    </span>
+                ) : (
+                    "Search is unavailable while this agent is disconnected."
+                )
             }
             closeAriaLabel="Close search"
             size="search"
             onClose={close}
         >
-            <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
+            <div className="mt-4 grid gap-4">
                 <SearchControls
                     query={query}
                     isContentSearch={isContentSearch}
@@ -241,7 +248,7 @@ export function SearchDialog(props: { agent: Agent }) {
                 <div
                     ref={resultsRef}
                     aria-label="Search results"
-                    className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-slate-800"
+                    className="overflow-hidden rounded-lg border border-slate-800"
                 >
                     {isContentSearch
                         ? contentSearch.data?.results.map((result) => (
@@ -283,143 +290,192 @@ function SearchControls(props: {
         preferences: Record<string, number | boolean>,
     ) => void;
 }) {
+    const queryLabel = props.isContentSearch
+        ? "Text to find"
+        : "File or folder name";
+
     return (
-        <div className="flex flex-wrap items-center gap-2">
-            <InputControl
-                key={props.isContentSearch ? "content" : "path"}
-                autoFocus
-                type="search"
-                aria-label={
-                    props.isContentSearch
-                        ? "Search file contents"
-                        : "Search file paths"
-                }
-                value={props.query}
-                disabled={props.disabled}
-                onChange={(event) =>
-                    void props.onUpdate({ q: event.target.value })
-                }
-                placeholder={
-                    props.isContentSearch
-                        ? "Search file contents"
-                        : "Search file paths"
-                }
-                className="min-w-48 flex-1"
-            />
-            <Tooltip content="Search inside files instead of matching file paths">
-                <Checkbox
-                    checked={props.isContentSearch}
-                    role="checkbox"
-                    label="Search file contents"
-                    title={false}
-                    onCheckedChange={props.onModeChange}
-                >
-                    Search file contents
-                </Checkbox>
-            </Tooltip>
-            <InputControl
-                type="number"
-                aria-label="Search timeout in seconds"
-                min={1}
-                max={60}
-                value={props.timeoutSeconds}
-                onChange={(event) => {
-                    const value = event.target.valueAsNumber;
-                    if (Number.isInteger(value)) {
-                        const timeout = Math.min(60, Math.max(1, value));
-                        props.onUpdateOption(
-                            { timeout },
-                            { recursiveSearchTimeoutSeconds: timeout },
-                        );
+        <div className="grid gap-4">
+            <fieldset className="grid gap-1.5">
+                <legend className="text-xs font-medium text-slate-400">
+                    Search by
+                </legend>
+                <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-950/70 p-1 sm:w-80">
+                    <ToggleButton
+                        label="Search file paths"
+                        pressed={!props.isContentSearch}
+                        size="sm"
+                        variant="subtle"
+                        className="w-full"
+                        onClick={() => props.onModeChange(false)}
+                    >
+                        File paths
+                    </ToggleButton>
+                    <ToggleButton
+                        label="Search file contents"
+                        pressed={props.isContentSearch}
+                        size="sm"
+                        variant="subtle"
+                        className="w-full"
+                        onClick={() => props.onModeChange(true)}
+                    >
+                        File contents
+                    </ToggleButton>
+                </div>
+            </fieldset>
+
+            <label className="grid gap-1.5 text-xs font-medium text-slate-400">
+                {queryLabel}
+                <InputControl
+                    key={props.isContentSearch ? "content" : "path"}
+                    autoFocus
+                    type="search"
+                    value={props.query}
+                    disabled={props.disabled}
+                    onChange={(event) =>
+                        void props.onUpdate({ q: event.target.value })
                     }
-                }}
-                className="w-20"
-            />
-            <ToggleButton
-                label="Include hidden files and directories"
-                pressed={props.includeHidden}
-                tooltip="Include hidden files and directories"
-                onClick={() =>
-                    props.onUpdateOption(
-                        { hidden: !props.includeHidden },
-                        {
-                            recursiveSearchIncludeHidden: !props.includeHidden,
-                        },
-                    )
-                }
-            >
-                {props.includeHidden ? (
-                    <Eye className="h-4 w-4" />
-                ) : (
-                    <EyeOff className="h-4 w-4" />
-                )}
-            </ToggleButton>
-            <ToggleButton
-                label="Respect .gitignore files"
-                pressed={props.respectGitignore}
-                tooltip="Respect .gitignore files"
-                onClick={() =>
-                    props.onUpdateOption(
-                        { gitignore: !props.respectGitignore },
-                        {
-                            recursiveSearchRespectGitignore:
-                                !props.respectGitignore,
-                        },
-                    )
-                }
-            >
-                <GitBranch className="h-4 w-4" />
-            </ToggleButton>
-            {props.isContentSearch ? (
-                <>
-                    <Tooltip content="Lines shown above and below each match">
+                    placeholder={
+                        props.isContentSearch
+                            ? "Text inside files"
+                            : "Name or path pattern"
+                    }
+                    className="h-10 w-full text-sm font-normal"
+                />
+            </label>
+
+            <div className="grid gap-2">
+                <p className="text-xs font-medium text-slate-400">Options</p>
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
+                    <label className="grid gap-1 text-xs text-slate-400">
+                        Timeout (seconds)
                         <InputControl
                             type="number"
-                            aria-label="Context lines above and below"
-                            min={0}
-                            max={20}
-                            value={props.contextSize}
+                            min={1}
+                            max={60}
+                            value={props.timeoutSeconds}
                             onChange={(event) => {
                                 const value = event.target.valueAsNumber;
                                 if (Number.isInteger(value)) {
-                                    void props.onUpdate({
-                                        context: Math.min(
-                                            20,
-                                            Math.max(0, value),
-                                        ),
-                                    });
+                                    const timeout = Math.min(
+                                        60,
+                                        Math.max(1, value),
+                                    );
+                                    props.onUpdateOption(
+                                        { timeout },
+                                        {
+                                            recursiveSearchTimeoutSeconds:
+                                                timeout,
+                                        },
+                                    );
                                 }
                             }}
-                            className="w-20"
+                            className="h-9 w-full py-1 text-sm font-normal sm:w-28"
                         />
-                    </Tooltip>
+                    </label>
+                    {props.isContentSearch ? (
+                        <label className="grid gap-1 text-xs text-slate-400">
+                            Context lines
+                            <InputControl
+                                type="number"
+                                min={0}
+                                max={20}
+                                value={props.contextSize}
+                                onChange={(event) => {
+                                    const value = event.target.valueAsNumber;
+                                    if (Number.isInteger(value)) {
+                                        void props.onUpdate({
+                                            context: Math.min(
+                                                20,
+                                                Math.max(0, value),
+                                            ),
+                                        });
+                                    }
+                                }}
+                                className="h-9 w-full py-1 text-sm font-normal sm:w-28"
+                            />
+                        </label>
+                    ) : null}
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                     <ToggleButton
-                        label="Use regular expressions"
-                        pressed={props.regex}
-                        tooltip="Use regular expressions"
+                        label="Include hidden files and directories"
+                        pressed={props.includeHidden}
+                        tooltip="Include hidden files and directories"
+                        size="sm"
+                        className="h-9 w-full justify-start sm:w-auto"
                         onClick={() =>
-                            void props.onUpdate({ regex: !props.regex })
+                            props.onUpdateOption(
+                                { hidden: !props.includeHidden },
+                                {
+                                    recursiveSearchIncludeHidden:
+                                        !props.includeHidden,
+                                },
+                            )
                         }
                     >
-                        <Regex className="h-4 w-4" />
+                        {props.includeHidden ? (
+                            <Eye className="h-4 w-4" />
+                        ) : (
+                            <EyeOff className="h-4 w-4" />
+                        )}
+                        Hidden files
                     </ToggleButton>
-                </>
-            ) : null}
-            {props.gitRoot ? (
-                <Tooltip content="Search the entire Git repository instead of the current directory">
-                    <Checkbox
-                        checked={props.searchFromGitRoot}
-                        role="checkbox"
-                        label="Search from git root"
-                        title={false}
-                        onCheckedChange={(checked) =>
-                            void props.onUpdate({ gitroot: checked })
+                    <ToggleButton
+                        label="Respect .gitignore files"
+                        pressed={props.respectGitignore}
+                        tooltip="Respect .gitignore files"
+                        size="sm"
+                        className="h-9 w-full justify-start sm:w-auto"
+                        onClick={() =>
+                            props.onUpdateOption(
+                                { gitignore: !props.respectGitignore },
+                                {
+                                    recursiveSearchRespectGitignore:
+                                        !props.respectGitignore,
+                                },
+                            )
                         }
                     >
-                        Search from git root
-                    </Checkbox>
-                </Tooltip>
-            ) : null}
+                        <GitBranch className="h-4 w-4" />
+                        .gitignore
+                    </ToggleButton>
+                    {props.isContentSearch ? (
+                        <ToggleButton
+                            label="Use regular expressions"
+                            pressed={props.regex}
+                            tooltip="Use regular expressions"
+                            size="sm"
+                            className="h-9 w-full justify-start sm:w-auto"
+                            onClick={() =>
+                                void props.onUpdate({ regex: !props.regex })
+                            }
+                        >
+                            <Regex className="h-4 w-4" />
+                            Regular expression
+                        </ToggleButton>
+                    ) : null}
+                    {props.gitRoot ? (
+                        <Tooltip
+                            content="Search the entire Git repository instead of the current directory"
+                            className="w-full sm:w-auto"
+                        >
+                            <Checkbox
+                                checked={props.searchFromGitRoot}
+                                role="checkbox"
+                                label="Search from git root"
+                                title={false}
+                                className="h-9 w-full justify-start border border-slate-700 bg-slate-900 px-3 py-2 sm:w-auto"
+                                onCheckedChange={(checked) =>
+                                    void props.onUpdate({ gitroot: checked })
+                                }
+                            >
+                                Git root
+                            </Checkbox>
+                        </Tooltip>
+                    ) : null}
+                </div>
+            </div>
         </div>
     );
 }
