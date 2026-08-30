@@ -1,16 +1,23 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi, useBlocker, useLocation } from "@tanstack/react-router";
+import {
+    getRouteApi,
+    Link,
+    useBlocker,
+    useLocation,
+} from "@tanstack/react-router";
 import {
     ClipboardCopy,
     Download,
+    History,
     LoaderCircle,
     MoreHorizontal,
     RefreshCw,
     Save,
     Search,
+    X,
 } from "lucide-react";
-import type { Agent } from "#ui/api-client";
+import { getBrowserUrl, type Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { Button } from "#ui/components/button";
@@ -29,14 +36,100 @@ import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
 import { IconButton } from "#ui/components/icon-button";
+import { ResponsiveAnchoredDialog } from "#ui/components/responsive-anchored-dialog";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
-import { useUserState } from "#ui/user-state";
+import {
+    rememberRecentEditorFile,
+    removeRecentEditorFile,
+    useUserState,
+    type RecentEditorFile,
+} from "#ui/user-state";
 
 const agentRoute = getRouteApi("/agents/$agentId");
+
+/** Renders one recent path compactly in the toolbar or as a full dialog row. */
+function RecentEditorFileItem(props: {
+    agentId: string;
+    file: RecentEditorFile;
+    variant: "inline" | "dialog";
+    onRemove: (path: string) => void;
+}) {
+    const isDialog = props.variant === "dialog";
+    return (
+        <span
+            className={
+                isDialog
+                    ? "flex min-w-0 items-center gap-1 rounded-md px-2 py-1 hover:bg-white/5"
+                    : "hidden min-w-0 items-center gap-0.5 2xl:inline-flex"
+            }
+        >
+            <Tooltip
+                content={props.file.path}
+                className={isDialog ? "min-w-0 flex-1" : undefined}
+            >
+                <Link
+                    to={getBrowserUrl(props.agentId, props.file.path)}
+                    aria-label={`Open ${props.file.name} from recent files`}
+                    className={
+                        isDialog
+                            ? "block min-w-0 flex-1 truncate py-1 text-sm text-blue-400 hover:underline"
+                            : "max-w-32 truncate px-1 text-xs text-blue-400 hover:underline"
+                    }
+                >
+                    {props.file.name}
+                </Link>
+            </Tooltip>
+            <IconButton
+                type="button"
+                label={`Remove ${props.file.name} from recent files`}
+                onClick={() => props.onRemove(props.file.path)}
+                className="h-6 w-6 shrink-0 rounded text-slate-500 hover:bg-white/5 hover:text-slate-200"
+            >
+                <X className="h-3 w-3" aria-hidden="true" />
+            </IconButton>
+        </span>
+    );
+}
+
+/** Makes the longer recent-file history available without crowding the editor toolbar. */
+function RecentEditorFilesDialog(props: {
+    isOpen: boolean;
+    anchorRef: React.RefObject<HTMLElement | null>;
+    agentId: string;
+    recentFiles: RecentEditorFile[];
+    onRemove: (path: string) => void;
+    onClose: () => void;
+}) {
+    return (
+        <ResponsiveAnchoredDialog
+            isOpen={props.isOpen}
+            title="Recent files"
+            closeAriaLabel="Close recent files"
+            desktopAnchorRef={props.anchorRef}
+            onClose={props.onClose}
+        >
+            {props.recentFiles.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-400">No recent files.</p>
+            ) : (
+                <div className="mt-4 space-y-1">
+                    {props.recentFiles.map((file) => (
+                        <RecentEditorFileItem
+                            key={file.path}
+                            agentId={props.agentId}
+                            file={file}
+                            variant="dialog"
+                            onRemove={props.onRemove}
+                        />
+                    ))}
+                </div>
+            )}
+        </ResponsiveAnchoredDialog>
+    );
+}
 
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
@@ -53,10 +146,14 @@ function FileEditActions(props: {
         entryType: "file";
     };
     selection: EditorSelection | null;
+    recentFiles: RecentEditorFile[];
     onSave: () => void;
+    onRemoveRecentFile: (path: string) => void;
 }) {
     const navigate = agentRoute.useNavigate();
     const location = useLocation();
+    const recentFilesButtonRef = React.useRef<HTMLButtonElement>(null);
+    const [recentFilesOpen, setRecentFilesOpen] = React.useState(false);
     const copyMutation = useMutation({
         mutationFn: async () => {
             if (props.selection === null) {
@@ -79,14 +176,20 @@ ${props.selection.text}
                     disabled={!props.canEdit || !props.isDirty}
                     isLoading={props.isSaving}
                     size="sm"
-                    className="h-9 w-9 rounded-md p-0 font-semibold shadow-sm shadow-blue-950/30 sm:w-auto sm:px-3.5"
+                    className="h-9 w-9 rounded-md p-0 font-semibold shadow-sm shadow-blue-950/30"
                 >
                     <Save className="h-4 w-4" aria-hidden="true" />
-                    <span className="hidden sm:inline">
-                        {props.isSaving ? "Saving..." : "Save"}
-                    </span>
                 </Button>
             </Tooltip>
+            <IconButton
+                ref={recentFilesButtonRef}
+                type="button"
+                label="Recent files"
+                onClick={() => setRecentFilesOpen(true)}
+                className="h-9 w-9 rounded-md border border-slate-700 text-slate-200 hover:bg-white/5"
+            >
+                <History className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
             <BookmarkButton bookmark={props.bookmark} />
             <Tooltip content="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.">
                 <Button
@@ -97,10 +200,9 @@ ${props.selection.text}
                     disabled={props.selection === null}
                     isLoading={copyMutation.isPending}
                     onClick={() => copyMutation.mutate()}
-                    className="h-9 w-9 rounded-md p-0 font-semibold sm:w-auto sm:px-3.5"
+                    className="h-9 w-9 rounded-md p-0 font-semibold"
                 >
                     <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-                    <span className="hidden sm:inline">Copy reference</span>
                 </Button>
             </Tooltip>
             <Tooltip content="Search the selected text from the git repository root when the file is in a worktree.">
@@ -123,12 +225,20 @@ ${props.selection.text}
                             replace: true,
                         });
                     }}
-                    className="h-9 w-9 rounded-md p-0 font-semibold sm:w-auto sm:px-3.5"
+                    className="h-9 w-9 rounded-md p-0 font-semibold"
                 >
                     <Search className="h-4 w-4" aria-hidden="true" />
-                    <span className="hidden sm:inline">Search selection</span>
                 </Button>
             </Tooltip>
+            {props.recentFiles.slice(0, 5).map((file) => (
+                <RecentEditorFileItem
+                    key={file.path}
+                    agentId={props.bookmark.agentId}
+                    file={file}
+                    variant="inline"
+                    onRemove={props.onRemoveRecentFile}
+                />
+            ))}
             {props.statusMessage ? (
                 <span
                     role="status"
@@ -160,6 +270,14 @@ ${props.selection.text}
                         : "Copied selection with file reference"}
                 </Toast>
             ) : null}
+            <RecentEditorFilesDialog
+                isOpen={recentFilesOpen}
+                anchorRef={recentFilesButtonRef}
+                agentId={props.bookmark.agentId}
+                recentFiles={props.recentFiles}
+                onRemove={props.onRemoveRecentFile}
+                onClose={() => setRecentFilesOpen(false)}
+            />
         </>
     );
 }
@@ -343,6 +461,88 @@ function getFileEditorStatus(props: {
     return props.isDirty ? "Unsaved changes" : null;
 }
 
+/** Records editor visits and exposes up to ten prior files for the active agent. */
+function useEditorUserState(props: {
+    agentId: string;
+    filePath: string;
+    fileName: string;
+}) {
+    const [userState, setUserState] = useUserState();
+    const recentFiles = (
+        userState.recentEditorFilesByAgent[props.agentId] ?? []
+    )
+        .filter((file) => file.path !== props.filePath)
+        .slice(0, 10);
+
+    React.useEffect(() => {
+        setUserState((current) => {
+            const agentRecentFiles =
+                current.recentEditorFilesByAgent[props.agentId] ?? [];
+            const nextAgentRecentFiles = rememberRecentEditorFile(
+                agentRecentFiles,
+                { path: props.filePath, name: props.fileName },
+            );
+            if (nextAgentRecentFiles === agentRecentFiles) {
+                return current;
+            }
+            return {
+                ...current,
+                recentEditorFilesByAgent: {
+                    ...current.recentEditorFilesByAgent,
+                    [props.agentId]: nextAgentRecentFiles,
+                },
+            };
+        });
+    }, [props.agentId, props.fileName, props.filePath, setUserState]);
+
+    /** Removes the selected history entry while preserving histories for other agents. */
+    const removeRecentFile = (path: string) => {
+        setUserState((current) => ({
+            ...current,
+            recentEditorFilesByAgent: {
+                ...current.recentEditorFilesByAgent,
+                [props.agentId]: removeRecentEditorFile(
+                    current.recentEditorFilesByAgent[props.agentId] ?? [],
+                    path,
+                ),
+            },
+        }));
+    };
+
+    return { userState, recentFiles, removeRecentFile };
+}
+
+/** Presents reload and navigation discard decisions without conflating their callbacks. */
+function EditorConfirmations(props: {
+    reloadOpen: boolean;
+    navigationOpen: boolean;
+    onCloseReload: () => void;
+    onConfirmReload: () => void;
+    onCloseNavigation: () => void;
+    onConfirmNavigation: () => void;
+}) {
+    return (
+        <>
+            <ConfirmationDialog
+                isOpen={props.reloadOpen}
+                title="Discard unsaved changes?"
+                description="Your edits have not been saved. Reloading this file will lose them."
+                confirmLabel="Discard changes"
+                onClose={props.onCloseReload}
+                onConfirm={props.onConfirmReload}
+            />
+            <ConfirmationDialog
+                isOpen={props.navigationOpen}
+                title="Discard unsaved changes?"
+                description="Your edits have not been saved. Leaving this page will lose them."
+                confirmLabel="Discard changes"
+                onClose={props.onCloseNavigation}
+                onConfirm={props.onConfirmNavigation}
+            />
+        </>
+    );
+}
+
 /**
  * Edits file contents in a viewport-bounded CodeMirror with explicit save/reload.
  * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
@@ -356,7 +556,11 @@ export function FileEditView(props: {
     scrollToLine?: number;
 }) {
     const queryClient = useQueryClient();
-    const [userState] = useUserState();
+    const editorUserState = useEditorUserState({
+        agentId: props.agent.id,
+        filePath: props.filePath,
+        fileName: props.fileName,
+    });
     const fileQuery = fileContentQueryOptions(props.agent, props.filePath);
     const contentQuery = useQuery(fileQuery);
     const [draft, setDraft] = React.useState<string | null>(null);
@@ -467,7 +671,11 @@ export function FileEditView(props: {
                                     entryType: "file",
                                 }}
                                 selection={selection}
+                                recentFiles={editorUserState.recentFiles}
                                 onSave={handleSave}
+                                onRemoveRecentFile={
+                                    editorUserState.removeRecentFile
+                                }
                             />
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
@@ -518,8 +726,8 @@ export function FileEditView(props: {
                         content={content}
                         fileName={props.fileName}
                         editable={canEdit}
-                        vimMode={userState.vimMode}
-                        wrapLines={userState.wrapEditorLines}
+                        vimMode={editorUserState.userState.vimMode}
+                        wrapLines={editorUserState.userState.wrapEditorLines}
                         scrollToLine={props.scrollToLine}
                         onChange={(nextContent) => {
                             setDraft(nextContent);
@@ -534,24 +742,16 @@ export function FileEditView(props: {
                     />
                 </div>
             </article>
-            <ConfirmationDialog
-                isOpen={reloadConfirmationOpen}
-                title="Discard unsaved changes?"
-                description="Your edits have not been saved. Reloading this file will lose them."
-                confirmLabel="Discard changes"
-                onClose={() => setReloadConfirmationOpen(false)}
-                onConfirm={() => {
+            <EditorConfirmations
+                reloadOpen={reloadConfirmationOpen}
+                navigationOpen={navigationBlocker.status === "blocked"}
+                onCloseReload={() => setReloadConfirmationOpen(false)}
+                onConfirmReload={() => {
                     setReloadConfirmationOpen(false);
                     reloadFile();
                 }}
-            />
-            <ConfirmationDialog
-                isOpen={navigationBlocker.status === "blocked"}
-                title="Discard unsaved changes?"
-                description="Your edits have not been saved. Leaving this page will lose them."
-                confirmLabel="Discard changes"
-                onClose={() => navigationBlocker.reset?.()}
-                onConfirm={() => navigationBlocker.proceed?.()}
+                onCloseNavigation={() => navigationBlocker.reset?.()}
+                onConfirmNavigation={() => navigationBlocker.proceed?.()}
             />
         </div>
     );

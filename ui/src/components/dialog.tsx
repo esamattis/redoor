@@ -10,7 +10,7 @@ import { IconButton } from "#ui/components/icon-button";
  * viewport center so the same dialog can power compact menus without a second
  * overlay primitive.
  */
-export function Dialog(props: {
+export type DialogProps = {
     isOpen: boolean;
     title: string;
     hideTitle?: boolean;
@@ -32,7 +32,11 @@ export function Dialog(props: {
      * such as a canvas right-click.
      */
     anchorPoint?: { x: number; y: number };
-}) {
+    /** Focuses the non-tooltip panel surface instead of an action when opening. */
+    initialFocus?: "panel";
+};
+
+export function Dialog(props: DialogProps) {
     const titleId = React.useId();
     const descriptionId = React.useId();
     const dialogRef = React.useRef<HTMLDialogElement>(null);
@@ -49,6 +53,7 @@ export function Dialog(props: {
         onClose: props.onClose,
         children: props.children,
         errorMessage: props.errorMessage,
+        initialFocus: props.initialFocus,
     });
 
     if (!props.isOpen) {
@@ -58,6 +63,7 @@ export function Dialog(props: {
     const panel = (
         <div
             ref={panelRef}
+            tabIndex={props.initialFocus === "panel" ? -1 : undefined}
             className={
                 isAnchored
                     ? "absolute w-56 rounded-xl border border-slate-700 bg-[#11141b] p-3 shadow-2xl shadow-black/40"
@@ -185,6 +191,7 @@ function useDialogBehavior(props: {
     onClose: () => void;
     children: React.ReactNode;
     errorMessage?: string | null;
+    initialFocus?: "panel";
 }) {
     const [anchorPosition, setAnchorPosition] = React.useState<{
         top: number;
@@ -227,7 +234,8 @@ function useDialogBehavior(props: {
             dialog.querySelector<HTMLElement>("[autofocus]") ??
             dialog.querySelector<HTMLElement>(
                 "input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])",
-            );
+            ) ??
+            (props.initialFocus === "panel" ? props.panelRef.current : null);
         autofocusTarget?.focus();
 
         return () => {
@@ -235,7 +243,27 @@ function useDialogBehavior(props: {
                 dialog.close();
             }
         };
-    }, [props.dialogRef, props.isAnchored, props.isOpen]);
+    }, [
+        props.dialogRef,
+        props.initialFocus,
+        props.isAnchored,
+        props.isOpen,
+        props.panelRef,
+    ]);
+
+    React.useEffect(() => {
+        if (
+            props.isOpen &&
+            props.isAnchored &&
+            props.initialFocus === "panel"
+        ) {
+            const frame = window.requestAnimationFrame(() => {
+                props.panelRef.current?.focus();
+            });
+            return () => window.cancelAnimationFrame(frame);
+        }
+        return undefined;
+    }, [props.initialFocus, props.isAnchored, props.isOpen, props.panelRef]);
 
     React.useLayoutEffect(() => {
         if (!props.isOpen || (!props.anchorRef && !props.anchorPoint)) {

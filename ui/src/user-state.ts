@@ -17,11 +17,22 @@ export const bookmarkSchema = z.object({
 
 export type Bookmark = z.infer<typeof bookmarkSchema>;
 
+/** One editor history entry keeps display text beside its absolute navigation target. */
+export const recentEditorFileSchema = z.object({
+    path: z.string(),
+    name: z.string(),
+});
+
+export type RecentEditorFile = z.infer<typeof recentEditorFileSchema>;
+
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
     theme: z.enum(["system", "dark", "light"]).catch("system"),
     bookmarks: z.array(bookmarkSchema).catch([]),
+    recentEditorFilesByAgent: z
+        .record(z.string(), z.array(recentEditorFileSchema))
+        .catch({}),
     vimMode: z.boolean().catch(false),
     wrapEditorLines: z.boolean().catch(false),
     recursiveSearchTimeoutSeconds: z.number().int().min(1).max(60).catch(5),
@@ -35,6 +46,7 @@ export const defaultUserState: UserState = {
     showHiddenFiles: true,
     theme: "system",
     bookmarks: [],
+    recentEditorFilesByAgent: {},
     vimMode: false,
     wrapEditorLines: false,
     recursiveSearchTimeoutSeconds: 5,
@@ -63,6 +75,31 @@ export function toggleBookmark(bookmarks: Bookmark[], bookmark: Bookmark) {
         return bookmarks.filter((entry) => getBookmarkKey(entry) !== targetKey);
     }
     return [...bookmarks, bookmark];
+}
+
+/** Retains the current file plus ten prior files so recent views can omit the current one. */
+export function rememberRecentEditorFile(
+    recentFiles: RecentEditorFile[],
+    file: RecentEditorFile,
+) {
+    if (
+        recentFiles[0]?.path === file.path &&
+        recentFiles[0].name === file.name
+    ) {
+        return recentFiles;
+    }
+    return [
+        file,
+        ...recentFiles.filter((entry) => entry.path !== file.path),
+    ].slice(0, 11);
+}
+
+/** Removes one path without affecting another agent's editor history. */
+export function removeRecentEditorFile(
+    recentFiles: RecentEditorFile[],
+    path: string,
+) {
+    return recentFiles.filter((entry) => entry.path !== path);
 }
 
 type UserStateUpdater = (prev: UserState) => UserState;
@@ -179,10 +216,11 @@ export function useUserState(): [
             const current =
                 queryClient.getQueryData<UserState>(queryKeys.userState()) ??
                 defaultUserState;
-            queryClient.setQueryData(
-                queryKeys.userState(),
-                nextUserState(current, update),
-            );
+            const next = nextUserState(current, update);
+            if (next === current) {
+                return;
+            }
+            queryClient.setQueryData(queryKeys.userState(), next);
             persistLatestUserState(api, queryClient);
         },
         [api, queryClient],

@@ -65,8 +65,21 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toBeDisabled();
+        // Desktop actions stay icon-only while their accessible names remain available.
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toHaveText("");
+        await expect(
+            page.getByRole("button", { name: "Bookmark", exact: true }),
+        ).toHaveText("");
+        await expect(
+            page.getByRole("button", { name: "Recent files", exact: true }),
+        ).toHaveText("");
         const saveBox = await page
             .getByRole("button", { name: "Save file" })
+            .boundingBox();
+        const recentFilesBox = await page
+            .getByRole("button", { name: "Recent files", exact: true })
             .boundingBox();
         const bookmarkBox = await page
             .getByRole("button", { name: "Bookmark", exact: true })
@@ -80,25 +93,46 @@ test.describe.serial("File Edit View", () => {
         const copyReferenceBox = await copyReferenceButton.boundingBox();
         const searchSelectionBox = await searchSelectionButton.boundingBox();
         expect(saveBox).not.toBeNull();
+        expect(recentFilesBox).not.toBeNull();
         expect(bookmarkBox).not.toBeNull();
         expect(copyReferenceBox).not.toBeNull();
         expect(searchSelectionBox).not.toBeNull();
         if (
             saveBox === null ||
+            recentFilesBox === null ||
             bookmarkBox === null ||
             copyReferenceBox === null ||
             searchSelectionBox === null
         ) {
             throw new Error("expected editor action measurements");
         }
-        // Bookmark is the next persistent toolbar action after Save.
-        expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
+        // Recent files is available immediately after Save at every breakpoint.
+        expect(recentFilesBox.x).toBeGreaterThan(saveBox.x);
+        // Bookmark remains the next persistent path action.
+        expect(bookmarkBox.x).toBeGreaterThan(recentFilesBox.x);
         // Copy reference follows Bookmark and stays unavailable without selected editor text.
         expect(copyReferenceBox.x).toBeGreaterThan(bookmarkBox.x);
         // Search selection follows Copy reference so the same selection can be grepped from git root.
         expect(searchSelectionBox.x).toBeGreaterThan(copyReferenceBox.x);
         await expect(copyReferenceButton).toBeDisabled();
         await expect(searchSelectionButton).toBeDisabled();
+        await expect(copyReferenceButton).toHaveText("");
+        await expect(searchSelectionButton).toHaveText("");
+        await page
+            .getByRole("button", { name: "Bookmark", exact: true })
+            .click();
+        await expect(
+            page.getByRole("button", {
+                name: "Remove bookmark",
+                exact: true,
+            }),
+        ).toHaveText("");
+        await page
+            .getByRole("button", {
+                name: "Remove bookmark",
+                exact: true,
+            })
+            .click();
         const editorOptions = await openEditorOptions(page);
         await expect(
             editorOptions.getByRole("button", { name: "Reload", exact: true }),
