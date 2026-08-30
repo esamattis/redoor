@@ -131,6 +131,7 @@ last line`,
                 timeout: 9,
                 include_hidden: true,
                 respect_gitignore: false,
+                case_sensitivity: "smart",
             }),
         );
         // Default mode enables only the fuzzy path endpoint.
@@ -140,8 +141,23 @@ last line`,
             ),
         ).toBe(false);
 
+        const smartCaseButton = dialog.getByRole("button", {
+            name: "Case: smart",
+        });
+        // The shared default is exposed by an icon-only control with an accessible state label.
+        await expect(smartCaseButton).toBeVisible();
+        await smartCaseButton.click();
+        await expect(page).toHaveURL(/[?&]case=sensitive/);
+        await expect(
+            dialog.getByRole("button", { name: "Case: sensitive" }),
+        ).toBeVisible();
+        await dialog.getByRole("button", { name: "Case: sensitive" }).click();
+        await expect(page).toHaveURL(/[?&]case=insensitive/);
+        await dialog.getByRole("button", { name: "Case: insensitive" }).click();
+        await expect(page).toHaveURL(/[?&]case=smart/);
+
         await dialog
-            .getByRole("checkbox", { name: "Search file contents" })
+            .getByRole("button", { name: "Search file contents" })
             .click();
         const contentResult = dialog.getByRole("link", {
             name: `Open ${nestedPath} at line 1`,
@@ -190,7 +206,7 @@ last line`,
             .poll(() =>
                 [...requestBodies.values()].some((body) =>
                     body?.includes(
-                        '"query":"unique-search-value","timeout":9,"include_hidden":true,"respect_gitignore":false,"fixed_string":true,"before_context":1,"after_context":1',
+                        '"query":"unique-search-value","timeout":9,"include_hidden":true,"respect_gitignore":false,"fixed_string":true,"case_sensitivity":"smart","before_context":1,"after_context":1',
                     ),
                 ),
             )
@@ -207,9 +223,7 @@ last line`,
             ).length,
         ).toBeGreaterThan(grepRequestCount);
 
-        await dialog
-            .getByRole("checkbox", { name: "Search file contents" })
-            .click();
+        await dialog.getByRole("button", { name: "Search file paths" }).click();
         const grepRequestsAfterSwitch = requests.filter((request) =>
             request.pathname.includes("/api/v1/grep"),
         ).length;
@@ -260,7 +274,9 @@ last line`,
             name: "Search agent",
         });
         // Directory metadata must scope grep to the directory currently being browsed.
-        await expect(dialog).toContainText(`Searching in ${ctx.testDirPath}`);
+        await expect(dialog).toContainText(
+            `Current folder: ${ctx.testDirPath}`,
+        );
         const desktopBounds = await dialog.boundingBox();
         const desktopViewport = page.viewportSize();
         // Desktop search remains modal while using most of the available workspace.
@@ -276,7 +292,7 @@ last line`,
         // Agent search starts in path mode rather than unexpectedly grepping file contents.
         await expect(pathInput).toBeFocused();
         await dialog
-            .getByRole("checkbox", { name: "Search file contents" })
+            .getByRole("button", { name: "Search file contents" })
             .click();
         const searchInput = dialog.getByRole("searchbox", {
             name: "Search file contents",
@@ -388,7 +404,7 @@ last line`,
         await expect(
             dialog.getByRole("searchbox", { name: "Search file paths" }),
         ).toBeFocused();
-        await expect(dialog).toContainText(`Searching in ${ctx.agentHome}`);
+        await expect(dialog).toContainText(`Current folder: ${ctx.agentHome}`);
     });
 
     test("uses recursive search preferences when URL options are absent", async ({
@@ -465,7 +481,9 @@ last line`,
         });
         // A directly loaded q opens search and a file route searches its parent.
         await expect(dialog).toBeVisible();
-        await expect(dialog).toContainText(`Searching in ${ctx.testDirPath}`);
+        await expect(dialog).toContainText(
+            `Current folder: ${ctx.testDirPath}`,
+        );
         await expect(
             dialog.getByRole("button", { name: "Use regular expressions" }),
         ).toHaveAttribute("aria-pressed", "false");
@@ -526,22 +544,24 @@ last line`,
         const dialog = page.getByRole("dialog", {
             name: "Search agent",
         });
-        const gitRootCheckbox = dialog.getByRole("checkbox", {
+        const gitRootButton = dialog.getByRole("button", {
             name: "Search from git root",
         });
         // Nested worktree views expose the git-root control from loader git context.
-        await expect(gitRootCheckbox).toBeVisible();
-        await expect(gitRootCheckbox).toHaveAttribute("aria-checked", "false");
-        await expect(dialog).toContainText(`Searching in ${gitRootNestedPath}`);
+        await expect(gitRootButton).toBeVisible();
+        await expect(gitRootButton).toHaveAttribute("aria-pressed", "false");
+        await expect(dialog).toContainText(
+            `Current folder: ${gitRootNestedPath}`,
+        );
         // Default scope stays on the browsed directory so sibling root files are excluded.
         await expect(dialog.getByText("0 results.")).toBeVisible();
 
-        await gitRootCheckbox.click();
+        await gitRootButton.click();
         await expect(page).toHaveURL(/gitroot=true/);
         await expect(dialog).toContainText(
-            `Searching in ${gitRootRepositoryPath}`,
+            `Current folder: ${gitRootRepositoryPath}`,
         );
-        await expect(gitRootCheckbox).toHaveAttribute("aria-checked", "true");
+        await expect(gitRootButton).toHaveAttribute("aria-pressed", "true");
         await expect(
             dialog.getByRole("link", {
                 name: /Open .*root-only\.txt at line 1/,
@@ -553,10 +573,10 @@ last line`,
         );
         // Paths outside a worktree must not offer git-root search because no extra git lookup is allowed.
         await expect(
-            dialog.getByRole("checkbox", { name: "Search from git root" }),
+            dialog.getByRole("button", { name: "Search from git root" }),
         ).toHaveCount(0);
         await expect(dialog).toContainText(
-            `Searching in ${gitRootOutsidePath}`,
+            `Current folder: ${gitRootOutsidePath}`,
         );
     });
 });

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use content_grep::ContentGrepRequest;
+pub use file_search::FileSearchRequest;
 
 /// Bounds per-match context so the fixed result ceiling also bounds response memory.
 pub const MAX_GREP_CONTEXT_LINES: u64 = 20;
@@ -19,6 +20,21 @@ pub use identity::{
     BinaryIdentity, ServerBuildMode, agent_loaded_config_path, current_binary_identity,
     current_exe_path, external_ip, set_agent_loaded_config_path,
 };
+
+/// Controls how letter case affects path and content search matching.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum CaseSensitivity {
+    /// Uses case-insensitive matching until the query contains an uppercase letter.
+    #[default]
+    Smart,
+    /// Requires query and candidate letter case to match exactly.
+    Sensitive,
+    /// Ignores letter case regardless of the query's capitalization.
+    Insensitive,
+}
 
 /// Carries credentials to the login endpoint without putting secrets in the URL.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -151,6 +167,9 @@ pub enum Command {
         /// Git ignore rules are enabled by default so searches match repository expectations.
         #[serde(default = "default_true")]
         respect_gitignore: bool,
+        /// Smart case keeps lowercase searches forgiving while uppercase remains intentional.
+        #[serde(default)]
+        case_sensitivity: CaseSensitivity,
     },
     /// Searches physical file lines without making the server read remote content.
     ContentGrep {
@@ -168,6 +187,9 @@ pub enum Command {
         /// Literal matching is opt-in so existing callers keep regex semantics.
         #[serde(default)]
         fixed_string: bool,
+        /// Smart case keeps lowercase searches forgiving while uppercase remains intentional.
+        #[serde(default)]
+        case_sensitivity: CaseSensitivity,
         /// Preceding physical lines are opt-in and bounded to keep each match response small.
         #[serde(default)]
         before_context: u64,
@@ -329,9 +351,10 @@ impl Command {
                 timeout_seconds,
                 include_hidden,
                 respect_gitignore,
+                case_sensitivity,
             } => {
                 format!(
-                    "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore}"
+                    "FileSearch path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} case_sensitivity={case_sensitivity:?}"
                 )
             }
             Self::ContentGrep {
@@ -341,10 +364,11 @@ impl Command {
                 include_hidden,
                 respect_gitignore,
                 fixed_string,
+                case_sensitivity,
                 before_context,
                 after_context,
             } => format!(
-                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} fixed_string={fixed_string} before_context={before_context} after_context={after_context}"
+                "ContentGrep path={path} query={query} timeout={timeout_seconds}s include_hidden={include_hidden} respect_gitignore={respect_gitignore} fixed_string={fixed_string} case_sensitivity={case_sensitivity:?} before_context={before_context} after_context={after_context}"
             ),
             Self::RawDownload {
                 path,
@@ -479,6 +503,8 @@ pub struct FindRequest {
     pub include_hidden: bool,
     #[serde(default = "default_true")]
     pub respect_gitignore: bool,
+    #[serde(default)]
+    pub case_sensitivity: CaseSensitivity,
 }
 
 /// Returns the best paths discovered before traversal completed or reached its deadline.
@@ -534,6 +560,8 @@ pub struct GrepRequest {
     pub respect_gitignore: bool,
     #[serde(default)]
     pub fixed_string: bool,
+    #[serde(default)]
+    pub case_sensitivity: CaseSensitivity,
     #[serde(default)]
     #[ts(type = "number")]
     pub before_context: u64,

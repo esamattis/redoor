@@ -5,7 +5,10 @@ use super::{
 };
 use redoor::{
     Level,
-    commands::{Command, CommandErrorKind, CommandHandler, CommandResult, ContentGrepRequest},
+    commands::{
+        Command, CommandErrorKind, CommandHandler, CommandResult, ContentGrepRequest,
+        FileSearchRequest,
+    },
     log, log_error, streaming,
     types::{AgentId, Message, RequestId},
 };
@@ -299,16 +302,20 @@ async fn handle_command_message(
             timeout_seconds,
             include_hidden,
             respect_gitignore,
+            case_sensitivity,
         } => {
             let result = match file_search_cancel {
                 Some(cancel_receiver) => {
                     CommandHandler::new()
                         .execute_file_search(
-                            path,
-                            query,
-                            timeout_seconds,
-                            include_hidden,
-                            respect_gitignore,
+                            FileSearchRequest {
+                                path,
+                                query,
+                                timeout_seconds,
+                                include_hidden,
+                                respect_gitignore,
+                                case_sensitivity,
+                            },
                             cancel_receiver,
                         )
                         .await
@@ -321,6 +328,7 @@ async fn handle_command_message(
                             timeout_seconds,
                             include_hidden,
                             respect_gitignore,
+                            case_sensitivity,
                         })
                         .await
                 }
@@ -343,6 +351,7 @@ async fn handle_command_message(
             include_hidden,
             respect_gitignore,
             fixed_string,
+            case_sensitivity,
             before_context,
             after_context,
         } => {
@@ -357,6 +366,7 @@ async fn handle_command_message(
                                 include_hidden,
                                 respect_gitignore,
                                 fixed_string,
+                                case_sensitivity,
                                 before_context,
                                 after_context,
                             },
@@ -373,6 +383,7 @@ async fn handle_command_message(
                             include_hidden,
                             respect_gitignore,
                             fixed_string,
+                            case_sensitivity,
                             before_context,
                             after_context,
                         })

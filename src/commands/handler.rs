@@ -57,6 +57,7 @@ impl CommandHandler {
                 timeout_seconds,
                 include_hidden,
                 respect_gitignore,
+                case_sensitivity,
             } => {
                 file_search::execute(
                     path,
@@ -64,6 +65,7 @@ impl CommandHandler {
                     timeout_seconds,
                     include_hidden,
                     respect_gitignore,
+                    case_sensitivity,
                 )
                 .await
             }
@@ -74,6 +76,7 @@ impl CommandHandler {
                 include_hidden,
                 respect_gitignore,
                 fixed_string,
+                case_sensitivity,
                 before_context,
                 after_context,
             } => {
@@ -84,6 +87,7 @@ impl CommandHandler {
                     include_hidden,
                     respect_gitignore,
                     fixed_string,
+                    case_sensitivity,
                     before_context,
                     after_context,
                 })
@@ -388,19 +392,16 @@ impl CommandHandler {
     /// Runs recursive search with the agent runtime's per-connection supersession signal.
     pub async fn execute_file_search(
         &self,
-        path: String,
-        query: String,
-        timeout_seconds: u64,
-        include_hidden: bool,
-        respect_gitignore: bool,
+        request: super::FileSearchRequest,
         cancel_receiver: watch::Receiver<bool>,
     ) -> CommandResult {
         file_search::execute_with_cancellation(
-            path,
-            query,
-            timeout_seconds,
-            include_hidden,
-            respect_gitignore,
+            request.path,
+            request.query,
+            request.timeout_seconds,
+            request.include_hidden,
+            request.respect_gitignore,
+            request.case_sensitivity,
             cancel_receiver,
         )
         .await

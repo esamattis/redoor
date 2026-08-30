@@ -1,4 +1,6 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+
+import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 
@@ -38,6 +40,7 @@ export const queryKeys = {
             timeoutSeconds: number;
             includeHidden: boolean;
             respectGitignore: boolean;
+            caseSensitivity: CaseSensitivity;
         },
     ) =>
         [
@@ -50,6 +53,7 @@ export const queryKeys = {
             search.timeoutSeconds,
             search.includeHidden,
             search.respectGitignore,
+            search.caseSensitivity,
         ] as const,
     contentGrep: (
         agentId: string,
@@ -61,6 +65,7 @@ export const queryKeys = {
             respectGitignore: boolean;
             regex: boolean;
             contextSize: number;
+            caseSensitivity: CaseSensitivity;
         },
     ) =>
         [
@@ -73,6 +78,7 @@ export const queryKeys = {
             search.timeoutSeconds,
             search.includeHidden,
             search.respectGitignore,
+            search.caseSensitivity,
             search.regex,
             search.contextSize,
         ] as const,
@@ -193,6 +199,7 @@ export function fileSearchQueryOptions(
         timeoutSeconds: number;
         includeHidden: boolean;
         respectGitignore: boolean;
+        caseSensitivity: CaseSensitivity;
     },
 ) {
     return queryOptions({
@@ -202,6 +209,7 @@ export function fileSearchQueryOptions(
                 timeoutSeconds: search.timeoutSeconds,
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
+                caseSensitivity: search.caseSensitivity,
                 signal,
             }),
         enabled: search.query.trim() !== "",
@@ -220,6 +228,7 @@ export function contentGrepQueryOptions(
         respectGitignore: boolean;
         regex: boolean;
         contextSize: number;
+        caseSensitivity: CaseSensitivity;
     },
 ) {
     return queryOptions({
@@ -230,6 +239,7 @@ export function contentGrepQueryOptions(
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
                 fixedString: !search.regex,
+                caseSensitivity: search.caseSensitivity,
                 beforeContext: search.contextSize,
                 afterContext: search.contextSize,
                 signal,

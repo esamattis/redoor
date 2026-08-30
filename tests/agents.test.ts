@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines */
 import {
     describe,
     it,
@@ -16,6 +17,7 @@ import {
 } from "#ui/api-client";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
+import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import fs from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -124,6 +126,7 @@ async function searchAgentFiles(
         timeout?: number;
         includeHidden?: boolean;
         respectGitignore?: boolean;
+        caseSensitivity?: CaseSensitivity;
     },
 ): Promise<FileSearchResponse> {
     const url = new URL("/api/v1/find", apiClient.baseUrl);
@@ -140,6 +143,7 @@ async function searchAgentFiles(
             timeout: search.timeout,
             include_hidden: search.includeHidden,
             respect_gitignore: search.respectGitignore,
+            case_sensitivity: search.caseSensitivity,
         }),
     });
     // Successful transport proves the REST route relayed the command to the connected agent.
@@ -487,6 +491,63 @@ describe("Agents API", () => {
                 (entry) => entry.name === "unrelated-document.txt",
             ),
         ).toBe(false);
+    });
+
+    it("should apply every case sensitivity mode to path and content search", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({ suffix: "-case-search" });
+        const target = path.join(searchRoot, "MixedCaseTarget.txt");
+        await fs.writeFile(target, "MixedCaseNeedle", "utf-8");
+
+        const smartLowerPath = await searchAgentFiles(testAgent, searchRoot, {
+            query: "mixedcasetarget",
+            caseSensitivity: "smart",
+        });
+        // A lowercase smart-case query remains forgiving for path names.
+        expect(smartLowerPath.results.map((entry) => entry.path)).toEqual([
+            target,
+        ]);
+        const smartUpperPath = await searchAgentFiles(testAgent, searchRoot, {
+            query: "mixedCaseTarget",
+            caseSensitivity: "smart",
+        });
+        // Any uppercase query letter makes smart path matching respect the whole query's case.
+        expect(smartUpperPath.results).toEqual([]);
+        const sensitivePath = await searchAgentFiles(testAgent, searchRoot, {
+            query: "mixedcasetarget",
+            caseSensitivity: "sensitive",
+        });
+        // Sensitive mode rejects a lowercase query for the mixed-case filename.
+        expect(sensitivePath.results).toEqual([]);
+        const insensitivePath = await searchAgentFiles(testAgent, searchRoot, {
+            query: "mixedcasetarget",
+            caseSensitivity: "insensitive",
+        });
+        // Insensitive mode always accepts equivalent letters regardless of case.
+        expect(insensitivePath.results.map((entry) => entry.path)).toEqual([
+            target,
+        ]);
+
+        const grep = (query: string, caseSensitivity: CaseSensitivity) =>
+            testAgent.grepContent(searchRoot, query, {
+                timeoutSeconds: 5,
+                includeHidden: false,
+                respectGitignore: true,
+                fixedString: true,
+                caseSensitivity,
+            });
+        const smartLowerContent = await grep("mixedcaseneedle", "smart");
+        // Content smart case has the same lowercase-insensitive default as path search.
+        expect(smartLowerContent.results).toHaveLength(1);
+        const smartUpperContent = await grep("mixedCaseNeedle", "smart");
+        // Uppercase content queries activate exact-case matching in smart mode.
+        expect(smartUpperContent.results).toEqual([]);
+        const sensitiveContent = await grep("mixedcaseneedle", "sensitive");
+        // Explicit sensitive mode does not depend on query capitalization.
+        expect(sensitiveContent.results).toEqual([]);
+        const insensitiveContent = await grep("mixedcaseneedle", "insensitive");
+        // Explicit insensitive mode finds the mixed-case physical line.
+        expect(insensitiveContent.results).toHaveLength(1);
     });
 
     it("should exclude unquoted minus terms and search quoted minus terms", async () => {

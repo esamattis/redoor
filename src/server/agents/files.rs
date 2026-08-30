@@ -118,6 +118,7 @@ pub(crate) async fn file_search_agent_handler(
                     timeout_seconds: search.timeout,
                     include_hidden: search.include_hidden,
                     respect_gitignore: search.respect_gitignore,
+                    case_sensitivity: search.case_sensitivity,
                 },
                 reply,
             })

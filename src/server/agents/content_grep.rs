@@ -54,6 +54,7 @@ pub(crate) async fn content_grep_handler(
                     include_hidden: search.include_hidden,
                     respect_gitignore: search.respect_gitignore,
                     fixed_string: search.fixed_string,
+                    case_sensitivity: search.case_sensitivity,
                     before_context: search.before_context,
                     after_context: search.after_context,
                 },

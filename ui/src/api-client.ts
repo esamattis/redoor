@@ -460,6 +460,7 @@ export class Agent {
             timeoutSeconds: number;
             includeHidden: boolean;
             respectGitignore: boolean;
+            caseSensitivity?: FindRequest["case_sensitivity"];
             signal?: AbortSignal;
         },
     ): Promise<FileSearchResponse> {
@@ -470,6 +471,7 @@ export class Agent {
             timeout: options.timeoutSeconds,
             include_hidden: options.includeHidden,
             respect_gitignore: options.respectGitignore,
+            case_sensitivity: options.caseSensitivity ?? "smart",
         };
         return apiRequest<FileSearchResponse>(
             `${this.baseUrl}/api/v1/find`,
@@ -492,6 +494,7 @@ export class Agent {
             includeHidden: boolean;
             respectGitignore: boolean;
             fixedString: boolean;
+            caseSensitivity?: GrepRequest["case_sensitivity"];
             beforeContext?: number;
             afterContext?: number;
             signal?: AbortSignal;
@@ -505,6 +508,7 @@ export class Agent {
             include_hidden: options.includeHidden,
             respect_gitignore: options.respectGitignore,
             fixed_string: options.fixedString,
+            case_sensitivity: options.caseSensitivity ?? "smart",
             before_context: options.beforeContext ?? 0,
             after_context: options.afterContext ?? 0,
         };
@@ -1126,10 +1130,7 @@ export class ApiClient {
         );
     }
 
-    async waitForAgentNames(
-        names: string[],
-        timeoutMs: number = 5000,
-    ): Promise<void> {
+    async waitForAgentNames(names: string[], timeoutMs = 5000): Promise<void> {
         const startTime = Date.now();
         while (Date.now() - startTime < timeoutMs) {
             const agents = await this.listAgents();

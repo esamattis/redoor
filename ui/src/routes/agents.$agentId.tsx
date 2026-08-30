@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { z } from "zod";
 
+import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import { SearchDialog } from "#ui/components/search-dialog";
 import { RouteError } from "#ui/components/route-error";
 
@@ -13,6 +14,7 @@ export type AgentSearch = {
     gitignore?: boolean;
     regex?: boolean;
     gitroot?: boolean;
+    case?: CaseSensitivity;
 };
 
 /** Restricts grep timeout URLs to the same safe range accepted by recursive search. */
@@ -49,6 +51,12 @@ const searchQuerySchema = z.string().optional().catch(undefined);
 /** Treats a missing mode as path search while rejecting stale shared URL values. */
 const searchModeSchema = z.literal("content").optional().catch(undefined);
 
+/** Rejects stale case values while keeping a missing value equivalent to smart case. */
+const caseSensitivitySchema = z
+    .enum(["smart", "sensitive", "insensitive"])
+    .optional()
+    .catch(undefined);
+
 export const Route = createFileRoute("/agents/$agentId")({
     validateSearch: (search): AgentSearch => ({
         q: searchQuerySchema.parse(search.q),
@@ -59,6 +67,7 @@ export const Route = createFileRoute("/agents/$agentId")({
         gitignore: optionalBooleanSchema.parse(search.gitignore),
         regex: optionalBooleanSchema.parse(search.regex),
         gitroot: optionalBooleanSchema.parse(search.gitroot),
+        case: caseSensitivitySchema.parse(search.case),
     }),
     loader: async ({ params, parentMatchPromise }) => {
         const rootMatch = await parentMatchPromise;

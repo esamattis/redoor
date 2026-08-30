@@ -1,6 +1,6 @@
 use super::{
-    CommandErrorKind, CommandResult, ContentGrepContextLine, ContentGrepMatch, ContentGrepResponse,
-    MAX_GREP_CONTEXT_LINES,
+    CaseSensitivity, CommandErrorKind, CommandResult, ContentGrepContextLine, ContentGrepMatch,
+    ContentGrepResponse, MAX_GREP_CONTEXT_LINES,
     file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
     metadata::has_common_binary_magic,
 };
@@ -54,6 +54,7 @@ pub struct ContentGrepRequest {
     pub include_hidden: bool,
     pub respect_gitignore: bool,
     pub fixed_string: bool,
+    pub case_sensitivity: CaseSensitivity,
     pub before_context: u64,
     pub after_context: u64,
 }
@@ -77,6 +78,7 @@ pub(super) async fn execute_with_cancellation(
         include_hidden,
         respect_gitignore,
         fixed_string,
+        case_sensitivity,
         before_context,
         after_context,
     } = request;
@@ -107,6 +109,8 @@ pub(super) async fn execute_with_cancellation(
                 .map_err(|_| std::io::Error::other("Content grep coordinator is unavailable"))?;
             let matcher = RegexMatcherBuilder::new()
                 .unicode(false)
+                .case_insensitive(matches!(case_sensitivity, CaseSensitivity::Insensitive))
+                .case_smart(matches!(case_sensitivity, CaseSensitivity::Smart))
                 .fixed_strings(fixed_string)
                 .build(&query)
                 .map_err(|error| {
@@ -451,6 +455,7 @@ mod tests {
             include_hidden: false,
             respect_gitignore: true,
             fixed_string,
+            case_sensitivity: CaseSensitivity::Smart,
             before_context: 0,
             after_context: 0,
         }

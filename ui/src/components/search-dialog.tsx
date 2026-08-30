@@ -6,8 +6,18 @@ import {
     useLocation,
     useMatches,
 } from "@tanstack/react-router";
-import { Eye, EyeOff, File, Folder, GitBranch, Regex } from "lucide-react";
+import {
+    CaseSensitive,
+    Eye,
+    EyeOff,
+    File,
+    Folder,
+    FolderGit2,
+    GitBranch,
+    Regex,
+} from "lucide-react";
 
+import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
@@ -19,8 +29,8 @@ import {
     type Agent,
 } from "#ui/api-client";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
-import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
+import { IconButton } from "#ui/components/icon-button";
 import { InputControl } from "#ui/components/input-control";
 import { ToggleButton } from "#ui/components/toggle-button";
 import { Tooltip } from "#ui/components/tooltip";
@@ -88,6 +98,7 @@ export function SearchDialog(props: { agent: Agent }) {
         search.gitignore ?? userState.recursiveSearchRespectGitignore;
     const regex = search.regex ?? false;
     const contextSize = search.context ?? 4;
+    const caseSensitivity = search.case ?? "smart";
     const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
     const searchDirectory = searchFromGitRoot ? gitRoot : directory;
     const [debouncedQuery, setDebouncedQuery] = React.useState(query);
@@ -140,6 +151,7 @@ export function SearchDialog(props: { agent: Agent }) {
             timeoutSeconds,
             includeHidden,
             respectGitignore,
+            caseSensitivity,
         }),
         enabled: canSearch && !isContentSearch,
     });
@@ -151,6 +163,7 @@ export function SearchDialog(props: { agent: Agent }) {
             respectGitignore,
             regex,
             contextSize,
+            caseSensitivity,
         }),
         enabled: canSearch && isContentSearch,
     });
@@ -186,6 +199,7 @@ export function SearchDialog(props: { agent: Agent }) {
             regex: undefined,
             context: undefined,
             gitroot: undefined,
+            case: undefined,
         });
 
     /** Persists common traversal defaults while keeping the current URL shareable. */
@@ -226,6 +240,7 @@ export function SearchDialog(props: { agent: Agent }) {
                     respectGitignore={respectGitignore}
                     regex={regex}
                     contextSize={contextSize}
+                    caseSensitivity={caseSensitivity}
                     gitRoot={gitRoot}
                     searchFromGitRoot={searchFromGitRoot}
                     disabled={directory === null}
@@ -280,6 +295,7 @@ function SearchControls(props: {
     respectGitignore: boolean;
     regex: boolean;
     contextSize: number;
+    caseSensitivity: CaseSensitivity;
     gitRoot: string | null;
     searchFromGitRoot: boolean;
     disabled: boolean;
@@ -293,6 +309,16 @@ function SearchControls(props: {
     const queryLabel = props.isContentSearch
         ? "Text to find"
         : "File or folder name";
+    const nextCaseSensitivity = {
+        smart: "sensitive",
+        sensitive: "insensitive",
+        insensitive: "smart",
+    } satisfies Record<CaseSensitivity, CaseSensitivity>;
+    const caseSensitivityLabel = {
+        smart: "Case: smart",
+        sensitive: "Case: sensitive",
+        insensitive: "Case: insensitive",
+    } satisfies Record<CaseSensitivity, string>;
 
     return (
         <div className="grid gap-4">
@@ -330,6 +356,11 @@ function SearchControls(props: {
                     key={props.isContentSearch ? "content" : "path"}
                     autoFocus
                     type="search"
+                    aria-label={
+                        props.isContentSearch
+                            ? "Search file contents"
+                            : "Search file paths"
+                    }
                     value={props.query}
                     disabled={props.disabled}
                     onChange={(event) =>
@@ -346,136 +377,156 @@ function SearchControls(props: {
 
             <div className="grid gap-2">
                 <p className="text-xs font-medium text-slate-400">Options</p>
-                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
-                    <label className="grid gap-1 text-xs text-slate-400">
-                        Timeout (seconds)
-                        <InputControl
-                            type="number"
-                            min={1}
-                            max={60}
-                            value={props.timeoutSeconds}
-                            onChange={(event) => {
-                                const value = event.target.valueAsNumber;
-                                if (Number.isInteger(value)) {
-                                    const timeout = Math.min(
-                                        60,
-                                        Math.max(1, value),
-                                    );
-                                    props.onUpdateOption(
-                                        { timeout },
-                                        {
-                                            recursiveSearchTimeoutSeconds:
-                                                timeout,
-                                        },
-                                    );
-                                }
-                            }}
-                            className="h-9 w-full py-1 text-sm font-normal sm:w-28"
-                        />
-                    </label>
-                    {props.isContentSearch ? (
-                        <label className="grid gap-1 text-xs text-slate-400">
-                            Context lines
-                            <InputControl
-                                type="number"
-                                min={0}
-                                max={20}
-                                value={props.contextSize}
-                                onChange={(event) => {
-                                    const value = event.target.valueAsNumber;
-                                    if (Number.isInteger(value)) {
-                                        void props.onUpdate({
-                                            context: Math.min(
-                                                20,
-                                                Math.max(0, value),
-                                            ),
-                                        });
-                                    }
-                                }}
-                                className="h-9 w-full py-1 text-sm font-normal sm:w-28"
-                            />
-                        </label>
-                    ) : null}
-                </div>
-                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-                    <ToggleButton
-                        label="Include hidden files and directories"
-                        pressed={props.includeHidden}
-                        tooltip="Include hidden files and directories"
-                        size="sm"
-                        className="h-9 w-full justify-start sm:w-auto"
-                        onClick={() =>
-                            props.onUpdateOption(
-                                { hidden: !props.includeHidden },
-                                {
-                                    recursiveSearchIncludeHidden:
-                                        !props.includeHidden,
-                                },
-                            )
-                        }
-                    >
-                        {props.includeHidden ? (
-                            <Eye className="h-4 w-4" />
-                        ) : (
-                            <EyeOff className="h-4 w-4" />
-                        )}
-                        Hidden files
-                    </ToggleButton>
-                    <ToggleButton
-                        label="Respect .gitignore files"
-                        pressed={props.respectGitignore}
-                        tooltip="Respect .gitignore files"
-                        size="sm"
-                        className="h-9 w-full justify-start sm:w-auto"
-                        onClick={() =>
-                            props.onUpdateOption(
-                                { gitignore: !props.respectGitignore },
-                                {
-                                    recursiveSearchRespectGitignore:
-                                        !props.respectGitignore,
-                                },
-                            )
-                        }
-                    >
-                        <GitBranch className="h-4 w-4" />
-                        .gitignore
-                    </ToggleButton>
-                    {props.isContentSearch ? (
+                <div className="grid gap-2 sm:flex sm:items-end">
+                    <div className="flex flex-wrap gap-2">
                         <ToggleButton
-                            label="Use regular expressions"
-                            pressed={props.regex}
-                            tooltip="Use regular expressions"
-                            size="sm"
-                            className="h-9 w-full justify-start sm:w-auto"
+                            label="Include hidden files and directories"
+                            pressed={props.includeHidden}
+                            tooltip="Include hidden files and directories"
+                            className="h-9 w-9"
                             onClick={() =>
-                                void props.onUpdate({ regex: !props.regex })
+                                props.onUpdateOption(
+                                    { hidden: !props.includeHidden },
+                                    {
+                                        recursiveSearchIncludeHidden:
+                                            !props.includeHidden,
+                                    },
+                                )
                             }
                         >
-                            <Regex className="h-4 w-4" />
-                            Regular expression
+                            {props.includeHidden ? (
+                                <Eye className="h-4 w-4" />
+                            ) : (
+                                <EyeOff className="h-4 w-4" />
+                            )}
                         </ToggleButton>
-                    ) : null}
-                    {props.gitRoot ? (
-                        <Tooltip
-                            content="Search the entire Git repository instead of the current directory"
-                            className="w-full sm:w-auto"
+                        <ToggleButton
+                            label="Respect .gitignore files"
+                            pressed={props.respectGitignore}
+                            tooltip="Respect .gitignore files"
+                            className="h-9 w-9"
+                            onClick={() =>
+                                props.onUpdateOption(
+                                    { gitignore: !props.respectGitignore },
+                                    {
+                                        recursiveSearchRespectGitignore:
+                                            !props.respectGitignore,
+                                    },
+                                )
+                            }
                         >
-                            <Checkbox
-                                checked={props.searchFromGitRoot}
-                                role="checkbox"
-                                label="Search from git root"
-                                title={false}
-                                className="h-9 w-full justify-start border border-slate-700 bg-slate-900 px-3 py-2 sm:w-auto"
-                                onCheckedChange={(checked) =>
-                                    void props.onUpdate({ gitroot: checked })
+                            <GitBranch className="h-4 w-4" />
+                        </ToggleButton>
+                        {props.isContentSearch ? (
+                            <ToggleButton
+                                label="Use regular expressions"
+                                pressed={props.regex}
+                                tooltip="Use regular expressions"
+                                className="h-9 w-9"
+                                onClick={() =>
+                                    void props.onUpdate({ regex: !props.regex })
                                 }
                             >
-                                Git root
-                            </Checkbox>
-                        </Tooltip>
-                    ) : null}
+                                <Regex className="h-4 w-4" />
+                            </ToggleButton>
+                        ) : null}
+                        <IconButton
+                            label={caseSensitivityLabel[props.caseSensitivity]}
+                            className="h-9 w-9 rounded-md border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            onClick={() =>
+                                void props.onUpdate({
+                                    case: nextCaseSensitivity[
+                                        props.caseSensitivity
+                                    ],
+                                })
+                            }
+                        >
+                            <CaseSensitive className="h-4 w-4" />
+                        </IconButton>
+                        {props.gitRoot ? (
+                            <ToggleButton
+                                label="Search from git root"
+                                pressed={props.searchFromGitRoot}
+                                tooltip="Search the entire Git repository instead of the current directory"
+                                className="h-9 w-9"
+                                onClick={() =>
+                                    void props.onUpdate({
+                                        gitroot: !props.searchFromGitRoot,
+                                    })
+                                }
+                            >
+                                <FolderGit2 className="h-4 w-4" />
+                            </ToggleButton>
+                        ) : null}
+                    </div>
+                    <SearchNumberInputs
+                        isContentSearch={props.isContentSearch}
+                        timeoutSeconds={props.timeoutSeconds}
+                        contextSize={props.contextSize}
+                        onUpdate={props.onUpdate}
+                        onUpdateOption={props.onUpdateOption}
+                    />
                 </div>
             </div>
+        </div>
+    );
+}
+
+/** Keeps bounded numeric controls compact and aligned at the toolbar's desktop edge. */
+function SearchNumberInputs(props: {
+    isContentSearch: boolean;
+    timeoutSeconds: number;
+    contextSize: number;
+    onUpdate: (changes: SearchChanges) => Promise<void>;
+    onUpdateOption: (
+        changes: SearchChanges,
+        preferences: Record<string, number | boolean>,
+    ) => void;
+}) {
+    return (
+        <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
+            <label className="grid gap-1 text-xs text-slate-400">
+                Timeout
+                <InputControl
+                    aria-label="Search timeout in seconds"
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={props.timeoutSeconds}
+                    onChange={(event) => {
+                        const value = event.target.valueAsNumber;
+                        if (Number.isInteger(value)) {
+                            const timeout = Math.min(60, Math.max(1, value));
+                            props.onUpdateOption(
+                                { timeout },
+                                { recursiveSearchTimeoutSeconds: timeout },
+                            );
+                        }
+                    }}
+                    className="h-9 w-16 py-1 text-sm font-normal"
+                />
+            </label>
+            {props.isContentSearch ? (
+                <label className="grid gap-1 text-xs text-slate-400">
+                    Context
+                    <InputControl
+                        aria-label="Context lines above and below"
+                        type="number"
+                        min={0}
+                        max={20}
+                        value={props.contextSize}
+                        onChange={(event) => {
+                            const value = event.target.valueAsNumber;
+                            if (Number.isInteger(value)) {
+                                void props.onUpdate({
+                                    context: Math.min(20, Math.max(0, value)),
+                                });
+                            }
+                        }}
+                        className="h-9 w-16 py-1 text-sm font-normal"
+                    />
+                </label>
+            ) : null}
         </div>
     );
 }

@@ -1,4 +1,6 @@
-use super::{CommandErrorKind, CommandResult, FileSearchEntry, FileSearchResponse};
+use super::{
+    CaseSensitivity, CommandErrorKind, CommandResult, FileSearchEntry, FileSearchResponse,
+};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use nucleo_matcher::{
     Config, Matcher, Utf32Str,
@@ -20,15 +22,26 @@ const RESULT_LIMIT: usize = 100;
 /// Prevents repository-controlled ignore rules from allocating an unbounded physical line.
 const MAX_GITIGNORE_LINE_BYTES: usize = 64 * 1024;
 
+/// Bundles path-search controls so cancellation coordination does not grow a positional API.
+pub struct FileSearchRequest {
+    pub path: String,
+    pub query: String,
+    pub timeout_seconds: u64,
+    pub include_hidden: bool,
+    pub respect_gitignore: bool,
+    pub case_sensitivity: CaseSensitivity,
+}
+
 /// Separates fuzzy terms from path fragments that must be skipped during traversal.
 struct SearchExpression {
     include_patterns: Vec<Pattern>,
     exclude_terms: Vec<String>,
+    case_sensitivity: CaseSensitivity,
 }
 
 impl SearchExpression {
     /// Parses whitespace-separated Google-style terms while retaining spaces inside double quotes.
-    fn parse(query: &str) -> Self {
+    fn parse(query: &str, case_sensitivity: CaseSensitivity) -> Self {
         let mut terms = Vec::new();
         let mut current = String::new();
         let mut in_quotes = false;
@@ -56,11 +69,15 @@ impl SearchExpression {
         let mut exclude_terms = Vec::new();
         for (term, was_quoted) in terms {
             if !was_quoted && term.starts_with('-') && term.len() > 1 {
-                exclude_terms.push(term[1..].to_lowercase());
+                exclude_terms.push(term[1..].to_string());
             } else {
                 include_patterns.push(Pattern::new(
                     &term,
-                    CaseMatching::Smart,
+                    match case_sensitivity {
+                        CaseSensitivity::Smart => CaseMatching::Smart,
+                        CaseSensitivity::Sensitive => CaseMatching::Respect,
+                        CaseSensitivity::Insensitive => CaseMatching::Ignore,
+                    },
                     Normalization::Smart,
                     AtomKind::Fuzzy,
                 ));
@@ -69,7 +86,26 @@ impl SearchExpression {
         Self {
             include_patterns,
             exclude_terms,
+            case_sensitivity,
         }
+    }
+
+    /// Applies the selected case policy to exclusion substrings as well as positive fuzzy terms.
+    fn excludes(&self, relative_path: &str) -> bool {
+        self.exclude_terms
+            .iter()
+            .any(|term| match self.case_sensitivity {
+                CaseSensitivity::Sensitive => relative_path.contains(term),
+                CaseSensitivity::Insensitive => {
+                    relative_path.to_lowercase().contains(&term.to_lowercase())
+                }
+                CaseSensitivity::Smart if term.chars().any(char::is_uppercase) => {
+                    relative_path.contains(term)
+                }
+                CaseSensitivity::Smart => {
+                    relative_path.to_lowercase().contains(&term.to_lowercase())
+                }
+            })
     }
 }
 
@@ -109,6 +145,7 @@ pub(super) async fn execute(
     timeout_seconds: u64,
     include_hidden: bool,
     respect_gitignore: bool,
+    case_sensitivity: CaseSensitivity,
 ) -> CommandResult {
     let (_cancel_sender, cancel_receiver) = watch::channel(false);
     execute_with_cancellation(
@@ -117,6 +154,7 @@ pub(super) async fn execute(
         timeout_seconds,
         include_hidden,
         respect_gitignore,
+        case_sensitivity,
         cancel_receiver,
     )
     .await
@@ -129,6 +167,7 @@ pub(super) async fn execute_with_cancellation(
     timeout_seconds: u64,
     include_hidden: bool,
     respect_gitignore: bool,
+    case_sensitivity: CaseSensitivity,
     mut cancel_receiver: watch::Receiver<bool>,
 ) -> CommandResult {
     if query.trim().is_empty() {
@@ -139,7 +178,7 @@ pub(super) async fn execute_with_cancellation(
     }
 
     let started_at = Instant::now();
-    let expression = SearchExpression::parse(&query);
+    let expression = SearchExpression::parse(&query, case_sensitivity);
     let mut matches = Vec::with_capacity(RESULT_LIMIT);
     let result = {
         let traversal = collect_matches(
@@ -203,6 +242,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
             cancel_receiver,
         )
         .await;
@@ -244,6 +284,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -283,6 +324,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -332,6 +374,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -390,6 +433,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
         let quoted_result = execute(
@@ -398,6 +442,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -442,6 +487,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
         let included_result = execute(
@@ -450,6 +496,7 @@ mod tests {
             5,
             true,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -505,6 +552,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
         let disabled = execute(
@@ -513,6 +561,7 @@ mod tests {
             5,
             false,
             false,
+            CaseSensitivity::Smart,
         )
         .await;
 
@@ -561,6 +610,7 @@ mod tests {
             5,
             false,
             true,
+            CaseSensitivity::Smart,
         )
         .await;
         let CommandResult::FileSearch(response) = result else {
@@ -623,12 +673,7 @@ async fn collect_matches(
             .strip_prefix(root)
             .map(|path| path.to_string_lossy())
             .unwrap_or_default();
-        let normalized_relative_path = relative_path.to_lowercase();
-        if expression
-            .exclude_terms
-            .iter()
-            .any(|term| normalized_relative_path.contains(term))
-        {
+        if expression.excludes(&relative_path) {
             // Rejecting before metadata and read_dir ensures excluded directories are never opened.
             continue;
         }
