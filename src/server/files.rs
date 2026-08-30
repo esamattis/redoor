@@ -7,8 +7,8 @@ use axum::{
 use redoor::{
     actors,
     commands::{
-        Command, CommandResult, CreateDirectoryResponse, ErrorResponse, RawDeleteResponse,
-        RenamePathRequest, RenamePathResponse,
+        Command, CommandResult, CreateDirectoryResponse, CreationOwnershipOptions, ErrorResponse,
+        RawDeleteResponse, RenamePathRequest, RenamePathResponse,
     },
     types::AgentId,
 };
@@ -94,10 +94,14 @@ pub(crate) async fn raw_agent_delete_handler(
 /// Route: `POST /api/v1/agents/{agent}/mkdir/{*path}`
 pub(crate) async fn create_directory_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    Query(ownership): Query<CreationOwnershipOptions>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
     let agent_id = AgentId::from(agent.clone());
     let resolved_path = absolute_path_from_url(path.unwrap_or_default());
+    if let Err(error) = ownership.validate() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+    }
 
     match state
         .router_ref
@@ -106,6 +110,7 @@ pub(crate) async fn create_directory_handler(
                 agent_id: agent_id.clone(),
                 command: Command::CreateDirectory {
                     path: resolved_path.clone(),
+                    ownership,
                 },
                 reply,
             })

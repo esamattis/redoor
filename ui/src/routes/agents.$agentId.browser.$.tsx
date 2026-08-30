@@ -5,11 +5,13 @@ import { z } from "zod";
 import {
     type ApiClient,
     type Agent,
+    type LsDirectoryResponse,
+} from "#ui/api-client";
+import {
     type LsResponse,
     isLsDirectoryResponse,
     isLsFileResponse,
-    type LsDirectoryResponse,
-} from "#ui/api-client";
+} from "#ui/ls-response";
 import { useUserState } from "#ui/user-state";
 import { RouteError } from "#ui/components/route-error";
 import {

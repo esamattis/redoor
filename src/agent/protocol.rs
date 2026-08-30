@@ -1,7 +1,8 @@
 use super::{
     ActiveDownloads, ActiveUploads, AgentActor, AgentCommandError, AgentHandle, AgentMsg,
     AgentState, DownloadSessionHandle, LogStreamSessionHandle, TerminalSessionHandle, logs,
-    raw::RawDownloadContext, terminal,
+    raw::{RawDownloadContext, RawUploadDestination},
+    terminal,
 };
 use redoor::{
     Level,
@@ -769,14 +770,21 @@ impl AgentActor {
         command: Command,
     ) -> bool {
         match command {
-            Command::RawUpload { path, on_existing } => {
+            Command::RawUpload {
+                path,
+                on_existing,
+                ownership,
+            } => {
                 self.start_raw_upload_session(
                     active_uploads.clone(),
                     write,
                     agent_id,
                     request_id,
-                    path,
-                    on_existing,
+                    RawUploadDestination {
+                        path,
+                        on_existing,
+                        ownership,
+                    },
                 )
                 .await;
                 self.send_transfer_ready_if_started(&active_uploads, write, agent_id, request_id)

@@ -67,6 +67,57 @@ describe("Raw Upload API", () => {
         expect(downloadedContent).toBe(uploadContent);
     });
 
+    it("should apply explicit numeric ownership to a new upload", async () => {
+        const uid = process.getuid?.();
+        const gid = process.getgid?.();
+        if (uid === undefined || gid === undefined) {
+            throw new Error("Unix ownership APIs are required for this test");
+        }
+        const uploadedFilePath = tempFiles.tempFile({ suffix: "-owned.txt" });
+
+        await testAgent.upload(
+            uploadedFilePath,
+            new File(["owned"], "owned.txt"),
+            { owner: String(uid), group: String(gid) },
+        );
+
+        const uploadedStats = fs.statSync(uploadedFilePath);
+        // Matching numeric IDs prove ownership was applied to the staged inode before publication.
+        expect(uploadedStats.uid).toBe(uid);
+        expect(uploadedStats.gid).toBe(gid);
+    });
+
+    it("should inherit new upload ownership from its parent", async () => {
+        const parentPath = tempFiles.tempDirectory({ suffix: "-upload-inherit" });
+        const uploadedFilePath = path.join(parentPath, "inherited.txt");
+        const parentStats = fs.statSync(parentPath);
+
+        await testAgent.upload(
+            uploadedFilePath,
+            new File(["inherited"], "inherited.txt"),
+            { inherit_owner: true, inherit_group: true },
+        );
+
+        const uploadedStats = fs.statSync(uploadedFilePath);
+        // Both inherited IDs must come from the immediate destination directory.
+        expect(uploadedStats.uid).toBe(parentStats.uid);
+        expect(uploadedStats.gid).toBe(parentStats.gid);
+    });
+
+    it("should reject conflicting group options before starting an upload", async () => {
+        const uploadedFilePath = tempFiles.tempFile({ suffix: "-conflict.txt" });
+
+        await expect(
+            testAgent.upload(
+                uploadedFilePath,
+                new File(["not uploaded"], "conflict.txt"),
+                { group: "0", inherit_group: true },
+            ),
+        ).rejects.toThrow("Cannot specify both group and inherit_group=true");
+        // No destination proves REST validation rejected the request before upload setup.
+        expect(fs.existsSync(uploadedFilePath)).toBe(false);
+    });
+
     it("should upload binary file via raw endpoint", async () => {
         const binaryContent = Buffer.from([0, 1, 2, 3, 255, 254, 253, 128, 64]);
         const uploadedFilePath = tempFiles.tempFile({ suffix: ".bin" });

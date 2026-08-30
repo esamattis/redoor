@@ -1,3 +1,5 @@
+import type { CreationOwnershipOptions } from "#bindings/CreationOwnershipOptions";
+
 /** Encodes each filesystem component while preserving `/` as a URL path separator. */
 export function encodeFilesystemPath(path: string): string {
     if (!path.startsWith("/")) {
@@ -15,4 +17,24 @@ export function appendFilesystemPath(route: string, path: string): string {
 /** Builds a browser route whose filesystem components remain visible as URL segments. */
 export function getBrowserUrl(agentId: string, path: string): string {
     return `/agents/${encodeURIComponent(agentId)}/browser/${encodeFilesystemPath(path)}`;
+}
+
+/** Serializes only requested ownership overrides so omitted fields retain agent-side defaults. */
+export function appendOwnershipOptions(
+    url: URL,
+    ownership?: Partial<CreationOwnershipOptions>,
+): URL {
+    if (ownership?.owner != null) {
+        url.searchParams.set("owner", ownership.owner);
+    }
+    if (ownership?.group != null) {
+        url.searchParams.set("group", ownership.group);
+    }
+    if (ownership?.inherit_owner != null) {
+        url.searchParams.set("inherit_owner", String(ownership.inherit_owner));
+    }
+    if (ownership?.inherit_group != null) {
+        url.searchParams.set("inherit_group", String(ownership.inherit_group));
+    }
+    return url;
 }

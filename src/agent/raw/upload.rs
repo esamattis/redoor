@@ -1,8 +1,9 @@
 use super::super::transfers::destination::{check_existing_destination, place_temp_at_destination};
 use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
+use redoor::ownership::{OwnershipPlan, ResolvedOwnership};
 use redoor::{
     Level,
-    commands::{CommandErrorKind, CommandResult, CopyExistingMode},
+    commands::{CommandErrorKind, CommandResult, CopyExistingMode, CreationOwnershipOptions},
     log,
     streaming::{self, StreamPayloadKind},
     types::{AgentId, RequestId},
@@ -63,16 +64,29 @@ async fn create_upload_temp(path: &str) -> std::io::Result<(PathBuf, File)> {
     ))
 }
 
-/// Copies mode only from a regular destination entry and never from a symlink target.
-async fn existing_destination_permissions(
+/// Captures metadata only from a regular destination entry and never from a symlink target.
+async fn existing_destination_metadata(
     path: &Path,
-) -> std::io::Result<Option<std::fs::Permissions>> {
+) -> std::io::Result<Option<(std::fs::Permissions, u32, u32)>> {
+    use std::os::unix::fs::MetadataExt;
+
     match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(metadata.permissions())),
+        Ok(metadata) if metadata.file_type().is_file() => Ok(Some((
+            metadata.permissions(),
+            metadata.uid(),
+            metadata.gid(),
+        ))),
         Ok(_) => Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Keeps path, collision policy, and ownership together so session startup stays under the argument lint.
+pub(crate) struct RawUploadDestination {
+    pub path: String,
+    pub on_existing: CopyExistingMode,
+    pub ownership: CreationOwnershipOptions,
 }
 
 struct RawUploadSession {
@@ -81,6 +95,7 @@ struct RawUploadSession {
     on_existing: CopyExistingMode,
     file: File,
     existing_permissions: Option<std::fs::Permissions>,
+    ownership: ResolvedOwnership,
     bytes_written: u64,
 }
 
@@ -177,10 +192,26 @@ impl RawUploadWorker {
             on_existing,
             file,
             existing_permissions,
+            ownership,
             bytes_written,
         } = session;
 
         drop(file);
+
+        if let Err(error) = ownership.apply(&temp_path).await {
+            let error_message = format!("Failed to set uploaded file ownership: {error}");
+            remove_upload_temp_file(&temp_path).await;
+            AgentActor
+                .send_command_response(
+                    &tx,
+                    &agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(error.kind(), error_message).into(),
+                )
+                .await;
+            active_uploads.remove(request_id);
+            return;
+        }
 
         if let Some(permissions) = existing_permissions
             && let Err(error) = tokio::fs::set_permissions(&temp_path, permissions).await
@@ -362,15 +393,20 @@ impl RawUploadWorker {
 }
 
 impl AgentActor {
+    /// Stages a temp file and ownership plan before the HTTP body starts streaming.
     pub(crate) async fn start_raw_upload_session(
         &self,
         active_uploads: ActiveUploads,
         write: &mpsc::Sender<WsMessage>,
         agent_id: &AgentId,
         request_id: RequestId,
-        path: String,
-        on_existing: CopyExistingMode,
+        destination: RawUploadDestination,
     ) {
+        let RawUploadDestination {
+            path,
+            on_existing,
+            ownership,
+        } = destination;
         let upload_already_exists = active_uploads.contains(request_id);
 
         if upload_already_exists {
@@ -402,8 +438,8 @@ impl AgentActor {
             return;
         }
 
-        let existing_permissions = match existing_destination_permissions(Path::new(&path)).await {
-            Ok(permissions) => permissions,
+        let existing_metadata = match existing_destination_metadata(Path::new(&path)).await {
+            Ok(metadata) => metadata,
             Err(error) => {
                 self.send_command_response(
                     write,
@@ -419,6 +455,35 @@ impl AgentActor {
                 return;
             }
         };
+        let existing_ids = existing_metadata.as_ref().map(|(_, uid, gid)| (*uid, *gid));
+        let ownership_plan = match OwnershipPlan::resolve(ownership, existing_ids).await {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.send_command_response(
+                    write,
+                    agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(error.kind(), error.to_string()).into(),
+                )
+                .await;
+                return;
+            }
+        };
+        let parent = Path::new(&path).parent().unwrap_or_else(|| Path::new("."));
+        let resolved_ownership = match ownership_plan.for_parent(parent).await {
+            Ok(ownership) => ownership,
+            Err(error) => {
+                self.send_command_response(
+                    write,
+                    agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(error.kind(), error.to_string()).into(),
+                )
+                .await;
+                return;
+            }
+        };
+        let existing_permissions = existing_metadata.map(|(permissions, _, _)| permissions);
         match create_upload_temp(&path).await {
             Ok((temp_path, file)) => {
                 let (chunk_sender, chunk_receiver) = mpsc::channel::<streaming::StreamChunk>(8);
@@ -450,6 +515,7 @@ impl AgentActor {
                             on_existing,
                             file,
                             existing_permissions,
+                            ownership: resolved_ownership,
                             bytes_written: 0,
                         },
                         tx: write.clone(),
@@ -497,14 +563,16 @@ mod tests {
         symlink(&target, &valid_link).unwrap();
         symlink("missing", &dangling_link).unwrap();
 
-        let regular = existing_destination_permissions(&target)
+        let regular = existing_destination_metadata(&target)
             .await
             .unwrap()
-            .unwrap();
-        let hard_link = existing_destination_permissions(&peer)
+            .unwrap()
+            .0;
+        let hard_link = existing_destination_metadata(&peer)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .0;
 
         // A regular entry keeps its own previous mode for replacement publication.
         assert_eq!(regular.mode() & 0o777, 0o751);
@@ -512,14 +580,14 @@ mod tests {
         assert_eq!(hard_link.mode() & 0o777, 0o751);
         // A valid symlink must not leak its target mode into the replacement file.
         assert!(
-            existing_destination_permissions(&valid_link)
+            existing_destination_metadata(&valid_link)
                 .await
                 .unwrap()
                 .is_none()
         );
         // A dangling symlink is still an entry and must likewise provide no target metadata.
         assert!(
-            existing_destination_permissions(&dangling_link)
+            existing_destination_metadata(&dangling_link)
                 .await
                 .unwrap()
                 .is_none()

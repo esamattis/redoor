@@ -6,6 +6,7 @@ pub mod log_protocol;
 pub mod log_registry;
 pub mod logging;
 pub mod one_time_token_registry;
+pub mod ownership;
 pub mod process;
 pub mod safe_fs;
 pub mod streaming;

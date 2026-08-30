@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 pub(crate) use download::RawDownloadContext;
+pub(crate) use upload::RawUploadDestination;
 
 /// Reframes one logical stream chunk into websocket-sized binary frames while preserving chunk order.
 pub(super) async fn send_framed_stream_bytes(

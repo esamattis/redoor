@@ -24,11 +24,8 @@ import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
-import {
-    isLsDirectoryResponse,
-    isLsFileResponse,
-    type Agent,
-} from "#ui/api-client";
+import { type Agent } from "#ui/api-client";
+import { isLsDirectoryResponse, isLsFileResponse } from "#ui/ls-response";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { Dialog } from "#ui/components/dialog";
 import { IconButton } from "#ui/components/icon-button";

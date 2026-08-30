@@ -9,12 +9,11 @@ import {
     onTestFinished,
 } from "vitest";
 import { z } from "zod";
+import { ApiClient, Agent } from "#ui/api-client";
 import {
-    ApiClient,
-    Agent,
     isLsDirectoryResponse,
     isLsFileResponse,
-} from "#ui/api-client";
+} from "#ui/ls-response";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";

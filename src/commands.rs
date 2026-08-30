@@ -149,6 +149,47 @@ pub struct UpgradeAgentResponse {
     pub target_version: String,
 }
 
+/// Selects explicit or parent-derived ownership for a newly created filesystem entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreationOwnershipOptions {
+    /// Accepts either a user name or a numeric UID resolved by the agent host.
+    pub owner: Option<String>,
+    /// Accepts either a group name or a numeric GID resolved by the agent host.
+    pub group: Option<String>,
+    /// Overrides the root-agent default when present.
+    pub inherit_owner: Option<bool>,
+    /// Overrides the root-agent default when present.
+    pub inherit_group: Option<bool>,
+}
+
+impl CreationOwnershipOptions {
+    /// Rejects ambiguous ownership requests before any filesystem mutation starts.
+    pub fn validate(&self) -> Result<(), String> {
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.trim().is_empty())
+        {
+            return Err("Owner cannot be empty".to_string());
+        }
+        if self
+            .group
+            .as_ref()
+            .is_some_and(|group| group.trim().is_empty())
+        {
+            return Err("Group cannot be empty".to_string());
+        }
+        if self.owner.is_some() && self.inherit_owner == Some(true) {
+            return Err("Cannot specify both owner and inherit_owner=true".to_string());
+        }
+        if self.group.is_some() && self.inherit_group == Some(true) {
+            return Err("Cannot specify both group and inherit_group=true".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
@@ -214,6 +255,9 @@ pub enum Command {
         /// Defaults to override so direct HTTP raw uploads keep replacing files.
         #[serde(default = "CopyExistingMode::override_mode")]
         on_existing: CopyExistingMode,
+        /// Applies only to the uploaded destination entry, not its parent directories.
+        #[serde(default)]
+        ownership: CreationOwnershipOptions,
     },
     /// Rewrites one existing regular-file inode after staging the complete body.
     EditFile {
@@ -270,6 +314,9 @@ pub enum Command {
     },
     CreateDirectory {
         path: String,
+        /// Applies only to the requested directory after recursive parent creation.
+        #[serde(default)]
+        ownership: CreationOwnershipOptions,
     },
     RenamePath {
         dir: String,
@@ -385,7 +432,9 @@ impl Command {
             Self::TarDownload { path, include_root } => {
                 format!("TarDownload path={path} include_root={include_root}")
             }
-            Self::RawUpload { path, on_existing } => {
+            Self::RawUpload {
+                path, on_existing, ..
+            } => {
                 format!("RawUpload path={path} on_existing={on_existing:?}")
             }
             Self::EditFile { path } => format!("EditFile path={path}"),
@@ -426,7 +475,7 @@ impl Command {
             } => format!(
                 "RestoreTrash location={location_id} item={item_id} destination={destination_path}"
             ),
-            Self::CreateDirectory { path } => format!("CreateDirectory path={path}"),
+            Self::CreateDirectory { path, .. } => format!("CreateDirectory path={path}"),
             Self::RenamePath { dir, old, new } => {
                 format!("RenamePath dir={dir} old={old} new={new}")
             }
@@ -1767,6 +1816,7 @@ mod tests {
             .execute(Command::RawUpload {
                 path: "upload.txt".to_string(),
                 on_existing: CopyExistingMode::Override,
+                ownership: CreationOwnershipOptions::default(),
             })
             .await;
 
@@ -1868,6 +1918,7 @@ mod tests {
         let result = handler
             .execute(Command::CreateDirectory {
                 path: nested_dir.to_string_lossy().to_string(),
+                ownership: CreationOwnershipOptions::default(),
             })
             .await;
 

@@ -125,7 +125,9 @@ impl CommandHandler {
                 CommandErrorKind::InvalidInput,
                 "Trash commands are handled by the agent runtime",
             ),
-            Command::CreateDirectory { path } => self.create_directory(path).await,
+            Command::CreateDirectory { path, ownership } => {
+                self.create_directory(path, ownership).await
+            }
             Command::RenamePath { dir, old, new } => self.rename_path(dir, old, new).await,
             Command::Metadata { path } => metadata::execute(path).await,
             Command::DirectorySize {
@@ -587,10 +589,36 @@ impl CommandHandler {
     }
 
     /// Creates all missing path components for remote directory workflows.
-    async fn create_directory(&self, path: String) -> CommandResult {
-        match tokio::fs::create_dir_all(&path).await {
+    async fn create_directory(
+        &self,
+        path: String,
+        ownership: super::CreationOwnershipOptions,
+    ) -> CommandResult {
+        let already_exists = match tokio::fs::symlink_metadata(&path).await {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return CommandResult::io_error("Failed to inspect directory", error),
+        };
+        let ownership_plan = match crate::ownership::OwnershipPlan::resolve(ownership, None).await {
+            Ok(plan) => plan,
+            Err(error) => return CommandResult::error(error.kind(), error.to_string()),
+        };
+        if let Err(error) = tokio::fs::create_dir_all(&path).await {
+            return CommandResult::io_error("Failed to create directory", error);
+        }
+        if already_exists {
+            return CommandResult::CreateDirectory;
+        }
+        let parent = std::path::Path::new(&path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let resolved_ownership = match ownership_plan.for_parent(parent).await {
+            Ok(ownership) => ownership,
+            Err(error) => return CommandResult::error(error.kind(), error.to_string()),
+        };
+        match resolved_ownership.apply(std::path::Path::new(&path)).await {
             Ok(()) => CommandResult::CreateDirectory,
-            Err(error) => CommandResult::io_error("Failed to create directory", error),
+            Err(error) => CommandResult::error(error.kind(), error.to_string()),
         }
     }
 

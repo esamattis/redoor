@@ -29,6 +29,7 @@ const execFileAsync = promisify(execFile);
 const SSH_TEST_HOST = "redoor-ssh-test";
 const SSH_TEST_USER = "redoor";
 const SSH_PASSWORD_USER = "redoor-password";
+const SSH_ROOT_USER = "root";
 
 type RelayPidMetadata = {
     pid: number;
@@ -72,6 +73,19 @@ async function sshTestCommand(command: string): Promise<void> {
 
 /** Runs a command as the password-only user so cleanup can reach that user's home. */
 async function sshPasswordTestCommand(command: string): Promise<void> {
+    await sshCommandWithPassword(SSH_PASSWORD_USER, command);
+}
+
+/** Runs a command as root for ownership behavior that cannot be exercised by local non-root agents. */
+async function sshRootTestCommand(command: string): Promise<void> {
+    await sshCommandWithPassword(SSH_ROOT_USER, command);
+}
+
+/** Uses the shared fixture password without exposing it in process arguments or test output. */
+async function sshCommandWithPassword(
+    username: string,
+    command: string,
+): Promise<void> {
     const password = process.env.REDOOR_SSH_TEST_PASSWORD;
     if (password === undefined || password === "") {
         throw new Error(
@@ -90,7 +104,7 @@ printf '%s\n' ${shellQuote(password)}
     try {
         await execFileAsync(
             "ssh",
-            ["-l", SSH_PASSWORD_USER, SSH_TEST_HOST, command],
+            ["-l", username, SSH_TEST_HOST, command],
             {
                 env: {
                     ...process.env,
@@ -719,6 +733,155 @@ log = "${agentLogPath}"
         const echo = await connected.echo("managed-through-password-ssh");
         // Echo proves sniff, binary upload, and the long-lived session all used askpass.
         expect(echo.message).toBe("managed-through-password-ssh");
+    }, 120_000);
+});
+
+describe.skipIf(
+    process.env.REDOOR_SSH_TEST !== "1" ||
+        !process.env.REDOOR_SSH_TEST_PASSWORD,
+)("root SSH agent ownership", () => {
+    test("inherits new entry ownership by default and allows opting out", async () => {
+        const processManager = new ProcessManager();
+        const home = mkdtempSync(join(tmpdir(), "redoor-root-ownership-"));
+        const suffix = `${process.pid}-${Date.now()}`;
+        const appName = `redoor-root-ownership-${suffix}`;
+        const agentName = `root-ownership-${suffix}`;
+        const remoteRoot = `/tmp/redoor-root-ownership-${suffix}`;
+        const parentPath = `${remoteRoot}/parent`;
+        const configPath = join(home, "config.toml");
+        const agentLogPath = join(home, "root-agent.log");
+        const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
+        if (sshPassword === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+        writeFileSync(
+            configPath,
+            `agent_token = "${TEST_AGENT_TOKEN}"
+
+[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+port = ${VITEST_SERVER_PORT}
+
+[[agents]]
+target = "${SSH_TEST_HOST}"
+username = "${SSH_ROOT_USER}"
+password = ${JSON.stringify(sshPassword)}
+name = "${agentName}"
+home = "${remoteRoot}"
+log = "${agentLogPath}"
+`,
+        );
+
+        onTestFinished(async () => {
+            await processManager.killAll();
+            try {
+                await cleanupSshTest({
+                    remoteRoot,
+                    agentAppNames: [appName],
+                    sshCommand: sshRootTestCommand,
+                });
+            } finally {
+                rmSync(home, { recursive: true, force: true });
+            }
+        });
+
+        await cleanupSshTest({
+            remoteRoot,
+            agentAppNames: [appName],
+            sshCommand: sshRootTestCommand,
+        });
+        await sshRootTestCommand(
+            `install -d -o ${SSH_TEST_USER} -g ${SSH_TEST_USER} ${shellQuote(parentPath)}`,
+        );
+        const serverPid = processManager.spawn(
+            SERVER_PATH,
+            ["server", "--config", configPath],
+            {
+                env: {
+                    ...process.env,
+                    HOME: home,
+                    REDOOR_APP_NAME: appName,
+                },
+            },
+        );
+        await waitForPort(VITEST_SERVER_PORT);
+        const apiClient = new ApiClient(
+            `http://127.0.0.1:${VITEST_SERVER_PORT}`,
+        );
+        await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
+        const configuredAgent = await waitForValue({
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (agent) => agent.name === agentName,
+                ),
+            description: "root SSH agent inventory registration",
+        });
+        await configuredAgent.start();
+        const connected = await waitForValue({
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.name === agentName,
+                );
+                if (agent?.connectionId) {
+                    return agent;
+                }
+                throw new Error(
+                    `status=${agent?.status ?? "missing"}, issue=${agent?.connectionIssue ?? "none"}, server=${processManager.getStdout(serverPid)}`,
+                );
+            },
+            timeoutMs: 60_000,
+            description: "root SSH agent to connect",
+        });
+
+        await connected.createDirectory(`${parentPath}/inherited-directory`);
+        await connected.upload(
+            `${parentPath}/inherited-file.txt`,
+            new File(["inherited"], "inherited-file.txt"),
+        );
+        await connected.upload(
+            `${parentPath}/root-file.txt`,
+            new File(["root"], "root-file.txt"),
+            { inherit_owner: false, inherit_group: false },
+        );
+        await connected.upload(
+            `${parentPath}/root-file.txt`,
+            new File(["replacement"], "root-file.txt"),
+        );
+        const listing = await connected.ls(parentPath);
+        if (!("files" in listing)) {
+            throw new Error("Root ownership fixture parent was not a directory");
+        }
+        const inheritedDirectory = listing.files.find(
+            (entry) => entry.name === "inherited-directory",
+        );
+        const inheritedFile = listing.files.find(
+            (entry) => entry.name === "inherited-file.txt",
+        );
+        const rootFile = listing.files.find(
+            (entry) => entry.name === "root-file.txt",
+        );
+        if (
+            inheritedDirectory === undefined ||
+            inheritedFile === undefined ||
+            rootFile === undefined
+        ) {
+            throw new Error("Root ownership fixture entries were not listed");
+        }
+
+        // Nonzero IDs prove root did not retain ownership when options were omitted.
+        expect(inheritedDirectory.uid).not.toBe(0);
+        expect(inheritedDirectory.gid).not.toBe(0);
+        // Both creation APIs must apply the same root-agent parent inheritance default.
+        expect(inheritedFile.uid).toBe(inheritedDirectory.uid);
+        expect(inheritedFile.gid).toBe(inheritedDirectory.gid);
+        // Root IDs after replacement prove explicit false disabled inheritance and omission preserved them.
+        expect(rootFile.uid).toBe(0);
+        expect(rootFile.gid).toBe(0);
+        // Replacement bytes confirm the preserved ownership belongs to the newly published inode.
+        expect(
+            Buffer.from(await connected.raw(`${parentPath}/root-file.txt`)).toString(),
+        ).toBe("replacement");
     }, 120_000);
 });
 

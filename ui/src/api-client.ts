@@ -22,6 +22,7 @@ import type { EmptyTrashResponse } from "#bindings/EmptyTrashResponse";
 import type { RestoreTrashItemRequest } from "#bindings/RestoreTrashItemRequest";
 import type { RestoreTrashItemResponse } from "#bindings/RestoreTrashItemResponse";
 import type { CreateDirectoryResponse } from "#bindings/CreateDirectoryResponse";
+import type { CreationOwnershipOptions } from "#bindings/CreationOwnershipOptions";
 import type { CopyFileRequest } from "#bindings/CopyFileRequest";
 import type { CopyFileResponse } from "#bindings/CopyFileResponse";
 import type { CopyEndpoint } from "#bindings/CopyEndpoint";
@@ -85,6 +86,7 @@ import {
     type RequestContext,
 } from "#ui/api-transport";
 import * as apiPaths from "#ui/api-paths";
+import type { LsResponse } from "#ui/ls-response";
 
 const { appendFilesystemPath, encodeFilesystemPath, getBrowserUrl } = apiPaths;
 
@@ -103,6 +105,7 @@ export type {
     RestoreTrashItemRequest,
     RestoreTrashItemResponse,
     CreateDirectoryResponse,
+    CreationOwnershipOptions,
     TransferDirection,
     TransferProgressEntry,
     TransferProgressListResponse,
@@ -160,28 +163,6 @@ export type {
     LoggingLevelRequest,
     LoggingLevelResponse,
 };
-
-type CopyFileResponseJson = {
-    copy_request_id: number;
-};
-
-type MoveFileResponseJson = {
-    move_request_id: number;
-};
-
-export type LsResponse = LsDirectoryResponse | LsFileResponse;
-
-export function isLsDirectoryResponse(
-    response: LsResponse,
-): response is LsDirectoryResponse {
-    return "files" in response;
-}
-
-export function isLsFileResponse(
-    response: LsResponse,
-): response is LsFileResponse {
-    return !("files" in response);
-}
 
 export class Agent {
     private baseUrl: string;
@@ -627,9 +608,17 @@ export class Agent {
         return url.toString();
     }
 
-    async upload(path: string, file: File): Promise<Response> {
+    async upload(
+        path: string,
+        file: File,
+        ownership?: Partial<CreationOwnershipOptions>,
+    ): Promise<Response> {
+        const url = apiPaths.appendOwnershipOptions(
+            new URL(this.getRawUrl(path), this.baseUrl),
+            ownership,
+        );
         const response = await fetch(
-            this.getRawUrl(path),
+            url,
             withAuthentication(
                 {
                     method: "PUT",
@@ -704,12 +693,21 @@ export class Agent {
         );
     }
 
-    async createDirectory(path: string): Promise<CreateDirectoryResponse> {
+    async createDirectory(
+        path: string,
+        ownership?: Partial<CreationOwnershipOptions>,
+    ): Promise<CreateDirectoryResponse> {
+        const url = apiPaths.appendOwnershipOptions(
+            new URL(
+                `${this.baseUrl}${appendFilesystemPath(
+                    `/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir`,
+                    path,
+                )}`,
+            ),
+            ownership,
+        );
         const response = await fetch(
-            `${this.baseUrl}${appendFilesystemPath(
-                `/api/v1/agents/${encodeURIComponent(this.info.id)}/mkdir`,
-                path,
-            )}`,
+            url,
             withAuthentication(
                 {
                     method: "POST",
@@ -763,7 +761,7 @@ export class Agent {
             on_existing: options?.on_existing ?? "error",
         };
 
-        const response = await apiRequest<CopyFileResponseJson>(
+        return apiRequest<CopyFileResponse>(
             `${this.baseUrl}/api/v1/copy`,
             {
                 method: "POST",
@@ -774,10 +772,6 @@ export class Agent {
             },
             this.requestContext,
         );
-
-        return {
-            copy_request_id: response.copy_request_id,
-        };
     }
 
     /** Starts a smart move that deletes the source only after destination publication. */
@@ -793,7 +787,7 @@ export class Agent {
             dest: destination,
             on_existing: options?.on_existing ?? "error",
         };
-        const response = await apiRequest<MoveFileResponseJson>(
+        return apiRequest<MoveFileResponse>(
             `${this.baseUrl}/api/v1/move`,
             {
                 method: "POST",
@@ -802,7 +796,6 @@ export class Agent {
             },
             this.requestContext,
         );
-        return { move_request_id: response.move_request_id };
     }
 
     async download(

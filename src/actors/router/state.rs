@@ -219,7 +219,11 @@ impl CopyContentKind {
         on_existing: crate::commands::CopyExistingMode,
     ) -> Command {
         match self {
-            Self::RawFile => Command::RawUpload { path, on_existing },
+            Self::RawFile => Command::RawUpload {
+                path,
+                on_existing,
+                ownership: crate::commands::CreationOwnershipOptions::default(),
+            },
             Self::TarDirectory => Command::TarUpload { path, on_existing },
         }
     }

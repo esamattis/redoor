@@ -14,11 +14,10 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import { ArrowUpDown, Files, SquareTerminal, X } from "lucide-react";
 import {
     ApiClient,
-    isLsDirectoryResponse,
-    isLsFileResponse,
     type TransferProgressEntry,
     type ServerInfoResponse,
 } from "#ui/api-client";
+import { isLsDirectoryResponse, isLsFileResponse } from "#ui/ls-response";
 import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 
 import {

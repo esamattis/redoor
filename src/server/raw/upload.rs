@@ -1,7 +1,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Path, State as AxumState},
+    extract::{Path, Query, State as AxumState},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -9,7 +9,9 @@ use futures_util::StreamExt;
 use headers::HeaderMap;
 use redoor::{
     actors,
-    commands::{Command, CommandResult, ErrorResponse, RawUploadResponse},
+    commands::{
+        Command, CommandResult, CreationOwnershipOptions, ErrorResponse, RawUploadResponse,
+    },
     streaming::{StreamChunkFrameRequest, StreamChunkFrames},
     types::{AgentId, ChunkIndex, RequestId},
 };
@@ -460,12 +462,16 @@ async fn forward_split_stream_chunk(
 /// Route: `PUT /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_put_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
+    Query(ownership): Query<CreationOwnershipOptions>,
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
     let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
+    if let Err(error) = ownership.validate() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+    }
     let total_bytes = match required_content_length(&headers, "uploads") {
         Ok(total_bytes) => total_bytes,
         Err(response) => return *response,
@@ -478,6 +484,7 @@ pub(crate) async fn raw_agent_put_handler(
         Command::RawUpload {
             path: resolved_path.clone(),
             on_existing: redoor::commands::CopyExistingMode::Override,
+            ownership,
         },
         resolved_path.clone(),
         total_bytes,
