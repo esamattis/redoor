@@ -7,6 +7,7 @@ import { RouteError } from "#ui/components/route-error";
 export type AgentSearch = {
     q?: string;
     mode?: "content";
+    context?: number;
     timeout?: number;
     hidden?: boolean;
     gitignore?: boolean;
@@ -20,6 +21,15 @@ const searchTimeoutSchema = z.coerce
     .int()
     .min(1)
     .max(60)
+    .optional()
+    .catch(undefined);
+
+/** Restricts shared before/after grep context to the limit accepted by the agent. */
+const searchContextSchema = z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(20)
     .optional()
     .catch(undefined);
 
@@ -43,6 +53,7 @@ export const Route = createFileRoute("/agents/$agentId")({
     validateSearch: (search): AgentSearch => ({
         q: searchQuerySchema.parse(search.q),
         mode: searchModeSchema.parse(search.mode),
+        context: searchContextSchema.parse(search.context),
         timeout: searchTimeoutSchema.parse(search.timeout),
         hidden: optionalBooleanSchema.parse(search.hidden),
         gitignore: optionalBooleanSchema.parse(search.gitignore),

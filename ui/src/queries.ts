@@ -60,6 +60,7 @@ export const queryKeys = {
             includeHidden: boolean;
             respectGitignore: boolean;
             regex: boolean;
+            contextSize: number;
         },
     ) =>
         [
@@ -73,6 +74,7 @@ export const queryKeys = {
             search.includeHidden,
             search.respectGitignore,
             search.regex,
+            search.contextSize,
         ] as const,
 };
 
@@ -217,6 +219,7 @@ export function contentGrepQueryOptions(
         includeHidden: boolean;
         respectGitignore: boolean;
         regex: boolean;
+        contextSize: number;
     },
 ) {
     return queryOptions({
@@ -227,6 +230,8 @@ export function contentGrepQueryOptions(
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
                 fixedString: !search.regex,
+                beforeContext: search.contextSize,
+                afterContext: search.contextSize,
                 signal,
             }),
         enabled: search.query.trim() !== "",

@@ -87,6 +87,7 @@ export function SearchDialog(props: { agent: Agent }) {
     const respectGitignore =
         search.gitignore ?? userState.recursiveSearchRespectGitignore;
     const regex = search.regex ?? false;
+    const contextSize = search.context ?? 4;
     const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
     const searchDirectory = searchFromGitRoot ? gitRoot : directory;
     const [debouncedQuery, setDebouncedQuery] = React.useState(query);
@@ -149,6 +150,7 @@ export function SearchDialog(props: { agent: Agent }) {
             includeHidden,
             respectGitignore,
             regex,
+            contextSize,
         }),
         enabled: canSearch && isContentSearch,
     });
@@ -182,6 +184,7 @@ export function SearchDialog(props: { agent: Agent }) {
             hidden: undefined,
             gitignore: undefined,
             regex: undefined,
+            context: undefined,
             gitroot: undefined,
         });
 
@@ -215,6 +218,7 @@ export function SearchDialog(props: { agent: Agent }) {
                     includeHidden={includeHidden}
                     respectGitignore={respectGitignore}
                     regex={regex}
+                    contextSize={contextSize}
                     gitRoot={gitRoot}
                     searchFromGitRoot={searchFromGitRoot}
                     disabled={directory === null}
@@ -268,6 +272,7 @@ function SearchControls(props: {
     includeHidden: boolean;
     respectGitignore: boolean;
     regex: boolean;
+    contextSize: number;
     gitRoot: string | null;
     searchFromGitRoot: boolean;
     disabled: boolean;
@@ -366,14 +371,39 @@ function SearchControls(props: {
                 <GitBranch className="h-4 w-4" />
             </ToggleButton>
             {props.isContentSearch ? (
-                <ToggleButton
-                    label="Use regular expressions"
-                    pressed={props.regex}
-                    tooltip="Use regular expressions"
-                    onClick={() => void props.onUpdate({ regex: !props.regex })}
-                >
-                    <Regex className="h-4 w-4" />
-                </ToggleButton>
+                <>
+                    <Tooltip content="Lines shown above and below each match">
+                        <InputControl
+                            type="number"
+                            aria-label="Context lines above and below"
+                            min={0}
+                            max={20}
+                            value={props.contextSize}
+                            onChange={(event) => {
+                                const value = event.target.valueAsNumber;
+                                if (Number.isInteger(value)) {
+                                    void props.onUpdate({
+                                        context: Math.min(
+                                            20,
+                                            Math.max(0, value),
+                                        ),
+                                    });
+                                }
+                            }}
+                            className="w-20"
+                        />
+                    </Tooltip>
+                    <ToggleButton
+                        label="Use regular expressions"
+                        pressed={props.regex}
+                        tooltip="Use regular expressions"
+                        onClick={() =>
+                            void props.onUpdate({ regex: !props.regex })
+                        }
+                    >
+                        <Regex className="h-4 w-4" />
+                    </ToggleButton>
+                </>
             ) : null}
             {props.gitRoot ? (
                 <Tooltip content="Search the entire Git repository instead of the current directory">
@@ -427,9 +457,44 @@ function ContentResult(props: { result: ContentGrepMatch; href: string }) {
             <span className="block text-sm text-blue-300">
                 {props.result.path}:{props.result.line_number}
             </span>
-            <span className="block truncate font-mono text-sm font-normal text-slate-300">
-                {props.result.line}
-                {props.result.line_truncated ? "…" : ""}
+            <span className="mt-1 block font-mono text-sm font-normal">
+                {props.result.before_context.map((line) => (
+                    <span
+                        key={line.line_number}
+                        className="grid grid-cols-[3rem_minmax(0,1fr)] text-slate-500"
+                    >
+                        <span className="pr-3 text-right select-none">
+                            {line.line_number}
+                        </span>
+                        <span className="truncate">
+                            {line.line}
+                            {line.line_truncated ? "…" : ""}
+                        </span>
+                    </span>
+                ))}
+                <span className="grid grid-cols-[3rem_minmax(0,1fr)] bg-blue-500/10 text-slate-200">
+                    <span className="pr-3 text-right text-blue-300 select-none">
+                        {props.result.line_number}
+                    </span>
+                    <span className="truncate">
+                        {props.result.line}
+                        {props.result.line_truncated ? "…" : ""}
+                    </span>
+                </span>
+                {props.result.after_context.map((line) => (
+                    <span
+                        key={line.line_number}
+                        className="grid grid-cols-[3rem_minmax(0,1fr)] text-slate-500"
+                    >
+                        <span className="pr-3 text-right select-none">
+                            {line.line_number}
+                        </span>
+                        <span className="truncate">
+                            {line.line}
+                            {line.line_truncated ? "…" : ""}
+                        </span>
+                    </span>
+                ))}
             </span>
         </Link>
     );

@@ -167,6 +167,34 @@ last line`,
                 name: /Open .*search-target\.txt at line 2/,
             }),
         ).toBeVisible();
+        const contextInput = dialog.getByLabel("Context lines above and below");
+        // Content search requests and displays the same default context on both sides.
+        await expect(contextInput).toHaveValue("4");
+        const searchTargetResult = dialog.getByRole("link", {
+            name: /Open .*search-target\.txt at line 2/,
+        });
+        await expect(searchTargetResult.getByText("first line")).toBeVisible();
+        await expect(searchTargetResult.getByText("last line")).toBeVisible();
+        const contentRequest = requests.find((request) =>
+            requestBodies
+                .get(request)
+                ?.includes('"query":"unique-search-value"'),
+        );
+        // One context control maps to both grep context directions.
+        expect(contentRequest && requestBodies.get(contentRequest)).toContain(
+            '"before_context":4,"after_context":4',
+        );
+        await contextInput.fill("1");
+        await expect(page).toHaveURL(/[?&]context=1/);
+        await expect
+            .poll(() =>
+                [...requestBodies.values()].some((body) =>
+                    body?.includes(
+                        '"query":"unique-search-value","timeout":9,"include_hidden":true,"respect_gitignore":false,"fixed_string":true,"before_context":1,"after_context":1',
+                    ),
+                ),
+            )
+            .toBe(true);
         // Content mode starts only grep requests while the path query remains disabled.
         expect(
             requests.filter((request) =>
