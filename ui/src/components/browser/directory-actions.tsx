@@ -389,10 +389,7 @@ function DirectoryNewAction(props: { agent: Agent; directoryPath: string }) {
     React.useEffect(() => {
         /** Opens file or directory creation from the file list without intercepting text entry. */
         const handleShortcut = (event: KeyboardEvent) => {
-            if (
-                dialogType !== null ||
-                shouldIgnoreKeyboardShortcut(event)
-            ) {
+            if (dialogType !== null || shouldIgnoreKeyboardShortcut(event)) {
                 return;
             }
 
