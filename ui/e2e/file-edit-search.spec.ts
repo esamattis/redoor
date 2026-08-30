@@ -20,7 +20,7 @@ test.describe.serial("File editor search and replace", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("should open search from the section title", async ({ page }) => {
+    test("should toggle search from the editor actions", async ({ page }) => {
         const filePath = path.join(ctx.testDirPath, "title-open.txt");
         await fs.writeFile(filePath, "alpha foo beta foo gamma");
         await page.goto(
@@ -28,10 +28,18 @@ test.describe.serial("File editor search and replace", () => {
         );
 
         await expect(page.getByLabel("File editor")).toBeVisible();
-        // The folding title is the mouse path; fields stay hidden until it is opened.
+        // Search stays out of the editor until its dedicated action is used.
         await expect(page.getByLabel("Find in file")).toBeHidden();
-        await page.getByRole("button", { name: "Search & Replace" }).click();
+        const toggle = page.getByRole("button", {
+            name: "Toggle search and replace",
+        });
+        await toggle.click();
         await expect(page.getByLabel("Find in file")).toBeVisible();
+        await expect(
+            page.getByRole("region", { name: "Search & Replace" }),
+        ).toBeVisible();
+        await toggle.click();
+        await expect(page.getByLabel("Find in file")).toBeHidden();
     });
 
     test("should open search from the shortcut and keep typing in the field", async ({
@@ -96,7 +104,7 @@ test.describe.serial("File editor search and replace", () => {
         );
     });
 
-    test("should expose the search shortcut on the section title", async ({
+    test("should expose the search shortcut on the editor action", async ({
         page,
     }) => {
         const filePath = path.join(ctx.testDirPath, "tooltip.txt");
@@ -106,8 +114,10 @@ test.describe.serial("File editor search and replace", () => {
         );
 
         await expect(page.getByLabel("File editor")).toBeVisible();
-        await page.getByRole("button", { name: "Search & Replace" }).hover();
-        // The tooltip keeps the accessible name while advertising Ctrl+F.
+        await page
+            .getByRole("button", { name: "Toggle search and replace" })
+            .hover();
+        // The action tooltip advertises the keyboard path to the same panel.
         await expect(page.getByRole("tooltip")).toHaveText(
             "Search and replace in the file (Ctrl+F)",
         );

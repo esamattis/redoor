@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import { Checkbox } from "#ui/components/checkbox";
 import { Button } from "#ui/components/button";
-import { FoldingSection } from "#ui/components/folding-section";
 import { InputControl } from "#ui/components/input-control";
 import { Tooltip } from "#ui/components/tooltip";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
@@ -146,68 +145,73 @@ export function EditorSearch(props: {
         findPrevious: findPreviousMatch,
     };
 
+    if (!open) {
+        return null;
+    }
+
     return (
-        <div
-            className={`shrink-0 px-3 pt-3 pb-3 ${open ? "" : "hidden sm:block"}`}
-        >
-            <FoldingSection
-                title="Search & Replace"
-                open={open}
-                onOpenChange={setOpen}
-                tooltip="Search and replace in the file (Ctrl+F)"
+        <div className="shrink-0 px-3 pt-3 pb-3">
+            <section
+                aria-label="Search & Replace"
+                className="rounded-lg border border-slate-800 bg-[#0b0d12]"
             >
-                <SearchReplaceFields
-                    search={search}
-                    replace={replace}
-                    searchInputRef={searchInputRef}
-                    matchCount={matchCount}
-                    queryValid={query.valid}
-                    onSearchChange={setSearch}
-                    onReplaceChange={setReplace}
-                    onFindNext={findNextMatch}
-                    onFindPrevious={findPreviousMatch}
-                    onReplaceNext={() => {
-                        if (props.view === null || !canReplace) {
-                            return;
-                        }
-                        applyQuery(query);
-                        replaceNext(props.view);
-                    }}
-                />
-                <SearchReplaceActions
-                    canSearch={canSearch}
-                    canReplace={canReplace}
-                    caseSensitive={caseSensitive}
-                    regexp={regexp}
-                    wholeWord={wholeWord}
-                    onFindNext={findNextMatch}
-                    onFindPrevious={findPreviousMatch}
-                    onSelectAll={() => {
-                        if (props.view === null || !canSearch) {
-                            return;
-                        }
-                        applyQuery(query);
-                        selectMatches(props.view);
-                    }}
-                    onReplaceNext={() => {
-                        if (props.view === null || !canReplace) {
-                            return;
-                        }
-                        applyQuery(query);
-                        replaceNext(props.view);
-                    }}
-                    onReplaceAll={() => {
-                        if (props.view === null || !canReplace) {
-                            return;
-                        }
-                        applyQuery(query);
-                        replaceAll(props.view);
-                    }}
-                    onCaseSensitiveChange={setCaseSensitive}
-                    onRegexpChange={setRegexp}
-                    onWholeWordChange={setWholeWord}
-                />
-            </FoldingSection>
+                <h2 className="px-3 py-2 text-sm font-medium text-slate-300">
+                    Search &amp; Replace
+                </h2>
+                <div className="space-y-3 border-t border-slate-800 px-3 py-3">
+                    <SearchReplaceFields
+                        search={search}
+                        replace={replace}
+                        searchInputRef={searchInputRef}
+                        matchCount={matchCount}
+                        queryValid={query.valid}
+                        onSearchChange={setSearch}
+                        onReplaceChange={setReplace}
+                        onFindNext={findNextMatch}
+                        onFindPrevious={findPreviousMatch}
+                        onReplaceNext={() => {
+                            if (props.view === null || !canReplace) {
+                                return;
+                            }
+                            applyQuery(query);
+                            replaceNext(props.view);
+                        }}
+                    />
+                    <SearchReplaceActions
+                        canSearch={canSearch}
+                        canReplace={canReplace}
+                        caseSensitive={caseSensitive}
+                        regexp={regexp}
+                        wholeWord={wholeWord}
+                        onFindNext={findNextMatch}
+                        onFindPrevious={findPreviousMatch}
+                        onSelectAll={() => {
+                            if (props.view === null || !canSearch) {
+                                return;
+                            }
+                            applyQuery(query);
+                            selectMatches(props.view);
+                        }}
+                        onReplaceNext={() => {
+                            if (props.view === null || !canReplace) {
+                                return;
+                            }
+                            applyQuery(query);
+                            replaceNext(props.view);
+                        }}
+                        onReplaceAll={() => {
+                            if (props.view === null || !canReplace) {
+                                return;
+                            }
+                            applyQuery(query);
+                            replaceAll(props.view);
+                        }}
+                        onCaseSensitiveChange={setCaseSensitive}
+                        onRegexpChange={setRegexp}
+                        onWholeWordChange={setWholeWord}
+                    />
+                </div>
+            </section>
         </div>
     );
 }

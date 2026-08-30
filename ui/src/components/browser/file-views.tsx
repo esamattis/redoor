@@ -13,6 +13,7 @@ import {
     LoaderCircle,
     MoreHorizontal,
     RefreshCw,
+    Replace,
     Save,
     Search,
     X,
@@ -148,6 +149,7 @@ function FileEditActions(props: {
     selection: EditorSelection | null;
     recentFiles: RecentEditorFile[];
     onSave: () => void;
+    onToggleSearch: () => void;
     onRemoveRecentFile: (path: string) => void;
 }) {
     const navigate = agentRoute.useNavigate();
@@ -191,6 +193,15 @@ ${props.selection.text}
                 <History className="h-4 w-4" aria-hidden="true" />
             </IconButton>
             <BookmarkButton bookmark={props.bookmark} />
+            <IconButton
+                type="button"
+                label="Toggle search and replace"
+                tooltip="Search and replace in the file (Ctrl+F)"
+                onClick={props.onToggleSearch}
+                className="h-9 w-9 rounded-md border border-slate-700 text-slate-200 hover:bg-white/5"
+            >
+                <Replace className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
             <Tooltip content="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.">
                 <Button
                     type="button"
@@ -673,27 +684,17 @@ export function FileEditView(props: {
                                 selection={selection}
                                 recentFiles={editorUserState.recentFiles}
                                 onSave={handleSave}
+                                onToggleSearch={() => {
+                                    if (!searchHandleRef.current?.close()) {
+                                        searchHandleRef.current?.open();
+                                    }
+                                }}
                                 onRemoveRecentFile={
                                     editorUserState.removeRecentFile
                                 }
                             />
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
-                            <IconButton
-                                type="button"
-                                label="Toggle search and replace"
-                                onClick={() => {
-                                    if (!searchHandleRef.current?.close()) {
-                                        searchHandleRef.current?.open();
-                                    }
-                                }}
-                                className="h-8 w-8 shrink-0 rounded-md text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 sm:hidden"
-                            >
-                                <Search
-                                    className="h-4 w-4"
-                                    aria-hidden="true"
-                                />
-                            </IconButton>
                             <FullWindowToggle
                                 targetName="editor"
                                 isFullWindow={isFullWindow}
