@@ -211,10 +211,23 @@ code {
  */
 [data-file-editor] .cm-editor {
     height: 100%;
+    isolation: isolate;
+    overflow: hidden;
 }
 
 [data-file-editor] .cm-scroller {
     overflow: auto;
+}
+
+/*
+ * Vim status uses sticky left/right:0, which pins to the app scrollport
+ * and paints over the side menu. Keep the panel in the editor column.
+ */
+[data-file-editor] .cm-panels {
+    left: auto;
+    right: auto;
+    width: 100%;
+    z-index: 1;
 }
 
 /* Match compact git-diff type on phones so the editor stays readable beside chrome. */

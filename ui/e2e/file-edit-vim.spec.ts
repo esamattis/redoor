@@ -97,6 +97,44 @@ test.describe.serial("File editor options", () => {
         await expect(page.getByLabel("File editor")).toHaveText("content1");
     });
 
+    test("should keep the Vim mode line inside the editor", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "vim-status-line.txt");
+        await fs.writeFile(filePath, "content1");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        await page.getByRole("button", { name: "Editor options" }).click();
+        await page.getByRole("button", { name: "Vim mode" }).click();
+        await page
+            .getByRole("button", { name: "Close editor options" })
+            .click();
+
+        const status = page.getByText("--NORMAL--");
+        await expect(status).toBeVisible();
+        const applicationMenu = page.getByRole("navigation", {
+            name: "Application",
+        });
+        await expect(applicationMenu).toBeVisible();
+        const editorViewport = page.getByRole("region", {
+            name: "Editor viewport",
+        });
+        const statusBox = await status.boundingBox();
+        const menuBox = await applicationMenu.boundingBox();
+        const editorBox = await editorViewport.boundingBox();
+        if (statusBox === null || menuBox === null || editorBox === null) {
+            throw new Error("expected Vim status, menu, and editor boxes");
+        }
+        // Sticky left:0 must not stretch the mode line across the sidebar.
+        expect(statusBox.x).toBeGreaterThanOrEqual(menuBox.x + menuBox.width);
+        expect(statusBox.x).toBeGreaterThanOrEqual(editorBox.x);
+        expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(
+            editorBox.x + editorBox.width + 1,
+        );
+    });
+
     test("should briefly highlight the exact Vim yank range", async ({
         page,
     }) => {
