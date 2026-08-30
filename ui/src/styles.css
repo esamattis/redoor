@@ -338,6 +338,17 @@ code {
     white-space: pre;
 }
 
+/* Filename chrome is the only path label, so it must read as a real destination. */
+.file-diff-html .d2h-file-name-link {
+    color: var(--color-blue-300);
+    text-decoration: none;
+}
+
+.file-diff-html .d2h-file-name-link:hover,
+.file-diff-html .d2h-file-name-link:focus-visible {
+    text-decoration: underline;
+}
+
 /* The inner code wrapper is content-sized, so anchor the action to the full cell. */
 .file-diff-html .d2h-editor-line-cell {
     position: relative;

@@ -354,35 +354,41 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                                 )}
                             </p>
                         ) : (
-                            diffQuery.data.diffs.map((diff, index) => (
-                                <section
-                                    key={`${diff.path}:${index}`}
-                                    id={`git-diff-${index}`}
-                                    aria-label={`Git diff for ${diff.path}`}
-                                    className="scroll-mt-4 overflow-hidden rounded-md border border-slate-800 bg-slate-950/30"
-                                >
-                                    <h2 className="break-all border-b border-slate-800 px-3 py-2 font-mono text-sm font-semibold">
-                                        <Link
-                                            to={props.agent.getBrowserUrl(
-                                                diff.path,
-                                            )}
-                                            className="text-blue-300 hover:underline"
-                                        >
-                                            {diffEntries[index]
-                                                ?.repository_relative_path ??
-                                                diff.path}
-                                        </Link>
-                                    </h2>
-                                    <div className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden">
-                                        <GitDiffResultView
-                                            result={diff.result}
-                                            editorHref={props.agent.getBrowserUrl(
-                                                diff.path,
-                                            )}
-                                        />
-                                    </div>
-                                </section>
-                            ))
+                            diffQuery.data.diffs.map((diff, index) => {
+                                const pathLabel =
+                                    diffEntries[index]
+                                        ?.repository_relative_path ?? diff.path;
+                                const isTextDiff = diff.result.type === "text";
+                                return (
+                                    <section
+                                        key={`${diff.path}:${index}`}
+                                        id={`git-diff-${index}`}
+                                        aria-label={`Git diff for ${diff.path}`}
+                                        className="scroll-mt-4 overflow-hidden rounded-md border border-slate-800 bg-slate-950/30"
+                                    >
+                                        {isTextDiff ? null : (
+                                            <h2 className="break-all border-b border-slate-800 px-3 py-2 font-mono text-sm font-semibold">
+                                                <Link
+                                                    to={props.agent.getBrowserUrl(
+                                                        diff.path,
+                                                    )}
+                                                    className="text-blue-300 hover:underline"
+                                                >
+                                                    {pathLabel}
+                                                </Link>
+                                            </h2>
+                                        )}
+                                        <div className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden">
+                                            <GitDiffResultView
+                                                result={diff.result}
+                                                editorHref={props.agent.getBrowserUrl(
+                                                    diff.path,
+                                                )}
+                                            />
+                                        </div>
+                                    </section>
+                                );
+                            })
                         )}
                     </div>
                 ) : null}

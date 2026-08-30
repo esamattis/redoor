@@ -27,6 +27,18 @@ function firstFileLine(file: ReturnType<typeof parseDiff>[number]): string {
     return "";
 }
 
+/** Keeps unmodified left-clicks in the SPA while still allowing new-tab opens via href. */
+function isUnmodifiedPrimaryClick(event: MouseEvent): boolean {
+    return (
+        !event.defaultPrevented &&
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey
+    );
+}
+
 /** Reads the new-file line from a diff2html gutter without wrapping the row in a link. */
 function newFileLineNumber(row: Element): number | undefined {
     const lineText = row.querySelector(".line-num2")?.textContent?.trim() ?? "";
@@ -34,6 +46,23 @@ function newFileLineNumber(row: Element): number | undefined {
         return undefined;
     }
     return Number(lineText);
+}
+
+/** Turns generated filename chrome into an editor link so the duplicate heading can be omitted. */
+function linkDiffFileNames(root: HTMLElement, editorHref: string) {
+    for (const name of root.querySelectorAll(".d2h-file-name")) {
+        if (name.closest("a") !== null || name.querySelector("a") !== null) {
+            continue;
+        }
+        const link = document.createElement("a");
+        link.href = editorHref;
+        link.dataset.editorFile = "";
+        link.className = "d2h-file-name-link";
+        while (name.firstChild !== null) {
+            link.append(name.firstChild);
+        }
+        name.append(link);
+    }
 }
 
 /**
@@ -117,41 +146,43 @@ export function UnifiedDiff(props: {
         if (editorHref === undefined) {
             return;
         }
+        linkDiffFileNames(target, editorHref);
         appendEditorLineLinks(target, editorHref);
 
-        /** Keeps unmodified clicks in the SPA while still allowing new-tab opens via the href. */
-        const handleEditorLineClick = (event: MouseEvent) => {
-            if (
-                event.defaultPrevented ||
-                event.button !== 0 ||
-                event.metaKey ||
-                event.ctrlKey ||
-                event.shiftKey ||
-                event.altKey
-            ) {
+        const handleEditorLinkClick = (event: MouseEvent) => {
+            if (!isUnmodifiedPrimaryClick(event)) {
                 return;
             }
             const eventTarget = event.target;
             if (!(eventTarget instanceof Element)) {
                 return;
             }
-            const link = eventTarget.closest("a[data-editor-line]");
-            if (!(link instanceof HTMLAnchorElement)) {
+            const lineLink = eventTarget.closest("a[data-editor-line]");
+            if (lineLink instanceof HTMLAnchorElement) {
+                const line = Number(lineLink.dataset.editorLine);
+                if (!Number.isInteger(line) || line < 1) {
+                    return;
+                }
+                event.preventDefault();
+                void navigate({
+                    to: editorHref,
+                    search: { line },
+                });
                 return;
             }
-            const line = Number(link.dataset.editorLine);
-            if (!Number.isInteger(line) || line < 1) {
+            const fileLink = eventTarget.closest("a[data-editor-file]");
+            if (!(fileLink instanceof HTMLAnchorElement)) {
                 return;
             }
             event.preventDefault();
             void navigate({
                 to: editorHref,
-                search: { line },
+                search: {},
             });
         };
-        target.addEventListener("click", handleEditorLineClick);
+        target.addEventListener("click", handleEditorLinkClick);
         return () => {
-            target.removeEventListener("click", handleEditorLineClick);
+            target.removeEventListener("click", handleEditorLinkClick);
         };
     }, [props.unifiedDiff, props.editorHref, resolvedTheme, navigate]);
 

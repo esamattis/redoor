@@ -252,11 +252,15 @@ test.describe.serial("Git browser", () => {
         await expect(directoryDiffs).toHaveCount(5);
         // Small batches activate in place without adding route search state.
         await expect(page).toHaveURL(directoryUrl);
-        // Diff box titles open the file edit view without using the status list.
+        // The remaining filename chrome opens the file edit view without a duplicate heading.
         await expect(
             page
                 .getByRole("region", { name: `Git diff for ${trackedPath}` })
-                .getByRole("heading")
+                .getByRole("heading"),
+        ).toHaveCount(0);
+        await expect(
+            page
+                .getByRole("region", { name: `Git diff for ${trackedPath}` })
                 .getByRole("link", { name: "tracked.ts", exact: true }),
         ).toHaveAttribute(
             "href",
