@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     getRouteApi,
     Link,
+    type ShouldBlockFn,
     useBlocker,
     useLocation,
 } from "@tanstack/react-router";
@@ -16,6 +17,7 @@ import {
     Replace,
     Save,
     Search,
+    ScanText,
     X,
 } from "lucide-react";
 import { getBrowserUrl, type Agent } from "#ui/api-client";
@@ -40,6 +42,7 @@ import { IconButton } from "#ui/components/icon-button";
 import { ResponsiveAnchoredDialog } from "#ui/components/responsive-anchored-dialog";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
+import { ToggleButton } from "#ui/components/toggle-button";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
@@ -49,6 +52,8 @@ import {
     useUserState,
     type RecentEditorFile,
 } from "#ui/user-state";
+import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
+import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 
 const agentRoute = getRouteApi("/agents/$agentId");
 
@@ -148,9 +153,11 @@ function FileEditActions(props: {
     };
     selection: EditorSelection | null;
     recentFiles: RecentEditorFile[];
+    preview?: boolean;
     onSave: () => void;
     onToggleSearch: () => void;
     onRemoveRecentFile: (path: string) => void;
+    onPreviewChange?: (preview: boolean) => void;
 }) {
     const navigate = agentRoute.useNavigate();
     const location = useLocation();
@@ -192,6 +199,20 @@ ${props.selection.text}
             >
                 <History className="h-4 w-4" aria-hidden="true" />
             </IconButton>
+            {props.preview !== undefined && props.onPreviewChange ? (
+                <ToggleButton
+                    pressed={props.preview}
+                    label="Preview"
+                    tooltip={
+                        props.preview
+                            ? "Show the markdown editor"
+                            : "Preview rendered markdown"
+                    }
+                    onClick={() => props.onPreviewChange?.(!props.preview)}
+                >
+                    <ScanText className="h-4 w-4" aria-hidden="true" />
+                </ToggleButton>
+            ) : null}
             <BookmarkButton bookmark={props.bookmark} />
             <IconButton
                 type="button"
@@ -384,6 +405,60 @@ function EditorOptionsMenu(props: {
     );
 }
 
+/** Gives rendered markdown a trailing, explicit route back to its mounted editor. */
+function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
+    return (
+        <IconButton
+            type="button"
+            label="Close markdown preview"
+            tooltip="Return to the markdown editor"
+            onClick={props.onClose}
+            className="h-9 w-9 rounded-md border border-slate-700 text-slate-300 hover:bg-white/5 hover:text-slate-50"
+        >
+            <X className="h-4 w-4" aria-hidden="true" />
+        </IconButton>
+    );
+}
+
+/** Groups secondary editor controls at the trailing edge of the file card. */
+function FileEditorSecondaryActions(props: {
+    agent: Agent;
+    path: string;
+    fileName: string;
+    canEdit: boolean;
+    isReloading: boolean;
+    isSaving: boolean;
+    downloadUrl: string;
+    isFullWindow: boolean;
+    showClosePreview: boolean;
+    onToggleFullWindow: () => void;
+    onReload: () => void;
+    onClosePreview: () => void;
+}) {
+    return (
+        <div className="flex shrink-0 items-center gap-1">
+            <FullWindowToggle
+                targetName="editor"
+                isFullWindow={props.isFullWindow}
+                onToggle={props.onToggleFullWindow}
+            />
+            <EditorOptionsMenu
+                agent={props.agent}
+                path={props.path}
+                fileName={props.fileName}
+                canEdit={props.canEdit}
+                isReloading={props.isReloading}
+                isSaving={props.isSaving}
+                downloadUrl={props.downloadUrl}
+                onReload={props.onReload}
+            />
+            {props.showClosePreview ? (
+                <CloseMarkdownPreviewButton onClose={props.onClosePreview} />
+            ) : null}
+        </div>
+    );
+}
+
 /** Makes browser save invoke the editor unless another interactive surface owns it. */
 function useFileSaveShortcut(onSave: () => void) {
     React.useEffect(() => {
@@ -417,6 +492,7 @@ function FileEditorSurface(props: {
     editable: boolean;
     vimMode: boolean;
     wrapLines: boolean;
+    preview: boolean;
     scrollToLine?: number;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
     onChange: (content: string) => void;
@@ -435,19 +511,32 @@ function FileEditorSurface(props: {
         );
     }
     return (
-        <CodeEditor
-            value={props.content}
-            fileName={props.fileName}
-            editable={props.editable}
-            vimMode={props.vimMode}
-            wrapLines={props.wrapLines}
-            scrollToLine={props.scrollToLine}
-            onChange={props.onChange}
-            onFocus={props.onFocus}
-            onSave={props.onSave}
-            onSelectionChange={props.onSelectionChange}
-            searchHandleRef={props.searchHandleRef}
-        />
+        <>
+            <div
+                aria-hidden={props.preview}
+                className={props.preview ? "hidden" : "flex min-h-0 flex-1"}
+            >
+                <CodeEditor
+                    value={props.content}
+                    fileName={props.fileName}
+                    editable={props.editable}
+                    vimMode={props.vimMode}
+                    wrapLines={props.wrapLines}
+                    scrollToLine={props.scrollToLine}
+                    onChange={props.onChange}
+                    onFocus={props.onFocus}
+                    onSave={props.onSave}
+                    onSelectionChange={props.onSelectionChange}
+                    searchHandleRef={props.searchHandleRef}
+                />
+            </div>
+            <div
+                aria-hidden={!props.preview}
+                className={props.preview ? "flex min-h-0 flex-1" : "hidden"}
+            >
+                <MarkdownPreview content={props.content} />
+            </div>
+        </>
     );
 }
 
@@ -565,6 +654,8 @@ export function FileEditView(props: {
     mimeType: string;
     downloadUrl: string;
     scrollToLine?: number;
+    preview: boolean;
+    onPreviewChange: (preview: boolean) => void;
 }) {
     const queryClient = useQueryClient();
     const editorUserState = useEditorUserState({
@@ -604,6 +695,8 @@ export function FileEditView(props: {
     const isDirty = draft !== null && draft !== savedContent;
     // Saving must not flip CodeMirror read-only, or Mod-s and :w steal editor focus.
     const canEdit = contentQuery.isSuccess;
+    const isMarkdown =
+        syntaxLanguageFromFileName(props.fileName) === "markdown";
 
     useEditorRefreshRegistration({
         agentId: props.agent.id,
@@ -683,6 +776,7 @@ export function FileEditView(props: {
                                 }}
                                 selection={selection}
                                 recentFiles={editorUserState.recentFiles}
+                                preview={isMarkdown ? props.preview : undefined}
                                 onSave={handleSave}
                                 onToggleSearch={() => {
                                     if (!searchHandleRef.current?.close()) {
@@ -692,27 +786,29 @@ export function FileEditView(props: {
                                 onRemoveRecentFile={
                                     editorUserState.removeRecentFile
                                 }
-                            />
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                            <FullWindowToggle
-                                targetName="editor"
-                                isFullWindow={isFullWindow}
-                                onToggle={() =>
-                                    setIsFullWindow((current) => !current)
+                                onPreviewChange={
+                                    isMarkdown
+                                        ? props.onPreviewChange
+                                        : undefined
                                 }
                             />
-                            <EditorOptionsMenu
-                                agent={props.agent}
-                                path={props.filePath}
-                                fileName={props.fileName}
-                                canEdit={canEdit}
-                                isReloading={contentQuery.isFetching}
-                                isSaving={saveMutation.isPending}
-                                downloadUrl={props.downloadUrl}
-                                onReload={handleReload}
-                            />
                         </div>
+                        <FileEditorSecondaryActions
+                            agent={props.agent}
+                            path={props.filePath}
+                            fileName={props.fileName}
+                            canEdit={canEdit}
+                            isReloading={contentQuery.isFetching}
+                            isSaving={saveMutation.isPending}
+                            downloadUrl={props.downloadUrl}
+                            isFullWindow={isFullWindow}
+                            showClosePreview={isMarkdown && props.preview}
+                            onToggleFullWindow={() =>
+                                setIsFullWindow((current) => !current)
+                            }
+                            onReload={handleReload}
+                            onClosePreview={() => props.onPreviewChange(false)}
+                        />
                     </div>
                 </header>
 
@@ -729,6 +825,7 @@ export function FileEditView(props: {
                         editable={canEdit}
                         vimMode={editorUserState.userState.vimMode}
                         wrapLines={editorUserState.userState.wrapEditorLines}
+                        preview={isMarkdown && props.preview}
                         scrollToLine={props.scrollToLine}
                         onChange={(nextContent) => {
                             setDraft(nextContent);
@@ -765,7 +862,12 @@ function useUnsavedEditorNavigationGuard(isDirty: boolean) {
     const isDirtyRef = React.useRef(isDirty);
     isDirtyRef.current = isDirty;
 
-    const shouldBlockFn = React.useCallback(() => isDirtyRef.current, []);
+    const shouldBlockFn: ShouldBlockFn = React.useCallback(
+        (args) =>
+            isDirtyRef.current &&
+            !isPreviewOnlyNavigation(args.current, args.next),
+        [],
+    );
     const enableBeforeUnload = React.useCallback(() => isDirtyRef.current, []);
 
     return useBlocker({
@@ -773,6 +875,29 @@ function useUnsavedEditorNavigationGuard(isDirty: boolean) {
         enableBeforeUnload,
         withResolver: true,
     });
+}
+
+/** Lets a dirty markdown buffer change representation without treating it as leaving the file. */
+function isPreviewOnlyNavigation(
+    current: { pathname: string; search: object },
+    next: { pathname: string; search: object },
+) {
+    if (current.pathname !== next.pathname) {
+        return false;
+    }
+    const currentSearch = JSON.stringify(current.search);
+    const nextSearch = JSON.stringify(next.search);
+    const currentWithoutPreview = JSON.stringify(
+        current.search,
+        (key, value) => (key === "preview" ? undefined : value),
+    );
+    const nextWithoutPreview = JSON.stringify(next.search, (key, value) =>
+        key === "preview" ? undefined : value,
+    );
+    return (
+        currentSearch !== nextSearch &&
+        currentWithoutPreview === nextWithoutPreview
+    );
 }
 
 /** Renders agent-verified images through the authenticated raw download URL. */

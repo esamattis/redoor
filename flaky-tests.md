@@ -6,3 +6,4 @@
 - 2026-08-30 focused and full Playwright runs: `content-search.spec.ts` again briefly observed two active grep requests while checking cancellation of a superseded search. The final full rerun passed all 185 tests.
 - 2026-08-30 `pn playwright -- git-browser.spec.ts`: `content-search.spec.ts` briefly observed two active grep requests while checking cancellation of a superseded search. The exact test passed on immediate rerun.
 - 2026-08-30 `pn test` Playwright: `content-search.spec.ts` briefly observed two active grep requests while checking cancellation of a superseded search. The exact test and its dependencies passed on immediate rerun.
+- 2026-08-30 `pn test` integration: `agent-logs.test.ts` timed out in `uses CLI log format over environment and TOML` while conflicting processes were running. The isolated test passed after those processes were stopped.

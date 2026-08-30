@@ -46,11 +46,35 @@ import {
 import { useBrowserRefreshTriggers } from "#ui/components/browser/refresh";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
+import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 
 type BrowserSearch = {
     view?: "details" | "edit" | "diff" | "sync" | "git";
     line?: number;
+    preview?: boolean;
 };
+
+type BrowserFullSearch = BrowserSearch & {
+    q?: string;
+    mode?: "content";
+    context?: number;
+    timeout?: number;
+    hidden?: boolean;
+    gitignore?: boolean;
+    regex?: boolean;
+    gitroot?: boolean;
+    case?: "smart" | "sensitive" | "insensitive";
+};
+
+/** Accepts booleans from router navigation and directly entered query strings. */
+const optionalBooleanSchema = z
+    .union([
+        z.boolean(),
+        z.literal("true").transform(() => true),
+        z.literal("false").transform(() => false),
+    ])
+    .optional()
+    .catch(undefined);
 
 /** Accepts only 1-based whole line numbers so garbage query values cannot drive the editor. */
 const browserLineSchema = z
@@ -85,6 +109,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 ? search.view
                 : undefined,
         line: browserLineSchema.parse(search.line),
+        preview: optionalBooleanSchema.parse(search.preview),
     }),
     loaderDeps: ({ search }) => ({ view: search.view }),
     loader: async ({ context, deps, params, parentMatchPromise, location }) => {
@@ -176,6 +201,17 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     deps.view,
                     lineFromLocationSearch(location.searchStr),
                 );
+                replaceDefaultMarkdownPreview({
+                    params,
+                    view: deps.view,
+                    filePath: lsResult.path,
+                    metadata,
+                    line: lineFromLocationSearch(location.searchStr),
+                    preview: optionalBooleanSchema.parse(
+                        rawSearch.get("preview"),
+                    ),
+                    currentSearch: location.search,
+                });
                 if (
                     wantsFileContentView(deps.view) &&
                     metadata?.editable === true
@@ -327,6 +363,7 @@ function BrowserRouteShell(props: {
 function FileBrowser() {
     const data = Route.useLoaderData();
     const { api } = Route.useRouteContext();
+    const navigate = Route.useNavigate();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
     useBrowserRefreshTriggers();
@@ -455,6 +492,15 @@ function FileBrowser() {
                         download: true,
                     })}
                     scrollToLine={search.line}
+                    preview={search.preview === true}
+                    onPreviewChange={(preview) =>
+                        navigate({
+                            search: (previous) => ({
+                                ...previous,
+                                preview,
+                            }),
+                        })
+                    }
                 />
             ) : activeView === "view" && viewableImage ? (
                 <FileImageView
@@ -648,6 +694,33 @@ function replaceLegacyEditFileView(
         to: "/agents/$agentId/browser/$",
         params,
         search: line === undefined ? {} : { line },
+        replace: true,
+    });
+}
+
+/** Makes rendered markdown the canonical first view while line bookmarks stay in the editor. */
+function replaceDefaultMarkdownPreview(options: {
+    params: { agentId: string; _splat?: string };
+    view: BrowserSearch["view"];
+    filePath: string;
+    metadata: MetadataResponse | null;
+    line: BrowserSearch["line"];
+    preview: BrowserSearch["preview"];
+    currentSearch: BrowserFullSearch;
+}) {
+    if (
+        !wantsFileContentView(options.view) ||
+        options.metadata?.editable !== true ||
+        syntaxLanguageFromFileName(options.filePath) !== "markdown" ||
+        options.line !== undefined ||
+        options.preview !== undefined
+    ) {
+        return;
+    }
+    throw redirect({
+        to: "/agents/$agentId/browser/$",
+        params: options.params,
+        search: { ...options.currentSearch, preview: true },
         replace: true,
     });
 }
