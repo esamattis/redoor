@@ -379,6 +379,17 @@ password = "${TEST_PASSWORD}"
         this.agentAppNames.delete(pid);
     }
 
+    /** Terminates one owned process and waits for its resources to be released. */
+    async killAndWait(pid: number): Promise<void> {
+        const child = this.processes.get(pid);
+        if (child === undefined) {
+            return;
+        }
+        const exit = this.waitForChildExit(pid, child);
+        this.kill(pid);
+        await exit;
+    }
+
     /** Reaps every owned process before the next serial test file can reuse its port. */
     async killAll(): Promise<void> {
         const processes = [...this.processes.entries()];

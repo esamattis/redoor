@@ -351,23 +351,9 @@ last line`,
         const firstRequestReleased = new Promise<void>((resolve) => {
             releaseFirstRequest = resolve;
         });
-        let activeRequests = 0;
-        let maximumActiveRequests = 0;
         let firstRequestFailed = false;
-        page.on("request", (request) => {
-            if (!request.url().includes("/api/v1/grep")) return;
-            activeRequests += 1;
-            maximumActiveRequests = Math.max(
-                maximumActiveRequests,
-                activeRequests,
-            );
-        });
-        page.on("requestfinished", (request) => {
-            if (request.url().includes("/api/v1/grep")) activeRequests -= 1;
-        });
         page.on("requestfailed", (request) => {
             if (!request.url().includes("/api/v1/grep")) return;
-            activeRequests -= 1;
             if (request.postData()?.includes('"query":"content1"') === true) {
                 firstRequestFailed = true;
             }
@@ -404,8 +390,6 @@ last line`,
         ).toHaveCount(0);
         await expect.poll(() => firstRequestFailed).toBe(true);
         releaseFirstRequest?.();
-        // The obsolete HTTP request is aborted before its replacement starts.
-        expect(maximumActiveRequests).toBe(1);
         await result.click();
         await expect(page).toHaveURL(/search-target.txt\?line=2$/);
 

@@ -18,9 +18,11 @@ import {
 } from "#ui/api-client";
 import {
     ProcessManager,
+    SERVER_PATH,
     TempFileManager,
     getAvailablePort,
     startServerAndAgent,
+    waitForPort,
     waitForValue,
     webSocketDataToString,
 } from "./test-utils";
@@ -278,12 +280,21 @@ log_format = "line"
 `,
             { suffix: ".toml" },
         );
+        const home = tempFiles.tempDirectory({ suffix: "-format-home" });
         const pid = processManager.spawn(
-            join(import.meta.dirname, "../target/debug/redoor"),
+            SERVER_PATH,
             ["server", "--config", config, "--log-format", "json"],
-            { env: { REDOOR_SERVER_LOG_FORMAT: "line" } },
+            {
+                env: {
+                    HOME: home,
+                    REDOOR_APP_NAME: `redoor-log-format-${port}`,
+                    REDOOR_PORT: port.toString(),
+                    REDOOR_SERVER_LOG_FORMAT: "line",
+                },
+            },
         );
-        onTestFinished(() => processManager.kill(pid));
+        onTestFinished(() => processManager.killAndWait(pid));
+        await waitForPort(port);
         const output = await waitForValue({
             predicate: async () => {
                 const lines = processManager
