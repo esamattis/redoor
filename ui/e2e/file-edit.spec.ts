@@ -818,11 +818,9 @@ gamma
         await expect(page).toHaveURL(/[?&]q=search-selection-token/);
         await expect(page).toHaveURL(/[?&]mode=content/);
         await expect(page).toHaveURL(/[?&]gitroot=true/);
-        const requestUrl = new URL((await grepRequest).url());
-        // The grep request proves editor selection bypasses the default path mode.
-        expect(requestUrl.searchParams.get("query")).toBe(
-            "search-selection-token",
-        );
+        const requestBody: unknown = (await grepRequest).postDataJSON();
+        // The grep POST body proves editor selection bypasses the default path mode.
+        expect(requestBody).toMatchObject({ query: "search-selection-token" });
     });
 
     test("should open shell-style files in the file editor", async ({
