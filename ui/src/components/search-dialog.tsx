@@ -7,6 +7,7 @@ import {
     useMatches,
 } from "@tanstack/react-router";
 import {
+    CaseLower,
     CaseSensitive,
     Eye,
     EyeOff,
@@ -319,6 +320,11 @@ function SearchControls(props: {
         sensitive: "Case: sensitive",
         insensitive: "Case: insensitive",
     } satisfies Record<CaseSensitivity, string>;
+    const caseSensitivityIcon = {
+        smart: <SmartCaseIcon className="h-4 w-4" />,
+        sensitive: <CaseSensitive className="h-4 w-4" />,
+        insensitive: <CaseLower className="h-4 w-4" />,
+    } satisfies Record<CaseSensitivity, React.ReactNode>;
 
     return (
         <div className="grid gap-4">
@@ -441,7 +447,7 @@ function SearchControls(props: {
                                 })
                             }
                         >
-                            <CaseSensitive className="h-4 w-4" />
+                            {caseSensitivityIcon[props.caseSensitivity]}
                         </IconButton>
                         {props.gitRoot ? (
                             <ToggleButton
@@ -674,5 +680,31 @@ function SearchStatus(props: {
             </Tooltip>
             . {data.timed_out ? "Search timed out." : ""}
         </p>
+    );
+}
+
+/**
+ * Lucide has Aa and aa glyphs, but nothing for smart case, so this keeps the
+ * same letterforms and adds a sparkle to show automatic case matching.
+ */
+function SmartCaseIcon(props: { className?: string }) {
+    return (
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <path d="m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16" />
+            <path d="M3.304 13h6.392" />
+            <path d="M22 11v5" />
+            <circle cx="18.5" cy="13.5" r="3.5" />
+            <path d="M19 3v4" />
+            <path d="M17 5h4" />
+        </svg>
     );
 }

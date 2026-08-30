@@ -146,14 +146,25 @@ last line`,
         });
         // The shared default is exposed by an icon-only control with an accessible state label.
         await expect(smartCaseButton).toBeVisible();
+        const smartCaseIcon = await smartCaseButton.innerHTML();
         await smartCaseButton.click();
         await expect(page).toHaveURL(/[?&]case=sensitive/);
-        await expect(
-            dialog.getByRole("button", { name: "Case: sensitive" }),
-        ).toBeVisible();
-        await dialog.getByRole("button", { name: "Case: sensitive" }).click();
+        const sensitiveCaseButton = dialog.getByRole("button", {
+            name: "Case: sensitive",
+        });
+        await expect(sensitiveCaseButton).toBeVisible();
+        const sensitiveCaseIcon = await sensitiveCaseButton.innerHTML();
+        // Each mode needs its own glyph so the current case rule is visible at a glance.
+        expect(sensitiveCaseIcon).not.toBe(smartCaseIcon);
+        await sensitiveCaseButton.click();
         await expect(page).toHaveURL(/[?&]case=insensitive/);
-        await dialog.getByRole("button", { name: "Case: insensitive" }).click();
+        const insensitiveCaseButton = dialog.getByRole("button", {
+            name: "Case: insensitive",
+        });
+        const insensitiveCaseIcon = await insensitiveCaseButton.innerHTML();
+        expect(insensitiveCaseIcon).not.toBe(sensitiveCaseIcon);
+        expect(insensitiveCaseIcon).not.toBe(smartCaseIcon);
+        await insensitiveCaseButton.click();
         await expect(page).toHaveURL(/[?&]case=smart/);
 
         await dialog
