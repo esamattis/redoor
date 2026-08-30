@@ -59,6 +59,12 @@
             "rules": {
                 "max-lines-per-function": "off"
             }
+        },
+        {
+            "files": ["ui/src/api-client.ts"],
+            "rules": {
+                "max-lines": "off"
+            }
         }
     ]
 }
