@@ -182,6 +182,12 @@ fn detect_mime_type(content: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Reuses metadata sniffing so scanners can reject common binary formats without reopening files.
+pub(super) fn has_common_binary_magic(content: &[u8]) -> bool {
+    is_browser_viewable_image_magic(content)
+        || detect_mime_type(content).is_some_and(|mime_type| mime_type != "text/plain")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +211,16 @@ mod tests {
             None,
             "zero-filled content should not match a known MIME"
         );
+    }
+
+    #[test]
+    fn common_binary_magic_excludes_known_text_prefixes() {
+        // Script and UTF-8 BOM prefixes remain searchable even though metadata recognizes them.
+        assert!(!has_common_binary_magic(b"#!/bin/sh\nneedle\n"));
+        assert!(!has_common_binary_magic(b"\xEF\xBB\xBFneedle\n"));
+        // Binary MIME and browser-image signatures are both covered by the shared predicate.
+        assert!(has_common_binary_magic(b"%PDF-1.7 needle"));
+        assert!(has_common_binary_magic(b"BMneedle"));
     }
 
     #[tokio::test]

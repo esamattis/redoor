@@ -1,6 +1,7 @@
 use super::{
     CommandErrorKind, CommandResult, ContentGrepMatch, ContentGrepResponse,
     file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
+    metadata::has_common_binary_magic,
 };
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
@@ -23,6 +24,8 @@ const MAX_PHYSICAL_LINE_BYTES: usize = 1024 * 1024;
 const MAX_RETURNED_LINE_BYTES: usize = 500;
 /// Bounds synchronous regex compilation before the matcher can yield back to Tokio.
 const MAX_QUERY_BYTES: usize = 4096;
+/// Avoids opening files whose scan cost is disproportionate to interactive grep.
+const MAX_SCANNED_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Accumulates scan state that remains valid when a deadline interrupts traversal.
 struct GrepOutput {
@@ -194,6 +197,8 @@ async fn collect_matches(
         }
         let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
             tokio::fs::metadata(&entry_path).await.ok()
+        } else if file_type.is_file() {
+            entry.metadata().await.ok()
         } else {
             None
         };
@@ -213,6 +218,9 @@ async fn collect_matches(
                 || followed_metadata
                     .as_ref()
                     .is_some_and(std::fs::Metadata::is_file))
+            && followed_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.len() <= MAX_SCANNED_FILE_BYTES)
         {
             scan_file(&entry_path, matcher, output).await;
             if output.truncated {
@@ -241,7 +249,7 @@ async fn collect_matches(
     Ok(())
 }
 
-/// Buffers only one bounded line and publishes file matches only after ruling out a late NUL byte.
+/// Buffers one bounded line and rejects binary prefixes before retaining any tentative matches.
 async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput) {
     let Ok(file) = tokio::fs::File::open(path).await else {
         return;
@@ -252,6 +260,7 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
     let mut oversized = false;
     let mut file_matches = Vec::new();
     let mut omitted_long_lines = 0_u64;
+    let mut is_first_chunk = true;
 
     loop {
         let buffer = match reader.fill_buf().await {
@@ -265,6 +274,12 @@ async fn scan_file(path: &Path, matcher: &impl Matcher, output: &mut GrepOutput)
                 retain_line_match(path, line_number, &line, matcher, &mut file_matches);
             }
             break;
+        }
+        if is_first_chunk {
+            if has_common_binary_magic(buffer) {
+                return;
+            }
+            is_first_chunk = false;
         }
         if buffer.contains(&0) {
             // Any tentative matches belong to a binary file and must never enter the response.
@@ -373,6 +388,9 @@ mod tests {
         tokio::fs::write(root.join("binary.bin"), b"target\nclean\0later")
             .await
             .expect("binary fixture should be written");
+        tokio::fs::write(root.join("binary.pdf"), b"%PDF-1.7 target without nul")
+            .await
+            .expect("magic-byte fixture should be written");
 
         let result = execute(test_request(
             root.to_string_lossy().into_owned(),
@@ -384,12 +402,9 @@ mod tests {
             panic!("valid grep should return its dedicated response");
         };
         // A NUL discovered after an apparent match must suppress the whole binary file.
-        assert!(
-            response
-                .results
-                .iter()
-                .all(|entry| !entry.path.ends_with("binary.bin"))
-        );
+        assert!(response.results.iter().all(|entry| {
+            !entry.path.ends_with("binary.bin") && !entry.path.ends_with("binary.pdf")
+        }));
         // CRLF and an unterminated final line are both physical lines with one-based positions.
         assert_eq!(
             response
@@ -403,6 +418,48 @@ mod tests {
         assert!(response.results[1].line_truncated);
         // A physical line over the scan bound is drained and reported instead of matched.
         assert_eq!(response.omitted_long_lines, 1);
+    }
+
+    /// Proves the size limit is exclusive and applied before oversized files reach the scanner.
+    #[tokio::test]
+    async fn grep_skips_files_larger_than_eight_mebibytes() {
+        let temp = TempDir::create();
+        let root = temp.path().join("size-bounded-grep");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
+        let eligible_path = root.join("eligible.txt");
+        let oversized_path = root.join("oversized.txt");
+        let mut eligible = b"eligible target\n".to_vec();
+        eligible.resize(MAX_SCANNED_FILE_BYTES as usize, b'x');
+        tokio::fs::write(&eligible_path, eligible)
+            .await
+            .expect("boundary fixture should be written");
+        let mut oversized = b"oversized target\n".to_vec();
+        oversized.resize(MAX_SCANNED_FILE_BYTES as usize + 1, b'x');
+        tokio::fs::write(&oversized_path, oversized)
+            .await
+            .expect("oversized fixture should be written");
+
+        let result = execute(test_request(
+            root.to_string_lossy().into_owned(),
+            "target",
+            false,
+        ))
+        .await;
+        let CommandResult::ContentGrep(response) = result else {
+            panic!("valid grep should return its dedicated response");
+        };
+        // A file exactly at the limit remains searchable.
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].path.ends_with("eligible.txt"));
+        // The extra byte keeps the oversized file from contributing a second match.
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|entry| !entry.path.ends_with("oversized.txt"))
+        );
     }
 
     /// Ensures malformed and empty expressions fail before any filesystem access occurs.

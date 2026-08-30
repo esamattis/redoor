@@ -636,6 +636,8 @@ describe("Agents API", () => {
         const hidden = path.join(grepRoot, ".cache", "hidden.txt");
         const ignored = path.join(grepRoot, "ignored.txt");
         const binary = path.join(grepRoot, "binary.bin");
+        const magicBinary = path.join(grepRoot, "binary.pdf");
+        const oversized = path.join(grepRoot, "oversized.txt");
         await fs.mkdir(path.dirname(hidden));
         await fs.writeFile(
             visible,
@@ -644,6 +646,11 @@ describe("Agents API", () => {
         await fs.writeFile(hidden, "hidden Needle");
         await fs.writeFile(ignored, "ignored Needle");
         await fs.writeFile(binary, Buffer.from("early Needle\nlate\0binary"));
+        await fs.writeFile(magicBinary, "%PDF-1.7 early Needle without nul");
+        await fs.writeFile(
+            oversized,
+            `oversized Needle\n${"x".repeat(8 * 1024 * 1024)}`,
+        );
         await fs.writeFile(path.join(grepRoot, ".gitignore"), "ignored.txt\n");
 
         const defaultResult = contentGrepResponseSchema.parse(
