@@ -1,7 +1,15 @@
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
+import type { UpdateSshAgentRequest } from "#bindings/UpdateSshAgentRequest";
 import { ApiClient, ApiError } from "#ui/api-client";
 import {
     ProcessManager,
@@ -17,11 +25,29 @@ import {
 const AGENT_NAME = "created-ssh-agent";
 const LOCAL_AGENT_NAME = "local-fixture-agent";
 
-/** Builds a complete create/update payload so tests only override the field under assertion. */
+/** Builds a complete create payload so tests only override the field under assertion. */
 function sshRequest(
     overrides: Partial<CreateSshAgentRequest> &
         Pick<CreateSshAgentRequest, "target">,
 ): CreateSshAgentRequest {
+    return {
+        username: null,
+        ssh_port: null,
+        name: null,
+        remote_bin: null,
+        home: null,
+        log: null,
+        password: null,
+        clear_password: null,
+        ...overrides,
+    };
+}
+
+/** Builds the generated update contract independently from the create request type. */
+function sshUpdateRequest(
+    overrides: Partial<UpdateSshAgentRequest> &
+        Pick<UpdateSshAgentRequest, "target">,
+): UpdateSshAgentRequest {
     return {
         username: null,
         ssh_port: null,
@@ -180,7 +206,8 @@ describe("SSH agent configuration API", () => {
     });
 
     it("reads, updates, renames, and deletes a stopped SSH entry", async () => {
-        const configuration = await apiClient.getSshAgentConfiguration(AGENT_NAME);
+        const configuration =
+            await apiClient.getSshAgentConfiguration(AGENT_NAME);
         // The edit view must learn that a secret exists without receiving the secret itself.
         expect(configuration).toMatchObject({
             target: "example-host",
@@ -197,7 +224,7 @@ describe("SSH agent configuration API", () => {
         );
         if (!configuredAgent) throw new Error("Created SSH agent missing");
         await configuredAgent.start();
-        const update = await apiClient.updateSshAgent(AGENT_NAME, {
+        const updateRequest: UpdateSshAgentRequest = {
             target: "updated-host",
             username: "operator",
             ssh_port: 2200,
@@ -207,7 +234,11 @@ describe("SSH agent configuration API", () => {
             log: null,
             password: "updated-secret",
             clear_password: false,
-        });
+        };
+        const update = await apiClient.updateSshAgent(
+            AGENT_NAME,
+            updateRequest,
+        );
         // Save must settle a delayed restart before replacing the identity, rather than racing it.
         expect(update.agent).toMatchObject({
             id: renamed,
@@ -226,18 +257,26 @@ describe("SSH agent configuration API", () => {
         expect(afterUpdate.has_password).toBe(true);
         const editedConfig = readFileSync(configPath, "utf8");
         // Updating must preserve unrelated comments while replacing old SSH values.
-        expect(editedConfig).toContain("# This comment must survive the config edit.");
+        expect(editedConfig).toContain(
+            "# This comment must survive the config edit.",
+        );
         expect(editedConfig).toContain('target = "updated-host"');
         expect(editedConfig).not.toContain('target = "example-host"');
         // A typed password on PUT must replace the durable secret, not keep the old one.
         expect(editedConfig).toContain('password = "updated-secret"');
         expect(editedConfig).not.toContain('password = "ssh-secret"');
 
-        const deletion = await apiClient.deleteManagedAgent(renamed);
+        const deletion = await apiClient.deleteManagedAgent(renamed, "ssh");
         expect(deletion.deleted).toBe(true);
         // Deletion must remove both durable TOML and retained runtime inventory.
-        expect((await apiClient.listAgents()).some((agent) => agent.id === renamed)).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(`name = "${renamed}"`);
+        expect(
+            (await apiClient.listAgents()).some(
+                (agent) => agent.id === renamed,
+            ),
+        ).toBe(false);
+        expect(readFileSync(configPath, "utf8")).not.toContain(
+            `name = "${renamed}"`,
+        );
     });
 
     it("returns 404 for unknown and local agents without converting them", async () => {
@@ -249,12 +288,12 @@ describe("SSH agent configuration API", () => {
         await expect(
             apiClient.updateSshAgent(
                 missing,
-                sshRequest({ target: "nobody", name: missing }),
+                sshUpdateRequest({ target: "nobody", name: missing }),
             ),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
-        await expect(apiClient.deleteManagedAgent(missing)).rejects.toMatchObject(
-            { status: 404 } satisfies Partial<ApiError>,
-        );
+        await expect(apiClient.deleteManagedAgent(missing, "ssh")).rejects.toMatchObject({
+            status: 404,
+        } satisfies Partial<ApiError>);
         // Local agents are managed but SSH GET/PUT must not convert them into SSH rows.
         await expect(
             apiClient.getSshAgentConfiguration(LOCAL_AGENT_NAME),
@@ -262,11 +301,14 @@ describe("SSH agent configuration API", () => {
         await expect(
             apiClient.updateSshAgent(
                 LOCAL_AGENT_NAME,
-                sshRequest({
+                sshUpdateRequest({
                     target: "converted-host",
                     name: LOCAL_AGENT_NAME,
                 }),
             ),
+        ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
+        await expect(
+            apiClient.deleteManagedAgent(LOCAL_AGENT_NAME, "ssh"),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
         const local = (await apiClient.listAgents()).find(
             (agent) => agent.id === LOCAL_AGENT_NAME,
@@ -295,7 +337,7 @@ describe("SSH agent configuration API", () => {
         onTestFinished(async () => {
             for (const name of [originalName, takenName]) {
                 try {
-                    await apiClient.deleteManagedAgent(name);
+                    await apiClient.deleteManagedAgent(name, "ssh");
                 } catch {
                     // Cleanup must tolerate an already-removed leftover from a failed assertion.
                 }
@@ -316,7 +358,7 @@ describe("SSH agent configuration API", () => {
         await expect(
             apiClient.updateSshAgent(
                 originalName,
-                sshRequest({ target: "source-host", name: takenName }),
+                sshUpdateRequest({ target: "source-host", name: takenName }),
             ),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
 
@@ -343,7 +385,7 @@ describe("SSH agent configuration API", () => {
         );
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "ssh");
             } catch {
                 // Cleanup must tolerate an already-removed leftover from a failed assertion.
             }
@@ -351,7 +393,7 @@ describe("SSH agent configuration API", () => {
 
         const updated = await apiClient.updateSshAgent(
             name,
-            sshRequest({ target: "secret-host-2", name }),
+            sshUpdateRequest({ target: "secret-host-2", name }),
         );
         // Identity stays the same so only the password-preservation path is under test.
         expect(updated.agent.id).toBe(name);
@@ -361,8 +403,12 @@ describe("SSH agent configuration API", () => {
         // Presence must stay true so the edit form can keep the password radio selected.
         expect(kept.has_password).toBe(true);
         // An empty PUT password must leave the durable secret untouched.
-        expect(readFileSync(configPath, "utf8")).toContain('password = "keep-me"');
-        expect(readFileSync(configPath, "utf8")).toContain('target = "secret-host-2"');
+        expect(readFileSync(configPath, "utf8")).toContain(
+            'password = "keep-me"',
+        );
+        expect(readFileSync(configPath, "utf8")).toContain(
+            'target = "secret-host-2"',
+        );
     });
 
     it("reports missing passwords and can clear a stored secret", async () => {
@@ -372,7 +418,7 @@ describe("SSH agent configuration API", () => {
         );
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "ssh");
             } catch {
                 // Cleanup must tolerate an already-removed leftover from a failed assertion.
             }
@@ -385,7 +431,7 @@ describe("SSH agent configuration API", () => {
 
         await apiClient.updateSshAgent(
             name,
-            sshRequest({
+            sshUpdateRequest({
                 target: "key-only-host",
                 name,
                 password: "temporary-secret",
@@ -394,13 +440,13 @@ describe("SSH agent configuration API", () => {
         expect(readFileSync(configPath, "utf8")).toContain(
             'password = "temporary-secret"',
         );
-        expect((await apiClient.getSshAgentConfiguration(name)).has_password).toBe(
-            true,
-        );
+        expect(
+            (await apiClient.getSshAgentConfiguration(name)).has_password,
+        ).toBe(true);
 
         await apiClient.updateSshAgent(
             name,
-            sshRequest({
+            sshUpdateRequest({
                 target: "key-only-host",
                 name,
                 clear_password: true,
@@ -427,7 +473,7 @@ describe("SSH agent configuration API", () => {
         );
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "ssh");
             } catch {
                 // Cleanup must tolerate a successful delete leaving nothing behind.
             }
@@ -443,13 +489,15 @@ describe("SSH agent configuration API", () => {
                 ?.status,
         ).not.toBe("stopped");
 
-        const deletion = await apiClient.deleteManagedAgent(name);
+        const deletion = await apiClient.deleteManagedAgent(name, "ssh");
         expect(deletion.deleted).toBe(true);
         // Both inventory and TOML must be gone after an auto-stop delete.
         expect(
             (await apiClient.listAgents()).some((agent) => agent.id === name),
         ).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(`name = "${name}"`);
+        expect(readFileSync(configPath, "utf8")).not.toContain(
+            `name = "${name}"`,
+        );
     });
 
     it("publishes sniffing progress for an unreachable SSH target", async () => {
@@ -459,7 +507,7 @@ describe("SSH agent configuration API", () => {
         );
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "ssh");
             } catch {
                 // Cleanup must tolerate an already-removed leftover from a failed assertion.
             }

@@ -6,9 +6,9 @@ use tower_http::cors::{Any, CorsLayer};
 
 use super::{
     agent_configuration::{
-        create_local_agent_handler, create_ssh_agent_handler, delete_managed_agent_handler,
-        get_local_agent_configuration_handler, get_ssh_agent_configuration_handler,
-        update_local_agent_handler, update_ssh_agent_handler,
+        create_local_agent_handler, create_ssh_agent_handler, delete_local_agent_handler,
+        delete_ssh_agent_handler, get_local_agent_configuration_handler,
+        get_ssh_agent_configuration_handler, update_local_agent_handler, update_ssh_agent_handler,
     },
     agent_logs::{agent_logs_websocket_handler, browser_agent_logs_websocket_handler},
     agent_transfers::agent_transfer_websocket_handler,
@@ -16,10 +16,11 @@ use super::{
         accounts_handler, chmod_path_handler, chown_path_handler, content_grep_handler,
         directory_size_handler, echo_agent_handler, file_search_agent_handler,
         get_agent_details_handler, list_agents_handler, ls_agent_handler, metadata_agent_handler,
-        open_path_agent_handler, restart_agent_handler, server_info_handler,
-        shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
+        open_path_agent_handler, restart_agent_handler, shutdown_agent_handler,
+        start_agent_handler, upgrade_agent_handler,
     },
     auth::{login_handler, logout_handler, require_authentication},
+    copy::copy_file_handler,
     diffs::diff_files_handler,
     file_edit::file_edit_handler,
     files::{create_directory_handler, raw_agent_delete_handler, rename_path_handler},
@@ -33,10 +34,11 @@ use super::{
     raw::{create_one_time_token_handler, raw_agent_handler, raw_agent_put_handler},
     restart::restart_server_handler,
     retry_agent_start::retry_agent_start_handler,
+    server_info::server_info_handler,
     state::ServerState,
     terminals::{agent_terminal_websocket_handler, browser_terminal_websocket_handler},
     transfer_cancellation::cancel_transfer_handler,
-    transfers::{copy_file_handler, list_transfer_progress_handler},
+    transfer_progress::list_transfer_progress_handler,
     trash::{empty_trash_handler, list_trash_handler, restore_trash_handler},
     ui::ui_service,
     user_state::{get_user_state_handler, update_user_state_handler},
@@ -88,21 +90,21 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route(
             "/api/v1/user/state",
-            get(get_user_state_handler).post(update_user_state_handler),
+            get(get_user_state_handler).put(update_user_state_handler),
         )
         .route(
             "/api/v1/transfers/progress",
             get(list_transfer_progress_handler),
         )
         .route(
-            "/api/v1/transfers/{transfer_id}/cancel",
-            post(cancel_transfer_handler),
+            "/api/v1/transfers/{transfer_id}",
+            axum::routing::delete(cancel_transfer_handler),
         )
         .route(
             "/api/v1/agents/{agent}",
             get(get_agent_details_handler)
                 .put(update_ssh_agent_handler)
-                .delete(delete_managed_agent_handler),
+                .delete(delete_ssh_agent_handler),
         )
         .route(
             "/api/v1/agents/{agent}/configuration",
@@ -111,7 +113,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route("/api/v1/local-agents", post(create_local_agent_handler))
         .route(
             "/api/v1/local-agents/{agent}",
-            put(update_local_agent_handler),
+            put(update_local_agent_handler).delete(delete_local_agent_handler),
         )
         .route(
             "/api/v1/local-agents/{agent}/configuration",
@@ -141,8 +143,19 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}/open/{*path}",
             post(open_path_agent_handler),
         )
-        .route("/api/v1/find", post(file_search_agent_handler))
-        .route("/api/v1/grep", post(content_grep_handler))
+        .route(
+            "/api/v1/agents/{agent}/find",
+            post(file_search_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/find/{*path}",
+            post(file_search_agent_handler),
+        )
+        .route("/api/v1/agents/{agent}/grep", post(content_grep_handler))
+        .route(
+            "/api/v1/agents/{agent}/grep/{*path}",
+            post(content_grep_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/metadata",
             get(metadata_agent_handler),

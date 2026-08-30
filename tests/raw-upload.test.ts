@@ -57,7 +57,12 @@ describe("Raw Upload API", () => {
             type: "text/plain",
         });
 
-        await testAgent.upload(uploadedFilePath, uploadFile);
+        const response = await testAgent.upload(uploadedFilePath, uploadFile);
+
+        // The upload response identifies the published destination rather than the staging path.
+        expect(response.path).toBe(uploadedFilePath);
+        // Byte accounting must reflect the complete request body, including its newline.
+        expect(response.bytes_written).toBe(Buffer.byteLength(uploadContent));
 
         const downloadedContent = Buffer.from(
             await testAgent.raw(uploadedFilePath),
@@ -88,7 +93,9 @@ describe("Raw Upload API", () => {
     });
 
     it("should inherit new upload ownership from its parent", async () => {
-        const parentPath = tempFiles.tempDirectory({ suffix: "-upload-inherit" });
+        const parentPath = tempFiles.tempDirectory({
+            suffix: "-upload-inherit",
+        });
         const uploadedFilePath = path.join(parentPath, "inherited.txt");
         const parentStats = fs.statSync(parentPath);
 
@@ -105,7 +112,9 @@ describe("Raw Upload API", () => {
     });
 
     it("should reject conflicting group options before starting an upload", async () => {
-        const uploadedFilePath = tempFiles.tempFile({ suffix: "-conflict.txt" });
+        const uploadedFilePath = tempFiles.tempFile({
+            suffix: "-conflict.txt",
+        });
 
         await expect(
             testAgent.upload(

@@ -82,7 +82,7 @@ function EditManagedAgentPage() {
         },
     });
     const deleteMutation = useMutation({
-        mutationFn: () => api.deleteManagedAgent(agentId),
+        mutationFn: () => api.deleteManagedAgent(agentId, configuration.kind),
         onSuccess: async () => {
             await queryClient.invalidateQueries(agentsQueryOptions(api));
             await router.invalidate();

@@ -10,29 +10,6 @@ use super::{
     state::ServerState,
 };
 
-/// Route: `GET /api/v1/transfers/progress`
-pub(crate) async fn list_transfer_progress_handler(
-    AxumState(state): AxumState<ServerState>,
-) -> impl IntoResponse {
-    match state
-        .router_ref
-        .request(5000, |reply| {
-            actors::router::RouterMsg::GetTransferProgress { reply }
-        })
-        .await
-    {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => {
-            let error_msg = format!("Failed to get transfer progress: {:?}", error);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: error_msg }),
-            )
-                .into_response()
-        }
-    }
-}
-
 /// Route: `POST /api/v1/copy`
 pub(crate) async fn copy_file_handler(
     AxumState(state): AxumState<ServerState>,

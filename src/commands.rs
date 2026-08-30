@@ -558,12 +558,10 @@ pub struct FileSearchEntry {
     pub file_type: String,
 }
 
-/// Identifies an agent path and bounded filename-search controls without URL-sized query data.
+/// Carries bounded filename-search controls while the route identifies the agent and root path.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct FindRequest {
-    pub agent: AgentId,
-    pub path: String,
     pub query: String,
     #[serde(default = "default_file_search_timeout_seconds")]
     #[ts(type = "number")]
@@ -613,12 +611,10 @@ pub struct ContentGrepMatch {
     pub after_context: Vec<ContentGrepContextLine>,
 }
 
-/// Identifies an agent path and bounded content-search controls without URL-sized query data.
+/// Carries bounded content-search controls while the route identifies the agent and root path.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct GrepRequest {
-    pub agent: AgentId,
-    pub path: String,
     pub query: String,
     #[serde(default = "default_file_search_timeout_seconds")]
     #[ts(type = "number")]
@@ -1054,6 +1050,22 @@ pub struct CreateSshAgentRequest {
     pub clear_password: Option<bool>,
 }
 
+/// Describes replacement SSH settings separately from the create contract.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateSshAgentRequest {
+    pub target: String,
+    pub username: Option<String>,
+    pub ssh_port: Option<u16>,
+    pub name: Option<String>,
+    pub remote_bin: Option<String>,
+    pub home: Option<String>,
+    pub log: Option<String>,
+    pub password: Option<String>,
+    /// Distinguishes keeping an omitted password from deleting the stored secret.
+    pub clear_password: Option<bool>,
+}
+
 /// Returns the newly visible dormant inventory record after persistence succeeds.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1101,6 +1113,15 @@ pub struct CreateLocalAgentRequest {
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
     /// Optional local path receiving the spawned agent process diagnostics.
+    pub log: Option<String>,
+}
+
+/// Describes replacement local-agent settings separately from the create contract.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateLocalAgentRequest {
+    pub name: Option<String>,
+    pub home: Option<String>,
     pub log: Option<String>,
 }
 

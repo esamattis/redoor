@@ -16,6 +16,7 @@ import type { TransferProgressState } from "#bindings/TransferProgressState";
 import type { CancelTransferResponse } from "#bindings/CancelTransferResponse";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { RawDeleteResponse } from "#bindings/RawDeleteResponse";
+import type { RawUploadResponse } from "#bindings/RawUploadResponse";
 import type { FileEditResponse } from "#bindings/FileEditResponse";
 import type { TrashListResponse } from "#bindings/TrashListResponse";
 import type { EmptyTrashResponse } from "#bindings/EmptyTrashResponse";
@@ -63,10 +64,12 @@ import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
 import type { CreateSshAgentResponse } from "#bindings/CreateSshAgentResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
 import type { UpdateSshAgentResponse } from "#bindings/UpdateSshAgentResponse";
+import type { UpdateSshAgentRequest } from "#bindings/UpdateSshAgentRequest";
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateLocalAgentResponse } from "#bindings/CreateLocalAgentResponse";
 import type { ManagedLocalAgentConfigurationResponse } from "#bindings/ManagedLocalAgentConfigurationResponse";
 import type { UpdateLocalAgentResponse } from "#bindings/UpdateLocalAgentResponse";
+import type { UpdateLocalAgentRequest } from "#bindings/UpdateLocalAgentRequest";
 import type { DeleteManagedAgentResponse } from "#bindings/DeleteManagedAgentResponse";
 import type { UpdateUserStateRequest } from "#bindings/UpdateUserStateRequest";
 import type { UserStateResponse } from "#bindings/UserStateResponse";
@@ -105,6 +108,7 @@ export type {
     CreateOneTimeTokenResponse,
     DirectorySizeResponse,
     RawDeleteResponse,
+    RawUploadResponse,
     TrashListResponse,
     EmptyTrashResponse,
     RestoreTrashItemRequest,
@@ -153,10 +157,12 @@ export type {
     CreateSshAgentResponse,
     ManagedSshAgentConfigurationResponse,
     UpdateSshAgentResponse,
+    UpdateSshAgentRequest,
     CreateLocalAgentRequest,
     CreateLocalAgentResponse,
     ManagedLocalAgentConfigurationResponse,
     UpdateLocalAgentResponse,
+    UpdateLocalAgentRequest,
     DeleteManagedAgentResponse,
     UpdateUserStateRequest,
     UserStateResponse,
@@ -470,8 +476,6 @@ export class Agent {
         },
     ): Promise<FileSearchResponse> {
         const request: FindRequest = {
-            agent: this.info.id,
-            path,
             query,
             timeout: options.timeoutSeconds,
             include_hidden: options.includeHidden,
@@ -479,7 +483,7 @@ export class Agent {
             case_sensitivity: options.caseSensitivity ?? "smart",
         };
         return apiRequest<FileSearchResponse>(
-            `${this.baseUrl}/api/v1/find`,
+            this.filesystemUrl("find", path),
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -506,8 +510,6 @@ export class Agent {
         },
     ): Promise<ContentGrepResponse> {
         const request: GrepRequest = {
-            agent: this.info.id,
-            path,
             query,
             timeout: options.timeoutSeconds,
             include_hidden: options.includeHidden,
@@ -518,7 +520,7 @@ export class Agent {
             after_context: options.afterContext ?? 0,
         };
         return apiRequest<ContentGrepResponse>(
-            `${this.baseUrl}/api/v1/grep`,
+            this.filesystemUrl("grep", path),
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -575,7 +577,15 @@ export class Agent {
         path: string,
         request: Partial<ChownPathRequest>,
     ): Promise<ChownPathResponse> {
-        return this.postJson(this.filesystemUrl("chown", path), request);
+        const url = apiPaths.appendOwnerAndGroup(
+            new URL(this.filesystemUrl("chown", path)),
+            request,
+        );
+        return apiRequest<ChownPathResponse>(
+            url.toString(),
+            { method: "POST" },
+            this.requestContext,
+        );
     }
 
     /** Replaces the ordinary rwx bits of one existing path without recursing. */
@@ -648,26 +658,22 @@ export class Agent {
         path: string,
         file: File,
         ownership?: Partial<CreationOwnershipOptions>,
-    ): Promise<Response> {
+    ): Promise<RawUploadResponse> {
         const url = apiPaths.appendOwnershipOptions(
             new URL(this.getRawUrl(path), this.baseUrl),
             ownership,
         );
-        const response = await fetch(
-            url,
-            withAuthentication(
-                {
-                    method: "PUT",
-                    headers: {
-                        "Content-Type": file.type || "application/octet-stream",
-                    },
-                    body: file,
+        return apiRequest<RawUploadResponse>(
+            url.toString(),
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": file.type || "application/octet-stream",
                 },
-                this.requestContext,
-            ),
+                body: file,
+            },
+            this.requestContext,
         );
-        await requireSuccessfulResponse(response, this.requestContext);
-        return response;
     }
 
     /** Rewrites one existing file inode through the dedicated editor endpoint. */
@@ -816,7 +822,6 @@ export class Agent {
         path: string,
         options?: {
             range?: [number | null, number | null];
-            method?: "GET" | "HEAD";
             download?: boolean;
         },
     ): Promise<Response> {
@@ -825,9 +830,6 @@ export class Agent {
         });
 
         const fetchOptions: RequestInit = {};
-        if (options?.method) {
-            fetchOptions.method = options.method;
-        }
         if (options?.range) {
             const [start, end] = options.range;
             if (start === null && end !== null) {
@@ -1003,7 +1005,7 @@ export class ApiClient {
     /** Replaces one stopped SSH-backed managed-agent configuration. */
     async updateSshAgent(
         agentId: string,
-        request: CreateSshAgentRequest,
+        request: UpdateSshAgentRequest,
     ): Promise<UpdateSshAgentResponse> {
         return apiRequest<UpdateSshAgentResponse>(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}`,
@@ -1045,7 +1047,7 @@ export class ApiClient {
     /** Replaces one stopped local managed-agent configuration. */
     async updateLocalAgent(
         agentId: string,
-        request: CreateLocalAgentRequest,
+        request: UpdateLocalAgentRequest,
     ): Promise<UpdateLocalAgentResponse> {
         return apiRequest<UpdateLocalAgentResponse>(
             `${this.baseUrl}/api/v1/local-agents/${encodeURIComponent(agentId)}`,
@@ -1058,12 +1060,14 @@ export class ApiClient {
         );
     }
 
-    /** Permanently removes one stopped managed-agent entry. */
+    /** Deletes through the collection that owns the managed-agent kind. */
     async deleteManagedAgent(
         agentId: string,
+        kind: "ssh" | "local",
     ): Promise<DeleteManagedAgentResponse> {
+        const collection = kind === "local" ? "local-agents" : "agents";
         return apiRequest<DeleteManagedAgentResponse>(
-            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}`,
+            `${this.baseUrl}/api/v1/${collection}/${encodeURIComponent(agentId)}`,
             { method: "DELETE" },
             this.requestContext(),
         );
@@ -1079,8 +1083,8 @@ export class ApiClient {
 
     async cancelTransfer(transferId: number): Promise<CancelTransferResponse> {
         return apiRequest<CancelTransferResponse>(
-            `${this.baseUrl}/api/v1/transfers/${encodeURIComponent(String(transferId))}/cancel`,
-            { method: "POST" },
+            `${this.baseUrl}/api/v1/transfers/${encodeURIComponent(String(transferId))}`,
+            { method: "DELETE" },
             this.requestContext(),
         );
     }
@@ -1129,7 +1133,7 @@ export class ApiClient {
         return apiRequest<UserStateResponse>(
             `${this.baseUrl}/api/v1/user/state`,
             {
-                method: "POST",
+                method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(request),
             },

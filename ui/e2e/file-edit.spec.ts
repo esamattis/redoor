@@ -838,7 +838,7 @@ gamma
             "Search the selected text from the git repository root when the file is in a worktree.",
         );
         const grepRequest = page.waitForRequest((request) =>
-            new URL(request.url()).pathname.includes("/api/v1/grep"),
+            new URL(request.url()).pathname.includes("/grep/"),
         );
         await searchSelectionButton.click();
 
@@ -853,6 +853,10 @@ gamma
         await expect(page).toHaveURL(/[?&]mode=content/);
         await expect(page).toHaveURL(/[?&]gitroot=true/);
         const requestBody: unknown = (await grepRequest).postDataJSON();
+        // Agent identity and repository root are carried by the scoped grep URL.
+        expect(new URL((await grepRequest).url()).pathname).toContain(
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep/`,
+        );
         // The grep POST body proves editor selection bypasses the default path mode.
         expect(requestBody).toMatchObject({ query: "search-selection-token" });
     });

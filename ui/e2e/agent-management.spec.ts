@@ -167,9 +167,17 @@ test.describe.serial("Agent management", () => {
         const confirmation = page.getByRole("dialog", {
             name: `Delete ${EDITED_LOCAL_AGENT}?`,
         });
+        const localDeleteRequest = page.waitForRequest(
+            (request) =>
+                request.url() ===
+                    `${WEB_BASE_URL}/api/v1/local-agents/${encodeURIComponent(EDITED_LOCAL_AGENT)}` &&
+                request.method() === "DELETE",
+        );
         await confirmation
             .getByRole("button", { name: "Delete managed agent" })
             .click();
+        // Local deletion must use the local-agent resource rather than the SSH route.
+        await localDeleteRequest;
 
         await expect(page).toHaveURL(/\/agents\/?$/);
         // Permanent deletion must remove the managed tab as well as the TOML entry.
@@ -253,9 +261,17 @@ test.describe.serial("Agent management", () => {
         const confirmation = page.getByRole("dialog", {
             name: `Delete ${EDITED_AGENT}?`,
         });
+        const sshDeleteRequest = page.waitForRequest(
+            (request) =>
+                request.url() ===
+                    `${WEB_BASE_URL}/api/v1/agents/${encodeURIComponent(EDITED_AGENT)}` &&
+                request.method() === "DELETE",
+        );
         await confirmation
             .getByRole("button", { name: "Delete managed agent" })
             .click();
+        // SSH deletion must stay on the SSH-backed managed-agent resource.
+        await sshDeleteRequest;
 
         await expect(page).toHaveURL(/\/agents\/?$/);
         // Permanent deletion must remove the managed tab as well as the TOML entry.

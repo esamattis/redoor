@@ -8,7 +8,7 @@ use redoor::{actors, commands::ErrorResponse, types::TransferId};
 
 use super::state::ServerState;
 
-/// Route: `POST /api/v1/transfers/{transfer_id}/cancel`.
+/// Route: `DELETE /api/v1/transfers/{transfer_id}` cancels one active transfer.
 pub(crate) async fn cancel_transfer_handler(
     AxumState(state): AxumState<ServerState>,
     Path(transfer_id): Path<u64>,

@@ -1,5 +1,5 @@
 use crate::server::{
-    agent_helpers::{AgentFilePath, absolute_path_from_url, require_absolute_path},
+    agent_helpers::{AgentFilePath, absolute_path_from_url},
     responses::command_error_status,
     state::ServerState,
 };
@@ -86,8 +86,9 @@ pub(crate) async fn ls_agent_handler(
     }
 }
 
-/// Route: `POST /api/v1/find`
+/// Route: `POST /api/v1/agents/{agent}/find/{*path}` searches below one filesystem root.
 pub(crate) async fn file_search_agent_handler(
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
     Json(search): Json<FindRequest>,
 ) -> impl IntoResponse {
@@ -101,11 +102,8 @@ pub(crate) async fn file_search_agent_handler(
             .into_response();
     }
 
-    let path = match require_absolute_path(search.path) {
-        Ok(path) => path,
-        Err(response) => return *response,
-    };
-    let agent_id = search.agent;
+    let path = absolute_path_from_url(path.unwrap_or_default());
+    let agent_id = AgentId::from(agent);
     let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
         .router_ref

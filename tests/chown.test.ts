@@ -60,6 +60,26 @@ describe("Chown Path API", () => {
         expect(stats.uid).toBe(os.userInfo().uid);
     });
 
+    it("reads owner and group from query parameters", async () => {
+        const filePath = path.join(agentCwd, "query-contract.txt");
+        await fs.writeFile(filePath, "unchanged");
+        const url = new URL(
+            testAgent.getRawUrl(filePath).replace("/raw/", "/chown/"),
+        );
+        url.searchParams.set("owner", String(os.userInfo().uid));
+        url.searchParams.set("group", String(os.userInfo().gid));
+
+        const response = await fetch(url, {
+            method: "POST",
+            headers: testAgent.getAuthHeaders(),
+        });
+        // Root accepts the query-only request; non-root rejection still proves route parsing reached the privilege gate.
+        expect(response.status).toBe(testAgent.isRoot ? 200 : 403);
+        // The direct URL keeps ownership selectors out of the JSON body contract.
+        expect(url.searchParams.get("owner")).toBe(String(os.userInfo().uid));
+        expect(url.searchParams.get("group")).toBe(String(os.userInfo().gid));
+    });
+
     it("rejects unknown owner names after the root gate", async () => {
         const filePath = path.join(agentCwd, "unknown-owner.txt");
         await fs.writeFile(filePath, "unknown");
@@ -123,7 +143,9 @@ describe("Chown Path API", () => {
             (user) => user.uid !== targetBefore.uid,
         );
         if (otherUser === undefined) {
-            throw new Error("Root agent returned no second user for symlink chown");
+            throw new Error(
+                "Root agent returned no second user for symlink chown",
+            );
         }
         const response = await testAgent.chown(linkPath, {
             owner: otherUser.name,

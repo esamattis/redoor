@@ -9,11 +9,8 @@ import {
     onTestFinished,
 } from "vitest";
 import { z } from "zod";
-import { ApiClient, Agent } from "#ui/api-client";
-import {
-    isLsDirectoryResponse,
-    isLsFileResponse,
-} from "#ui/ls-response";
+import { ApiClient, Agent, encodeFilesystemPath } from "#ui/api-client";
+import { isLsDirectoryResponse, isLsFileResponse } from "#ui/ls-response";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";
@@ -128,7 +125,7 @@ async function searchAgentFiles(
         caseSensitivity?: CaseSensitivity;
     },
 ): Promise<FileSearchResponse> {
-    const url = new URL("/api/v1/find", apiClient.baseUrl);
+    const url = getAgentSearchUrl(agent, root);
     const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -136,8 +133,6 @@ async function searchAgentFiles(
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            agent: agent.id,
-            path: root,
             query: search.query,
             timeout: search.timeout,
             include_hidden: search.includeHidden,
@@ -150,14 +145,24 @@ async function searchAgentFiles(
     return fileSearchResponseSchema.parse(await response.json());
 }
 
-/** Builds the top-level find URL for direct POST validation requests. */
-function getAgentSearchUrl(): URL {
-    return new URL("/api/v1/find", apiClient.baseUrl);
+/** Builds the agent-scoped find URL for direct POST validation requests. */
+function getAgentSearchUrl(agent: Agent, root: string): URL {
+    const route = `/api/v1/agents/${encodeURIComponent(agent.id)}/find`;
+    const encodedRoot = encodeFilesystemPath(root);
+    return new URL(
+        encodedRoot ? `${route}/${encodedRoot}` : route,
+        apiClient.baseUrl,
+    );
 }
 
-/** Builds the top-level grep URL for direct POST requests that need the raw response. */
-function getAgentGrepUrl(): URL {
-    return new URL("/api/v1/grep", apiClient.baseUrl);
+/** Builds the agent-scoped grep URL for direct POST requests that need the raw response. */
+function getAgentGrepUrl(agent: Agent, root: string): URL {
+    const route = `/api/v1/agents/${encodeURIComponent(agent.id)}/grep`;
+    const encodedRoot = encodeFilesystemPath(root);
+    return new URL(
+        encodedRoot ? `${route}/${encodedRoot}` : route,
+        apiClient.baseUrl,
+    );
 }
 
 describe("Agents API", () => {
@@ -588,7 +593,7 @@ describe("Agents API", () => {
 
     it("should reject file search timeouts above 60 seconds", async () => {
         const testAgent = await getConnectedTestAgent();
-        const url = getAgentSearchUrl();
+        const url = getAgentSearchUrl(testAgent, agentCwd);
 
         const response = await fetch(url, {
             method: "POST",
@@ -597,8 +602,6 @@ describe("Agents API", () => {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({
-                agent: testAgent.id,
-                path: agentCwd,
                 query: "target",
                 timeout: 61,
             }),
@@ -839,14 +842,18 @@ describe("Agents API", () => {
             { line_number: 6, line: "five", line_truncated: false },
         ]);
         // The second match gets its own preceding context, including the first match.
-        expect(secondMatch.before_context.map((line) => line.line_number)).toEqual([3, 4]);
+        expect(
+            secondMatch.before_context.map((line) => line.line_number),
+        ).toEqual([3, 4]);
         // The file boundary naturally clips the maximum accepted context window.
-        expect(secondMatch.after_context.map((line) => line.line)).toEqual(["five"]);
+        expect(secondMatch.after_context.map((line) => line.line)).toEqual([
+            "five",
+        ]);
     });
 
     it("should validate grep timeout, context, and regular expressions", async () => {
         const testAgent = await getConnectedTestAgent();
-        const timeoutUrl = getAgentGrepUrl();
+        const timeoutUrl = getAgentGrepUrl(testAgent, agentCwd);
         const timeoutResponse = await fetch(timeoutUrl, {
             method: "POST",
             headers: {
@@ -854,8 +861,6 @@ describe("Agents API", () => {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({
-                agent: testAgent.id,
-                path: agentCwd,
                 query: "target",
                 timeout: 61,
             }),
@@ -863,40 +868,8 @@ describe("Agents API", () => {
         // REST validation rejects deadlines outside the documented caller-selected range.
         expect(timeoutResponse.status).toBe(400);
 
-        const contextResponse = await fetch(getAgentGrepUrl(), {
-            method: "POST",
-            headers: {
-                ...testAgent.getAuthHeaders(),
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                agent: testAgent.id,
-                path: agentCwd,
-                query: "target",
-                before_context: 21,
-            }),
-        });
-        // Context limits prevent one match from expanding into an unbounded response.
-        expect(contextResponse.status).toBe(400);
-
-        const afterContextResponse = await fetch(getAgentGrepUrl(), {
-            method: "POST",
-            headers: {
-                ...testAgent.getAuthHeaders(),
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                agent: testAgent.id,
-                path: agentCwd,
-                query: "target",
-                after_context: 21,
-            }),
-        });
-        // Both context directions enforce the same response-size bound.
-        expect(afterContextResponse.status).toBe(400);
-
-        const regexResponse = await fetch(
-            getAgentGrepUrl(),
+        const contextResponse = await fetch(
+            getAgentGrepUrl(testAgent, agentCwd),
             {
                 method: "POST",
                 headers: {
@@ -904,8 +877,40 @@ describe("Agents API", () => {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
-                    agent: testAgent.id,
-                    path: agentCwd,
+                    query: "target",
+                    before_context: 21,
+                }),
+            },
+        );
+        // Context limits prevent one match from expanding into an unbounded response.
+        expect(contextResponse.status).toBe(400);
+
+        const afterContextResponse = await fetch(
+            getAgentGrepUrl(testAgent, agentCwd),
+            {
+                method: "POST",
+                headers: {
+                    ...testAgent.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    query: "target",
+                    after_context: 21,
+                }),
+            },
+        );
+        // Both context directions enforce the same response-size bound.
+        expect(afterContextResponse.status).toBe(400);
+
+        const regexResponse = await fetch(
+            getAgentGrepUrl(testAgent, agentCwd),
+            {
+                method: "POST",
+                headers: {
+                    ...testAgent.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
                     query: "(",
                 }),
             },
@@ -997,7 +1002,7 @@ describe("Agents API", () => {
         if (!agentProcess) {
             throw new Error("Agent process not found");
         }
-        const firstUrl = getAgentGrepUrl();
+        const firstUrl = getAgentGrepUrl(testAgent, grepRoot);
         const firstRequest = fetch(firstUrl, {
             method: "POST",
             headers: {
@@ -1005,8 +1010,6 @@ describe("Agents API", () => {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({
-                agent: testAgent.id,
-                path: grepRoot,
                 query: "first-query-with-no-match",
             }),
         });

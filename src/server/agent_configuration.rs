@@ -11,7 +11,8 @@ use redoor::commands::{
     AgentConnectionStatus, AgentInfoResponse, CreateLocalAgentRequest, CreateLocalAgentResponse,
     CreateSshAgentRequest, CreateSshAgentResponse, DeleteManagedAgentResponse, ErrorResponse,
     ManagedLocalAgentConfigurationResponse, ManagedSshAgentConfigurationResponse,
-    UpdateLocalAgentResponse, UpdateSshAgentResponse,
+    UpdateLocalAgentRequest, UpdateLocalAgentResponse, UpdateSshAgentRequest,
+    UpdateSshAgentResponse,
 };
 
 use crate::{
@@ -54,7 +55,7 @@ pub(crate) async fn get_ssh_agent_configuration_handler(
 pub(crate) async fn update_ssh_agent_handler(
     Path(agent_id): Path<String>,
     AxumState(state): AxumState<ServerState>,
-    Json(request): Json<CreateSshAgentRequest>,
+    Json(request): Json<UpdateSshAgentRequest>,
 ) -> impl IntoResponse {
     match update_ssh_agent(&state, &agent_id, request).await {
         Ok(agent) => (StatusCode::OK, Json(UpdateSshAgentResponse { agent })).into_response(),
@@ -62,12 +63,12 @@ pub(crate) async fn update_ssh_agent_handler(
     }
 }
 
-/// Route: `DELETE /api/v1/agents/{agent}` removes one stopped managed TOML entry.
-pub(crate) async fn delete_managed_agent_handler(
+/// Route: `DELETE /api/v1/agents/{agent}` removes one stopped SSH-backed TOML entry.
+pub(crate) async fn delete_ssh_agent_handler(
     Path(agent_id): Path<String>,
     AxumState(state): AxumState<ServerState>,
 ) -> impl IntoResponse {
-    match delete_managed_agent(&state, &agent_id).await {
+    match delete_managed_agent(&state, &agent_id, ManagedAgentKind::Ssh).await {
         Ok(()) => (
             StatusCode::OK,
             Json(DeleteManagedAgentResponse { deleted: true }),
@@ -86,6 +87,21 @@ pub(crate) async fn create_local_agent_handler(
         Ok(agent) => (
             StatusCode::CREATED,
             Json(CreateLocalAgentResponse { agent }),
+        )
+            .into_response(),
+        Err((status, error)) => (status, Json(ErrorResponse { error })).into_response(),
+    }
+}
+
+/// Route: `DELETE /api/v1/local-agents/{agent}` removes one stopped local TOML entry.
+pub(crate) async fn delete_local_agent_handler(
+    Path(agent_id): Path<String>,
+    AxumState(state): AxumState<ServerState>,
+) -> impl IntoResponse {
+    match delete_managed_agent(&state, &agent_id, ManagedAgentKind::Local).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(DeleteManagedAgentResponse { deleted: true }),
         )
             .into_response(),
         Err((status, error)) => (status, Json(ErrorResponse { error })).into_response(),
@@ -111,7 +127,7 @@ pub(crate) async fn get_local_agent_configuration_handler(
 pub(crate) async fn update_local_agent_handler(
     Path(agent_id): Path<String>,
     AxumState(state): AxumState<ServerState>,
-    Json(request): Json<CreateLocalAgentRequest>,
+    Json(request): Json<UpdateLocalAgentRequest>,
 ) -> impl IntoResponse {
     match update_local_agent(&state, &agent_id, request).await {
         Ok(agent) => (StatusCode::OK, Json(UpdateLocalAgentResponse { agent })).into_response(),
@@ -155,10 +171,11 @@ async fn create_ssh_agent(
 async fn update_ssh_agent(
     state: &ServerState,
     old_id: &str,
-    request: CreateSshAgentRequest,
+    request: UpdateSshAgentRequest,
 ) -> Result<AgentInfoResponse, (StatusCode, String)> {
     let clear_password = request.clear_password.unwrap_or(false);
-    let mut config = validate_request(request).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let mut config =
+        validate_update_request(request).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let new_id = watchdog::supervisor_key(&AgentConfig::SshBacked(config.clone()));
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent_for_update(state, old_id, &new_id).await?;
@@ -219,9 +236,9 @@ async fn create_local_agent(
 async fn update_local_agent(
     state: &ServerState,
     old_id: &str,
-    request: CreateLocalAgentRequest,
+    request: UpdateLocalAgentRequest,
 ) -> Result<AgentInfoResponse, (StatusCode, String)> {
-    let config = validate_local_request(request);
+    let config = validate_local_update_request(request);
     let new_id = watchdog::supervisor_key(&AgentConfig::Local(config.clone()));
     let _edit_guard = state.config_edit_lock.lock().await;
     find_local_agent_for_update(state, old_id, &new_id).await?;
@@ -248,22 +265,23 @@ async fn update_local_agent(
 async fn delete_managed_agent(
     state: &ServerState,
     agent_id: &str,
+    expected_kind: ManagedAgentKind,
 ) -> Result<(), (StatusCode, String)> {
     let _edit_guard = state.config_edit_lock.lock().await;
     let configured = find_configured_agent(state, agent_id).await?;
-    let supervisor_present = state.watchdog_registry.lookup(agent_id).is_some();
-    if configured.is_none() && !supervisor_present {
+    if let Some(config) = &configured {
+        if !expected_kind.matches_config(config) {
+            return Err(expected_kind.not_found(agent_id));
+        }
+    } else {
         let inventory = list_agent_snapshots(state)
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
-        if !inventory
+        let retained = inventory
             .iter()
-            .any(|agent| agent.id.to_string() == agent_id)
-        {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!("Managed agent '{agent_id}' was not found"),
-            ));
+            .find(|agent| agent.id.to_string() == agent_id && agent.configuration_editable);
+        if !retained.is_some_and(|agent| expected_kind.matches_inventory(agent)) {
+            return Err(expected_kind.not_found(agent_id));
         }
     }
 
@@ -282,6 +300,43 @@ async fn delete_managed_agent(
         None => {}
     }
     unregister_runtime_agent(state, agent_id).await
+}
+
+/// Distinguishes route ownership so SSH and local resources cannot delete each other.
+#[derive(Clone, Copy)]
+enum ManagedAgentKind {
+    Ssh,
+    Local,
+}
+
+impl ManagedAgentKind {
+    /// Matches durable configuration before any destructive operation begins.
+    fn matches_config(self, config: &AgentConfig) -> bool {
+        matches!(
+            (self, config),
+            (Self::Ssh, AgentConfig::SshBacked(_)) | (Self::Local, AgentConfig::Local(_))
+        )
+    }
+
+    /// Recovers the resource kind from retained inventory during an idempotent delete retry.
+    fn matches_inventory(self, agent: &AgentInfoResponse) -> bool {
+        match self {
+            Self::Ssh => agent.ssh_target.is_some(),
+            Self::Local => agent.ssh_target.is_none(),
+        }
+    }
+
+    /// Uses resource-specific wording so a cross-kind route does not reveal another collection.
+    fn not_found(self, agent_id: &str) -> (StatusCode, String) {
+        let kind = match self {
+            Self::Ssh => "SSH",
+            Self::Local => "local",
+        };
+        (
+            StatusCode::NOT_FOUND,
+            format!("Managed {kind} agent '{agent_id}' was not found"),
+        )
+    }
 }
 
 /// Removes the dormant supervisor and retained router inventory together.
@@ -600,6 +655,15 @@ fn validate_local_request(request: CreateLocalAgentRequest) -> LocalAgentConfig 
     }
 }
 
+/// Applies the same normalization to the distinct local update wire type.
+fn validate_local_update_request(request: UpdateLocalAgentRequest) -> LocalAgentConfig {
+    LocalAgentConfig {
+        name: optional_text(request.name),
+        home: optional_text(request.home),
+        log: optional_text(request.log),
+    }
+}
+
 /// Normalizes optional text and rejects values that would create unusable TOML entries.
 fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConfig, String> {
     let target = request.target.trim().to_string();
@@ -618,6 +682,21 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
         home: optional_text(request.home),
         log: optional_text(request.log),
         password: optional_password(request.password),
+    })
+}
+
+/// Applies common SSH validation to the distinct update wire type.
+fn validate_update_request(request: UpdateSshAgentRequest) -> Result<SshBackedAgentConfig, String> {
+    validate_request(CreateSshAgentRequest {
+        target: request.target,
+        username: request.username,
+        ssh_port: request.ssh_port,
+        name: request.name,
+        remote_bin: request.remote_bin,
+        home: request.home,
+        log: request.log,
+        password: request.password,
+        clear_password: request.clear_password,
     })
 }
 

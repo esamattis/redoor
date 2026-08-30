@@ -76,6 +76,33 @@ describe("user state", () => {
             showHiddenFiles: false,
             nested: { theme: "dark", count: 3 },
         };
+        const directResponse = await fetch(`${baseUrl}/api/v1/user/state`, {
+            method: "PUT",
+            headers: {
+                ...api.getAuthHeaders(),
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ state: document }),
+        });
+        // The replacement contract accepts PUT directly and no longer aliases POST.
+        expect(directResponse.status).toBe(200);
+        // Direct readback proves the request body was accepted by the new method.
+        await expect(directResponse.json()).resolves.toEqual({
+            state: document,
+        });
+        const removedPostResponse = await fetch(
+            `${baseUrl}/api/v1/user/state`,
+            {
+                method: "POST",
+                headers: {
+                    ...api.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ state: { stale: true } }),
+            },
+        );
+        // The former POST alias is absent so clients cannot silently depend on both verbs.
+        expect(removedPostResponse.status).toBe(405);
         const written = await api.updateUserState({ state: document });
         // The response must echo the stored document so clients can skip a follow-up GET.
         expect(written.state).toEqual(document);
@@ -88,8 +115,10 @@ describe("user state", () => {
 
         const replacement = { only: "this" };
         await api.updateUserState({ state: replacement });
-        // A later POST replaces the whole document instead of merging server-side.
+        // A later PUT replaces the whole document instead of merging server-side.
         expect((await api.getUserState()).state).toEqual(replacement);
-        expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(replacement);
+        expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(
+            replacement,
+        );
     });
 });

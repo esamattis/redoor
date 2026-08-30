@@ -87,7 +87,7 @@ test.describe.serial("User state", () => {
 
     test("should toast when settings cannot be saved", async ({ page }) => {
         await page.route("**/api/v1/user/state", async (route) => {
-            if (route.request().method() !== "POST") {
+            if (route.request().method() !== "PUT") {
                 await route.continue();
                 return;
             }

@@ -290,7 +290,7 @@ test.describe.serial("File Browser Navigation", () => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         let pathSearchRequests = 0;
         page.on("request", (request) => {
-            if (new URL(request.url()).pathname.includes("/api/v1/find")) {
+            if (new URL(request.url()).pathname.includes("/find/")) {
                 pathSearchRequests += 1;
             }
         });

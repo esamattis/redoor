@@ -1,8 +1,16 @@
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
+import type { UpdateLocalAgentRequest } from "#bindings/UpdateLocalAgentRequest";
 import { ApiClient, ApiError } from "#ui/api-client";
 import {
     ProcessManager,
@@ -22,6 +30,18 @@ const SSH_FIXTURE_NAME = "ssh-fixture-agent";
 function localRequest(
     overrides: Partial<CreateLocalAgentRequest> = {},
 ): CreateLocalAgentRequest {
+    return {
+        name: null,
+        home: null,
+        log: null,
+        ...overrides,
+    };
+}
+
+/** Builds the generated update contract independently from the create request type. */
+function localUpdateRequest(
+    overrides: Partial<UpdateLocalAgentRequest> = {},
+): UpdateLocalAgentRequest {
     return {
         name: null,
         home: null,
@@ -183,11 +203,15 @@ describe("Local agent configuration API", () => {
         );
         if (!configuredAgent) throw new Error("Created local agent missing");
         await configuredAgent.start();
-        const update = await apiClient.updateLocalAgent(AGENT_NAME, {
+        const updateRequest: UpdateLocalAgentRequest = {
             name: renamed,
             home: "/srv/updated-local",
             log: null,
-        });
+        };
+        const update = await apiClient.updateLocalAgent(
+            AGENT_NAME,
+            updateRequest,
+        );
         // Save must settle a delayed restart before replacing the identity, rather than racing it.
         expect(update.agent).toMatchObject({
             id: renamed,
@@ -213,11 +237,13 @@ describe("Local agent configuration API", () => {
         expect(editedConfig).not.toContain(`name = "${AGENT_NAME}"`);
         expect(editedConfig).not.toContain("/tmp/created-local-agent.log");
 
-        const deletion = await apiClient.deleteManagedAgent(renamed);
+        const deletion = await apiClient.deleteManagedAgent(renamed, "local");
         expect(deletion.deleted).toBe(true);
         // Deletion must remove both durable TOML and retained runtime inventory.
         expect(
-            (await apiClient.listAgents()).some((agent) => agent.id === renamed),
+            (await apiClient.listAgents()).some(
+                (agent) => agent.id === renamed,
+            ),
         ).toBe(false);
         expect(readFileSync(configPath, "utf8")).not.toContain(
             `name = "${renamed}"`,
@@ -233,9 +259,12 @@ describe("Local agent configuration API", () => {
         await expect(
             apiClient.updateLocalAgent(
                 missing,
-                localRequest({ name: missing }),
+                localUpdateRequest({ name: missing }),
             ),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
+        await expect(apiClient.deleteManagedAgent(missing, "local")).rejects.toMatchObject(
+            { status: 404 } satisfies Partial<ApiError>,
+        );
         // SSH agents are managed but must stay out of the local configuration API.
         await expect(
             apiClient.getLocalAgentConfiguration(SSH_FIXTURE_NAME),
@@ -243,8 +272,14 @@ describe("Local agent configuration API", () => {
         await expect(
             apiClient.updateLocalAgent(
                 SSH_FIXTURE_NAME,
-                localRequest({ name: SSH_FIXTURE_NAME, home: "/converted" }),
+                localUpdateRequest({
+                    name: SSH_FIXTURE_NAME,
+                    home: "/converted",
+                }),
             ),
+        ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
+        await expect(
+            apiClient.deleteManagedAgent(SSH_FIXTURE_NAME, "local"),
         ).rejects.toMatchObject({ status: 404 } satisfies Partial<ApiError>);
         const ssh = (await apiClient.listAgents()).find(
             (agent) => agent.id === SSH_FIXTURE_NAME,
@@ -269,12 +304,15 @@ describe("Local agent configuration API", () => {
             sshRequest({ target: "taken-host", name: takenName }),
         );
         onTestFinished(async () => {
-            for (const name of [originalName, takenName]) {
-                try {
-                    await apiClient.deleteManagedAgent(name);
-                } catch {
-                    // Cleanup must tolerate an already-removed leftover from a failed assertion.
-                }
+            try {
+                await apiClient.deleteManagedAgent(originalName, "local");
+            } catch {
+                // Cleanup must tolerate an already-removed leftover from a failed assertion.
+            }
+            try {
+                await apiClient.deleteManagedAgent(takenName, "ssh");
+            } catch {
+                // Cleanup must tolerate an already-removed leftover from a failed assertion.
             }
         });
         const original = (await apiClient.listAgents()).find(
@@ -292,7 +330,7 @@ describe("Local agent configuration API", () => {
         await expect(
             apiClient.updateLocalAgent(
                 originalName,
-                localRequest({ name: takenName }),
+                localUpdateRequest({ name: takenName }),
             ),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
 
@@ -313,7 +351,7 @@ describe("Local agent configuration API", () => {
         await apiClient.createLocalAgent(localRequest({ name }));
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "local");
             } catch {
                 // Cleanup must tolerate a successful delete leaving nothing behind.
             }
@@ -329,7 +367,7 @@ describe("Local agent configuration API", () => {
                 ?.status,
         ).not.toBe("stopped");
 
-        const deletion = await apiClient.deleteManagedAgent(name);
+        const deletion = await apiClient.deleteManagedAgent(name, "local");
         expect(deletion.deleted).toBe(true);
         // Both inventory and TOML must be gone after an auto-stop delete.
         expect(
@@ -345,7 +383,7 @@ describe("Local agent configuration API", () => {
         await apiClient.createLocalAgent(localRequest({ name }));
         onTestFinished(async () => {
             try {
-                await apiClient.deleteManagedAgent(name);
+                await apiClient.deleteManagedAgent(name, "local");
             } catch {
                 // Cleanup must tolerate a successful delete leaving nothing behind.
             }
@@ -353,7 +391,8 @@ describe("Local agent configuration API", () => {
         const created = (await apiClient.listAgents()).find(
             (agent) => agent.id === name,
         );
-        if (!created) throw new Error("Local silent-provisioning agent missing");
+        if (!created)
+            throw new Error("Local silent-provisioning agent missing");
         await created.start();
         const connected = await waitForValue({
             timeoutMs: 15_000,

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State as AxumState},
+    extract::{Path, Query, State as AxumState},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -20,7 +20,7 @@ use crate::server::{
 pub(crate) async fn chown_path_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
-    Json(request): Json<ChownPathRequest>,
+    Query(request): Query<ChownPathRequest>,
 ) -> impl IntoResponse {
     if request.owner.is_none() && request.group.is_none() {
         return (

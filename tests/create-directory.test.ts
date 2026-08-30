@@ -41,7 +41,16 @@ describe("Create Directory API", () => {
             "child",
         );
 
-        const response = await testAgent.createDirectory(createdDirectoryPath);
+        const mkdirUrl = testAgent
+            .getRawUrl(createdDirectoryPath)
+            .replace("/raw/", "/mkdir/");
+        const rawResponse = await fetch(mkdirUrl, {
+            method: "POST",
+            headers: testAgent.getAuthHeaders(),
+        });
+        // Resource creation uses 201 so callers can distinguish it from command-style success.
+        expect(rawResponse.status).toBe(201);
+        const response: { path: string } = await rawResponse.json();
 
         // Returning the created path confirms the API response identifies the target directory.
         expect(response.path).toBe(createdDirectoryPath);
@@ -75,7 +84,9 @@ describe("Create Directory API", () => {
     });
 
     it("should inherit directory ownership from its parent", async () => {
-        const parentPath = tempFiles.tempDirectory({ suffix: "-mkdir-inherit" });
+        const parentPath = tempFiles.tempDirectory({
+            suffix: "-mkdir-inherit",
+        });
         const createdDirectoryPath = path.join(parentPath, "inherited");
         const parentStats = await fs.stat(parentPath);
 

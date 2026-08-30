@@ -55,8 +55,10 @@ test.describe.serial("Transfer cancellation", () => {
             });
         });
         await page.route(
-            `**/api/v1/transfers/${transfer.request_id}/cancel`,
+            `**/api/v1/transfers/${transfer.request_id}`,
             async (route) => {
+                // Cancellation is the DELETE operation on the transfer resource itself.
+                expect(route.request().method()).toBe("DELETE");
                 canceled = true;
                 await route.fulfill({
                     json: {

@@ -82,8 +82,8 @@ last line`,
         page.on("request", (request) => {
             const url = new URL(request.url());
             if (
-                url.pathname.includes("/api/v1/find") ||
-                url.pathname.includes("/api/v1/grep")
+                url.pathname.includes("/find/") ||
+                url.pathname.includes("/grep/")
             ) {
                 requests.push(url);
                 requestBodies.set(url, request.postData());
@@ -132,13 +132,15 @@ last line`,
             (pathTextBounds?.x ?? 0) - (pathResultBounds?.x ?? 0),
         ).toBeLessThan(60);
         const pathRequest = requests.find((request) =>
-            request.pathname.includes("/api/v1/find"),
+            request.pathname.includes("/find/"),
         );
-        // The shared dialog forwards URL-owned traversal options in the path API JSON body.
+        // Agent and path belong to the resource URL rather than the find JSON contract.
+        expect(pathRequest?.pathname).toBe(
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/find/${ctx.testDirUrlPath}`,
+        );
+        // The shared dialog forwards only search options in the path API JSON body.
         expect(pathRequest && requestBodies.get(pathRequest)).toBe(
             JSON.stringify({
-                agent: ctx.agentId,
-                path: ctx.testDirPath,
                 query: "nested-path-target",
                 timeout: 9,
                 include_hidden: true,
@@ -148,9 +150,7 @@ last line`,
         );
         // Default mode enables only the fuzzy path endpoint.
         expect(
-            requests.some((request) =>
-                request.pathname.includes("/api/v1/grep"),
-            ),
+            requests.some((request) => request.pathname.includes("/grep/")),
         ).toBe(false);
 
         const smartCaseButton = dialog.getByRole("button", {
@@ -192,10 +192,10 @@ last line`,
             `/agents/${ctx.agentId}/browser/${encodeFilesystemPath(nestedPath)}?line=1`,
         );
         const searchRequestCount = requests.filter((request) =>
-            request.pathname.includes("/api/v1/find"),
+            request.pathname.includes("/find/"),
         ).length;
         const grepRequestCount = requests.filter((request) =>
-            request.pathname.includes("/api/v1/grep"),
+            request.pathname.includes("/grep/"),
         ).length;
 
         await dialog
@@ -219,6 +219,10 @@ last line`,
                 .get(request)
                 ?.includes('"query":"unique-search-value"'),
         );
+        // Content grep uses the same agent-and-path URL scope as filename search.
+        expect(contentRequest?.pathname).toBe(
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep/${ctx.testDirUrlPath}`,
+        );
         // One context control maps to both grep context directions.
         expect(contentRequest && requestBodies.get(contentRequest)).toContain(
             '"before_context":4,"after_context":4',
@@ -236,27 +240,22 @@ last line`,
             .toBe(true);
         // Content mode starts only grep requests while the path query remains disabled.
         expect(
-            requests.filter((request) =>
-                request.pathname.includes("/api/v1/find"),
-            ),
+            requests.filter((request) => request.pathname.includes("/find/")),
         ).toHaveLength(searchRequestCount);
         expect(
-            requests.filter((request) =>
-                request.pathname.includes("/api/v1/grep"),
-            ).length,
+            requests.filter((request) => request.pathname.includes("/grep/"))
+                .length,
         ).toBeGreaterThan(grepRequestCount);
 
         await dialog.getByRole("button", { name: "Search file paths" }).click();
         const grepRequestsAfterSwitch = requests.filter((request) =>
-            request.pathname.includes("/api/v1/grep"),
+            request.pathname.includes("/grep/"),
         ).length;
         await pathInput.fill("nested-path-target");
         await expect(pathResult).toBeVisible();
         // Returning to path mode does not leak another request to the inactive grep endpoint.
         expect(
-            requests.filter((request) =>
-                request.pathname.includes("/api/v1/grep"),
-            ),
+            requests.filter((request) => request.pathname.includes("/grep/")),
         ).toHaveLength(grepRequestsAfterSwitch);
         await pathResult.click();
         await expect(page).toHaveURL(/nested-path-target\.txt$/);
@@ -353,12 +352,12 @@ last line`,
         });
         let firstRequestFailed = false;
         page.on("requestfailed", (request) => {
-            if (!request.url().includes("/api/v1/grep")) return;
+            if (!request.url().includes("/grep/")) return;
             if (request.postData()?.includes('"query":"content1"') === true) {
                 firstRequestFailed = true;
             }
         });
-        await page.route("**/api/v1/grep", async (route) => {
+        await page.route("**/api/v1/agents/*/grep/**", async (route) => {
             if (
                 route.request().postData()?.includes('"query":"content1"') !==
                 true

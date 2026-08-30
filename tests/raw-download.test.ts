@@ -68,9 +68,12 @@ describe("Raw Download API", () => {
     });
 
     it("cancels a throttled download and closes its HTTP stream promptly", async () => {
-        const testFilePath = tempFiles.create(Buffer.alloc(8 * 1024 * 1024, "d"), {
-            suffix: ".bin",
-        });
+        const testFilePath = tempFiles.create(
+            Buffer.alloc(8 * 1024 * 1024, "d"),
+            {
+                suffix: ".bin",
+            },
+        );
         const serverProcess = processManager.getProcess(serverPid);
         if (!serverProcess) {
             throw new Error("Server process not found");
@@ -85,13 +88,17 @@ describe("Raw Download API", () => {
         const proxiedAgentName = "raw-download-explicit-cancel-agent";
         const connected = waitForLogMessage(
             serverProcess,
-            new RegExp(`Transfer socket registered: agent_id=${proxiedAgentName},`),
+            new RegExp(
+                `Transfer socket registered: agent_id=${proxiedAgentName},`,
+            ),
             10000,
         );
         const proxiedAgentPid = processManager.spawnAgent({
             wsAddress: `ws://${proxy.listen}/ws`,
             name: proxiedAgentName,
-            cwd: tempFiles.tempDirectory({ suffix: "-explicit-cancel-agent-cwd" }),
+            cwd: tempFiles.tempDirectory({
+                suffix: "-explicit-cancel-agent-cwd",
+            }),
         });
         onTestFinished(async () => {
             processManager.kill(proxiedAgentPid);
@@ -123,7 +130,8 @@ describe("Raw Download API", () => {
         // Receiving bytes proves the download worker and throttled HTTP response were both live.
         expect(firstChunk.value?.byteLength ?? 0).toBeGreaterThan(0);
         const active = await waitForValue({
-            description: "partially downloaded row before explicit cancellation",
+            description:
+                "partially downloaded row before explicit cancellation",
             predicate: async () =>
                 (await apiClient.getTransferProgress()).transfers.find(
                     (transfer) =>
@@ -838,10 +846,9 @@ describe("Raw Download API", () => {
         const testContent = "test content for range check";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
 
-        const response = await testAgent.download(testFilePath, {
-            method: "HEAD",
-        });
+        const response = await testAgent.download(testFilePath);
 
+        // A normal GET advertises resumability now that HEAD is not part of the download contract.
         expect(response.headers.get("Accept-Ranges")).toBe("bytes");
     });
 

@@ -118,7 +118,7 @@ pub(crate) async fn create_directory_handler(
         .await
     {
         Ok(CommandResult::CreateDirectory) => (
-            StatusCode::OK,
+            StatusCode::CREATED,
             Json(CreateDirectoryResponse {
                 path: resolved_path,
             }),

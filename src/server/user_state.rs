@@ -15,7 +15,7 @@ pub(crate) async fn get_user_state_handler(State(state): State<ServerState>) -> 
     }
 }
 
-/// Route: `POST /api/v1/user/state`
+/// Route: `PUT /api/v1/user/state` replaces the authenticated user's stored document.
 ///
 /// Replaces the on-disk document atomically so a crash cannot leave truncated JSON.
 pub(crate) async fn update_user_state_handler(

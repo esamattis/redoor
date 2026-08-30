@@ -107,8 +107,10 @@ describe("Raw Upload API with toxiproxy", () => {
 
         const uploadResponse = await uploadPromise;
 
-        // A successful response confirms the upload still completes cleanly when the request body is throttled.
-        expect(uploadResponse.ok).toBe(true);
+        // The typed response confirms the throttled upload published the intended destination.
+        expect(uploadResponse.path).toBe(uploadedFilePath);
+        // Complete byte accounting proves throttling did not truncate the request body.
+        expect(uploadResponse.bytes_written).toBe(totalBytes);
 
         const completedTransfer = await waitForValue({
             description: "completed slow upload progress row",
@@ -210,8 +212,11 @@ describe("Raw Upload API with toxiproxy", () => {
 
         const uploadResponse = await uploadPromise;
 
-        // Finishing successfully confirms the responsiveness fix does not break the throttled upload itself.
-        expect(uploadResponse.ok).toBe(true);
+        // Finishing with a complete typed response proves control responsiveness did not truncate the upload.
+        expect(uploadResponse).toMatchObject({
+            path: uploadedFilePath,
+            bytes_written: totalBytes,
+        });
     }, 20000);
 
     it("cancels a throttled upload over the control path and removes partial output", async () => {
@@ -378,8 +383,11 @@ describe("Raw Upload API with toxiproxy", () => {
             }),
         );
 
-        // A successful response after toxic removal confirms the proxy path recovers for later uploads.
-        expect(recoveryResponse.ok).toBe(true);
+        // A complete typed response after toxic removal proves the proxy path recovered for later uploads.
+        expect(recoveryResponse).toEqual({
+            path: recoveredPath,
+            bytes_written: recoveredContent.length,
+        });
 
         const recoveredTransfer = await waitForValue({
             description: "completed upload progress row after toxic removal",

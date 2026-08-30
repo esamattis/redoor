@@ -1,14 +1,23 @@
 use crate::server::{
-    agent_helpers::require_absolute_path, responses::command_error_status, state::ServerState,
+    agent_helpers::{AgentFilePath, absolute_path_from_url},
+    responses::command_error_status,
+    state::ServerState,
 };
-use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::{Path, State as AxumState},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use redoor::{
     actors,
     commands::{Command, CommandResult, ErrorResponse, GrepRequest, MAX_GREP_CONTEXT_LINES},
+    types::AgentId,
 };
 
-/// Route: `POST /api/v1/grep`
+/// Route: `POST /api/v1/agents/{agent}/grep/{*path}` searches below one filesystem root.
 pub(crate) async fn content_grep_handler(
+    Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
     AxumState(state): AxumState<ServerState>,
     Json(search): Json<GrepRequest>,
 ) -> impl IntoResponse {
@@ -35,11 +44,8 @@ pub(crate) async fn content_grep_handler(
             .into_response();
     }
 
-    let path = match require_absolute_path(search.path) {
-        Ok(path) => path,
-        Err(response) => return *response,
-    };
-    let agent_id = search.agent;
+    let path = absolute_path_from_url(path.unwrap_or_default());
+    let agent_id = AgentId::from(agent);
     let context_requested = search.before_context > 0 || search.after_context > 0;
     let request_timeout_ms = (search.timeout + 2) * 1000;
     match state
