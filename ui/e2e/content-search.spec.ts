@@ -208,7 +208,7 @@ last line`,
         ).toBeVisible();
         const contextInput = dialog.getByLabel("Context lines above and below");
         // Content search requests and displays the same default context on both sides.
-        await expect(contextInput).toHaveValue("4");
+        await expect(contextInput).toHaveValue("2");
         const searchTargetResult = dialog.getByRole("link", {
             name: /Open .*search-target\.txt at line 2/,
         });
@@ -225,7 +225,7 @@ last line`,
         );
         // One context control maps to both grep context directions.
         expect(contentRequest && requestBodies.get(contentRequest)).toContain(
-            '"before_context":4,"after_context":4',
+            '"before_context":2,"after_context":2',
         );
         await contextInput.fill("1");
         await expect(page).toHaveURL(/[?&]context=1/);

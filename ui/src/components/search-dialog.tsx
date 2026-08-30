@@ -177,7 +177,7 @@ export function SearchDialog(props: { agent: Agent }) {
     const respectGitignore =
         search.gitignore ?? userState.recursiveSearchRespectGitignore;
     const regex = search.regex ?? false;
-    const contextSize = search.context ?? 4;
+    const contextSize = search.context ?? 2;
     const caseSensitivity = search.case ?? "smart";
     const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
     const searchDirectory = searchFromGitRoot ? gitRoot : directory;
@@ -603,7 +603,7 @@ function PathResult(props: {
     return (
         <Link
             to={props.href}
-            className="flex w-full items-start gap-3 rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
+            className="flex w-full items-start gap-3 rounded-none border-b border-slate-800 px-3 py-2 text-left focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open path ${props.result.path}`}
             onClick={(event) =>
                 handleSearchResultClick(event, props.href, props.onOpen)
@@ -631,7 +631,7 @@ function ContentResult(props: {
     return (
         <Link
             to={props.href}
-            className="block w-full rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
+            className="block w-full rounded-none border-b border-slate-800 px-3 py-2 text-left focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open ${props.result.path} at line ${props.result.line_number}`}
             onClick={(event) =>
                 handleSearchResultClick(event, props.href, props.onOpen)

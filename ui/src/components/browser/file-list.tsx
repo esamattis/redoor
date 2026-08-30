@@ -89,6 +89,7 @@ export function FileList(props: {
     directoryPath: string;
     actions: React.ReactNode;
     files: LsEntry[];
+    showHiddenFiles: boolean;
     mountPoint: MountPoint | null;
 }) {
     const navigate = useNavigate();
@@ -101,7 +102,12 @@ export function FileList(props: {
         direction: FileSortDirection;
     } | null>(null);
     const normalizedFilter = filter.toLowerCase();
-    const filteredFiles = props.files.filter((entry) =>
+    // A leading dot is a hidden-name query, so include those entries without flipping the toggle.
+    const includeHiddenFiles = props.showHiddenFiles || filter.startsWith(".");
+    const visibleFiles = includeHiddenFiles
+        ? props.files
+        : props.files.filter((entry) => !entry.name.startsWith("."));
+    const filteredFiles = visibleFiles.filter((entry) =>
         entry.name.toLowerCase().includes(normalizedFilter),
     );
     const displayedFiles = sort

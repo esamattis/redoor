@@ -574,14 +574,11 @@ function DirectoryBrowserPage(props: {
             ? listingQuery.data
             : props.lsResult;
     const showHiddenFiles = userState.showHiddenFiles;
-    const visibleFiles = showHiddenFiles
-        ? lsResult.files
-        : lsResult.files.filter((file) => !file.name.startsWith("."));
     const directories = sortFileEntries(
-        visibleFiles.filter((file) => file.type === "directory"),
+        lsResult.files.filter((file) => file.type === "directory"),
     );
     const regularFiles = sortFileEntries(
-        visibleFiles.filter((file) => file.type === "file"),
+        lsResult.files.filter((file) => file.type === "file"),
     );
     const activeView =
         props.view === "git"
@@ -644,6 +641,7 @@ function DirectoryBrowserPage(props: {
                         agentName={props.agentName}
                         directoryPath={lsResult.path}
                         files={[...directories, ...regularFiles]}
+                        showHiddenFiles={showHiddenFiles}
                         mountPoint={getMountPointForPath(
                             props.mountPoints,
                             lsResult.path,
