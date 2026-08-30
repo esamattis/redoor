@@ -79,39 +79,33 @@ function useSearchScope(agent: Agent): {
 
 type SearchChanges = Record<string, string | number | boolean | undefined>;
 
-/** Owns the single route-wide path and content search workflow. */
-export function SearchDialog(props: { agent: Agent }) {
-    const search = agentRoute.useSearch();
-    const navigate = agentRoute.useNavigate();
-    const location = useLocation();
-    const { directory, gitRoot } = useSearchScope(props.agent);
-    const [userState, setUserState] = useUserState();
-    const isOpen = search.q !== undefined;
-    const isContentSearch = search.mode === "content";
-    const query = search.q ?? "";
-    const timeoutSeconds =
-        search.timeout ?? userState.recursiveSearchTimeoutSeconds;
-    const includeHidden =
-        search.hidden ?? userState.recursiveSearchIncludeHidden;
-    const respectGitignore =
-        search.gitignore ?? userState.recursiveSearchRespectGitignore;
-    const regex = search.regex ?? false;
-    const contextSize = search.context ?? 4;
-    const caseSensitivity = search.case ?? "smart";
-    const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
-    const searchDirectory = searchFromGitRoot ? gitRoot : directory;
+/** Shared ?q= seeds the field; keystrokes stay local so the caret is not reset. */
+function useSearchQuery(urlQuery: string | undefined) {
+    const [query, setQuery] = React.useState(urlQuery ?? "");
     const [debouncedQuery, setDebouncedQuery] = React.useState(query);
-    const resultsRef = React.useRef<HTMLDivElement>(null);
+
+    React.useEffect(() => {
+        // Editor search and opened/shared URLs populate the input without controlling it.
+        setQuery(urlQuery ?? "");
+    }, [urlQuery]);
 
     React.useEffect(() => {
         const timer = window.setTimeout(() => setDebouncedQuery(query), 200);
         return () => window.clearTimeout(timer);
     }, [query]);
 
+    return { query, setQuery, debouncedQuery };
+}
+
+/** Cmd/Ctrl+K stays available in text controls; unmodified s does not intercept typing. */
+function useOpenSearchShortcut(args: {
+    isOpen: boolean;
+    location: { hash: string; pathname: string; searchStr: string };
+    navigate: ReturnType<typeof agentRoute.useNavigate>;
+}) {
     React.useEffect(() => {
-        /** Cmd/Ctrl+K stays available in text controls; unmodified s does not intercept typing. */
         const openSearch = (event: KeyboardEvent) => {
-            if (isOpen) {
+            if (args.isOpen) {
                 return;
             }
 
@@ -128,23 +122,67 @@ export function SearchDialog(props: { agent: Agent }) {
             }
 
             event.preventDefault();
-            const params = new URLSearchParams(location.searchStr);
+            const params = new URLSearchParams(args.location.searchStr);
             params.set("q", "");
             params.delete("mode");
-            void navigate({
-                to: `${location.pathname}?${params.toString()}${location.hash}`,
+            void args.navigate({
+                to: `${args.location.pathname}?${params.toString()}${args.location.hash}`,
                 replace: true,
             });
         };
         window.addEventListener("keydown", openSearch);
         return () => window.removeEventListener("keydown", openSearch);
     }, [
-        isOpen,
-        location.hash,
-        location.pathname,
-        location.searchStr,
-        navigate,
+        args.isOpen,
+        args.location.hash,
+        args.location.pathname,
+        args.location.searchStr,
+        args.navigate,
     ]);
+}
+
+/** Leaves modified clicks on the real href so middle-click and new-tab still work. */
+function handleSearchResultClick(
+    event: React.MouseEvent<HTMLAnchorElement>,
+    href: string,
+    openSelectedResult: (href: string) => void,
+) {
+    if (
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+    ) {
+        return;
+    }
+    event.preventDefault();
+    openSelectedResult(href);
+}
+
+/** Owns the single route-wide path and content search workflow. */
+export function SearchDialog(props: { agent: Agent }) {
+    const search = agentRoute.useSearch();
+    const navigate = agentRoute.useNavigate();
+    const location = useLocation();
+    const { directory, gitRoot } = useSearchScope(props.agent);
+    const [userState, setUserState] = useUserState();
+    const isOpen = search.q !== undefined;
+    const isContentSearch = search.mode === "content";
+    const { query, setQuery, debouncedQuery } = useSearchQuery(search.q);
+    const timeoutSeconds =
+        search.timeout ?? userState.recursiveSearchTimeoutSeconds;
+    const includeHidden =
+        search.hidden ?? userState.recursiveSearchIncludeHidden;
+    const respectGitignore =
+        search.gitignore ?? userState.recursiveSearchRespectGitignore;
+    const regex = search.regex ?? false;
+    const contextSize = search.context ?? 4;
+    const caseSensitivity = search.case ?? "smart";
+    const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
+    const searchDirectory = searchFromGitRoot ? gitRoot : directory;
+    const resultsRef = React.useRef<HTMLDivElement>(null);
+    useOpenSearchShortcut({ isOpen, location, navigate });
 
     const canSearch =
         isOpen &&
@@ -195,6 +233,15 @@ export function SearchDialog(props: { agent: Agent }) {
             replace,
         });
     };
+
+    /** Snapshots the typed query onto this history entry so Back can restore the search. */
+    const openSelectedResult = async (href: string) => {
+        if (query !== (search.q ?? "")) {
+            await updateSearch({ q: query });
+        }
+        await navigate({ to: href });
+    };
+
     const close = () =>
         void updateSearch({
             q: undefined,
@@ -256,6 +303,7 @@ export function SearchDialog(props: { agent: Agent }) {
                             false,
                         )
                     }
+                    onQueryChange={setQuery}
                     onUpdate={updateSearch}
                     onUpdateOption={updateOption}
                 />
@@ -277,6 +325,7 @@ export function SearchDialog(props: { agent: Agent }) {
                                   key={`${result.path}:${result.line_number}:${result.line}`}
                                   result={result}
                                   href={`${props.agent.getBrowserUrl(result.path)}?line=${result.line_number}`}
+                                  onOpen={openSelectedResult}
                               />
                           ))
                         : pathSearch.data?.results.map((result) => (
@@ -284,6 +333,7 @@ export function SearchDialog(props: { agent: Agent }) {
                                   key={result.path}
                                   result={result}
                                   href={props.agent.getBrowserUrl(result.path)}
+                                  onOpen={openSelectedResult}
                               />
                           ))}
                 </div>
@@ -292,7 +342,7 @@ export function SearchDialog(props: { agent: Agent }) {
     );
 }
 
-/** Groups URL-backed controls while exposing content-only options only in grep mode. */
+/** Groups search controls while exposing content-only options only in grep mode. */
 function SearchControls(props: {
     query: string;
     isContentSearch: boolean;
@@ -306,6 +356,7 @@ function SearchControls(props: {
     searchFromGitRoot: boolean;
     disabled: boolean;
     onModeChange: (checked: boolean) => void;
+    onQueryChange: (query: string) => void;
     onUpdate: (changes: SearchChanges) => Promise<void>;
     onUpdateOption: (
         changes: SearchChanges,
@@ -375,7 +426,7 @@ function SearchControls(props: {
                     value={props.query}
                     disabled={props.disabled}
                     onChange={(event) =>
-                        void props.onUpdate({ q: event.target.value })
+                        props.onQueryChange(event.target.value)
                     }
                     placeholder={
                         props.isContentSearch
@@ -543,13 +594,20 @@ function SearchNumberInputs(props: {
 }
 
 /** Presents one fuzzy path match with enough context to distinguish duplicate names. */
-function PathResult(props: { result: FileSearchEntry; href: string }) {
+function PathResult(props: {
+    result: FileSearchEntry;
+    href: string;
+    onOpen: (href: string) => void;
+}) {
     const ResultIcon = props.result.type === "directory" ? Folder : File;
     return (
         <Link
             to={props.href}
             className="flex w-full items-start gap-3 rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open path ${props.result.path}`}
+            onClick={(event) =>
+                handleSearchResultClick(event, props.href, props.onOpen)
+            }
         >
             <ResultIcon className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
             <span className="min-w-0">
@@ -565,12 +623,19 @@ function PathResult(props: { result: FileSearchEntry; href: string }) {
 }
 
 /** Presents a grep match with its line preview and exact navigation destination. */
-function ContentResult(props: { result: ContentGrepMatch; href: string }) {
+function ContentResult(props: {
+    result: ContentGrepMatch;
+    href: string;
+    onOpen: (href: string) => void;
+}) {
     return (
         <Link
             to={props.href}
             className="block w-full rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open ${props.result.path} at line ${props.result.line_number}`}
+            onClick={(event) =>
+                handleSearchResultClick(event, props.href, props.onOpen)
+            }
         >
             <span className="block text-xs text-blue-300 sm:text-sm">
                 {props.result.path}:{props.result.line_number}

@@ -96,6 +96,18 @@ last line`,
         const pathInput = dialog.getByRole("searchbox", {
             name: "Search file paths",
         });
+        await pathInput.fill("abcd");
+        await pathInput.evaluate((element: HTMLInputElement) => {
+            element.setSelectionRange(2, 2);
+        });
+        await pathInput.pressSequentially("X");
+        // Local query state must keep the caret so mid-string edits are not forced to the end.
+        await expect(pathInput).toHaveValue("abXcd");
+        expect(
+            await pathInput.evaluate(
+                (element: HTMLInputElement) => element.selectionStart,
+            ),
+        ).toBe(3);
         await pathInput.fill("nested-path-target");
         const nestedPath = path.join(
             ctx.testDirPath,
@@ -375,8 +387,8 @@ last line`,
         await searchInput.fill("content1");
         await firstRequestStarted;
         await searchInput.fill("unique-search-value");
-        await expect(page).toHaveURL(/q=unique-search-value/);
-        // Replacing query state keeps each keystroke out of browser history.
+        // Typing must not write q; the caret would jump if the URL owned each keystroke.
+        await expect(page).not.toHaveURL(/q=unique-search-value/);
         await expect
             .poll(() => page.evaluate(() => history.length))
             .toBe(historyLength);
@@ -395,11 +407,12 @@ last line`,
         // The obsolete HTTP request is aborted before its replacement starts.
         expect(maximumActiveRequests).toBe(1);
         await result.click();
-        await expect(page).toHaveURL(/search-target\.txt\?line=2$/);
+        await expect(page).toHaveURL(/search-target.txt\?line=2$/);
 
         await page.goBack();
-        // The prior entry retains q so Back restores the dialog and completed search.
+        // Selecting a result snapshots q onto the search entry so Back restores it.
         await expect(dialog).toBeVisible();
+        await expect(page).toHaveURL(/q=unique-search-value/);
         await expect(searchInput).toHaveValue("unique-search-value");
         await expect(result).toBeVisible();
 
