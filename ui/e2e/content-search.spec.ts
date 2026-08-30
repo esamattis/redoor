@@ -614,5 +614,20 @@ test.describe("Mobile agent search", () => {
         // Mobile search consumes the complete viewport so controls and results have maximum room.
         expect(bounds?.width).toBe(390);
         expect(bounds?.height).toBe(844);
+
+        await dialog
+            .getByRole("button", { name: "Search file contents" })
+            .click();
+        const timeoutBox = await dialog
+            .getByLabel("Search timeout in seconds")
+            .boundingBox();
+        const contextBox = await dialog
+            .getByLabel("Context lines above and below")
+            .boundingBox();
+        // A two-column grid stretched these compact inputs across the full phone width.
+        expect(
+            (contextBox?.x ?? 0) -
+                ((timeoutBox?.x ?? 0) + (timeoutBox?.width ?? 0)),
+        ).toBeLessThan(24);
     });
 });

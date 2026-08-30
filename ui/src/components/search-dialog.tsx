@@ -483,7 +483,7 @@ function SearchControls(props: {
     );
 }
 
-/** Keeps bounded numeric controls compact and aligned at the toolbar's desktop edge. */
+/** Keeps bounded numeric controls compact so mobile does not stretch a gap between them. */
 function SearchNumberInputs(props: {
     isContentSearch: boolean;
     timeoutSeconds: number;
@@ -495,7 +495,7 @@ function SearchNumberInputs(props: {
     ) => void;
 }) {
     return (
-        <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
+        <div className="flex gap-2 sm:ml-auto">
             <label className="grid gap-1 text-xs text-slate-400">
                 Timeout
                 <InputControl
