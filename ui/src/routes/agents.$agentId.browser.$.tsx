@@ -493,6 +493,11 @@ function FileBrowser() {
                     agent={agent}
                     fileName={fileName}
                     filePath={lsResult.path}
+                    repositoryRoot={
+                        data.gitContext.status === "inside_worktree"
+                            ? data.gitContext.repository_root
+                            : null
+                    }
                     mimeType={data.metadata?.mime_type ?? "text/plain"}
                     downloadUrl={agent.getRawUrl(lsResult.path, {
                         download: true,

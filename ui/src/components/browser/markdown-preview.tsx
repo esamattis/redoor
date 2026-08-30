@@ -1,6 +1,8 @@
 import type { ComponentProps } from "react";
+import { Link } from "@tanstack/react-router";
 import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { getBrowserUrl } from "#ui/api-client";
 import { syntaxHighlighter } from "#ui/utils/syntax-highlighting";
 
 /** Highlights only explicitly labeled fences so inline and unknown code remain predictable. */
@@ -32,8 +34,96 @@ function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
     );
 }
 
+/** Normalizes a remote POSIX path without allowing parent segments above filesystem root. */
+function normalizeFilesystemPath(path: string): string {
+    const parts: string[] = [];
+    for (const part of path.split("/")) {
+        if (part === "" || part === ".") continue;
+        if (part === "..") {
+            parts.pop();
+            continue;
+        }
+        parts.push(part);
+    }
+    return `/${parts.join("/")}`;
+}
+
+/** Decodes Markdown URL escaping before encoding the destination as a browser route. */
+function decodeMarkdownPath(path: string): string {
+    try {
+        return decodeURIComponent(path);
+    } catch {
+        return path;
+    }
+}
+
+/** Resolves a Markdown file link against its directory or the active repository root. */
+export function resolveMarkdownFileLink(options: {
+    href: string;
+    agentId: string;
+    filePath: string;
+    repositoryRoot: string | null;
+}): string {
+    const suffixIndex = options.href.search(/[?#]/);
+    const hrefPath =
+        suffixIndex === -1 ? options.href : options.href.slice(0, suffixIndex);
+    const suffix = suffixIndex === -1 ? "" : options.href.slice(suffixIndex);
+    const decodedPath = decodeMarkdownPath(hrefPath);
+    const fileDirectory = options.filePath.slice(
+        0,
+        options.filePath.lastIndexOf("/") + 1,
+    );
+    const destination = decodedPath.startsWith("/")
+        ? `${options.repositoryRoot ?? ""}/${decodedPath.slice(1)}`
+        : `${fileDirectory}/${decodedPath}`;
+
+    return `${getBrowserUrl(
+        options.agentId,
+        normalizeFilesystemPath(destination),
+    )}${suffix}`;
+}
+
+/** Keeps web and document links native while routing remote filesystem links in-app. */
+function MarkdownLink(
+    props: ComponentProps<"a"> &
+        ExtraProps & {
+            agentId: string;
+            filePath: string;
+            repositoryRoot: string | null;
+        },
+) {
+    const href = props.href ?? "";
+    if (href.startsWith("#") || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(href)) {
+        return (
+            <a href={href} title={props.title} className={props.className}>
+                {props.children}
+            </a>
+        );
+    }
+
+    return (
+        <Link
+            to={resolveMarkdownFileLink({
+                href,
+                agentId: props.agentId,
+                filePath: props.filePath,
+                repositoryRoot: props.repositoryRoot,
+            })}
+            title={props.title}
+            className={props.className}
+        >
+            {props.children}
+        </Link>
+    );
+}
+
 /** Renders an untrusted markdown draft without enabling raw HTML execution. */
-export function MarkdownPreview(props: { content: string }) {
+export function MarkdownPreview(props: {
+    content: string;
+    agentId: string;
+    filePath: string;
+    repositoryRoot: string | null;
+}) {
     return (
         <section
             role="region"
@@ -42,7 +132,17 @@ export function MarkdownPreview(props: { content: string }) {
         >
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
-                components={{ code: MarkdownCode }}
+                components={{
+                    code: MarkdownCode,
+                    a: (linkProps) => (
+                        <MarkdownLink
+                            {...linkProps}
+                            agentId={props.agentId}
+                            filePath={props.filePath}
+                            repositoryRoot={props.repositoryRoot}
+                        />
+                    ),
+                }}
             >
                 {props.content}
             </ReactMarkdown>

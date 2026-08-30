@@ -485,6 +485,9 @@ function useFileSaveShortcut(onSave: () => void) {
 
 /** Selects the editor body without coupling its loading states to draft ownership. */
 function FileEditorSurface(props: {
+    agentId: string;
+    filePath: string;
+    repositoryRoot: string | null;
     isPending: boolean;
     error?: Error;
     content: string;
@@ -534,7 +537,12 @@ function FileEditorSurface(props: {
                 aria-hidden={!props.preview}
                 className={props.preview ? "flex min-h-0 flex-1" : "hidden"}
             >
-                <MarkdownPreview content={props.content} />
+                <MarkdownPreview
+                    content={props.content}
+                    agentId={props.agentId}
+                    filePath={props.filePath}
+                    repositoryRoot={props.repositoryRoot}
+                />
             </div>
         </>
     );
@@ -644,19 +652,25 @@ function EditorConfirmations(props: {
 }
 
 /**
- * Edits file contents in a viewport-bounded CodeMirror with explicit save/reload.
- * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
+ * Keeps editor route context explicit because previews need filesystem and repository paths.
  */
-export function FileEditView(props: {
+type FileEditViewProps = {
     agent: Agent;
     fileName: string;
     filePath: string;
+    repositoryRoot: string | null;
     mimeType: string;
     downloadUrl: string;
     scrollToLine?: number;
     preview: boolean;
     onPreviewChange: (preview: boolean) => void;
-}) {
+};
+
+/**
+ * Edits file contents in a viewport-bounded CodeMirror with explicit save/reload.
+ * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
+ */
+export function FileEditView(props: FileEditViewProps) {
     const queryClient = useQueryClient();
     const editorUserState = useEditorUserState({
         agentId: props.agent.id,
@@ -814,6 +828,9 @@ export function FileEditView(props: {
 
                 <div className="flex min-h-0 flex-1 flex-col">
                     <FileEditorSurface
+                        agentId={props.agent.id}
+                        filePath={props.filePath}
+                        repositoryRoot={props.repositoryRoot}
                         isPending={contentQuery.isPending}
                         error={
                             contentQuery.isError

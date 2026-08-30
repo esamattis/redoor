@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { $ } from "zx";
 import {
     encodeFilesystemPath,
     setupTestDir,
@@ -13,16 +14,34 @@ test.describe.serial("Markdown preview", () => {
     let ctx: TestContext;
     let markdownPath: string;
     let markdownUrl: string;
+    let markdownDirectoryUrl: string;
+    let repositoryPath: string;
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("markdown-preview");
-        markdownPath = path.join(ctx.testDirPath, "README.md");
+        repositoryPath = path.join(ctx.testDirPath, "repository");
+        const markdownDirectory = path.join(repositoryPath, "docs");
+        await fs.mkdir(markdownDirectory, { recursive: true });
+        await $`git -C ${repositoryPath} init`;
+        markdownPath = path.join(markdownDirectory, "README.md");
         markdownUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(markdownPath)}`;
+        markdownDirectoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(markdownDirectory)}`;
+        await fs.writeFile(
+            path.join(repositoryPath, "root-target.txt"),
+            "Repository root target",
+        );
+        await fs.writeFile(
+            path.join(repositoryPath, "relative-target.txt"),
+            "Relative target",
+        );
         await fs.writeFile(
             markdownPath,
             `# Preview heading
 
 Preview body
+
+[Root target](/root-target.txt)
+[Relative target](../relative-target.txt)
 
 ${"```typescript"}
 const highlighted = true;
@@ -36,9 +55,7 @@ ${"```"}
     });
 
     test("opens markdown from the listing in preview", async ({ page }) => {
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`,
-        );
+        await page.goto(markdownDirectoryUrl);
         await page
             .getByRole("link", { name: "README.md", exact: true })
             .click();
@@ -68,6 +85,26 @@ ${"```"}
         // CodeMirror remains mounted while CSS keeps it out of the visible preview.
         await expect(page.getByLabel("File editor")).toBeAttached();
         await expect(page.getByLabel("File editor")).not.toBeVisible();
+    });
+
+    test("routes file links relative to the document and git root", async ({
+        page,
+    }) => {
+        await page.goto(markdownUrl);
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+
+        await preview.getByRole("link", { name: "Root target" }).click();
+        // Leading slashes use the repository root rather than the remote filesystem root.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(repositoryPath, "root-target.txt"))}`,
+        );
+
+        await page.goto(markdownUrl);
+        await preview.getByRole("link", { name: "Relative target" }).click();
+        // Relative links continue to use the Markdown document's own directory.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(repositoryPath, "relative-target.txt"))}`,
+        );
     });
 
     test("toggles without losing the editor draft or caret", async ({
