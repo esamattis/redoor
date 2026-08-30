@@ -248,7 +248,7 @@ export function SearchDialog(props: { agent: Agent }) {
                 <div
                     ref={resultsRef}
                     aria-label="Search results"
-                    className="overflow-hidden rounded-lg border border-slate-800"
+                    className="overflow-x-auto rounded-lg border border-slate-800"
                 >
                     {isContentSearch
                         ? contentSearch.data?.results.map((result) => (
@@ -491,10 +491,10 @@ function PathResult(props: { result: FileSearchEntry; href: string }) {
         >
             <ResultIcon className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
             <span className="min-w-0">
-                <span className="block font-medium text-blue-300">
+                <span className="block text-sm font-medium text-blue-300 sm:text-base">
                     {props.result.name}
                 </span>
-                <span className="block truncate font-mono text-xs font-normal text-slate-500">
+                <span className="block whitespace-nowrap font-mono text-[11px] font-normal text-slate-500 sm:text-xs">
                     {props.result.path}
                 </span>
             </span>
@@ -510,10 +510,10 @@ function ContentResult(props: { result: ContentGrepMatch; href: string }) {
             className="block w-full rounded-none border-b border-slate-800 px-3 py-2 text-left hover:bg-white/5 focus:bg-blue-500/10 focus:outline-none"
             aria-label={`Open ${props.result.path} at line ${props.result.line_number}`}
         >
-            <span className="block text-sm text-blue-300">
+            <span className="block text-xs text-blue-300 sm:text-sm">
                 {props.result.path}:{props.result.line_number}
             </span>
-            <span className="mt-1 block font-mono text-sm font-normal">
+            <span className="mt-1 block font-mono text-xs font-normal sm:text-sm">
                 {props.result.before_context.map((line) => (
                     <span
                         key={line.line_number}
@@ -522,7 +522,7 @@ function ContentResult(props: { result: ContentGrepMatch; href: string }) {
                         <span className="pr-3 text-right select-none">
                             {line.line_number}
                         </span>
-                        <span className="truncate">
+                        <span className="whitespace-pre">
                             {line.line}
                             {line.line_truncated ? "…" : ""}
                         </span>
@@ -532,7 +532,7 @@ function ContentResult(props: { result: ContentGrepMatch; href: string }) {
                     <span className="pr-3 text-right text-blue-300 select-none">
                         {props.result.line_number}
                     </span>
-                    <span className="truncate">
+                    <span className="whitespace-pre">
                         {props.result.line}
                         {props.result.line_truncated ? "…" : ""}
                     </span>
@@ -545,7 +545,7 @@ function ContentResult(props: { result: ContentGrepMatch; href: string }) {
                         <span className="pr-3 text-right select-none">
                             {line.line_number}
                         </span>
-                        <span className="truncate">
+                        <span className="whitespace-pre">
                             {line.line}
                             {line.line_truncated ? "…" : ""}
                         </span>

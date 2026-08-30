@@ -118,7 +118,7 @@ function GitStatusSection(props: {
         >
             <h2
                 id={`git-${props.title.toLowerCase().replace(" ", "-")}`}
-                className="mb-1 text-sm font-semibold text-slate-200"
+                className="mb-1 text-xs font-semibold text-slate-200 sm:text-sm"
             >
                 {props.title}{" "}
                 <span className="text-slate-500">({props.entries.length})</span>
@@ -133,12 +133,12 @@ function GitStatusSection(props: {
                             <Link
                                 to={props.agent.getBrowserUrl(item.entry.path)}
                                 search={{ view: "git" }}
-                                className="block break-all font-mono text-sm text-blue-300 hover:underline"
+                                className="block break-all font-mono text-xs text-blue-300 hover:underline sm:text-sm"
                             >
                                 {item.entry.repository_relative_path}
                             </Link>
                             {item.entry.original_path !== null ? (
-                                <span className="mt-1 block break-all text-xs text-slate-500">
+                                <span className="mt-1 block break-all text-[11px] text-slate-500 sm:text-xs">
                                     from {item.entry.original_path}
                                 </span>
                             ) : null}
@@ -147,12 +147,12 @@ function GitStatusSection(props: {
                             {props.diffAnchorByPath === null ? null : (
                                 <a
                                     href={`#${props.diffAnchorByPath.get(item.entry.path)}`}
-                                    className="text-xs text-blue-300 hover:underline"
+                                    className="text-[11px] text-blue-300 hover:underline sm:text-xs"
                                 >
                                     Diff
                                 </a>
                             )}
-                            <span className="rounded-full border border-slate-700 px-2 py-0.5 text-xs capitalize text-slate-400">
+                            <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] capitalize text-slate-400 sm:text-xs">
                                 {formatChangeState(item.state)}
                             </span>
                         </span>
