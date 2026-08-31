@@ -39,8 +39,8 @@ async function requireSyncedWithOriginMain(): Promise<void> {
         process.exit(1);
     }
 
-    // Tags are not updated by the branch push, so refresh them before incrementing.
-    await $`git fetch origin --tags`;
+    // Treat origin as authoritative so stale local tags cannot affect the next version.
+    await $`git fetch origin --tags --force --prune --prune-tags`;
 }
 
 /** Skills cannot answer prompts, so the bump type is a required CLI argument. */
