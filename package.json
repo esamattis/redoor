@@ -91,6 +91,7 @@
         "tailwind-merge": "^3.6.0",
         "tailwindcss": "^4.3.3",
         "toxiproxy-node-client": "^4.1.0",
+        "yaml": "^2.9.0",
         "zod": "^4.4.3",
         "zx": "^8.8.5"
     },

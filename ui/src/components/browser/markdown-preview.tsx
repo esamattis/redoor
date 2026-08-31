@@ -2,8 +2,100 @@ import type { ComponentProps } from "react";
 import { Link } from "@tanstack/react-router";
 import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { getBrowserUrl } from "#ui/api-client";
 import { syntaxHighlighter } from "#ui/utils/syntax-highlighting";
+
+/** Opening `---` must be the first line so thematic breaks later in the file stay markdown. */
+const YAML_FRONTMATTER_OPENING = /^---[ \t]*\r?\n/;
+/** The next fence-only line ends the YAML document the same way GitHub and Jekyll do. */
+const YAML_FRONTMATTER_CLOSING = /(?:^|\r?\n)---[ \t]*(?:\r?\n|$)/;
+
+/** Keeps table cells as authored YAML instead of re-parsing values as markdown. */
+function formatYamlFrontmatterCell(value: Node | null): string {
+    if (value === null) {
+        return "";
+    }
+    return stringify(value).trimEnd();
+}
+
+/**
+ * GitHub turns a leading YAML mapping into a header-row table, so invalid or
+ * non-mapping fences are left in the markdown rather than guessed at.
+ */
+function parseMarkdownYamlFrontmatter(content: string): {
+    headers: string[];
+    values: string[];
+    body: string;
+} | null {
+    const opening = YAML_FRONTMATTER_OPENING.exec(content);
+    if (opening === null) {
+        return null;
+    }
+    const fromYaml = content.slice(opening[0].length);
+    const closing = YAML_FRONTMATTER_CLOSING.exec(fromYaml);
+    if (closing === null) {
+        return null;
+    }
+    const body = fromYaml.slice(closing.index + closing[0].length);
+    const document = parseDocument(fromYaml.slice(0, closing.index));
+    if (document.errors.length > 0) {
+        return null;
+    }
+    if (document.contents === null) {
+        return { headers: [], values: [], body };
+    }
+    if (!isMap(document.contents)) {
+        return null;
+    }
+
+    const headers: string[] = [];
+    const values: string[] = [];
+    for (const item of document.contents.items) {
+        headers.push(
+            formatYamlFrontmatterCell(isNode(item.key) ? item.key : null),
+        );
+        values.push(
+            formatYamlFrontmatterCell(isNode(item.value) ? item.value : null),
+        );
+    }
+    return { headers, values, body };
+}
+
+/** Renders keys as column headers so the preview matches GitHub's frontmatter table. */
+function YamlFrontmatterTable(props: { headers: string[]; values: string[] }) {
+    return (
+        <table
+            aria-label="YAML frontmatter"
+            className="border-collapse text-xs"
+        >
+            <thead>
+                <tr>
+                    {props.headers.map((header, index) => (
+                        <th
+                            key={index}
+                            className="border border-slate-700 px-2 py-1"
+                        >
+                            {header}
+                        </th>
+                    ))}
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    {props.values.map((value, index) => (
+                        <td
+                            key={index}
+                            className="whitespace-pre-wrap border border-slate-700 px-2 py-1"
+                        >
+                            {value}
+                        </td>
+                    ))}
+                </tr>
+            </tbody>
+        </table>
+    );
+}
 
 /** Highlights only explicitly labeled fences so inline and unknown code remain predictable. */
 function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
@@ -124,12 +216,21 @@ export function MarkdownPreview(props: {
     filePath: string;
     repositoryRoot: string | null;
 }) {
+    const frontmatter = parseMarkdownYamlFrontmatter(props.content);
+    const markdown = frontmatter === null ? props.content : frontmatter.body;
+
     return (
         <section
             role="region"
             aria-label="Markdown preview"
             className="syntax-highlight prose prose-invert min-h-0 max-w-none flex-1 overflow-auto px-5 py-6 prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto sm:px-8 sm:py-8"
         >
+            {frontmatter !== null && frontmatter.headers.length > 0 ? (
+                <YamlFrontmatterTable
+                    headers={frontmatter.headers}
+                    values={frontmatter.values}
+                />
+            ) : null}
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -144,7 +245,7 @@ export function MarkdownPreview(props: {
                     ),
                 }}
             >
-                {props.content}
+                {markdown}
             </ReactMarkdown>
         </section>
     );
