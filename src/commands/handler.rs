@@ -856,11 +856,14 @@ impl CommandHandler {
 }
 
 /// Caps NSS dumps so an LDAP host cannot serialize an unbounded catalog into one REST response.
+#[cfg(not(target_os = "android"))]
 const MAX_ENUMERATED_ACCOUNTS: usize = 8192;
 
 /// Closes the passwd iterator even when UTF-8 skipping or the cap aborts enumeration early.
+#[cfg(not(target_os = "android"))]
 struct PasswdEnumerationGuard;
 
+#[cfg(not(target_os = "android"))]
 impl Drop for PasswdEnumerationGuard {
     fn drop(&mut self) {
         unsafe {
@@ -870,8 +873,10 @@ impl Drop for PasswdEnumerationGuard {
 }
 
 /// Closes the group iterator even when UTF-8 skipping or the cap aborts enumeration early.
+#[cfg(not(target_os = "android"))]
 struct GroupEnumerationGuard;
 
+#[cfg(not(target_os = "android"))]
 impl Drop for GroupEnumerationGuard {
     fn drop(&mut self) {
         unsafe {
@@ -900,7 +905,18 @@ fn enumerate_accounts() -> Result<AgentAccountsResponse, String> {
     crate::ownership::with_nss_lock(enumerate_accounts_locked)
 }
 
+/// Bionic has no getpwent/getgrent, so owner/group selects stay empty on Android.
+#[cfg(target_os = "android")]
+fn enumerate_accounts_locked() -> Result<AgentAccountsResponse, String> {
+    Ok(AgentAccountsResponse {
+        users: Vec::new(),
+        groups: Vec::new(),
+        truncated: false,
+    })
+}
+
 /// Runs only while the process-wide NSS lock is held so getpwent cannot interleave with lookups.
+#[cfg(not(target_os = "android"))]
 fn enumerate_accounts_locked() -> Result<AgentAccountsResponse, String> {
     let mut users = Vec::new();
     let mut groups = Vec::new();
