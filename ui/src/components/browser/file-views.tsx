@@ -74,7 +74,7 @@ function RecentEditorFileItem(props: {
             }
         >
             <Tooltip
-                content={props.file.path}
+                content={`Open ${props.file.path}`}
                 className={isDialog ? "min-w-0 flex-1" : undefined}
             >
                 <Link
@@ -154,6 +154,7 @@ function FileEditActions(props: {
     selection: EditorSelection | null;
     recentFiles: RecentEditorFile[];
     preview?: boolean;
+    isSearchOpen: boolean;
     onSave: () => void;
     onToggleSearch: () => void;
     onRemoveRecentFile: (path: string) => void;
@@ -194,6 +195,7 @@ ${props.selection.text}
                 ref={recentFilesButtonRef}
                 type="button"
                 label="Recent files"
+                tooltip="Show recent files"
                 onClick={() => setRecentFilesOpen(true)}
                 className="h-9 w-9 rounded-md border border-slate-700 text-slate-200 hover:bg-white/5"
             >
@@ -217,7 +219,11 @@ ${props.selection.text}
             <IconButton
                 type="button"
                 label="Toggle search and replace"
-                tooltip="Search and replace in the file (Ctrl+F)"
+                tooltip={
+                    props.isSearchOpen
+                        ? "Close search and replace (Ctrl+F)"
+                        : "Search and replace in the file (Ctrl+F)"
+                }
                 onClick={props.onToggleSearch}
                 className="h-9 w-9 rounded-md border border-slate-700 text-slate-200 hover:bg-white/5"
             >
@@ -493,6 +499,7 @@ function FileEditorSurface(props: {
     preview: boolean;
     scrollToLine?: number;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
+    onSearchOpenChange: (open: boolean) => void;
     onChange: (content: string) => void;
     onFocus: () => void;
     onSave: () => void;
@@ -527,6 +534,7 @@ function FileEditorSurface(props: {
                     onSave={props.onSave}
                     onSelectionChange={props.onSelectionChange}
                     searchHandleRef={props.searchHandleRef}
+                    onSearchOpenChange={props.onSearchOpenChange}
                 />
             </div>
             <div
@@ -689,6 +697,7 @@ export function FileEditView(props: FileEditViewProps) {
     const [reloadConfirmationOpen, setReloadConfirmationOpen] =
         React.useState(false);
     const [isFullWindow, setIsFullWindow] = React.useState(false);
+    const [isSearchOpen, setIsSearchOpen] = React.useState(false);
     const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
     const saveMutation = useMutation({
@@ -794,6 +803,7 @@ export function FileEditView(props: FileEditViewProps) {
                                 selection={selection}
                                 recentFiles={editorUserState.recentFiles}
                                 preview={isMarkdown ? props.preview : undefined}
+                                isSearchOpen={isSearchOpen}
                                 onSave={handleSave}
                                 onToggleSearch={() => {
                                     if (!searchHandleRef.current?.close()) {
@@ -855,6 +865,7 @@ export function FileEditView(props: FileEditViewProps) {
                         onSave={handleSave}
                         onSelectionChange={setSelection}
                         searchHandleRef={searchHandleRef}
+                        onSearchOpenChange={setIsSearchOpen}
                         onClosePreview={() => props.onPreviewChange(false)}
                     />
                 </div>

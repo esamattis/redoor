@@ -193,7 +193,7 @@ function AgentBookmarks(props: {
                         key={getBookmarkKey(bookmark)}
                         className="group flex min-w-0 items-center"
                     >
-                        <Tooltip content={bookmark.path}>
+                        <Tooltip content={`Open ${bookmark.path}`}>
                             <Link
                                 to={href}
                                 onClick={props.onClose}

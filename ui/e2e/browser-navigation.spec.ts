@@ -919,6 +919,9 @@ test.describe.serial("File Browser Navigation", () => {
         await expect(
             page.getByRole("button", { name: "Copied!" }),
         ).toBeVisible();
+        await page.getByRole("button", { name: "Copied!" }).hover();
+        // After success, the tooltip still names the next click rather than Copied.
+        await expect(page.getByRole("tooltip")).toHaveText("Copy file path");
     });
 
     test("should navigate by editing the breadcrumb path", async ({ page }) => {

@@ -124,6 +124,7 @@ export function CodeEditor(props: {
     onSave: () => void;
     onSelectionChange: (selection: EditorSelection | null) => void;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
+    onSearchOpenChange: (open: boolean) => void;
 }) {
     const resolvedTheme = useResolvedTheme();
     const onSaveRef = React.useRef(props.onSave);
@@ -255,6 +256,7 @@ export function CodeEditor(props: {
                 editable={props.editable}
                 documentRevision={documentRevision}
                 handleRef={props.searchHandleRef}
+                onOpenChange={props.onSearchOpenChange}
             />
             <div
                 data-file-editor=""

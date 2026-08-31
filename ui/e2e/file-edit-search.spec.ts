@@ -114,12 +114,34 @@ test.describe.serial("File editor search and replace", () => {
         );
 
         await expect(page.getByLabel("File editor")).toBeVisible();
-        await page
-            .getByRole("button", { name: "Toggle search and replace" })
-            .hover();
+        const searchToggle = page.getByRole("button", {
+            name: "Toggle search and replace",
+        });
+        await searchToggle.hover();
         // The action tooltip advertises the keyboard path to the same panel.
         await expect(page.getByRole("tooltip")).toHaveText(
             "Search and replace in the file (Ctrl+F)",
+        );
+        await searchToggle.click();
+        await expect(
+            page.getByRole("region", { name: "Search & Replace" }),
+        ).toBeVisible();
+        await searchToggle.hover();
+        // Once the panel is open, the same control must name closing it.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Close search and replace (Ctrl+F)",
+        );
+        const matchCase = page.getByRole("button", { name: "Match case" });
+        await matchCase.hover();
+        // Unchecked options advertise enabling the constraint.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Match the exact letter case",
+        );
+        await matchCase.click();
+        await matchCase.hover();
+        // After enabling, the tooltip names the click that turns the option off.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Ignore letter case",
         );
     });
 });

@@ -39,6 +39,27 @@ import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 
 const agentRoute = getRouteApi("/agents/$agentId");
 
+/** Cycles smart → sensitive → insensitive so the control can name the next click. */
+const nextCaseSensitivity = {
+    smart: "sensitive",
+    sensitive: "insensitive",
+    insensitive: "smart",
+} satisfies Record<CaseSensitivity, CaseSensitivity>;
+
+/** Accessible name stays on the current mode so screen readers can hear the applied rule. */
+const caseSensitivityLabel = {
+    smart: "Case: smart",
+    sensitive: "Case: sensitive",
+    insensitive: "Case: insensitive",
+} satisfies Record<CaseSensitivity, string>;
+
+/** Tooltip copy names the mode the next click will select. */
+const caseSensitivityNextTooltip = {
+    smart: "Click to match exact letter case",
+    sensitive: "Click to ignore letter case",
+    insensitive: "Click to use smart case",
+} satisfies Record<CaseSensitivity, string>;
+
 /** Reads worktree root from already-loaded browser context so searching never probes git again. */
 function gitRootFromContext(gitContext: GitContextResponse | undefined) {
     return gitContext?.status === "inside_worktree"
@@ -366,16 +387,6 @@ function SearchControls(props: {
     const queryLabel = props.isContentSearch
         ? "Text to find"
         : "File or folder name";
-    const nextCaseSensitivity = {
-        smart: "sensitive",
-        sensitive: "insensitive",
-        insensitive: "smart",
-    } satisfies Record<CaseSensitivity, CaseSensitivity>;
-    const caseSensitivityLabel = {
-        smart: "Case: smart",
-        sensitive: "Case: sensitive",
-        insensitive: "Case: insensitive",
-    } satisfies Record<CaseSensitivity, string>;
     const caseSensitivityIcon = {
         smart: <SmartCaseIcon className="h-4 w-4" />,
         sensitive: <CaseSensitive className="h-4 w-4" />,
@@ -444,7 +455,11 @@ function SearchControls(props: {
                         <ToggleButton
                             label="Include hidden files and directories"
                             pressed={props.includeHidden}
-                            tooltip="Include hidden files and directories"
+                            tooltip={
+                                props.includeHidden
+                                    ? "Exclude hidden files and directories"
+                                    : "Include hidden files and directories"
+                            }
                             className="h-9 w-9"
                             onClick={() =>
                                 props.onUpdateOption(
@@ -465,7 +480,11 @@ function SearchControls(props: {
                         <ToggleButton
                             label="Respect .gitignore files"
                             pressed={props.respectGitignore}
-                            tooltip="Respect .gitignore files"
+                            tooltip={
+                                props.respectGitignore
+                                    ? "Include files ignored by .gitignore"
+                                    : "Respect .gitignore files"
+                            }
                             className="h-9 w-9"
                             onClick={() =>
                                 props.onUpdateOption(
@@ -483,7 +502,11 @@ function SearchControls(props: {
                             <ToggleButton
                                 label="Use regular expressions"
                                 pressed={props.regex}
-                                tooltip="Use regular expressions"
+                                tooltip={
+                                    props.regex
+                                        ? "Search as literal text"
+                                        : "Use regular expressions"
+                                }
                                 className="h-9 w-9"
                                 onClick={() =>
                                     void props.onUpdate({ regex: !props.regex })
@@ -494,6 +517,11 @@ function SearchControls(props: {
                         ) : null}
                         <IconButton
                             label={caseSensitivityLabel[props.caseSensitivity]}
+                            tooltip={
+                                caseSensitivityNextTooltip[
+                                    props.caseSensitivity
+                                ]
+                            }
                             className="h-9 w-9 rounded-md border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                             onClick={() =>
                                 void props.onUpdate({
@@ -509,7 +537,11 @@ function SearchControls(props: {
                             <ToggleButton
                                 label="Search from git root"
                                 pressed={props.searchFromGitRoot}
-                                tooltip="Search the entire Git repository instead of the current directory"
+                                tooltip={
+                                    props.searchFromGitRoot
+                                        ? "Search the current directory only"
+                                        : "Search the entire Git repository instead of the current directory"
+                                }
                                 className="h-9 w-9"
                                 onClick={() =>
                                     void props.onUpdate({

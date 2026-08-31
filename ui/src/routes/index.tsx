@@ -108,7 +108,7 @@ function AgentNameGrid(props: { agents: Agent[] }) {
                     {sortedAgents.map((agent) => (
                         <Tooltip
                             key={agent.id}
-                            content={agentOriginTooltip(agent)}
+                            content={`Open ${agent.name} (${agentOriginTooltip(agent)})`}
                         >
                             <Link
                                 to="/agents/$agentId"

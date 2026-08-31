@@ -124,7 +124,11 @@ function PermissionsGrid(props: {
                                             className="px-2 py-2 text-center"
                                         >
                                             <Tooltip
-                                                content={`Toggle ${label.toLowerCase()} on this path only.`}
+                                                content={
+                                                    isAllowed
+                                                        ? `Remove ${label.toLowerCase()} on this path only.`
+                                                        : `Allow ${label.toLowerCase()} on this path only.`
+                                                }
                                             >
                                                 <Checkbox
                                                     role="checkbox"

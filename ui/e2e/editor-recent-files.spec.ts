@@ -121,7 +121,8 @@ test.describe.serial("Recent editor files", () => {
             exact: true,
         });
         await recentFilesButton.focus();
-        await expect(page.getByRole("tooltip")).toHaveText("Recent files");
+        // The tooltip names the next click, not the control's current label.
+        await expect(page.getByRole("tooltip")).toHaveText("Show recent files");
         await recentFilesButton.click();
         const dialog = page.getByRole("dialog", { name: "Recent files" });
         await expect(dialog).toBeVisible();
@@ -153,8 +154,10 @@ test.describe.serial("Recent editor files", () => {
             name: "Open recent-k.txt from recent files",
         });
         await newestRecentLink.focus();
-        // The tooltip exposes the absolute target even though the link only shows its filename.
-        await expect(page.getByRole("tooltip")).toHaveText(newestRecentPath);
+        // The tooltip names opening the truncated filename's absolute path.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            `Open ${newestRecentPath}`,
+        );
 
         await dialog
             .getByRole("button", {

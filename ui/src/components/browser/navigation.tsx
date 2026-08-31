@@ -524,6 +524,7 @@ function Breadcrumbs(props: {
                             void copy();
                         }}
                         label={isCopied ? "Copied!" : "Copy file path"}
+                        tooltip="Copy file path"
                         className={
                             isCopied
                                 ? "shrink-0 rounded-md p-1.5 text-emerald-300"

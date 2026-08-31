@@ -37,6 +37,7 @@ export function EditorSearch(props: {
     editable: boolean;
     documentRevision: number;
     handleRef: React.RefObject<EditorSearchHandle | null>;
+    onOpenChange: (open: boolean) => void;
 }) {
     const searchInputRef = React.useRef<HTMLInputElement>(null);
     const [open, setOpen] = React.useState(false);
@@ -118,6 +119,16 @@ export function EditorSearch(props: {
         }
         applySearchQuery(props.view, query);
     }, [open, props.view, query]);
+
+    /** The toolbar tooltip names close vs open, so unmount and Escape must clear that state. */
+    React.useEffect(() => {
+        props.onOpenChange(open);
+        return () => {
+            if (open) {
+                props.onOpenChange(false);
+            }
+        };
+    }, [open, props.onOpenChange]);
 
     React.useLayoutEffect(() => {
         if (!open || focusNonce === 0) {
@@ -428,7 +439,13 @@ function SearchReplaceActions(props: {
                 />
             </div>
             <div className="flex flex-wrap gap-2">
-                <Tooltip content="Match the exact letter case">
+                <Tooltip
+                    content={
+                        props.caseSensitive
+                            ? "Ignore letter case"
+                            : "Match the exact letter case"
+                    }
+                >
                     <Checkbox
                         checked={props.caseSensitive}
                         onCheckedChange={props.onCaseSensitiveChange}
@@ -438,7 +455,13 @@ function SearchReplaceActions(props: {
                         Match case
                     </Checkbox>
                 </Tooltip>
-                <Tooltip content="Interpret the query as a regular expression">
+                <Tooltip
+                    content={
+                        props.regexp
+                            ? "Search as literal text"
+                            : "Interpret the query as a regular expression"
+                    }
+                >
                     <Checkbox
                         checked={props.regexp}
                         onCheckedChange={props.onRegexpChange}
@@ -448,7 +471,13 @@ function SearchReplaceActions(props: {
                         Regular expression
                     </Checkbox>
                 </Tooltip>
-                <Tooltip content="Match whole words only">
+                <Tooltip
+                    content={
+                        props.wholeWord
+                            ? "Allow partial word matches"
+                            : "Match whole words only"
+                    }
+                >
                     <Checkbox
                         checked={props.wholeWord}
                         onCheckedChange={props.onWholeWordChange}

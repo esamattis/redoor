@@ -169,10 +169,7 @@ export function CopyablePath(props: {
                     {props.value}
                 </code>
             )}
-            <Tooltip
-                content={isCopied ? "Copied!" : props.copyAriaLabel}
-                className="shrink-0"
-            >
+            <Tooltip content={props.copyAriaLabel} className="shrink-0">
                 <Button
                     type="button"
                     variant="subtle"

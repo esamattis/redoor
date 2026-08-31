@@ -158,6 +158,11 @@ last line`,
         });
         // The shared default is exposed by an icon-only control with an accessible state label.
         await expect(smartCaseButton).toBeVisible();
+        await smartCaseButton.hover();
+        // The tooltip names the next case mode, not the one already applied.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Click to match exact letter case",
+        );
         const smartCaseIcon = await smartCaseButton.innerHTML();
         await smartCaseButton.click();
         await expect(page).toHaveURL(/[?&]case=sensitive/);
@@ -449,14 +454,24 @@ last line`,
         await expect(
             dialog.getByLabel("Search timeout in seconds"),
         ).toHaveValue("17");
-        await expect(
-            dialog.getByRole("button", {
-                name: "Include hidden files and directories",
-            }),
-        ).toHaveAttribute("aria-pressed", "true");
-        await expect(
-            dialog.getByRole("button", { name: "Respect .gitignore files" }),
-        ).toHaveAttribute("aria-pressed", "false");
+        const hiddenToggle = dialog.getByRole("button", {
+            name: "Include hidden files and directories",
+        });
+        await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
+        await hiddenToggle.hover();
+        // A pressed option must advertise turning it off, not restating the current filter.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Exclude hidden files and directories",
+        );
+        const gitignoreToggle = dialog.getByRole("button", {
+            name: "Respect .gitignore files",
+        });
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
+        await gitignoreToggle.hover();
+        // An unpressed option must advertise the filter the next click enables.
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Respect .gitignore files",
+        );
 
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}?q=&timeout=9&hidden=false&gitignore=true`,

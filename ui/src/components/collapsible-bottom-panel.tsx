@@ -275,7 +275,7 @@ function BottomDrawerTabButton(props: {
     }
 
     return (
-        <Tooltip content={tabDetails(props.tab)} className="shrink-0">
+        <Tooltip content={`Show ${tabDetails(props.tab)}`} className="shrink-0">
             {button}
         </Tooltip>
     );
