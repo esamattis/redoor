@@ -46,20 +46,22 @@ Foreground and daemon relays both supervise their SSH session. Failed host prepa
 Manage that relay without starting any other configured relay:
 
 ```bash
+redoor agent relay ls
 redoor agent relay status production
 redoor agent relay logs production
 redoor agent relay logs production -n 100
 redoor agent relay stop production
 ```
 
-Use a non-default config only when starting a relay or resolving logs for a stopped relay:
+Use a non-default config when listing or starting relays, or when resolving logs for a stopped relay:
 
 ```bash
 redoor agent relay start production --config /path/to/config.toml --daemon
 redoor agent relay logs production --config /path/to/config.toml
+redoor agent relay ls --config /path/to/config.toml
 ```
 
-`status` and `stop` use only the relay ID and its runtime file. They continue to work if the relay entry is changed or removed while its process is running. `logs` also prefers the running relay's recorded log path.
+`ls` prints the configured relay IDs one per line in declaration order. `status` and `stop` use only the relay ID and its runtime file. They continue to work if the relay entry is changed or removed while its process is running. `logs` also prefers the running relay's recorded log path.
 
 ## Runtime files
 

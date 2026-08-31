@@ -231,6 +231,34 @@ port = ${port}
         });
     });
 
+    test("relay ls prints configured IDs in declaration order", async () => {
+        const isolated = isolatedProcess("agent");
+        const configPath = join(isolated.env.HOME, "relays.toml");
+        writeFileSync(
+            configPath,
+            `agent_token = "lifecycle-token"
+
+[[relays]]
+id = "production"
+target = "production.example.com"
+server = "https://redoor.example.com"
+
+[[relays]]
+id = "staging"
+target = "staging.example.com"
+server = "https://redoor.example.com"
+`,
+        );
+
+        const listed = await execFileAsync(
+            SERVER_PATH,
+            ["agent", "relay", "ls", "--config", configPath],
+            { env: isolated.env },
+        );
+        // Stable line-oriented output lets operators and scripts select any configured relay.
+        expect(listed.stdout).toBe("production\nstaging\n");
+    });
+
     test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         "foreground server exits when its parent is killed",
         async () => {

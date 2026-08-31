@@ -175,6 +175,8 @@ struct RelayCommandArgs {
 /// Relay-specific lifecycle commands keyed by configured relay ID.
 #[derive(Subcommand)]
 enum RelayCommand {
+    /// List the relay IDs available in configuration.
+    Ls(RelayListArgs),
     /// Start one configured relay in the foreground or background.
     Start(RelayStartArgs),
     /// Stop one named relay using its locked runtime file.
@@ -183,6 +185,14 @@ enum RelayCommand {
     Status(RelayIdArgs),
     /// Print one named relay's file log.
     Logs(RelayLogsArgs),
+}
+
+/// Options used to find the configured relay IDs.
+#[derive(Args)]
+struct RelayListArgs {
+    /// Override the shared TOML config path.
+    #[arg(long)]
+    config: Option<String>,
 }
 
 /// Options required to start one configured relay.
@@ -315,6 +325,9 @@ async fn main() {
                 run_utility(launchd::run(launchd, ServiceRole::Agent)).await;
             }
             Some(AgentCommand::Relay(relay)) => match relay.command {
+                RelayCommand::Ls(list) => {
+                    run_utility(list_relays(list)).await;
+                }
                 RelayCommand::Start(start) => {
                     run_named_relay(start).await;
                 }
@@ -342,6 +355,19 @@ async fn main() {
             }
         },
     }
+}
+
+/// Prints configured relay IDs in declaration order for interactive and scripted selection.
+async fn list_relays(args: RelayListArgs) -> anyhow::Result<()> {
+    let config_path = match args.config.map(PathBuf::from) {
+        Some(path) => path,
+        None => config::default_config_path()?,
+    };
+    let parsed = config::parse_config_file(&config_path.to_string_lossy()).await?;
+    for relay in parsed.relays {
+        println!("{}", relay.id);
+    }
+    Ok(())
 }
 
 /// Loads one named relay, establishes its isolated runtime identity, and starts it.
@@ -869,6 +895,11 @@ mod tests {
         assert!(
             Cli::try_parse_from(["redoor", "agent", "relay", "logs", "production"]).is_ok(),
             "relay logs should require only its stable ID"
+        );
+        assert!(
+            Cli::try_parse_from(["redoor", "agent", "relay", "ls", "--config", "relay.toml"])
+                .is_ok(),
+            "relay ls should accept an explicit shared config path"
         );
     }
 
