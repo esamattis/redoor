@@ -78,7 +78,7 @@ ${"```"}
         await expect(
             page.getByRole("button", { name: "Preview", exact: true }),
         ).toHaveText("");
-        // A separate trailing action gives the rendered card an obvious editor exit.
+        // The preview pane itself owns the editor exit so it stays on the rendered page.
         await expect(
             page.getByRole("button", { name: "Close markdown preview" }),
         ).toBeVisible();

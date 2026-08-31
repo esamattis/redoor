@@ -405,15 +405,15 @@ function EditorOptionsMenu(props: {
     );
 }
 
-/** Gives rendered markdown a trailing, explicit route back to its mounted editor. */
+/** Puts the editor exit on the rendered page so it stays with the markdown, not the toolbar. */
 function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
     return (
         <IconButton
             type="button"
             label="Close markdown preview"
-            tooltip="Return to the markdown editor"
+            tooltip="Edit markdown"
             onClick={props.onClose}
-            className="h-9 w-9 rounded-md border border-slate-700 text-slate-300 hover:bg-white/5 hover:text-slate-50"
+            className="h-8 w-8 rounded-md bg-[#11141b]/90 text-slate-300 hover:bg-white/5 hover:text-slate-50"
         >
             <X className="h-4 w-4" aria-hidden="true" />
         </IconButton>
@@ -430,10 +430,8 @@ function FileEditorSecondaryActions(props: {
     isSaving: boolean;
     downloadUrl: string;
     isFullWindow: boolean;
-    showClosePreview: boolean;
     onToggleFullWindow: () => void;
     onReload: () => void;
-    onClosePreview: () => void;
 }) {
     return (
         <div className="flex shrink-0 items-center gap-1">
@@ -452,9 +450,6 @@ function FileEditorSecondaryActions(props: {
                 downloadUrl={props.downloadUrl}
                 onReload={props.onReload}
             />
-            {props.showClosePreview ? (
-                <CloseMarkdownPreviewButton onClose={props.onClosePreview} />
-            ) : null}
         </div>
     );
 }
@@ -502,6 +497,7 @@ function FileEditorSurface(props: {
     onFocus: () => void;
     onSave: () => void;
     onSelectionChange: (selection: EditorSelection | null) => void;
+    onClosePreview: () => void;
 }) {
     if (props.isPending) {
         return <p className="p-4 text-sm text-slate-400">Loading file...</p>;
@@ -535,7 +531,9 @@ function FileEditorSurface(props: {
             </div>
             <div
                 aria-hidden={!props.preview}
-                className={props.preview ? "flex min-h-0 flex-1" : "hidden"}
+                className={
+                    props.preview ? "relative flex min-h-0 flex-1" : "hidden"
+                }
             >
                 <MarkdownPreview
                     content={props.content}
@@ -543,6 +541,11 @@ function FileEditorSurface(props: {
                     filePath={props.filePath}
                     repositoryRoot={props.repositoryRoot}
                 />
+                <div className="absolute top-0 right-1 z-10">
+                    <CloseMarkdownPreviewButton
+                        onClose={props.onClosePreview}
+                    />
+                </div>
             </div>
         </>
     );
@@ -816,12 +819,10 @@ export function FileEditView(props: FileEditViewProps) {
                             isSaving={saveMutation.isPending}
                             downloadUrl={props.downloadUrl}
                             isFullWindow={isFullWindow}
-                            showClosePreview={isMarkdown && props.preview}
                             onToggleFullWindow={() =>
                                 setIsFullWindow((current) => !current)
                             }
                             onReload={handleReload}
-                            onClosePreview={() => props.onPreviewChange(false)}
                         />
                     </div>
                 </header>
@@ -854,6 +855,7 @@ export function FileEditView(props: FileEditViewProps) {
                         onSave={handleSave}
                         onSelectionChange={setSelection}
                         searchHandleRef={searchHandleRef}
+                        onClosePreview={() => props.onPreviewChange(false)}
                     />
                 </div>
             </article>
