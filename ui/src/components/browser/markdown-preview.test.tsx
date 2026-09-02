@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { MarkdownPreview, resolveMarkdownFileLink } from "./markdown-preview";
 
@@ -105,6 +105,66 @@ test("resolves absolute markdown links from the repository root", () => {
 
     // A leading slash follows Git hosting conventions while browsing a worktree.
     expect(link).toBe("/agents/agent/browser/repo/source/main.ts");
+});
+
+test("renders nested YAML frontmatter with indentation preserved", () => {
+    const view = render(
+        <MarkdownPreview
+            agentId="agent"
+            filePath="/README.md"
+            repositoryRoot={null}
+            content={`---
+completions:
+  - contextPath:
+      - backends
+    id: radiatordb
+    type: block
+---
+
+# Body heading
+`}
+        />,
+    );
+    const table = view.getByRole("table", { name: "YAML frontmatter" });
+    const valueCell = table.querySelector("td");
+
+    // Nested mappings must keep YAML indent so list items stay distinct from their fields.
+    expect(table.querySelector("th")?.textContent).toBe("completions");
+    expect(valueCell?.textContent).toMatch(/- contextPath:/);
+    expect(valueCell?.textContent).toMatch(/\n  id: radiatordb/);
+    expect(valueCell?.textContent).toMatch(/\n  type: block/);
+    // Document body stays markdown after the folded metadata block.
+    expect(
+        view.getByRole("heading", { name: "Body heading" }).textContent,
+    ).toBe("Body heading");
+});
+
+test("collapses YAML frontmatter without hiding the document body", () => {
+    const view = render(
+        <MarkdownPreview
+            agentId="agent"
+            filePath="/README.md"
+            repositoryRoot={null}
+            content={`---
+title: Preview
+---
+
+Visible body
+`}
+        />,
+    );
+    const toggle = view.getByRole("button", { name: "YAML frontmatter" });
+
+    // Frontmatter starts open so the metadata table is inspectable on first paint.
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(view.getByRole("table", { name: "YAML frontmatter" })).toBeTruthy();
+
+    fireEvent.click(toggle);
+
+    // Folding must drop only the table; the markdown body remains the primary content.
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(view.queryByRole("table", { name: "YAML frontmatter" })).toBeNull();
+    expect(view.getByText("Visible body")).toBeTruthy();
 });
 
 test("keeps absolute markdown links filesystem-rooted outside git", () => {

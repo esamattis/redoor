@@ -4,6 +4,7 @@ import { Tooltip } from "#ui/components/tooltip";
 
 /**
  * Keeps optional controls collapsed until the user asks for them, so dense views stay readable.
+ * `contentClassName` replaces the padded panel when the body should sit flush with the frame.
  */
 export function FoldingSection(props: {
     title: string;
@@ -12,6 +13,7 @@ export function FoldingSection(props: {
     children: React.ReactNode;
     tooltip?: string;
     className?: string;
+    contentClassName?: string;
 }) {
     const panelId = React.useId();
     const toggle = (
@@ -47,7 +49,10 @@ export function FoldingSection(props: {
             {props.open ? (
                 <div
                     id={panelId}
-                    className="space-y-3 border-t border-slate-800 px-3 py-3"
+                    className={
+                        props.contentClassName ??
+                        "space-y-3 border-t border-slate-800 px-3 py-3"
+                    }
                 >
                     {props.children}
                 </div>

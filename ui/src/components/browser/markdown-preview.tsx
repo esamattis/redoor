@@ -1,9 +1,10 @@
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { Link } from "@tanstack/react-router";
 import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { getBrowserUrl } from "#ui/api-client";
+import { FoldingSection } from "#ui/components/folding-section";
 import { syntaxHighlighter } from "#ui/utils/syntax-highlighting";
 
 /** Opening `---` must be the first line so thematic breaks later in the file stay markdown. */
@@ -16,7 +17,7 @@ function formatYamlFrontmatterCell(value: Node | null): string {
     if (value === null) {
         return "";
     }
-    return stringify(value).trimEnd();
+    return stringify(value, { lineWidth: 0 }).trimEnd();
 }
 
 /**
@@ -62,38 +63,51 @@ function parseMarkdownYamlFrontmatter(content: string): {
     return { headers, values, body };
 }
 
-/** Renders keys as column headers so the preview matches GitHub's frontmatter table. */
+/**
+ * Frontmatter is metadata, not document prose, so it stays outside typography
+ * styles that collapse YAML indentation and shrink tables to content width.
+ */
 function YamlFrontmatterTable(props: { headers: string[]; values: string[] }) {
+    const [open, setOpen] = useState(true);
     return (
-        <table
-            aria-label="YAML frontmatter"
-            className="border-collapse text-xs"
+        <FoldingSection
+            title="YAML frontmatter"
+            open={open}
+            onOpenChange={setOpen}
+            tooltip="Hide or show the document's YAML frontmatter"
+            className="mb-6 w-full overflow-hidden"
+            contentClassName="p-0"
         >
-            <thead>
-                <tr>
-                    {props.headers.map((header, index) => (
-                        <th
-                            key={index}
-                            className="border border-slate-700 px-2 py-1"
-                        >
-                            {header}
-                        </th>
-                    ))}
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    {props.values.map((value, index) => (
-                        <td
-                            key={index}
-                            className="whitespace-pre-wrap border border-slate-700 px-2 py-1"
-                        >
-                            {value}
-                        </td>
-                    ))}
-                </tr>
-            </tbody>
-        </table>
+            <table
+                aria-label="YAML frontmatter"
+                className="w-full table-fixed border-collapse text-xs"
+            >
+                <thead>
+                    <tr>
+                        {props.headers.map((header, index) => (
+                            <th
+                                key={index}
+                                className="border border-slate-700 bg-slate-900 px-2 py-1 text-left font-medium"
+                            >
+                                {header}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        {props.values.map((value, index) => (
+                            <td
+                                key={index}
+                                className="whitespace-pre-wrap break-words border border-slate-700 px-2 py-1 align-top font-mono"
+                            >
+                                {value}
+                            </td>
+                        ))}
+                    </tr>
+                </tbody>
+            </table>
+        </FoldingSection>
     );
 }
 
@@ -223,7 +237,7 @@ export function MarkdownPreview(props: {
         <section
             role="region"
             aria-label="Markdown preview"
-            className="syntax-highlight prose prose-invert min-h-0 max-w-none flex-1 overflow-auto px-5 py-6 prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto sm:px-8 sm:py-8"
+            className="min-h-0 max-w-none flex-1 overflow-auto px-5 py-6 sm:px-8 sm:py-8"
         >
             {frontmatter !== null && frontmatter.headers.length > 0 ? (
                 <YamlFrontmatterTable
@@ -231,22 +245,24 @@ export function MarkdownPreview(props: {
                     values={frontmatter.values}
                 />
             ) : null}
-            <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                    code: MarkdownCode,
-                    a: (linkProps) => (
-                        <MarkdownLink
-                            {...linkProps}
-                            agentId={props.agentId}
-                            filePath={props.filePath}
-                            repositoryRoot={props.repositoryRoot}
-                        />
-                    ),
-                }}
-            >
-                {markdown}
-            </ReactMarkdown>
+            <div className="syntax-highlight prose prose-invert max-w-none prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
+                <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                        code: MarkdownCode,
+                        a: (linkProps) => (
+                            <MarkdownLink
+                                {...linkProps}
+                                agentId={props.agentId}
+                                filePath={props.filePath}
+                                repositoryRoot={props.repositoryRoot}
+                            />
+                        ),
+                    }}
+                >
+                    {markdown}
+                </ReactMarkdown>
+            </div>
         </section>
     );
 }

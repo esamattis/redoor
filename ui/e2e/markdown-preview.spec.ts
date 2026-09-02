@@ -166,6 +166,56 @@ Draft body`);
         ).toHaveCount(0);
     });
 
+    test("shows full-width collapsible YAML frontmatter", async ({ page }) => {
+        const frontmatterPath = path.join(repositoryPath, "docs", "backend.md");
+        await fs.writeFile(
+            frontmatterPath,
+            `---
+completions:
+  - contextPath:
+      - backends
+    id: radiatordb
+    type: block
+    title: RadiatorDB document backend
+---
+
+# Backend docs
+`,
+        );
+        const frontmatterUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(frontmatterPath)}`;
+        await page.goto(frontmatterUrl);
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+        const frontmatter = preview.getByRole("region", {
+            name: "YAML frontmatter",
+        });
+        const table = frontmatter.getByRole("table", {
+            name: "YAML frontmatter",
+        });
+
+        // Nested fields must remain YAML, not a flattened markdown list.
+        await expect(table.getByRole("columnheader")).toHaveText("completions");
+        await expect(table).toContainText("id: radiatordb");
+        await expect(
+            preview.getByRole("heading", { name: "Backend docs" }),
+        ).toBeVisible();
+
+        const previewBox = await preview.boundingBox();
+        const frontmatterBox = await frontmatter.boundingBox();
+        // The metadata block should use the preview width instead of shrinking to the key name.
+        expect(previewBox).not.toBeNull();
+        expect(frontmatterBox).not.toBeNull();
+        expect(frontmatterBox?.width ?? 0).toBeGreaterThan(
+            (previewBox?.width ?? 0) * 0.9,
+        );
+
+        await page.getByRole("button", { name: "YAML frontmatter" }).click();
+        // Collapse is for getting the metadata out of the way of the document body.
+        await expect(table).toHaveCount(0);
+        await expect(
+            preview.getByRole("heading", { name: "Backend docs" }),
+        ).toBeVisible();
+    });
+
     test("keeps markdown line bookmarks in the editor", async ({ page }) => {
         await page.goto(`${markdownUrl}?line=3`);
 
