@@ -1,9 +1,10 @@
 import React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { getRouteApi, useNavigate, useRouter } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
     ArchiveRestore,
+    Copy,
     Download,
     ExternalLink,
     LoaderCircle,
@@ -11,7 +12,7 @@ import {
     Pencil,
     Trash2,
 } from "lucide-react";
-import type { Agent } from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
@@ -33,6 +34,25 @@ import {
     selectedFileKeysAtom,
     toggleSelectedFileAtom,
 } from "#ui/selected-files";
+
+const rootRouteApi = getRouteApi("__root__");
+
+/** Waits for publication because copy returns a request id before the new name exists. */
+async function waitForCopyTransfer(api: ApiClient, requestId: number) {
+    while (true) {
+        const progress = await api.getTransferProgress();
+        const transfer = progress.transfers.find(
+            (entry) => entry.request_id === requestId,
+        );
+        if (transfer?.state === "completed") {
+            return;
+        }
+        if (transfer?.state === "errored") {
+            throw new Error(transfer.error ?? "Duplicate failed");
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+}
 
 /** Renames the current entry in a focused workflow and follows its new URL. */
 function RenamePathDialog(props: {
@@ -229,6 +249,183 @@ export function RenamePathAction(props: {
     });
 }
 
+/** Copies the current entry beside its source so the original path stays in place. */
+function DuplicatePathDialog(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    isOpen: boolean;
+    onClose: () => void;
+}) {
+    const { api } = rootRouteApi.useRouteContext();
+    const router = useRouter();
+    const [name, setName] = React.useState(props.currentName);
+    const [validationError, setValidationError] = React.useState<string | null>(
+        null,
+    );
+    const duplicateMutation = useMutation({
+        mutationFn: async (newName: string) => {
+            const parentPath = getImmediateParentPath(props.path);
+            if (parentPath === null) {
+                throw new Error("The filesystem root cannot be duplicated");
+            }
+            const response = await props.agent.copyTo(
+                {
+                    agent: props.agent.id,
+                    path: joinBrowserPath(parentPath, newName),
+                },
+                props.path,
+            );
+            await waitForCopyTransfer(api, response.copy_request_id);
+        },
+        onSuccess: async () => {
+            props.onClose();
+            await router.invalidate();
+        },
+    });
+    const parentPath = getImmediateParentPath(props.path);
+    const trimmedName = name.trim();
+    const isDuplicating = duplicateMutation.isPending;
+    const canDuplicate =
+        parentPath !== null &&
+        trimmedName.length > 0 &&
+        trimmedName !== props.currentName &&
+        !trimmedName.includes("/") &&
+        trimmedName !== "." &&
+        trimmedName !== "..";
+
+    React.useEffect(() => {
+        setName(props.currentName);
+        setValidationError(null);
+        duplicateMutation.reset();
+    }, [props.currentName, props.isOpen, props.path]);
+
+    const handleDuplicate = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (parentPath === null) {
+            setValidationError("The filesystem root cannot be duplicated");
+            return;
+        }
+        if (!trimmedName) {
+            setValidationError(
+                `${props.entryType === "file" ? "File" : "Directory"} name is required`,
+            );
+            return;
+        }
+        if (
+            trimmedName.includes("/") ||
+            trimmedName === "." ||
+            trimmedName === ".."
+        ) {
+            setValidationError("Name must be a single path component");
+            return;
+        }
+        if (trimmedName === props.currentName) {
+            return;
+        }
+
+        setValidationError(null);
+        duplicateMutation.mutate(trimmedName);
+    };
+
+    const label = `Duplicate ${props.entryType}`;
+
+    return (
+        <Dialog
+            isOpen={props.isOpen}
+            title={`Duplicate ${props.entryType}`}
+            description={`Choose a name for the copy of ${props.currentName}.`}
+            closeAriaLabel={`Close duplicate ${props.entryType} dialog`}
+            isBusy={isDuplicating}
+            errorMessage={
+                validationError ??
+                (duplicateMutation.isError
+                    ? getErrorMessage(
+                          duplicateMutation.error,
+                          "Duplicate failed",
+                      )
+                    : null)
+            }
+            onClose={props.onClose}
+        >
+            <form onSubmit={handleDuplicate} className="mt-4">
+                <label
+                    htmlFor={`${props.entryType}-duplicate-input`}
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    New name
+                </label>
+                <InputControl
+                    ref={focusAndSelectFileNameStem}
+                    id={`${props.entryType}-duplicate-input`}
+                    type="text"
+                    value={name}
+                    onChange={(event) => {
+                        setName(event.target.value);
+                        setValidationError(null);
+                        duplicateMutation.reset();
+                    }}
+                    aria-label={label}
+                    disabled={isDuplicating || parentPath === null}
+                    className="w-full rounded-lg bg-slate-950/70 text-sm transition focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <DialogActions>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={props.onClose}
+                        disabled={isDuplicating}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        type="submit"
+                        disabled={!canDuplicate || isDuplicating}
+                        isLoading={isDuplicating}
+                        className="font-semibold"
+                    >
+                        <Copy className="h-4 w-4" />
+                        {isDuplicating ? "Duplicating..." : "Duplicate"}
+                    </Button>
+                </DialogActions>
+            </form>
+        </Dialog>
+    );
+}
+
+/** Owns the duplicate workflow so the overflow menu can close before the dialog opens. */
+function DuplicatePathAction(props: {
+    agent: Agent;
+    path: string;
+    currentName: string;
+    entryType: "file" | "directory";
+    children: (action: {
+        open: () => void;
+        disabled: boolean;
+        dialog: React.ReactNode;
+    }) => React.ReactNode;
+}) {
+    const [isOpen, setIsOpen] = React.useState(false);
+    const disabled = getImmediateParentPath(props.path) === null;
+
+    return props.children({
+        open: () => setIsOpen(true),
+        disabled,
+        dialog: (
+            <DuplicatePathDialog
+                agent={props.agent}
+                path={props.path}
+                currentName={props.currentName}
+                entryType={props.entryType}
+                isOpen={isOpen}
+                onClose={() => setIsOpen(false)}
+            />
+        ),
+    });
+}
+
 /** Owns native-open feedback so the menu can close without losing the toast. */
 function OpenNativelyAction(props: {
     agent: Agent;
@@ -274,6 +471,8 @@ function PathActionMenuItems(props: {
     close: () => void;
     renameDisabled: boolean;
     onRename: () => void;
+    duplicateDisabled: boolean;
+    onDuplicate: () => void;
     showOpenNatively?: boolean;
     openNativelyPending?: boolean;
     onOpenNatively?: () => void;
@@ -316,6 +515,16 @@ function PathActionMenuItems(props: {
             >
                 <Pencil className="h-4 w-4 text-slate-400" />
                 Rename
+            </ActionMenuButton>
+            <ActionMenuButton
+                disabled={props.duplicateDisabled}
+                onClick={() => {
+                    props.close();
+                    props.onDuplicate();
+                }}
+            >
+                <Copy className="h-4 w-4 text-slate-400" />
+                Duplicate
             </ActionMenuButton>
             {props.showDownload ? (
                 props.entryType === "directory" ? (
@@ -421,49 +630,80 @@ export function PathActionMenu(props: {
             navigateAfterRename={props.navigateAfterRename}
         >
             {(renameAction) => (
-                <OpenNativelyAction agent={props.agent} path={props.path}>
-                    {(openNatively) => (
-                        <>
-                            <ActionMenu
-                                label={props.label}
-                                icon={<MoreHorizontal className="h-4 w-4" />}
-                                variant="icon"
-                            >
-                                {(close) => (
-                                    <PathActionMenuItems
-                                        agent={props.agent}
-                                        path={props.path}
-                                        currentName={props.currentName}
-                                        entryType={props.entryType}
-                                        close={close}
-                                        renameDisabled={renameAction.disabled}
-                                        onRename={renameAction.open}
-                                        showOpenNatively={
-                                            props.showOpenNatively
+                <DuplicatePathAction
+                    agent={props.agent}
+                    path={props.path}
+                    currentName={props.currentName}
+                    entryType={props.entryType}
+                >
+                    {(duplicateAction) => (
+                        <OpenNativelyAction
+                            agent={props.agent}
+                            path={props.path}
+                        >
+                            {(openNatively) => (
+                                <>
+                                    <ActionMenu
+                                        label={props.label}
+                                        icon={
+                                            <MoreHorizontal className="h-4 w-4" />
                                         }
-                                        openNativelyPending={
-                                            openNatively.isPending
-                                        }
-                                        onOpenNatively={openNatively.open}
-                                        showSelect={props.showSelect}
-                                        showDownload={props.showDownload}
-                                        downloadUrl={props.downloadUrl}
-                                        downloadName={props.downloadName}
-                                        onDownloadDirectory={
-                                            props.onDownloadDirectory
-                                        }
-                                        showUnarchive={props.showUnarchive}
-                                        onUnarchive={props.onUnarchive}
-                                        onDelete={props.onDelete}
-                                        deleteDisabled={!canModify}
-                                    />
-                                )}
-                            </ActionMenu>
-                            {renameAction.dialog}
-                            {openNatively.toast}
-                        </>
+                                        variant="icon"
+                                    >
+                                        {(close) => (
+                                            <PathActionMenuItems
+                                                agent={props.agent}
+                                                path={props.path}
+                                                currentName={props.currentName}
+                                                entryType={props.entryType}
+                                                close={close}
+                                                renameDisabled={
+                                                    renameAction.disabled
+                                                }
+                                                onRename={renameAction.open}
+                                                duplicateDisabled={
+                                                    duplicateAction.disabled
+                                                }
+                                                onDuplicate={
+                                                    duplicateAction.open
+                                                }
+                                                showOpenNatively={
+                                                    props.showOpenNatively
+                                                }
+                                                openNativelyPending={
+                                                    openNatively.isPending
+                                                }
+                                                onOpenNatively={
+                                                    openNatively.open
+                                                }
+                                                showSelect={props.showSelect}
+                                                showDownload={
+                                                    props.showDownload
+                                                }
+                                                downloadUrl={props.downloadUrl}
+                                                downloadName={
+                                                    props.downloadName
+                                                }
+                                                onDownloadDirectory={
+                                                    props.onDownloadDirectory
+                                                }
+                                                showUnarchive={
+                                                    props.showUnarchive
+                                                }
+                                                onUnarchive={props.onUnarchive}
+                                                onDelete={props.onDelete}
+                                                deleteDisabled={!canModify}
+                                            />
+                                        )}
+                                    </ActionMenu>
+                                    {renameAction.dialog}
+                                    {duplicateAction.dialog}
+                                    {openNatively.toast}
+                                </>
+                            )}
+                        </OpenNativelyAction>
                     )}
-                </OpenNativelyAction>
+                </DuplicatePathAction>
             )}
         </RenamePathAction>
     );
