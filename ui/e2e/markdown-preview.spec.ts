@@ -87,6 +87,21 @@ ${"```"}
         await expect(page.getByLabel("File editor")).not.toBeVisible();
     });
 
+    test("does not steal browser find while the editor is hidden", async ({
+        page,
+    }) => {
+        await page.goto(markdownUrl);
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+        await expect(
+            preview.getByRole("heading", { name: "Preview heading" }),
+        ).toBeVisible();
+
+        await preview.click();
+        await page.keyboard.press("ControlOrMeta+f");
+        // Hidden CodeMirror must stay mounted without intercepting native page find.
+        await expect(page.getByLabel("Find in file")).toHaveCount(0);
+    });
+
     test("routes file links relative to the document and git root", async ({
         page,
     }) => {

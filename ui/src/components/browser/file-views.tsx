@@ -535,6 +535,7 @@ function FileEditorSurface(props: {
                     onSelectionChange={props.onSelectionChange}
                     searchHandleRef={props.searchHandleRef}
                     onSearchOpenChange={props.onSearchOpenChange}
+                    captureFindKeys={!props.preview}
                 />
             </div>
             <div

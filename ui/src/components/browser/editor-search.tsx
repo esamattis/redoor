@@ -38,6 +38,7 @@ export function EditorSearch(props: {
     documentRevision: number;
     handleRef: React.RefObject<EditorSearchHandle | null>;
     onOpenChange: (open: boolean) => void;
+    captureFindKeys: boolean;
 }) {
     const searchInputRef = React.useRef<HTMLInputElement>(null);
     const [open, setOpen] = React.useState(false);
@@ -143,6 +144,7 @@ export function EditorSearch(props: {
     }, [focusNonce, open]);
 
     useEditorSearchWindowShortcuts({
+        captureFindKeys: props.captureFindKeys,
         openSearch,
         closeSearch,
         findNextMatch,
@@ -229,8 +231,11 @@ export function EditorSearch(props: {
 
 /**
  * Intercepts editor-wide find keys even when CodeMirror is not focused.
+ * Markdown preview keeps the editor mounted and hidden, so capture must turn
+ * off there or native Cmd/Ctrl+F never reaches the browser.
  */
 function useEditorSearchWindowShortcuts(props: {
+    captureFindKeys: boolean;
     openSearch: () => void;
     closeSearch: () => boolean;
     findNextMatch: () => boolean;
@@ -244,7 +249,8 @@ function useEditorSearchWindowShortcuts(props: {
             if (
                 event.defaultPrevented ||
                 isTerminalInputTarget(event.target) ||
-                event.altKey
+                event.altKey ||
+                !propsRef.current.captureFindKeys
             ) {
                 return;
             }

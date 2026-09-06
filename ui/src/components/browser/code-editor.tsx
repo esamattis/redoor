@@ -94,6 +94,53 @@ function editorSelectionFromState(state: EditorState): EditorSelection | null {
     };
 }
 
+/**
+ * Keeps find bindings from swallowing native page search when the editor is hidden.
+ */
+function editorSearchKeyBindings(
+    searchHandleRef: React.RefObject<EditorSearchHandle | null>,
+    captureFindKeysRef: React.RefObject<boolean>,
+) {
+    const runFind = (command: () => boolean | undefined) => {
+        if (!captureFindKeysRef.current) {
+            return false;
+        }
+        return command() ?? false;
+    };
+    return [
+        {
+            key: "Mod-f",
+            run: () => {
+                if (!captureFindKeysRef.current) {
+                    return false;
+                }
+                searchHandleRef.current?.open();
+                return true;
+            },
+        },
+        {
+            key: "Mod-g",
+            run: () => runFind(() => searchHandleRef.current?.findNext()),
+        },
+        {
+            key: "Shift-Mod-g",
+            run: () => runFind(() => searchHandleRef.current?.findPrevious()),
+        },
+        {
+            key: "F3",
+            run: () => runFind(() => searchHandleRef.current?.findNext()),
+        },
+        {
+            key: "Shift-F3",
+            run: () => runFind(() => searchHandleRef.current?.findPrevious()),
+        },
+        {
+            key: "Escape",
+            run: () => searchHandleRef.current?.close() ?? false,
+        },
+    ];
+}
+
 /** Applies inbound ?line= once the view exists so typing and saves do not re-scroll. */
 function useInboundScrollToLine(
     view: EditorView | null,
@@ -125,6 +172,7 @@ export function CodeEditor(props: {
     onSelectionChange: (selection: EditorSelection | null) => void;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
     onSearchOpenChange: (open: boolean) => void;
+    captureFindKeys: boolean;
 }) {
     const resolvedTheme = useResolvedTheme();
     const onSaveRef = React.useRef(props.onSave);
@@ -136,6 +184,8 @@ export function CodeEditor(props: {
     };
     vimWriteRef.current = saveFromEditor;
     const editorRef = React.useRef<ReactCodeMirrorRef>(null);
+    const captureFindKeysRef = React.useRef(props.captureFindKeys);
+    captureFindKeysRef.current = props.captureFindKeys;
     const onFocusRef = React.useRef(props.onFocus);
     onFocusRef.current = props.onFocus;
     const hasReceivedFocusRef = React.useRef(false);
@@ -200,40 +250,10 @@ export function CodeEditor(props: {
                             return true;
                         },
                     },
-                    {
-                        key: "Mod-f",
-                        run: () => {
-                            props.searchHandleRef.current?.open();
-                            return true;
-                        },
-                    },
-                    {
-                        key: "Mod-g",
-                        run: () =>
-                            props.searchHandleRef.current?.findNext() ?? false,
-                    },
-                    {
-                        key: "Shift-Mod-g",
-                        run: () =>
-                            props.searchHandleRef.current?.findPrevious() ??
-                            false,
-                    },
-                    {
-                        key: "F3",
-                        run: () =>
-                            props.searchHandleRef.current?.findNext() ?? false,
-                    },
-                    {
-                        key: "Shift-F3",
-                        run: () =>
-                            props.searchHandleRef.current?.findPrevious() ??
-                            false,
-                    },
-                    {
-                        key: "Escape",
-                        run: () =>
-                            props.searchHandleRef.current?.close() ?? false,
-                    },
+                    ...editorSearchKeyBindings(
+                        props.searchHandleRef,
+                        captureFindKeysRef,
+                    ),
                 ]),
             ),
             ...(language === undefined ? [] : [language]),
@@ -257,6 +277,7 @@ export function CodeEditor(props: {
                 documentRevision={documentRevision}
                 handleRef={props.searchHandleRef}
                 onOpenChange={props.onSearchOpenChange}
+                captureFindKeys={props.captureFindKeys}
             />
             <div
                 data-file-editor=""
