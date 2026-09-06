@@ -20,7 +20,9 @@ The server provides an unified Web UI for the agents with file browser and remot
 </table>
 
 
-<img width="1087" height="235" alt="image" src="https://github.com/user-attachments/assets/f8c5a045-92a9-436c-b7f0-7129b566d50c" />
+<img width="1087" alt="image" src="https://github.com/user-attachments/assets/f8c5a045-92a9-436c-b7f0-7129b566d50c" />
+
+<img width="1087" alt="image" src="https://github.com/user-attachments/assets/9fe00af0-0229-4b96-974e-f3296df8e8d9" />
 
 
 
