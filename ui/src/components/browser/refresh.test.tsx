@@ -60,15 +60,21 @@ test("refreshes the listing and a clean editor when terminal focus leaves", asyn
 
     await waitFor(() => expect(mocks.invalidateRoute).toHaveBeenCalledOnce());
     // A clean editor must pull new bytes before route invalidation reloads the listing.
-    expect(mocks.refetchQueries).toHaveBeenCalledWith({
-        queryKey: [
-            "server-state",
-            "file-content",
-            "agent-1",
-            "/workspace/file.txt",
-        ],
-        type: "all",
-    });
+    expect(mocks.refetchQueries).toHaveBeenCalledWith(
+        {
+            queryKey: [
+                "server-state",
+                "file-content",
+                "agent-1",
+                "/workspace/file.txt",
+            ],
+            type: "all",
+        },
+        {
+            // Concurrent CodeMirror focus must join this fetch instead of canceling it.
+            cancelRefetch: false,
+        },
+    );
 });
 
 test("keeps an unsaved editor while refreshing the listing", async () => {

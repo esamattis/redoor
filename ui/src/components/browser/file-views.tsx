@@ -737,9 +737,11 @@ export function FileEditView(props: FileEditViewProps) {
         }
         setDraft(null);
         saveMutation.reset();
-        const reloadPromise = contentQuery.refetch().finally(() => {
-            reloadPromiseRef.current = null;
-        });
+        const reloadPromise = contentQuery
+            .refetch({ cancelRefetch: false })
+            .finally(() => {
+                reloadPromiseRef.current = null;
+            });
         reloadPromiseRef.current = reloadPromise;
     }, [canEdit, contentQuery, saveMutation]);
 

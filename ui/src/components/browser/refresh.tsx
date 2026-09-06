@@ -56,13 +56,19 @@ export async function refreshBrowserPath(options: {
 
     // Pull editor bytes before invalidate so a remount cannot drop an inactive refetch.
     if (fileContent && !isEditorDirty) {
-        await options.queryClient.refetchQueries({
-            queryKey: queryKeys.fileContent(
-                fileContent.agentId,
-                fileContent.path,
-            ),
-            type: "all",
-        });
+        await options.queryClient.refetchQueries(
+            {
+                queryKey: queryKeys.fileContent(
+                    fileContent.agentId,
+                    fileContent.path,
+                ),
+                type: "all",
+            },
+            {
+                // CodeMirror focus can request the same bytes during tab restoration.
+                cancelRefetch: false,
+            },
+        );
     }
     // Git state can change outside redoor without changing the directory listing.
     await options.queryClient.invalidateQueries({
