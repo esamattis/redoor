@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Installs the latest redoor release from GitHub into ~/.local/bin/redoor.
+# Installs the latest redoor release from GitHub into ~/.local/bin/redoor
+# (or /usr/local/bin/redoor when run as root).
 #
 # Usage:
 #   ./install.sh             # install latest release
@@ -9,9 +10,17 @@
 set -euo pipefail
 
 REPO="esamattis/redoor"
-# Allow override via env so users can install elsewhere and so the script
-# can be tested without touching the real ~/.local/bin.
-INSTALL_DIR="${REDOOR_INSTALL_DIR:-${HOME}/.local/bin}"
+# Root defaults to /usr/local/bin so the binary lands on the system PATH
+# and matches systemd unit ExecStart. Unprivileged installs stay in
+# ~/.local/bin so we never write outside the user's home. REDOOR_INSTALL_DIR
+# overrides either default so the script can be tested without touching
+# the real location.
+if [[ "${EUID}" -eq 0 ]]; then
+    DEFAULT_INSTALL_DIR="/usr/local/bin"
+else
+    DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
+fi
+INSTALL_DIR="${REDOOR_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 BINARY_NAME="redoor"
 
 # Declared at the top level so the EXIT trap (which runs in the global scope,
