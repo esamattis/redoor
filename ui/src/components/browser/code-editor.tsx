@@ -48,7 +48,7 @@ function useFocusEditorShortcut(view: EditorView | null) {
             view.focus();
             window.clearTimeout(focusCorrectionTimer);
             focusCorrectionTimer = window.setTimeout(() => {
-                // Ghostty retries focus asynchronously, so reclaim it only if that retry won.
+                // The terminal may settle focus asynchronously, so reclaim it only if that won.
                 if (isTerminalInputTarget(document.activeElement)) {
                     view.focus();
                 }

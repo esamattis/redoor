@@ -8,7 +8,7 @@ export function isTextEntryElement(
     );
 }
 
-/** Treats the Ghostty session as text entry so file-browser keys stay out of the shell. */
+/** Treats the terminal session as text entry so file-browser keys stay out of the shell. */
 export function isTerminalInputTarget(target: EventTarget | null): boolean {
     return (
         target instanceof Element &&

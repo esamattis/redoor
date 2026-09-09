@@ -5,6 +5,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    expectTerminalFocused,
     minimizeBottomDrawer,
     simulateTabRefocus,
     WEB_BASE_URL,
@@ -1090,7 +1091,7 @@ gamma
             name: `agent1_src 1 for ${ctx.agentName}`,
         });
         // Alt+t from the editor must reuse the same open-or-focus action as t.
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         await expectEditorText(editor, "t");
 
         await page
@@ -1102,11 +1103,11 @@ gamma
         );
         await page.mouse.move(0, 0);
         await terminalInput.click();
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
 
         await page.keyboard.type("e");
         // A focused shell must keep e as input instead of jumping to the editor.
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         await expect(editor).not.toBeFocused();
 
         await page.keyboard.press("Alt+e");

@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";
 import {
+    expectTerminalBlurred,
+    expectTerminalFocused,
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
@@ -266,7 +268,7 @@ five`,
             name: `agent1_src 1 for ${ctx.agentName}`,
         });
         // Vim must not treat Alt+t as till, or the buffer and mode would change.
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         await expect(editor).toHaveText("content1");
         await expect(page.getByText("--NORMAL--")).toBeVisible();
 
@@ -278,7 +280,7 @@ five`,
         ).toBeVisible();
         // The committed connected state must not reclaim focus after Alt+e.
         await expect(editor).toBeFocused();
-        await expect(terminalInput).not.toBeFocused();
+        await expectTerminalBlurred(terminalInput);
         await expect(page.getByText("--NORMAL--")).toBeVisible();
     });
 

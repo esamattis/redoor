@@ -138,6 +138,15 @@ test.describe.serial("Unarchive file action", () => {
             .getByRole("button", { name: "Unarchive", exact: true })
             .click();
 
+        const firstTerminal = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        // WTerm must initialize before the mocked clock releases its sizing frame.
+        await expect(firstTerminal).toHaveAttribute(
+            "data-terminal-initialized",
+            "true",
+        );
+        await page.clock.runFor(16);
         await expect(
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
         ).toBeVisible();
@@ -380,6 +389,15 @@ test.describe.serial("Unarchive file action", () => {
             .getByRole("dialog", { name: "Unarchive" })
             .getByRole("button", { name: "Unarchive", exact: true })
             .click();
+        const terminal = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+        // The frozen clock must release the renderer's initial sizing frame before connection.
+        await expect(terminal).toHaveAttribute(
+            "data-terminal-initialized",
+            "true",
+        );
+        await page.clock.runFor(16);
         await expect(
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
         ).toBeVisible();

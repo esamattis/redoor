@@ -111,7 +111,7 @@ export function useBrowserRefreshTriggers() {
             }
             void refreshBrowser();
         };
-        /** Ignores focus movement inside Ghostty while catching exits to editor or shell controls. */
+        /** Ignores focus movement inside the terminal while catching exits to adjacent controls. */
         const refreshAfterTerminalBlur = (event: FocusEvent) => {
             const target = event.target;
             if (!(target instanceof Element)) {

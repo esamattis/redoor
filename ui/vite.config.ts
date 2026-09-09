@@ -8,9 +8,6 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 // https://vitejs.dev/config/
 export default defineConfig({
     build: {
-        // Ghostty is a user-triggered lazy chunk; its terminal runtime is
-        // intentionally larger than Vite's generic application-chunk limit.
-        chunkSizeWarningLimit: 700,
         rolldownOptions: {
             output: {
                 // Preserve component function names so React DevTools remains

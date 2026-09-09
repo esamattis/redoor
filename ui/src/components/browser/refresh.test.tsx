@@ -102,7 +102,7 @@ test("ignores focus movement within the terminal", () => {
 
     fireEvent.focusOut(terminalInput, { relatedTarget: terminalControl });
 
-    // Internal Ghostty focus changes must not cause browser network traffic.
+    // Internal terminal focus changes must not cause browser network traffic.
     expect(mocks.invalidateRoute).not.toHaveBeenCalled();
     expect(mocks.refetchQueries).not.toHaveBeenCalled();
 });

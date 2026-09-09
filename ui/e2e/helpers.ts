@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { ApiClient, encodeFilesystemPath } from "#ui/api-client";
 import { testPorts } from "#test-ports";
 
@@ -15,6 +15,30 @@ const BASE_TEST_DIR = path.join(__dirname, "..", "..", ".test");
 // the browser and the API client target the same origin.
 export const WEB_BASE_URL = `http://localhost:${testPorts.playwright}`;
 export const API_BASE_URL = WEB_BASE_URL;
+
+/** Asserts keyboard ownership through wterm's hidden textarea inside the accessible host. */
+export async function expectTerminalFocused(terminal: Locator): Promise<void> {
+    // Focus must remain inside the labeled textbox even though its input node is aria-hidden.
+    await expect
+        .poll(() =>
+            terminal.evaluate((host) =>
+                host.contains(host.ownerDocument.activeElement),
+            ),
+        )
+        .toBe(true);
+}
+
+/** Asserts that neither the terminal host nor its internal input owns keyboard focus. */
+export async function expectTerminalBlurred(terminal: Locator): Promise<void> {
+    // Leaving the shell must move focus completely outside its accessible host.
+    await expect
+        .poll(() =>
+            terminal.evaluate(
+                (host) => !host.contains(host.ownerDocument.activeElement),
+            ),
+        )
+        .toBe(true);
+}
 
 export interface TestContext {
     agentId: string;

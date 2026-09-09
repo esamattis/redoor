@@ -7,6 +7,7 @@ import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import {
     API_BASE_URL,
+    expectTerminalFocused,
     minimizeBottomDrawer,
     setupTestDir,
     teardownTestDir,
@@ -18,6 +19,11 @@ const terminalFrameSchema = z.union([
     z.string(),
     z.instanceof(Buffer).transform((payload) => payload.toString("utf8")),
 ]);
+
+const terminalResizeFrameSchema = z.object({
+    type: z.literal("resize"),
+    size: z.object({ rows: z.number(), cols: z.number() }),
+});
 
 test.describe.serial("Terminal panel lifecycle", () => {
     let ctx: TestContext;
@@ -150,9 +156,23 @@ test.describe.serial("Terminal panel lifecycle", () => {
         request,
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
+        const terminalSizes: Array<{ rows: number; cols: number }> = [];
         page.on("websocket", (socket) => {
             if (socket.url().includes("/terminal/ws")) {
                 terminalSockets.push(socket);
+                socket.on("framesent", (event) => {
+                    const frame = terminalFrameSchema.parse(event.payload);
+                    try {
+                        const message = terminalResizeFrameSchema.safeParse(
+                            JSON.parse(frame),
+                        );
+                        if (message.success) {
+                            terminalSizes.push(message.data.size);
+                        }
+                    } catch {
+                        // Binary shell input is intentionally not a JSON control frame.
+                    }
+                });
             }
         });
         const detailsResponse = await request.get(
@@ -170,7 +190,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("button", { name: "New terminal", exact: true }),
         ).toBeVisible();
-        // An agent route must begin without allocating a Ghostty socket or PTY.
+        // An agent route must begin without allocating a terminal socket or PTY.
         await expect(
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(0);
@@ -215,6 +235,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // Minimize and re-expand retain the existing terminal session.
         expect(terminalSockets).toHaveLength(1);
+        await expect.poll(() => terminalSizes.length).toBeGreaterThan(0);
+        // Hidden drawer measurements must never collapse the remote PTY to one cell.
+        expect(terminalSizes).not.toContainEqual({ rows: 1, cols: 1 });
 
         await minimizeBottomDrawer(page);
         await page
@@ -466,7 +489,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
             name: `agent1_src 1 for ${ctx.agentName}`,
         });
         // The shortcut must land in the shell so the user can type immediately.
-        await expect(firstTerminal).toBeFocused();
+        await expectTerminalFocused(firstTerminal);
 
         await page.getByRole("tab", { name: "agent1_src 1" }).click();
         await page.keyboard.press("t");
@@ -474,7 +497,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(1);
-        await expect(firstTerminal).toBeFocused();
+        await expectTerminalFocused(firstTerminal);
 
         await page
             .getByRole("button", { name: "Minimize bottom drawer" })
@@ -484,7 +507,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(1);
-        await expect(firstTerminal).toBeFocused();
+        await expectTerminalFocused(firstTerminal);
 
         await page
             .getByRole("link", { name: "agent2_custom, connected" })
@@ -509,7 +532,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(1);
-        await expect(firstTerminal).toBeFocused();
+        await expectTerminalFocused(firstTerminal);
 
         await minimizeBottomDrawer(page);
         await page
@@ -541,11 +564,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect(
             page.getByRole("tab", { name: "agent1_src 2" }),
         ).toHaveAttribute("aria-selected", "true");
-        await expect(
+        await expectTerminalFocused(
             page.getByRole("textbox", {
                 name: `agent1_src 2 for ${ctx.agentName}`,
             }),
-        ).toBeFocused();
+        );
     });
 
     test("does not invoke single-key shortcuts while the terminal is focused", async ({
@@ -579,7 +602,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const terminalPanel = page.getByRole("tabpanel", {
             name: "agent1_src 1",
         });
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         // A focused shell must show a blue frame so keyboard ownership is visible.
         await expect(terminalPanel).toHaveCSS(
             "border-color",
@@ -587,13 +610,13 @@ test.describe.serial("Terminal panel lifecycle", () => {
         );
         await page.keyboard.press("Escape");
         // Escape must stay in the shell so control sequences remain available.
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         await page.keyboard.type("tfdj");
         // Shell input must not create tabs or trigger file-browser character shortcuts.
         await expect(
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(1);
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
         await expect(filterInput).not.toBeFocused();
         await expect(
             page.getByRole("dialog", { name: "Create directory" }),
@@ -606,7 +629,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await page.keyboard.press("Backspace");
         // Backspace edits the shell instead of leaving the current directory.
         await expect(page).toHaveURL(directoryUrl);
-        await expect(terminalInput).toBeFocused();
+        await expectTerminalFocused(terminalInput);
     });
 
     test("copies and pastes from the terminal context menu", async ({
@@ -639,12 +662,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
             `agent1_src 1 for ${ctx.agentName}`,
         );
         const terminalInput = terminalHost.locator("textarea");
-        const canvas = terminalHost.locator("canvas");
-        await canvas.click({ button: "right" });
+        await terminalHost.click({ button: "right" });
         const actions = page.getByRole("dialog", { name: "Terminal actions" });
-        // A canvas right-click must replace the browser image menu.
+        // A terminal right-click must replace the browser context menu.
         await expect(actions).toBeVisible();
-        // Copy stays unavailable until Ghostty has a real selection.
+        // Copy stays unavailable until the terminal has a scoped DOM selection.
         await expect(
             actions.getByRole("button", { name: "Copy" }),
         ).toBeDisabled();
@@ -659,19 +681,23 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await terminalInput.press("Enter");
         await expect.poll(() => terminalOutput).toContain("terminal-copy");
 
-        const box = await canvas.boundingBox();
-        if (box === null) {
-            throw new Error("terminal canvas is not visible");
-        }
-        await page.mouse.move(box.x + 4, box.y + 4);
-        await page.mouse.down();
-        await page.mouse.move(box.x + box.width - 4, box.y + box.height - 4);
-        await page.mouse.up();
-
-        await canvas.click({ button: "right", position: { x: 12, y: 12 } });
+        await terminalHost.evaluate((host) => {
+            const selection = window.getSelection();
+            if (!selection) {
+                throw new Error("browser selection is unavailable");
+            }
+            const range = document.createRange();
+            range.selectNodeContents(host);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        });
+        await terminalHost.dispatchEvent("contextmenu", {
+            clientX: 12,
+            clientY: 12,
+        });
         await expect(actions).toBeVisible();
         const copyButton = actions.getByRole("button", { name: "Copy" });
-        // Dragging across the canvas must create a copyable Ghostty selection.
+        // Native DOM selection inside the host must be available to the copy action.
         await expect(copyButton).toBeEnabled();
         await page.evaluate(() => navigator.clipboard.writeText(""));
         await copyButton.click();
@@ -685,9 +711,12 @@ test.describe.serial("Terminal panel lifecycle", () => {
                 "printf '\\160\\141\\163\\164\\145\\055\\157\\153\\n'",
             ),
         );
-        await canvas.click({ button: "right", position: { x: 12, y: 12 } });
+        await terminalHost.click({
+            button: "right",
+            position: { x: 12, y: 12 },
+        });
         await actions.getByRole("button", { name: "Paste" }).click();
-        // The async clipboard read closes the menu only after text reaches Ghostty.
+        // The async clipboard read closes the menu only after text reaches wterm input.
         await expect(actions).toHaveCount(0);
         await terminalInput.press("Enter");
         // Paste must reach the PTY as input rather than staying in the browser.
@@ -697,6 +726,12 @@ test.describe.serial("Terminal panel lifecycle", () => {
     test("follows the app light theme without dropping the shell", async ({
         page,
     }) => {
+        const terminalSockets: PlaywrightWebSocket[] = [];
+        page.on("websocket", (socket) => {
+            if (socket.url().includes("/terminal/ws")) {
+                terminalSockets.push(socket);
+            }
+        });
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
         await api.updateUserState({
@@ -722,7 +757,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
 
         const surface = page.locator("[data-terminal-theme]");
-        // Dark mode must keep the Ghostty frame on the app canvas color.
+        // Dark mode must keep the terminal frame on the app canvas color.
         await expect(surface).toHaveAttribute("data-terminal-theme", "dark");
         await expect(surface).toHaveCSS("background-color", "rgb(11, 13, 18)");
 
@@ -733,9 +768,10 @@ test.describe.serial("Terminal panel lifecycle", () => {
             "background-color",
             "rgb(248, 250, 252)",
         );
-        // Remounting Ghostty for WASM default colors must keep the existing PTY.
+        // CSS variable updates must keep the existing renderer and PTY socket.
         await expect(
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
         ).toBeVisible();
+        expect(terminalSockets).toHaveLength(1);
     });
 });

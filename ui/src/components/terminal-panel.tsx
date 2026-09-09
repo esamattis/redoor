@@ -9,23 +9,20 @@ import {
     X,
 } from "lucide-react";
 import { useAtomValue, useSetAtom } from "jotai";
-import type {
-    FitAddon as GhosttyFitAddon,
-    IDisposable,
-    Terminal as GhosttyTerminal,
-} from "ghostty-web";
+import type { WTerm } from "@wterm/dom";
+import type { GhosttyCore } from "@wterm/ghostty";
 import { z } from "zod";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { type Agent, type TerminalServerMessage } from "#ui/api-client";
-import { initializeGhostty } from "#ui/terminal/ghostty";
 import {
-    bindTerminalInput,
     disposeTerminalResources,
-    mountGhostty,
-    remountGhosttyForTheme,
+    sendTerminalInput,
+    sendTerminalResize,
     type TerminalResources,
 } from "#ui/terminal/session";
+import { applyTerminalTheme } from "#ui/terminal/theme";
+import { createWTerm } from "#ui/terminal/wterm";
 import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { AddButton } from "#ui/components/add-button";
@@ -120,13 +117,33 @@ function getServerDisconnectMessage(
     return null;
 }
 
-/** Preserves keyboard navigation when terminal activation starts from its tablist. */
-function isTerminalTabFocused(): boolean {
-    return Boolean(
-        document.activeElement?.closest(
-            '[role="tablist"][aria-label="Terminal tabs"]',
-        ),
-    );
+/** Gives wterm's resize observer one rendered frame before PTY dimensions are captured. */
+function waitForTerminalSizing(): Promise<void> {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/** Returns only native browser selection whose endpoints both belong to this terminal. */
+function getTerminalSelection(host: HTMLElement): string {
+    const selection = window.getSelection();
+    if (
+        !selection ||
+        selection.isCollapsed ||
+        !selection.anchorNode ||
+        !selection.focusNode ||
+        !host.contains(selection.anchorNode) ||
+        !host.contains(selection.focusNode)
+    ) {
+        return "";
+    }
+    return selection.toString();
+}
+
+/** Removes control escapes and adds shell paste guards only when the PTY requested them. */
+function formatTerminalPaste(terminal: WTerm, text: string): string {
+    const safeText = text.replaceAll("\x1b", "");
+    return terminal.bridge?.bracketedPaste() === true
+        ? `\x1b[200~${safeText}\x1b[201~`
+        : safeText;
 }
 
 /** Identifies the routed agent and directory used by the direct new-terminal action. */
@@ -611,14 +628,12 @@ function connectTerminal(props: {
     cwd: string;
     generation: number;
     resources: TerminalResources;
-    terminal: GhosttyTerminal;
+    terminal: WTerm;
     isReadyRef: React.RefObject<boolean>;
     updateTerminalState: (state: TerminalState) => void;
     showDisconnected: (generation: number, message: string) => void;
     generationRef: React.RefObject<number>;
     stateRef: React.RefObject<TerminalState>;
-    isActiveRef: React.RefObject<boolean>;
-    isPanelCollapsedRef: React.RefObject<boolean>;
 }) {
     const socket = new WebSocket(
         props.agent.getTerminalWebSocketUrl(
@@ -629,11 +644,6 @@ function connectTerminal(props: {
     socket.binaryType = "arraybuffer";
     props.resources.socketRef.current = socket;
     props.isReadyRef.current = false;
-    props.resources.terminalDisposablesRef.current = bindTerminalInput({
-        terminal: props.terminal,
-        socket,
-        isReady: () => props.isReadyRef.current,
-    });
 
     /** Applies typed binary output and lifecycle notifications. */
     const handleMessage = (event: MessageEvent) => {
@@ -733,10 +743,9 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         );
     }
     const resources: TerminalResources = {
-        terminalRef: React.useRef<GhosttyTerminal | null>(null),
-        fitAddonRef: React.useRef<GhosttyFitAddon | null>(null),
+        terminalRef: React.useRef<WTerm | null>(null),
+        coreRef: React.useRef<GhosttyCore | null>(null),
         socketRef: React.useRef<WebSocket | null>(null),
-        terminalDisposablesRef: React.useRef<IDisposable[]>([]),
         removeSocketListenersRef: React.useRef<(() => void) | null>(null),
         startupCommand: startupCommandRef.current,
     };
@@ -745,13 +754,10 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
     const isActiveRef = React.useRef(props.isActive);
     const isPanelCollapsedRef = React.useRef(props.isPanelCollapsed);
     const isReadyRef = React.useRef(false);
-    const appliedThemeRef = React.useRef<"dark" | "light" | null>(null);
     const themeRef = React.useRef(resolvedTheme);
     isActiveRef.current = props.isActive;
     isPanelCollapsedRef.current = props.isPanelCollapsed;
     themeRef.current = resolvedTheme;
-
-    const ariaLabel = `${props.tab.title} for ${props.agent.name}`;
 
     /** Keeps socket handlers and the parent tab badge on the same lifecycle. */
     const updateTerminalState = (nextState: TerminalState) => {
@@ -765,7 +771,6 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
             resources,
             hostRef,
             isReadyRef,
-            appliedThemeRef,
         });
     };
 
@@ -779,7 +784,7 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         updateTerminalState({ type: "disconnected", message });
     };
 
-    /** Creates Ghostty and a shell only for a selected, expanded tab. */
+    /** Creates wterm and a shell only for a selected, expanded tab. */
     const startTerminal = async () => {
         if (stateRef.current.type !== "not_started") {
             return;
@@ -788,23 +793,39 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         generationRef.current = generation;
         updateTerminalState({ type: "initializing" });
         try {
-            const ghostty = await initializeGhostty();
-            if (generationRef.current !== generation) {
-                return;
-            }
             const host = hostRef.current;
             if (!host) {
                 failSetup(generation, "Terminal host is unavailable");
                 return;
             }
-            const terminal = mountGhostty({
-                ghostty,
+            applyTerminalTheme(host, themeRef.current);
+            const session = await createWTerm({
                 host,
-                themeMode: themeRef.current,
-                ariaLabel,
-                resources,
-                appliedThemeRef,
+                onData: (data) =>
+                    sendTerminalInput({
+                        resources,
+                        isReady: () => isReadyRef.current,
+                        data,
+                    }),
+                onResize: (cols, rows) =>
+                    sendTerminalResize({
+                        resources,
+                        isReady: () => isReadyRef.current,
+                        canResize: () =>
+                            isActiveRef.current && !isPanelCollapsedRef.current,
+                        cols,
+                        rows,
+                    }),
             });
+            if (generationRef.current !== generation) {
+                session.terminal.destroy();
+                session.core.dispose();
+                return;
+            }
+            resources.terminalRef.current = session.terminal;
+            resources.coreRef.current = session.core;
+            host.setAttribute("data-terminal-initialized", "true");
+            await waitForTerminalSizing();
             if (generationRef.current !== generation) {
                 return;
             }
@@ -814,7 +835,7 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 cwd: props.tab.cwd,
                 generation,
                 resources,
-                terminal,
+                terminal: session.terminal,
                 isReadyRef,
                 updateTerminalState,
                 showDisconnected: (currentGeneration, message) => {
@@ -824,8 +845,6 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 },
                 generationRef,
                 stateRef,
-                isActiveRef,
-                isPanelCollapsedRef,
             });
         } catch {
             failSetup(generation, "Failed to initialize terminal");
@@ -845,7 +864,13 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
                 return;
             }
             if (stateRef.current.type === "connected") {
-                resources.fitAddonRef.current?.fit();
+                sendTerminalResize({
+                    resources,
+                    isReady: () => isReadyRef.current,
+                    canResize: () => true,
+                    cols: resources.terminalRef.current?.cols ?? 80,
+                    rows: resources.terminalRef.current?.rows ?? 24,
+                });
             }
         }
     }, [
@@ -856,24 +881,10 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
     ]);
 
     React.useEffect(() => {
-        if (
-            !resources.terminalRef.current ||
-            appliedThemeRef.current === resolvedTheme
-        ) {
-            return;
+        const host = hostRef.current;
+        if (host) {
+            applyTerminalTheme(host, resolvedTheme);
         }
-        void remountGhosttyForTheme({
-            themeMode: resolvedTheme,
-            resources,
-            hostRef,
-            appliedThemeRef,
-            isReadyRef,
-            ariaLabel,
-            shouldFocus: () =>
-                isActiveRef.current &&
-                !isPanelCollapsedRef.current &&
-                !isTerminalTabFocused(),
-        });
     }, [resolvedTheme]);
 
     React.useEffect(() => {
@@ -917,12 +928,21 @@ function useTerminalLifecycle(props: TerminalSessionProps) {
         };
     }, []);
 
-    return { hostRef, terminalRef: resources.terminalRef };
+    /** Lets context-menu paste use the same UTF-8 ready-gated path as keyboard input. */
+    const sendInput = (data: string) => {
+        sendTerminalInput({
+            resources,
+            isReady: () => isReadyRef.current,
+            data,
+        });
+    };
+
+    return { hostRef, terminalRef: resources.terminalRef, sendInput };
 }
 
 /** Owns one tab's browser resources so sibling sessions cannot affect it. */
 function TerminalSession(props: TerminalSessionProps) {
-    const { hostRef, terminalRef } = useTerminalLifecycle(props);
+    const { hostRef, terminalRef, sendInput } = useTerminalLifecycle(props);
     const [contextMenu, setContextMenu] = React.useState<{
         x: number;
         y: number;
@@ -938,15 +958,14 @@ function TerminalSession(props: TerminalSessionProps) {
             return;
         }
 
-        /** Stops Ghostty's canvas image menu so copy and paste stay available. */
+        /** Replaces the browser menu so terminal copy and paste stay available. */
         const handleContextMenu = (event: MouseEvent) => {
             event.preventDefault();
             event.stopPropagation();
-            const terminal = terminalRef.current;
             setContextMenu({
                 x: event.clientX,
                 y: event.clientY,
-                canCopy: Boolean(terminal?.hasSelection()),
+                canCopy: getTerminalSelection(host).length > 0,
             });
         };
 
@@ -963,9 +982,10 @@ function TerminalSession(props: TerminalSessionProps) {
         }
     };
 
-    /** Copies the Ghostty selection because the canvas has no native text. */
+    /** Copies only selection rendered inside this terminal's DOM host. */
     const copySelection = async () => {
-        const text = terminalRef.current?.getSelection() ?? "";
+        const host = hostRef.current;
+        const text = host ? getTerminalSelection(host) : "";
         if (!text) {
             return;
         }
@@ -976,7 +996,7 @@ function TerminalSession(props: TerminalSessionProps) {
         }
     };
 
-    /** Injects clipboard text through Ghostty so bracketed paste still works. */
+    /** Sends sanitized clipboard text with the shell's requested paste framing. */
     const pasteClipboard = async () => {
         const terminal = terminalRef.current;
         if (!terminal) {
@@ -985,7 +1005,7 @@ function TerminalSession(props: TerminalSessionProps) {
         try {
             const text = await navigator.clipboard.readText();
             if (text) {
-                terminal.paste(text);
+                sendInput(formatTerminalPaste(terminal, text));
             }
         } catch {
             setClipboardError("Could not paste into the terminal");
@@ -998,14 +1018,16 @@ function TerminalSession(props: TerminalSessionProps) {
             role="tabpanel"
             aria-labelledby={`terminal-tab-${props.tab.id}`}
             aria-hidden={!props.isActive}
-            hidden={!props.isActive}
-            className="relative h-full rounded-md border border-transparent p-1.5 focus-within:border-blue-500"
+            inert={!props.isActive}
+            className={`absolute inset-0 rounded-md border border-transparent p-1.5 focus-within:border-blue-500 ${props.isActive ? "visible" : "invisible"}`}
         >
             <div
                 ref={hostRef}
                 data-terminal-input
+                role="textbox"
+                aria-multiline="true"
                 aria-label={`${props.tab.title} for ${props.agent.name}`}
-                className="h-full w-full overflow-hidden caret-transparent"
+                className="terminal-host h-full w-full caret-transparent"
             />
             <ContextMenu
                 isOpen={contextMenu !== null}
