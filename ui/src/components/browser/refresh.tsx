@@ -71,9 +71,15 @@ export async function refreshBrowserPath(options: {
         );
     }
     // Git state can change outside redoor without changing the directory listing.
-    await options.queryClient.invalidateQueries({
-        queryKey: queryKeys.git(),
-    });
+    await options.queryClient.invalidateQueries(
+        {
+            queryKey: queryKeys.git(),
+        },
+        {
+            // Creating a file navigates while this refresh may already be in flight.
+            cancelRefetch: false,
+        },
+    );
     await options.router.invalidate();
 }
 

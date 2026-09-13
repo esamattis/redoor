@@ -59,6 +59,15 @@ test("refreshes the listing and a clean editor when terminal focus leaves", asyn
     fireEvent.focusOut(terminalInput, { relatedTarget: editor });
 
     await waitFor(() => expect(mocks.invalidateRoute).toHaveBeenCalledOnce());
+    // Creating a file can navigate while this git refresh is already fetching.
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith(
+        {
+            queryKey: ["server-state", "git"],
+        },
+        {
+            cancelRefetch: false,
+        },
+    );
     // A clean editor must pull new bytes before route invalidation reloads the listing.
     expect(mocks.refetchQueries).toHaveBeenCalledWith(
         {
@@ -87,6 +96,15 @@ test("keeps an unsaved editor while refreshing the listing", async () => {
     fireEvent.focusOut(terminalInput, { relatedTarget: editor });
 
     await waitFor(() => expect(mocks.invalidateRoute).toHaveBeenCalledOnce());
+    // Git still refreshes for a dirty editor, but must not abort an in-flight loader fetch.
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith(
+        {
+            queryKey: ["server-state", "git"],
+        },
+        {
+            cancelRefetch: false,
+        },
+    );
     // Unsaved text must never be replaced by the automatic terminal-blur refresh.
     expect(mocks.refetchQueries).not.toHaveBeenCalled();
 });

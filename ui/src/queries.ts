@@ -1,8 +1,37 @@
-import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+import {
+    keepPreviousData,
+    queryOptions,
+    isCancelledError,
+    type FetchQueryOptions,
+    type QueryClient,
+    type QueryKey,
+} from "@tanstack/react-query";
 
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
+
+/**
+ * Retries once so a concurrent invalidateQueries cancel cannot fail a route loader.
+ */
+export async function fetchQueryUncancelled<
+    TQueryFnData,
+    TError = Error,
+    TData = TQueryFnData,
+    TQueryKey extends QueryKey = QueryKey,
+>(
+    queryClient: QueryClient,
+    options: FetchQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
+): Promise<TData> {
+    try {
+        return await queryClient.fetchQuery(options);
+    } catch (error) {
+        if (isCancelledError(error)) {
+            return queryClient.fetchQuery(options);
+        }
+        throw error;
+    }
+}
 
 /** Centralizes cache keys so loaders, components, and mutations share server state. */
 export const queryKeys = {

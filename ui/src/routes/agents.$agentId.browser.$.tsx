@@ -38,6 +38,7 @@ import {
 import {
     agentAccountsQueryOptions,
     browserListingQueryOptions,
+    fetchQueryUncancelled,
     fileContentQueryOptions,
     gitContextQueryOptions,
     gitDiffQueryOptions,
@@ -157,11 +158,11 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         const path = `/${params._splat ?? ""}`;
 
-        const gitContextPromise = context.queryClient.fetchQuery({
+        const gitContextPromise = fetchQueryUncancelled(context.queryClient, {
             ...gitContextQueryOptions(agent, path),
             staleTime: 0,
         });
-        const listingPromise = context.queryClient.fetchQuery({
+        const listingPromise = fetchQueryUncancelled(context.queryClient, {
             ...browserListingQueryOptions(agent, path),
             // Route invalidation is an explicit refresh even if the mounted listing is retained.
             staleTime: 0,
@@ -217,13 +218,15 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     wantsFileContentView(deps.view) &&
                     metadata?.editable === true
                 ) {
-                    await context.queryClient.fetchQuery(
+                    await fetchQueryUncancelled(
+                        context.queryClient,
                         fileContentQueryOptions(agent, lsResult.path),
                     );
                 }
             }
             if (deps.view === "details" && agent.isRoot) {
-                await context.queryClient.fetchQuery(
+                await fetchQueryUncancelled(
+                    context.queryClient,
                     agentAccountsQueryOptions(agent),
                 );
             }
@@ -232,12 +235,12 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 gitContext.status === "inside_worktree"
             ) {
                 if (isLsDirectoryResponse(lsResult)) {
-                    await context.queryClient.fetchQuery({
+                    await fetchQueryUncancelled(context.queryClient, {
                         ...gitStatusQueryOptions(agent, lsResult.path),
                         staleTime: 0,
                     });
                 } else {
-                    await context.queryClient.fetchQuery({
+                    await fetchQueryUncancelled(context.queryClient, {
                         ...gitDiffQueryOptions(agent, [lsResult.path], "full"),
                         staleTime: 0,
                     });
@@ -269,7 +272,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 gitContext.entry_type === "missing" &&
                 gitContext.tracking_state === "deleted"
             ) {
-                await context.queryClient.fetchQuery({
+                await fetchQueryUncancelled(context.queryClient, {
                     ...gitDiffQueryOptions(agent, [path], "full"),
                     staleTime: 0,
                 });
