@@ -90,7 +90,7 @@ async function readClipboardFiles(items: ClipboardItem[]) {
     return files;
 }
 
-/** Validates text-import names so pasted content cannot escape the current directory. */
+/** Validates pasted-content names so imports cannot escape the current directory. */
 function getFileNameError(fileName: string) {
     if (!fileName.trim()) {
         return "Filename is required";
@@ -243,75 +243,112 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
     };
 }
 
-/** Owns the filename prompt required before plain clipboard text becomes a file. */
-function usePastedTextImport(props: {
+type PastedContent = {
+    blob: Blob;
+    kind: "image" | "text";
+    suggestedName: string;
+};
+
+/** Owns filename confirmation so clipboard content is not uploaded implicitly. */
+function usePastedContentImport(props: {
     destination: DirectoryDestination | null;
     showMissingDirectoryError: () => void;
     uploadFiles: (files: UploadSourceFile[]) => Promise<void>;
 }) {
-    const [pastedText, setPastedText] = React.useState<string | null>(null);
-    const [textFileName, setTextFileName] = React.useState("pasted-text.txt");
-    const [textFileNameError, setTextFileNameError] = React.useState<
-        string | null
-    >(null);
+    const [pastedContents, setPastedContents] = React.useState<PastedContent[]>(
+        [],
+    );
+    const [fileName, setFileName] = React.useState("");
+    const [fileNameError, setFileNameError] = React.useState<string | null>(
+        null,
+    );
+    const pastedContent = pastedContents[0] ?? null;
 
-    const openTextFileDialog = React.useCallback(
-        (text: string) => {
+    const openPastedContentDialog = React.useCallback(
+        (contents: PastedContent[]) => {
+            const firstContent = contents[0];
+            if (!firstContent) {
+                return;
+            }
             if (!props.destination) {
                 props.showMissingDirectoryError();
                 return;
             }
 
-            setPastedText(text);
-            setTextFileName("pasted-text.txt");
-            setTextFileNameError(null);
+            setPastedContents(contents);
+            setFileName(firstContent.suggestedName);
+            setFileNameError(null);
         },
         [props.destination, props.showMissingDirectoryError],
     );
 
-    const handleTextFileSubmit = React.useCallback(
+    const closePastedContentDialog = React.useCallback(() => {
+        setPastedContents([]);
+        setFileNameError(null);
+    }, []);
+
+    const handleFileSubmit = React.useCallback(
         async (event: React.FormEvent<HTMLFormElement>) => {
             event.preventDefault();
-            const trimmedFileName = textFileName.trim();
+            const trimmedFileName = fileName.trim();
             const validationError = getFileNameError(trimmedFileName);
             if (validationError) {
-                setTextFileNameError(validationError);
+                setFileNameError(validationError);
                 return;
             }
-            if (pastedText === null) {
+            if (!pastedContent) {
                 return;
             }
 
-            setPastedText(null);
-            const file = new File([pastedText], trimmedFileName, {
-                type: "text/plain",
+            const remainingContents = pastedContents.slice(1);
+            setPastedContents(remainingContents);
+            setFileName(remainingContents[0]?.suggestedName ?? "");
+            setFileNameError(null);
+            const file = new File([pastedContent.blob], trimmedFileName, {
+                type: pastedContent.blob.type,
             });
             await props.uploadFiles([{ file, relativePath: file.name }]);
         },
-        [pastedText, props.uploadFiles, textFileName],
+        [fileName, pastedContent, pastedContents, props.uploadFiles],
     );
 
     React.useEffect(() => {
         if (!props.destination) {
-            setPastedText(null);
+            setPastedContents([]);
         }
     }, [props.destination]);
 
     return {
-        pastedText,
-        textFileName,
-        textFileNameError,
-        setPastedText,
-        setTextFileName,
-        setTextFileNameError,
-        openTextFileDialog,
-        handleTextFileSubmit,
+        closePastedContentDialog,
+        fileName,
+        fileNameError,
+        handleFileSubmit,
+        openImageFileDialog: (images: File[]) =>
+            openPastedContentDialog(
+                images.map((image) => ({
+                    blob: image,
+                    kind: "image",
+                    suggestedName: image.name,
+                })),
+            ),
+        openTextFileDialog: (text: string) =>
+            openPastedContentDialog([
+                {
+                    blob: new Blob([text], { type: "text/plain" }),
+                    kind: "text",
+                    suggestedName: "pasted-text.txt",
+                },
+            ]),
+        pastedContent,
+        setFileName,
+        setFileNameError,
     };
 }
 
 /** Reads the permission-gated clipboard API for imports requested by toolbar controls. */
 function useClipboardImporter(props: {
     destination: DirectoryDestination | null;
+    openImageFileDialog: (images: File[]) => void;
     openTextFileDialog: (text: string) => void;
     setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
     showMissingDirectoryError: () => void;
@@ -333,12 +370,23 @@ function useClipboardImporter(props: {
                 const items = await navigator.clipboard.read();
                 const files = await readClipboardFiles(items);
                 if (files.length > 0) {
-                    await props.uploadFiles(
-                        files.map((file) => ({
-                            file,
-                            relativePath: file.name,
-                        })),
+                    const images = files.filter((file) =>
+                        file.type.startsWith("image/"),
                     );
+                    const otherFiles = files.filter(
+                        (file) => !file.type.startsWith("image/"),
+                    );
+                    if (otherFiles.length > 0) {
+                        await props.uploadFiles(
+                            otherFiles.map((file) => ({
+                                file,
+                                relativePath: file.name,
+                            })),
+                        );
+                    }
+                    if (images.length > 0) {
+                        props.openImageFileDialog(images);
+                    }
                     return;
                 }
             }
@@ -364,6 +412,7 @@ function useClipboardImporter(props: {
         }
     }, [
         props.destination,
+        props.openImageFileDialog,
         props.openTextFileDialog,
         props.setImportState,
         props.showMissingDirectoryError,
@@ -375,6 +424,7 @@ function useClipboardImporter(props: {
 function useGlobalImportEvents(props: {
     destination: DirectoryDestination | null;
     importFromClipboard: () => Promise<void>;
+    openImageFileDialog: (images: File[]) => void;
     openTextFileDialog: (text: string) => void;
     showMissingDirectoryError: () => void;
     uploadFiles: (
@@ -467,9 +517,23 @@ function useGlobalImportEvents(props: {
                 return;
             }
             if (files.length > 0) {
-                void props.uploadFiles(
-                    files.map((file) => ({ file, relativePath: file.name })),
+                const images = files.filter((file) =>
+                    file.type.startsWith("image/"),
                 );
+                const otherFiles = files.filter(
+                    (file) => !file.type.startsWith("image/"),
+                );
+                if (otherFiles.length > 0) {
+                    void props.uploadFiles(
+                        otherFiles.map((file) => ({
+                            file,
+                            relativePath: file.name,
+                        })),
+                    );
+                }
+                if (images.length > 0) {
+                    props.openImageFileDialog(images);
+                }
                 return;
             }
 
@@ -504,6 +568,7 @@ function useGlobalImportEvents(props: {
     }, [
         props.destination,
         props.importFromClipboard,
+        props.openImageFileDialog,
         props.openTextFileDialog,
         props.showMissingDirectoryError,
         props.uploadFiles,
@@ -519,6 +584,69 @@ function useGlobalImportEvents(props: {
     }, [props.destination]);
 
     return isDraggingFiles;
+}
+
+/** Prompts for a safe filename before pasted clipboard content is uploaded. */
+function PastedContentFileDialog(props: {
+    closePastedContentDialog: () => void;
+    destination: DirectoryDestination | null;
+    fileName: string;
+    fileNameError: string | null;
+    handleFileSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+    pastedContent: PastedContent | null;
+    setFileName: React.Dispatch<React.SetStateAction<string>>;
+    setFileNameError: React.Dispatch<React.SetStateAction<string | null>>;
+}) {
+    const kind = props.pastedContent?.kind ?? "text";
+
+    return (
+        <Dialog
+            isOpen={props.pastedContent !== null}
+            title={`Save pasted ${kind}`}
+            description={
+                props.destination
+                    ? `Choose a filename for the ${kind} pasted into ${props.destination.path}.`
+                    : undefined
+            }
+            closeAriaLabel={`Close save pasted ${kind} dialog`}
+            errorMessage={props.fileNameError}
+            onClose={props.closePastedContentDialog}
+        >
+            <form onSubmit={props.handleFileSubmit} className="mt-4">
+                <label
+                    htmlFor="pasted-content-file-name"
+                    className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                    Filename
+                </label>
+                <InputControl
+                    ref={focusAndSelectFileNameStem}
+                    id="pasted-content-file-name"
+                    type="text"
+                    value={props.fileName}
+                    onChange={(event) => {
+                        props.setFileName(event.target.value);
+                        props.setFileNameError(null);
+                    }}
+                    autoFocus
+                    className="w-full rounded shadow-sm focus:ring-blue-500/30"
+                />
+                <DialogActions>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={props.closePastedContentDialog}
+                    >
+                        Cancel
+                    </Button>
+                    <Button type="submit">
+                        <ClipboardPaste className="h-4 w-4" />
+                        Upload {kind}
+                    </Button>
+                </DialogActions>
+            </form>
+        </Dialog>
+    );
 }
 
 /** Displays the active target while files are being dragged across the page. */
@@ -569,69 +697,6 @@ function FileImportToast(props: {
     );
 }
 
-/** Prompts for a safe filename before pasted text is uploaded. */
-function PastedTextFileDialog(props: {
-    destination: DirectoryDestination | null;
-    handleTextFileSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
-    pastedText: string | null;
-    setPastedText: React.Dispatch<React.SetStateAction<string | null>>;
-    setTextFileName: React.Dispatch<React.SetStateAction<string>>;
-    setTextFileNameError: React.Dispatch<React.SetStateAction<string | null>>;
-    textFileName: string;
-    textFileNameError: string | null;
-}) {
-    const isOpen = props.pastedText !== null;
-
-    return (
-        <Dialog
-            isOpen={isOpen}
-            title="Save pasted text"
-            description={
-                props.destination
-                    ? `Choose a filename for the text pasted into ${props.destination.path}.`
-                    : undefined
-            }
-            closeAriaLabel="Close save pasted text dialog"
-            errorMessage={props.textFileNameError}
-            onClose={() => props.setPastedText(null)}
-        >
-            <form onSubmit={props.handleTextFileSubmit} className="mt-4">
-                <label
-                    htmlFor="pasted-text-file-name"
-                    className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                    Filename
-                </label>
-                <InputControl
-                    ref={focusAndSelectFileNameStem}
-                    id="pasted-text-file-name"
-                    type="text"
-                    value={props.textFileName}
-                    onChange={(event) => {
-                        props.setTextFileName(event.target.value);
-                        props.setTextFileNameError(null);
-                    }}
-                    autoFocus
-                    className="w-full rounded shadow-sm focus:ring-blue-500/30"
-                />
-                <DialogActions>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => props.setPastedText(null)}
-                    >
-                        Cancel
-                    </Button>
-                    <Button type="submit">
-                        <ClipboardPaste className="h-4 w-4" />
-                        Upload text
-                    </Button>
-                </DialogActions>
-            </form>
-        </Dialog>
-    );
-}
-
 /**
  * Owns page-wide drop and paste workflows so imports remain available regardless
  * of which element has focus and unsupported destinations fail visibly.
@@ -640,14 +705,15 @@ export function GlobalFileImportHandler(props: {
     destination: DirectoryDestination | null;
 }) {
     const uploader = useFileUploader({ destination: props.destination });
-    const textImport = usePastedTextImport({
+    const pastedContentImport = usePastedContentImport({
         destination: props.destination,
         showMissingDirectoryError: uploader.showMissingDirectoryError,
         uploadFiles: uploader.uploadFiles,
     });
     const importFromClipboard = useClipboardImporter({
         destination: props.destination,
-        openTextFileDialog: textImport.openTextFileDialog,
+        openImageFileDialog: pastedContentImport.openImageFileDialog,
+        openTextFileDialog: pastedContentImport.openTextFileDialog,
         setImportState: uploader.setImportState,
         showMissingDirectoryError: uploader.showMissingDirectoryError,
         uploadFiles: uploader.uploadFiles,
@@ -655,7 +721,8 @@ export function GlobalFileImportHandler(props: {
     const isDraggingFiles = useGlobalImportEvents({
         destination: props.destination,
         importFromClipboard,
-        openTextFileDialog: textImport.openTextFileDialog,
+        openImageFileDialog: pastedContentImport.openImageFileDialog,
+        openTextFileDialog: pastedContentImport.openTextFileDialog,
         showMissingDirectoryError: uploader.showMissingDirectoryError,
         uploadFiles: uploader.uploadFiles,
     });
@@ -670,15 +737,17 @@ export function GlobalFileImportHandler(props: {
                 importState={uploader.importState}
                 setImportState={uploader.setImportState}
             />
-            <PastedTextFileDialog
+            <PastedContentFileDialog
+                closePastedContentDialog={
+                    pastedContentImport.closePastedContentDialog
+                }
                 destination={props.destination}
-                handleTextFileSubmit={textImport.handleTextFileSubmit}
-                pastedText={textImport.pastedText}
-                setPastedText={textImport.setPastedText}
-                setTextFileName={textImport.setTextFileName}
-                setTextFileNameError={textImport.setTextFileNameError}
-                textFileName={textImport.textFileName}
-                textFileNameError={textImport.textFileNameError}
+                fileName={pastedContentImport.fileName}
+                fileNameError={pastedContentImport.fileNameError}
+                handleFileSubmit={pastedContentImport.handleFileSubmit}
+                pastedContent={pastedContentImport.pastedContent}
+                setFileName={pastedContentImport.setFileName}
+                setFileNameError={pastedContentImport.setFileNameError}
             />
         </>
     );
