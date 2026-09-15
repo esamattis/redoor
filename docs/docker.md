@@ -25,6 +25,7 @@ Add `compose.yaml` in the same directory:
 services:
   redoor:
     image: ghcr.io/esamattis/redoor:latest
+    init: true
     restart: unless-stopped
     ports:
       - "127.0.0.1:7666:7666"

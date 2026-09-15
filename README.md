@@ -64,7 +64,7 @@ and see `$HOME/.local/bin/redoor --help`
 Run the `linux/amd64` or `linux/arm64` container with one command:
 
 ```bash
-docker run --rm --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest
+docker run --rm --init --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest
 ```
 
 Open `http://127.0.0.1:7666` and log in with username `redoor` and password `redoor`.
