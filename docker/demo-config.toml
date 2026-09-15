@@ -1,0 +1,11 @@
+# Demo-only defaults for running the container with no additional files.
+agent_token = "redoor-demo-agent-token"
+
+[server]
+bind = "0.0.0.0"
+username = "redoor"
+password = "redoor"
+
+[[agents]]
+local = true
+name = "local"

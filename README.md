@@ -59,6 +59,18 @@ $HOME/.local/bin/redoor server
 
 and see `$HOME/.local/bin/redoor --help`
 
+### Docker
+
+Run the `linux/amd64` or `linux/arm64` container with one command:
+
+```bash
+docker run --rm --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest
+```
+
+Open `http://127.0.0.1:7666` and log in with username `redoor` and password `redoor`.
+
+These credentials and the agent token built into the image are only for a local demo. See [Docker Compose deployment](docs/docker.md) for persistent storage and private credentials.
+
 ## Configuration
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).
