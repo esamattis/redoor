@@ -166,6 +166,25 @@ describe("Raw Upload API", () => {
         expect(downloadedContent).toBe(replacementContent);
     });
 
+    it("should preserve an existing file when strict upload creation is requested", async () => {
+        const uploadedFilePath = tempFiles.create("original content", {
+            suffix: ".txt",
+        });
+
+        await expect(
+            testAgent.upload(
+                uploadedFilePath,
+                new File(["replacement content"], "replacement.txt"),
+                { on_existing: "error" },
+            ),
+        ).rejects.toThrow("already exists");
+
+        // A rejected strict upload must leave the destination bytes untouched.
+        expect(fs.readFileSync(uploadedFilePath, "utf8")).toBe(
+            "original content",
+        );
+    });
+
     it("should preserve existing permissions when replacing a file", async () => {
         const uploadedFilePath = tempFiles.create("old executable", {
             suffix: ".bin",

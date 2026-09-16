@@ -39,6 +39,34 @@ pub(crate) enum AgentUploadStartError {
     Finished(Box<Result<CommandResult, actors::router::RouterError>>),
 }
 
+/// Selects creation metadata and replacement behavior for one raw upload.
+#[derive(serde::Deserialize)]
+pub(crate) struct RawUploadQueryParams {
+    /// Keeps existing raw PUT clients replacing files unless they opt into strict creation.
+    #[serde(default = "redoor::commands::CopyExistingMode::override_mode")]
+    on_existing: redoor::commands::CopyExistingMode,
+    /// Accepts either a user name or numeric UID for the new file.
+    owner: Option<String>,
+    /// Accepts either a group name or numeric GID for the new file.
+    group: Option<String>,
+    /// Lets callers explicitly request or disable parent-owner inheritance.
+    inherit_owner: Option<bool>,
+    /// Lets callers explicitly request or disable parent-group inheritance.
+    inherit_group: Option<bool>,
+}
+
+impl RawUploadQueryParams {
+    /// Restores the shared ownership value after top-level query parsing handles booleans.
+    fn ownership(&self) -> CreationOwnershipOptions {
+        CreationOwnershipOptions {
+            owner: self.owner.clone(),
+            group: self.group.clone(),
+            inherit_owner: self.inherit_owner,
+            inherit_group: self.inherit_group,
+        }
+    }
+}
+
 /// Owns one initialized server-to-agent upload and cancels it if its producer exits early.
 pub(crate) struct AgentUpload {
     state: ServerState,
@@ -462,13 +490,14 @@ async fn forward_split_stream_chunk(
 /// Route: `PUT /api/v1/agents/{agent}/raw/{*path}`
 pub(crate) async fn raw_agent_put_handler(
     Path(AgentFilePath { agent, path }): Path<AgentFilePath>,
-    Query(ownership): Query<CreationOwnershipOptions>,
+    Query(params): Query<RawUploadQueryParams>,
     AxumState(state): AxumState<ServerState>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
     let path = absolute_path_from_url(path.unwrap_or_default());
     let agent_id = AgentId::from(agent.clone());
+    let ownership = params.ownership();
     if let Err(error) = ownership.validate() {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
     }
@@ -483,7 +512,7 @@ pub(crate) async fn raw_agent_put_handler(
         agent_id,
         Command::RawUpload {
             path: resolved_path.clone(),
-            on_existing: redoor::commands::CopyExistingMode::Override,
+            on_existing: params.on_existing,
             ownership,
         },
         resolved_path.clone(),

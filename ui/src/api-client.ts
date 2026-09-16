@@ -657,12 +657,17 @@ export class Agent {
     async upload(
         path: string,
         file: File,
-        ownership?: Partial<CreationOwnershipOptions>,
+        options?: Partial<CreationOwnershipOptions> & {
+            on_existing?: CopyExistingMode;
+        },
     ): Promise<RawUploadResponse> {
         const url = apiPaths.appendOwnershipOptions(
             new URL(this.getRawUrl(path), this.baseUrl),
-            ownership,
+            options,
         );
+        if (options?.on_existing != null) {
+            url.searchParams.set("on_existing", options.on_existing);
+        }
         return apiRequest<RawUploadResponse>(
             url.toString(),
             {

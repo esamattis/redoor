@@ -1,7 +1,10 @@
 import React from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSetAtom } from "jotai";
 import { ClipboardPaste, Upload } from "lucide-react";
-import type { Agent } from "#ui/api-client";
+import { ApiError, type Agent } from "#ui/api-client";
+import { joinBrowserPath } from "#ui/components/browser/utils";
+import { browserListingQueryOptions } from "#ui/queries";
 import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
 import {
     enqueueUploadBatchAtom,
@@ -252,9 +255,10 @@ type PastedContent = {
 /** Owns filename confirmation so clipboard content is not uploaded implicitly. */
 function usePastedContentImport(props: {
     destination: DirectoryDestination | null;
+    setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
     showMissingDirectoryError: () => void;
-    uploadFiles: (files: UploadSourceFile[]) => Promise<void>;
 }) {
+    const queryClient = useQueryClient();
     const [pastedContents, setPastedContents] = React.useState<PastedContent[]>(
         [],
     );
@@ -263,6 +267,28 @@ function usePastedContentImport(props: {
         null,
     );
     const pastedContent = pastedContents[0] ?? null;
+    const uploadMutation = useMutation({
+        mutationFn: async (request: {
+            content: PastedContent;
+            destination: DirectoryDestination;
+            fileName: string;
+        }) => {
+            const file = new File([request.content.blob], request.fileName, {
+                type: request.content.blob.type,
+            });
+            await request.destination.agent.upload(
+                joinBrowserPath(request.destination.path, request.fileName),
+                file,
+                { on_existing: "error" },
+            );
+            return request.destination;
+        },
+        onSuccess: (destination) => {
+            void queryClient.invalidateQueries(
+                browserListingQueryOptions(destination.agent, destination.path),
+            );
+        },
+    });
 
     const openPastedContentDialog = React.useCallback(
         (contents: PastedContent[]) => {
@@ -299,17 +325,45 @@ function usePastedContentImport(props: {
             if (!pastedContent) {
                 return;
             }
+            if (!props.destination) {
+                props.showMissingDirectoryError();
+                return;
+            }
 
-            const remainingContents = pastedContents.slice(1);
-            setPastedContents(remainingContents);
-            setFileName(remainingContents[0]?.suggestedName ?? "");
-            setFileNameError(null);
-            const file = new File([pastedContent.blob], trimmedFileName, {
-                type: pastedContent.blob.type,
-            });
-            await props.uploadFiles([{ file, relativePath: file.name }]);
+            try {
+                await uploadMutation.mutateAsync({
+                    content: pastedContent,
+                    destination: props.destination,
+                    fileName: trimmedFileName,
+                });
+                const remainingContents = pastedContents.slice(1);
+                setPastedContents(remainingContents);
+                setFileName(remainingContents[0]?.suggestedName ?? "");
+                setFileNameError(null);
+                props.setImportState({
+                    type: "success",
+                    message: `Uploaded ${trimmedFileName}.`,
+                });
+            } catch (cause) {
+                setFileNameError(
+                    cause instanceof ApiError && cause.status === 409
+                        ? `A file named ${trimmedFileName} already exists. Choose a different filename.`
+                        : getErrorMessage(
+                              cause,
+                              "The pasted content could not be uploaded.",
+                          ),
+                );
+            }
         },
-        [fileName, pastedContent, pastedContents, props.uploadFiles],
+        [
+            fileName,
+            pastedContent,
+            pastedContents,
+            props.destination,
+            props.setImportState,
+            props.showMissingDirectoryError,
+            uploadMutation,
+        ],
     );
 
     React.useEffect(() => {
@@ -323,6 +377,7 @@ function usePastedContentImport(props: {
         fileName,
         fileNameError,
         handleFileSubmit,
+        isUploading: uploadMutation.isPending,
         openImageFileDialog: (images: File[]) =>
             openPastedContentDialog(
                 images.map((image) => ({
@@ -593,6 +648,7 @@ function PastedContentFileDialog(props: {
     fileName: string;
     fileNameError: string | null;
     handleFileSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+    isUploading: boolean;
     pastedContent: PastedContent | null;
     setFileName: React.Dispatch<React.SetStateAction<string>>;
     setFileNameError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -602,6 +658,7 @@ function PastedContentFileDialog(props: {
     return (
         <Dialog
             isOpen={props.pastedContent !== null}
+            isBusy={props.isUploading}
             title={`Save pasted ${kind}`}
             description={
                 props.destination
@@ -624,6 +681,7 @@ function PastedContentFileDialog(props: {
                     id="pasted-content-file-name"
                     type="text"
                     value={props.fileName}
+                    disabled={props.isUploading}
                     onChange={(event) => {
                         props.setFileName(event.target.value);
                         props.setFileNameError(null);
@@ -636,10 +694,11 @@ function PastedContentFileDialog(props: {
                         type="button"
                         variant="secondary"
                         onClick={props.closePastedContentDialog}
+                        disabled={props.isUploading}
                     >
                         Cancel
                     </Button>
-                    <Button type="submit">
+                    <Button type="submit" isLoading={props.isUploading}>
                         <ClipboardPaste className="h-4 w-4" />
                         Upload {kind}
                     </Button>
@@ -707,8 +766,8 @@ export function GlobalFileImportHandler(props: {
     const uploader = useFileUploader({ destination: props.destination });
     const pastedContentImport = usePastedContentImport({
         destination: props.destination,
+        setImportState: uploader.setImportState,
         showMissingDirectoryError: uploader.showMissingDirectoryError,
-        uploadFiles: uploader.uploadFiles,
     });
     const importFromClipboard = useClipboardImporter({
         destination: props.destination,
@@ -745,6 +804,7 @@ export function GlobalFileImportHandler(props: {
                 fileName={pastedContentImport.fileName}
                 fileNameError={pastedContentImport.fileNameError}
                 handleFileSubmit={pastedContentImport.handleFileSubmit}
+                isUploading={pastedContentImport.isUploading}
                 pastedContent={pastedContentImport.pastedContent}
                 setFileName={pastedContentImport.setFileName}
                 setFileNameError={pastedContentImport.setFileNameError}
