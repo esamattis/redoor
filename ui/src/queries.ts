@@ -12,7 +12,9 @@ import type { Agent, ApiClient } from "#ui/api-client";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 
 /**
- * Retries once so a concurrent invalidateQueries cancel cannot fail a route loader.
+ * Keeps cache refreshes from turning an otherwise valid route load into an error.
+ * More than one refresh can cancel successive fetches, so a fixed retry count
+ * would still occasionally surface a normal TanStack Query cancellation.
  */
 export async function fetchQueryUncancelled<
     TQueryFnData,
@@ -23,13 +25,14 @@ export async function fetchQueryUncancelled<
     queryClient: QueryClient,
     options: FetchQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
 ): Promise<TData> {
-    try {
-        return await queryClient.fetchQuery(options);
-    } catch (error) {
-        if (isCancelledError(error)) {
-            return queryClient.fetchQuery(options);
+    for (;;) {
+        try {
+            return await queryClient.fetchQuery(options);
+        } catch (error) {
+            if (!isCancelledError(error)) {
+                throw error;
+            }
         }
-        throw error;
     }
 }
 

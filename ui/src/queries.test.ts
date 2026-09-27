@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 
 import { fetchQueryUncancelled } from "./queries";
 
-test("retries fetchQuery once after a CancelledError", async () => {
+test("retries fetchQuery after a CancelledError", async () => {
     const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false } },
     });
@@ -22,6 +22,52 @@ test("retries fetchQuery once after a CancelledError", async () => {
     // A concurrent invalidate must not surface as a failed file-create navigation.
     expect(result).toBe("ok");
     expect(attempts).toBe(2);
+});
+
+test("an awaited loader fetch survives successive query invalidations", async () => {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+    });
+    const queryKey = ["loader", "refresh-race"];
+    queryClient.setQueryData(queryKey, "old");
+    const requests: Array<{ resolve: (value: string) => void }> = [];
+    const started: Array<() => void> = [];
+    const options = {
+        queryKey,
+        staleTime: 0,
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+            new Promise<string>((resolve, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason));
+                requests.push({ resolve });
+                started.shift()?.();
+            }),
+    };
+    /** Waits for each actual fetch rather than relying on a timer to reproduce the race. */
+    const waitForRequest = (count: number) =>
+        requests.length >= count
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => started.push(resolve));
+
+    const loader = fetchQueryUncancelled(queryClient, options);
+    await waitForRequest(1);
+    // The first invalidation cancels the fetch a route loader is awaiting.
+    const firstRefresh = queryClient.invalidateQueries({
+        queryKey,
+        refetchType: "all",
+    });
+    await waitForRequest(2);
+    // A second event can cancel the retry too; one retry is not sufficient.
+    const secondRefresh = queryClient.invalidateQueries({
+        queryKey,
+        refetchType: "all",
+    });
+    await waitForRequest(3);
+    requests[2]?.resolve("fresh");
+
+    // Neither refresh should replace a successful route load with CancelledError.
+    await expect(loader).resolves.toBe("fresh");
+    await Promise.all([firstRefresh, secondRefresh]);
+    expect(requests).toHaveLength(3);
 });
 
 test("does not retry unrelated fetchQuery failures", async () => {

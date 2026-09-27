@@ -40,6 +40,7 @@ import { UploadQueueManager } from "#ui/upload-queue";
 import { rememberAgentTabLocationAtom } from "#ui/agent-tab-locations";
 import {
     agentsQueryOptions,
+    fetchQueryUncancelled,
     serverInfoQueryOptions,
     transfersQueryOptions,
 } from "#ui/queries";
@@ -98,10 +99,22 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
         }
 
         const [agents, transferProgress, serverInfo] = await Promise.all([
-            context.queryClient.fetchQuery(agentsQueryOptions(context.api)),
-            context.queryClient.fetchQuery(transfersQueryOptions(context.api)),
-            context.queryClient.fetchQuery(serverInfoQueryOptions(context.api)),
-            context.queryClient.fetchQuery(userStateQueryOptions(context.api)),
+            fetchQueryUncancelled(
+                context.queryClient,
+                agentsQueryOptions(context.api),
+            ),
+            fetchQueryUncancelled(
+                context.queryClient,
+                transfersQueryOptions(context.api),
+            ),
+            fetchQueryUncancelled(
+                context.queryClient,
+                serverInfoQueryOptions(context.api),
+            ),
+            fetchQueryUncancelled(
+                context.queryClient,
+                userStateQueryOptions(context.api),
+            ),
         ]);
 
         return {

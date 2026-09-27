@@ -14,7 +14,11 @@ import { RouteError } from "#ui/components/route-error";
 import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage, joinBrowserPath } from "#ui/components/browser/utils";
-import { queryKeys, trashQueryOptions } from "#ui/queries";
+import {
+    fetchQueryUncancelled,
+    queryKeys,
+    trashQueryOptions,
+} from "#ui/queries";
 
 type TrashRow = TrashItem & { locationId: string; locationPath: string };
 
@@ -32,7 +36,8 @@ export const Route = createFileRoute("/agents/$agentId/trash")({
         if (!agent.supportsTrash) {
             return { agent, os: loaderData.details.os, trash: null };
         }
-        const trash = await context.queryClient.fetchQuery(
+        const trash = await fetchQueryUncancelled(
+            context.queryClient,
             trashQueryOptions(agent),
         );
         return { agent, os: loaderData.details.os, trash };
