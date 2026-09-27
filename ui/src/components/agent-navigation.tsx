@@ -8,6 +8,7 @@ import {
     agentTabLocationsAtom,
     getAgentTabLocation,
 } from "#ui/agent-tab-locations";
+import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { SideMenu } from "#ui/components/side-menu";
 import { AddButton } from "#ui/components/add-button";
 import { IconButton } from "#ui/components/icon-button";
@@ -112,7 +113,8 @@ function AgentMenu(props: {
                                             <span className="block truncate font-medium">
                                                 {agent.name}
                                             </span>
-                                            <span className="block text-xs capitalize text-slate-500">
+                                            <span className="flex items-center gap-1.5 text-xs capitalize text-slate-500">
+                                                <AgentStatusDot agent={agent} />
                                                 {agent.status}
                                             </span>
                                         </span>

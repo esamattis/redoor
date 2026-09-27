@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import type { Agent, ServerAuthMode } from "#ui/api-client";
+import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
 import { Button } from "#ui/components/button";
 import {
@@ -68,17 +69,6 @@ function PathField(props: {
     );
 }
 
-/** Maps lifecycle and diagnostics onto the three colors the home chips can show. */
-function agentStatusDotClass(agent: Agent): string {
-    if (agent.connectionIssue) {
-        return "bg-red-500";
-    }
-    if (agent.status === "connected") {
-        return "bg-emerald-500";
-    }
-    return "bg-amber-400";
-}
-
 /** Distinguishes TOML-owned local/SSH agents from observation-only remotes. */
 function agentOriginTooltip(agent: Agent): string {
     if (!agent.managed) {
@@ -115,10 +105,7 @@ function AgentNameGrid(props: { agents: Agent[] }) {
                                 params={{ agentId: agent.id }}
                                 className="inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm text-slate-200 hover:border-slate-600 hover:bg-white/5"
                             >
-                                <span
-                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${agentStatusDotClass(agent)}`}
-                                    aria-hidden="true"
-                                />
+                                <AgentStatusDot agent={agent} />
                                 {agent.name}
                             </Link>
                         </Tooltip>
