@@ -34,6 +34,10 @@ export function MissingPathCreationForm(props: { agent: Agent; path: string }) {
                 return props.agent.createDirectory(entry.path);
             }
 
+            // Upload requires an existing parent, even when the browser URL points deeper into a missing tree.
+            await props.agent.createDirectory(
+                getImmediateParentPath(entry.path) ?? "/",
+            );
             return props.agent.upload(
                 entry.path,
                 new globalThis.File([""], trimmedFileName, {

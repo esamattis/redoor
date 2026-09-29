@@ -84,6 +84,47 @@ test.describe.serial("Missing path creation", () => {
         await expect(fs.readFile(missingFilePath, "utf8")).resolves.toBe("");
     });
 
+    test("should create missing intermediate directories for files and directories", async ({
+        page,
+    }) => {
+        const root = `${ctx.testDirPath}/nested-${Date.now()}`;
+        const filePath = `${root}/file-parent/deeper/hosts.yml`;
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`;
+        await page.goto(fileUrl);
+
+        // The final segment is offered even when several ancestor directories are absent.
+        await expect(
+            page.getByRole("textbox", { name: "File name" }),
+        ).toHaveValue("hosts.yml");
+        await page.getByRole("button", { name: "File", exact: true }).click();
+        // The create form disappears only after the upload and route refresh finish.
+        await expect(
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
+        ).toHaveCount(0);
+        // The missing ancestors must be available before the empty file is uploaded.
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("");
+        expect(
+            (await fs.stat(`${root}/file-parent/deeper`)).isDirectory(),
+        ).toBe(true);
+
+        const directoryPath = `${root}/directory-parent/deeper/new-directory`;
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(directoryPath)}`;
+        await page.goto(directoryUrl);
+        await page
+            .getByRole("button", { name: "Directory", exact: true })
+            .click();
+        // Directory creation must also materialize every absent ancestor.
+        await expect(
+            page.getByRole("searchbox", { name: "Filter files" }),
+        ).toBeVisible();
+        expect((await fs.stat(directoryPath)).isDirectory()).toBe(true);
+        expect(
+            (await fs.stat(`${root}/directory-parent/deeper`)).isDirectory(),
+        ).toBe(true);
+    });
+
     test("should hide the create form after breadcrumb navigation to an existing parent", async ({
         page,
     }) => {
