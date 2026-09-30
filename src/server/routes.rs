@@ -85,6 +85,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             post(super::exec::exec_handler),
         )
         .route(
+            "/api/v1/agents/{agent}/exec/{execution_id}",
+            axum::routing::delete(super::exec::cancel_execution_handler),
+        )
+        .route(
             "/api/v1/server/logging-level",
             get(get_server_logging_level_handler).put(update_server_logging_level_handler),
         )

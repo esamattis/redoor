@@ -1,5 +1,5 @@
 use super::RouterError;
-use super::state::{DirectDownload, DirectUpload, DirectUploadKind, RouterState};
+use super::state::{DirectUpload, DirectUploadKind, RouterState};
 use super::ui;
 use crate::commands::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
@@ -21,10 +21,6 @@ pub(crate) struct DownloadStartContext {
     pub(crate) full_size: Option<u64>,
     /// Starting file offset when this request may resume a canceled download.
     pub(crate) resume_offset: Option<u64>,
-    /// Bounded sink that receives streamed chunks for the REST caller.
-    pub(crate) chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
-    /// Optional direct signal for terminating the public HTTP body on explicit cancellation.
-    pub(crate) rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Inputs needed to register a new direct upload in progress tracking.
@@ -65,8 +61,11 @@ pub(crate) struct CopyStartContext {
     pub(crate) direction: TransferDirection,
 }
 
-/// Creates a progress entry and direct-download state for a newly started download.
-pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadStartContext) {
+/// Records file progress without taking ownership of the underlying output transport.
+pub(crate) fn record_download_start(
+    state: &mut RouterState,
+    context: DownloadStartContext,
+) -> TransferId {
     let transfer_id = context.request_id.as_transfer_id();
     let now = UnixTimestampSeconds::new(chrono::Utc::now().timestamp());
     let restart_offset = context
@@ -129,18 +128,9 @@ pub(crate) fn record_download_start(state: &mut RouterState, context: DownloadSt
             },
         );
     }
-    state.streams.downloads.insert(
-        context.request_id,
-        DirectDownload {
-            agent_id: context.agent_id,
-            chunk_sender: Some(context.chunk_sender),
-            rest_cancel_sender: context.rest_cancel_sender,
-            progress_id: Some(progress_id),
-            canceled_by_rest: false,
-        },
-    );
     // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
     ui::notify_transfer_refresh_immediately(state);
+    progress_id
 }
 
 /// Creates a progress entry and direct-upload state for a newly started upload.

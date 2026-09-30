@@ -126,19 +126,30 @@ pub struct PendingRestReplies {
         HashMap<RequestId, (tokio::sync::oneshot::Sender<CommandResult>, AgentId)>,
 }
 
-/// State tracked for one direct download stream flowing from agent to REST.
-pub struct DirectDownload {
+/// Transport ownership for agent-to-REST output, independent of file progress.
+pub struct DirectOutputStream {
+    /// Distinguishes execution cancellation from file-transfer cancellation.
+    pub(crate) kind: DirectOutputKind,
     /// Agent currently producing this stream.
     pub(crate) agent_id: AgentId,
     /// Bounded REST-facing sink that receives forwarded chunks.
     pub(crate) chunk_sender: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
     /// Stops a live REST body before waiting for the agent's cleanup acknowledgement.
     pub(crate) rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
-    /// Progress entry may differ from the request id when a range request resumes a download.
+    /// Execution has no progress entry; resumed downloads can use an earlier transfer id.
     pub(crate) progress_id: Option<TransferId>,
     /// Whether REST-side teardown already triggered cancellation for this
     /// upload, used to suppress duplicate forwarding and duplicate completion.
     pub(crate) canceled_by_rest: bool,
+}
+
+/// Shared output transport must not imply that every stream is a file download.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectOutputKind {
+    /// File streams retain transfer history and byte progress.
+    File,
+    /// Process output retains only live transport and cancellation ownership.
+    Execution,
 }
 
 /// State tracked for one direct upload stream flowing from REST to agent.
@@ -205,10 +216,10 @@ impl DirectUploadKind {
 }
 
 #[derive(Default)]
-/// Active direct upload and download streams keyed by internal request id.
+/// Active transport streams keyed by internal request id, independent of public file history.
 pub struct StreamTransferRegistry {
-    /// Direct download streams keyed by the router-generated request id.
-    pub(crate) downloads: HashMap<RequestId, DirectDownload>,
+    /// Agent-to-REST output includes file bytes and process events.
+    pub(crate) outputs: HashMap<RequestId, DirectOutputStream>,
     /// Direct upload streams keyed by the router-generated request id.
     pub(crate) uploads: HashMap<RequestId, DirectUpload>,
 }

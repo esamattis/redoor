@@ -1,11 +1,13 @@
+//! Shared bounded output transport; only filesystem streams participate in transfer progress.
+
 use super::super::RouterError;
 use super::super::RouterHandle;
 use super::super::messages::{
-    ExecuteStreamRequest, FinishDownloadChunkRoute, RouteStreamChunkRequest, RouterMsg,
-    TransferProgressUpdateRequest,
+    ExecuteStreamRequest, FinishOutputChunkRoute, OutputStreamTracking, RouteStreamChunkRequest,
+    RouterMsg, TransferProgressUpdateRequest,
 };
 use super::super::progress::{self, DownloadStartContext};
-use super::super::state::RouterState;
+use super::super::state::{DirectOutputKind, DirectOutputStream, RouterState};
 use super::super::ui;
 use crate::commands::{TransferDirection, TransferProgressState};
 use crate::log;
@@ -22,20 +24,19 @@ pub(crate) fn finish_rejected(
     };
     if !state
         .streams
-        .downloads
+        .outputs
         .get(&response.request_id)
         .is_some_and(|stream| stream.agent_id == response.agent_id)
     {
         return false;
     }
-    let Some(stream) = state.streams.downloads.remove(&response.request_id) else {
+    let Some(stream) = state.streams.outputs.remove(&response.request_id) else {
         return false;
     };
-    let id = stream
-        .progress_id
-        .unwrap_or_else(|| response.request_id.as_transfer_id());
-    progress::mark_transfer_errored(state, id, message.clone());
-    ui::notify_transfer_refresh(state);
+    if let Some(id) = stream.progress_id {
+        progress::mark_transfer_errored(state, id, message.clone());
+        ui::notify_transfer_refresh(state);
+    }
     if let Some(sender) = stream.chunk_sender {
         let chunk = crate::streaming::StreamChunk {
             request_id: response.request_id,
@@ -61,15 +62,17 @@ pub(crate) fn update_progress(
     state: &mut RouterState,
     request: &TransferProgressUpdateRequest,
 ) -> bool {
-    let progress_id = state
+    let Some(progress_id) = state
         .streams
-        .downloads
+        .outputs
         .get(&request.request_id)
         .and_then(|transfer| {
             (transfer.agent_id == request.agent_id).then_some(transfer.progress_id)
         })
         .flatten()
-        .unwrap_or_else(|| request.request_id.as_transfer_id());
+    else {
+        return false;
+    };
 
     let Some(progress) = state.progress.entries.get(&progress_id) else {
         return false;
@@ -90,7 +93,7 @@ pub(crate) fn update_progress(
     true
 }
 
-/// Starts a direct download stream and records its progress entry.
+/// Registers shared output transport and creates progress only for filesystem downloads.
 pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
     let request_id = state.next_id();
 
@@ -122,17 +125,37 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
             }));
             return;
         }
-        progress::record_download_start(
-            state,
-            DownloadStartContext {
-                request_id,
-                agent_id: request.agent_id.clone(),
-                path: request.path,
-                total_bytes: request.total_bytes,
-                full_size: request.full_size,
-                resume_offset: request.resume_offset,
-                chunk_sender: request.chunk_sender,
+        let (kind, progress_id) = match request.tracking {
+            OutputStreamTracking::Download {
+                path,
+                total_bytes,
+                full_size,
+                resume_offset,
+            } => (
+                DirectOutputKind::File,
+                Some(progress::record_download_start(
+                    state,
+                    DownloadStartContext {
+                        request_id,
+                        agent_id: request.agent_id.clone(),
+                        path,
+                        total_bytes,
+                        full_size,
+                        resume_offset,
+                    },
+                )),
+            ),
+            OutputStreamTracking::Execution => (DirectOutputKind::Execution, None),
+        };
+        state.streams.outputs.insert(
+            request_id,
+            DirectOutputStream {
+                kind,
+                agent_id: request.agent_id,
+                chunk_sender: Some(request.chunk_sender),
                 rest_cancel_sender: request.rest_cancel_sender,
+                progress_id,
+                canceled_by_rest: false,
             },
         );
 
@@ -149,7 +172,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
     }
 }
 
-/// Forwards one inbound direct-download chunk to the waiting REST stream.
+/// Forwards bounded output without coupling process events to file-transfer progress.
 pub(crate) fn route_chunk(
     state: &mut RouterState,
     myself: &RouterHandle,
@@ -159,7 +182,7 @@ pub(crate) fn route_chunk(
     let chunk = request.chunk;
     let reply = request.reply;
     let request_id = chunk.request_id;
-    let chunk_sender = match state.streams.downloads.get(&request_id) {
+    let chunk_sender = match state.streams.outputs.get(&request_id) {
         Some(transfer) => {
             if transfer.agent_id != agent_id {
                 log!(
@@ -181,20 +204,19 @@ pub(crate) fn route_chunk(
                         request_id,
                         chunk.is_error
                     );
-                    let transfer_id = transfer
-                        .progress_id
-                        .unwrap_or_else(|| request_id.as_transfer_id());
-                    if matches!(
-                        state
-                            .progress
-                            .entries
-                            .get(&transfer_id)
-                            .map(|entry| &entry.state),
-                        Some(crate::commands::TransferProgressState::Canceling)
-                    ) {
+                    if let Some(transfer_id) = transfer.progress_id
+                        && matches!(
+                            state
+                                .progress
+                                .entries
+                                .get(&transfer_id)
+                                .map(|entry| &entry.state),
+                            Some(crate::commands::TransferProgressState::Canceling)
+                        )
+                    {
                         progress::mark_transfer_canceled(state, transfer_id);
                     }
-                    state.streams.downloads.remove(&request_id);
+                    state.streams.outputs.remove(&request_id);
                 }
                 let _ = reply.send(());
                 return;
@@ -240,32 +262,30 @@ pub(crate) fn route_chunk(
     let myself = myself.clone();
     tokio::spawn(async move {
         let send_succeeded = chunk_sender.send(chunk).await.is_ok();
-        let send_result = myself.send(RouterMsg::FinishRoutedDownloadChunk(
-            FinishDownloadChunkRoute {
-                agent_id,
-                request_id,
-                chunk_index,
-                is_last,
-                bytes,
-                error_message,
-                send_succeeded,
-                reply,
-            },
-        ));
+        let send_result = myself.send(RouterMsg::FinishRoutedOutputChunk(FinishOutputChunkRoute {
+            agent_id,
+            request_id,
+            chunk_index,
+            is_last,
+            bytes,
+            error_message,
+            send_succeeded,
+            reply,
+        }));
         if let Err(tokio::sync::mpsc::error::SendError(message)) = send_result
-            && let RouterMsg::FinishRoutedDownloadChunk(route) = message
+            && let RouterMsg::FinishRoutedOutputChunk(route) = message
         {
             let _ = route.reply.send(());
         }
     });
 }
 
-/// Finalizes one direct-download chunk after the REST-side bounded send completes.
-pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloadChunkRoute) {
+/// Settles output transport after downstream acceptance, updating file progress only when present.
+pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishOutputChunkRoute) {
     let is_error = route.error_message.is_some();
 
     if !route.send_succeeded {
-        let cancellation = match state.streams.downloads.get_mut(&route.request_id) {
+        let cancellation = match state.streams.outputs.get_mut(&route.request_id) {
             Some(transfer) => {
                 if transfer.agent_id != route.agent_id {
                     log!(
@@ -281,28 +301,27 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                     return;
                 }
                 transfer.canceled_by_rest = true;
-                Some(
-                    transfer
-                        .progress_id
-                        .unwrap_or_else(|| route.request_id.as_transfer_id()),
-                )
+                Some(transfer.progress_id)
             }
             None => {
                 return;
             }
         };
 
-        if let Some(transfer_id) = cancellation {
+        if let Some(progress_id) = cancellation {
             log!(
                 Level::Warning,
                 "Failed to send chunk to REST stream: request_id={}",
                 route.request_id
             );
-            progress::mark_transfer_errored(
-                state,
-                transfer_id,
-                "Download canceled by client".to_string(),
-            );
+            if let Some(transfer_id) = progress_id {
+                progress::mark_transfer_errored(
+                    state,
+                    transfer_id,
+                    "Download canceled by client".to_string(),
+                );
+                ui::notify_transfer_refresh(state);
+            }
             if let Some(agent_connection) = state.agents.by_id.get(&route.agent_id) {
                 log!(
                     Level::Info,
@@ -314,13 +333,12 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
                     request_id: route.request_id,
                 });
             }
-            ui::notify_transfer_refresh(state);
         }
         return;
     }
 
     let has_matching_transfer = matches!(
-        state.streams.downloads.get(&route.request_id),
+        state.streams.outputs.get(&route.request_id),
         Some(transfer) if transfer.agent_id == route.agent_id
     );
 
@@ -330,24 +348,26 @@ pub(crate) fn finish_routed_chunk(state: &mut RouterState, route: &FinishDownloa
 
     let transfer_id = state
         .streams
-        .downloads
+        .outputs
         .get(&route.request_id)
-        .and_then(|transfer| transfer.progress_id)
-        .unwrap_or_else(|| route.request_id.as_transfer_id());
+        .and_then(|transfer| transfer.progress_id);
 
-    if !is_error {
-        progress::increment_bytes(state, transfer_id, route.bytes);
-    }
-
-    if let Some(error_message) = &route.error_message {
-        progress::mark_transfer_errored(state, transfer_id, error_message.clone());
-    } else if route.is_last {
-        progress::mark_transfer_completed(state, transfer_id);
+    if let Some(transfer_id) = transfer_id {
+        if !is_error {
+            progress::increment_bytes(state, transfer_id, route.bytes);
+        }
+        if let Some(error_message) = &route.error_message {
+            progress::mark_transfer_errored(state, transfer_id, error_message.clone());
+        } else if route.is_last {
+            progress::mark_transfer_completed(state, transfer_id);
+        }
     }
 
     if route.is_last || is_error {
-        state.streams.downloads.remove(&route.request_id);
-        ui::notify_transfer_refresh(state);
+        state.streams.outputs.remove(&route.request_id);
+        if transfer_id.is_some() {
+            ui::notify_transfer_refresh(state);
+        }
         log!(
             Level::Info,
             "Streaming complete: agent_id={}, request_id={}, total_chunks={}, is_error={}",

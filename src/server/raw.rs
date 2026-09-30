@@ -277,10 +277,12 @@ pub(crate) async fn raw_agent_handler(
                         range_start,
                         range_end,
                     },
-                    path: path.clone(),
-                    total_bytes: content_length,
-                    full_size: Some(metadata.file_size),
-                    resume_offset: range_start,
+                    tracking: actors::router::OutputStreamTracking::Download {
+                        path: path.clone(),
+                        total_bytes: content_length,
+                        full_size: Some(metadata.file_size),
+                        resume_offset: range_start,
+                    },
                     reply,
                     chunk_sender: response_sender,
                     rest_cancel_sender: Some(rest_cancel_sender.clone()),
@@ -391,14 +393,16 @@ async fn stream_directory_archive(
                         path: path.clone(),
                         include_root: true,
                     },
-                    path: path.clone(),
-                    // Archive length is unknown at start so the body can begin immediately
-                    // without Content-Length. A parallel metadata walk may publish a total
-                    // later; completion still promotes counted bytes if that walk is late.
-                    // Counts are plain tar bytes from the agent, before REST-edge gzip.
-                    total_bytes: 0,
-                    full_size: None,
-                    resume_offset: None,
+                    tracking: actors::router::OutputStreamTracking::Download {
+                        path: path.clone(),
+                        // Archive length is unknown at start so the body can begin immediately
+                        // without Content-Length. A parallel metadata walk may publish a total
+                        // later; completion still promotes counted bytes if that walk is late.
+                        // Counts are plain tar bytes from the agent, before REST-edge gzip.
+                        total_bytes: 0,
+                        full_size: None,
+                        resume_offset: None,
+                    },
                     reply,
                     chunk_sender: response_sender,
                     rest_cancel_sender: Some(rest_cancel_sender.clone()),
@@ -721,10 +725,12 @@ mod tests {
                         range_start: None,
                         range_end: None,
                     },
-                    path: path.clone(),
-                    total_bytes: 2,
-                    full_size: Some(2),
-                    resume_offset: None,
+                    tracking: actors::router::OutputStreamTracking::Download {
+                        path: path.clone(),
+                        total_bytes: 2,
+                        full_size: Some(2),
+                        resume_offset: None,
+                    },
                     reply,
                     chunk_sender,
                     rest_cancel_sender: Some(rest_cancel_sender.clone()),

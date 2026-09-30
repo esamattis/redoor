@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import type { ExecRequest } from "#bindings/ExecRequest";
+import type { ExecEvent } from "#bindings/ExecEvent";
 import {
     setupTestDir,
     teardownTestDir,
@@ -20,6 +22,58 @@ test.describe.serial("Transfer Path Links", () => {
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+    });
+
+    test("keeps transfer history usable during remote execution", async ({
+        page,
+    }) => {
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error) => pageErrors.push(error.message));
+        await page.goto(`${WEB_BASE_URL}/transfers`);
+        // Start execution only after the transfer view is mounted to reproduce concurrent CLI/API activity.
+        await expect(
+            page.getByRole("heading", {
+                name: "Transfer history",
+                exact: true,
+            }),
+        ).toBeVisible();
+        const request: ExecRequest = {
+            argv: ["printf", "transfer-view-exec-regression"],
+            cwd: null,
+            env: {},
+            timeout_ms: null,
+        };
+        const response = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents/${ctx.agentId}/exec`,
+            { data: request },
+        );
+        // Real output confirms this exercised the same stream endpoint as `redoor remote exec`.
+        expect(response.ok()).toBe(true);
+        const records: ExecEvent[] = (await response.text())
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+        const stdout = records.flatMap((event) =>
+            event.type === "stdout" ? event.data : [],
+        );
+        // Output bytes must be decoded from the NDJSON protocol rather than treated as plain text.
+        expect(Buffer.from(stdout).toString()).toBe(
+            "transfer-view-exec-regression",
+        );
+        expect(records.at(-1)).toEqual({ type: "exit", code: 0, signal: null });
+        await page.reload();
+        // Refetching history must remain renderable after execution completes and its live stream is released.
+        await expect(
+            page.getByRole("heading", {
+                name: "Transfer history",
+                exact: true,
+            }),
+        ).toBeVisible();
+        // Executions have no filesystem path and therefore do not belong in the transfer table.
+        await expect(
+            page.getByRole("row").filter({ hasText: "remote exec" }),
+        ).toHaveCount(0);
+        expect(pageErrors).toEqual([]);
     });
 
     test("should navigate to browser view from transfer path link", async ({

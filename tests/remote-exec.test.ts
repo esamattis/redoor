@@ -18,6 +18,7 @@ import {
 } from "./test-utils";
 import type { ExecRequest } from "#bindings/ExecRequest";
 import type { ExecEvent } from "#bindings/ExecEvent";
+import type { CancelExecutionResponse } from "#bindings/CancelExecutionResponse";
 
 describe("Remote exec and non-shell streaming API", () => {
     const processes = new ProcessManager();
@@ -126,6 +127,8 @@ describe("Remote exec and non-shell streaming API", () => {
             values.map((value) => `<${value}>`).join(""),
         );
         expect(output.stderr).toBe("");
+        // Completed CLI executions must not leak output labels into filesystem transfer history.
+        expect((await setup.apiClient.getTransferProgress()).transfers).toEqual([]);
     });
 
     it("sets cwd and repeated environment overrides, preserves stderr and returns a remote failure", async () => {
@@ -310,17 +313,36 @@ describe("Remote exec and non-shell streaming API", () => {
         const echo = await setup.testAgent.echo("responsive during exec");
         expect(echo.message).toBe("responsive during exec");
         const id = response.headers.get("X-Redoor-Execution-Id");
-        const canceled = await fetch(
+        // Execution output must never create a path-bearing file-transfer entry, even while active.
+        expect((await setup.apiClient.getTransferProgress()).transfers).toEqual([]);
+        const wrongAgent = await fetch(
+            `${setup.apiClient.baseUrl}/api/v1/agents/another-agent/exec/${id}`,
+            { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
+        );
+        // An execution id cannot authorize cancellation under a different agent's resource.
+        expect(wrongAgent.status).toBe(404);
+        const fileCancellation = await fetch(
             `${setup.apiClient.baseUrl}/api/v1/transfers/${id}`,
+            { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
+        );
+        // Shared transport ids do not make executions cancellable as filesystem transfers.
+        expect(fileCancellation.status).toBe(404);
+        const canceled = await fetch(
+            `${setup.apiClient.baseUrl}/api/v1/agents/${setup.testAgent.id}/exec/${id}`,
             { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
         );
         // Independent control must stop the worker even when the consumer stops reading its infinite output.
         expect(canceled.status).toBe(200);
+        const cancellation: CancelExecutionResponse = await canceled.json();
+        // The execution endpoint returns an execution handle, not a transfer-progress handle.
+        expect(cancellation.execution_id).toBe(Number(id));
         const pid = Number(await fs.readFile(pidFile, "utf8"));
         await waitForValue({
             description: "backpressured exec reaped",
             predicate: async () => gone(pid),
         });
+        // Cancellation must not leave a synthetic download in completed transfer history either.
+        expect((await setup.apiClient.getTransferProgress()).transfers).toEqual([]);
     });
 
     it("returns a transport failure promptly when the agent execution limit rejects admission", async () => {
@@ -347,14 +369,10 @@ describe("Remote exec and non-shell streaming API", () => {
         abort.abort();
         for (const response of responses)
             await response.body?.cancel().catch(() => undefined);
+        // A real execution proves admission slots were released; transfer history cannot observe execution cleanup.
         await waitForValue({
             description: "rejected admission cleanup",
-            predicate: async () =>
-                !(await setup.apiClient.getTransferProgress()).transfers.some(
-                    (entry) =>
-                        entry.path === "remote exec" &&
-                        ["active", "canceling"].includes(entry.state),
-                ),
+            predicate: async () => (await exec(setup.testAgent.id, "--", "true")).exitCode === 0,
         });
     });
 
@@ -398,6 +416,32 @@ describe("Remote exec and non-shell streaming API", () => {
         // Human-mode exit status follows the conventional 128 + signal mapping without status on stdout.
         expect(signaled.exitCode).toBe(143);
         expect(signaled.stdout).toBe("");
+    });
+
+    it("rejects cancellation of completed executions and file-transfer handles", async () => {
+        const response = await api({
+            argv: ["true"], cwd: null, env: {}, timeout_ms: null,
+        });
+        await response.text();
+        const id = response.headers.get("X-Redoor-Execution-Id");
+        const finished = await fetch(
+            `${setup.apiClient.baseUrl}/api/v1/agents/${setup.testAgent.id}/exec/${id}`,
+            { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
+        );
+        // Completed output no longer owns an execution resource and must not appear cancellable.
+        expect(finished.status).toBe(404);
+        const destination = path.join(files.tempDirectory(), "file.txt");
+        await setup.testAgent.upload(destination, new File(["content"], "file.txt"));
+        const transfer = (await setup.apiClient.getTransferProgress()).transfers.find(
+            (entry) => entry.path === destination,
+        );
+        if (transfer === undefined) throw new Error("Missing file transfer fixture");
+        const file = await fetch(
+            `${setup.apiClient.baseUrl}/api/v1/agents/${setup.testAgent.id}/exec/${transfer.request_id}`,
+            { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
+        );
+        // Execution cancellation must not accept another resource merely because its numeric id is valid.
+        expect(file.status).toBe(404);
     });
 
     it("reports lost transport and stops agent work when its server connection disappears", async () => {

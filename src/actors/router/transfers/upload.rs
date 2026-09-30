@@ -485,7 +485,7 @@ pub(crate) fn finish_transfer(
             )
         }
         None => {
-            if state.streams.downloads.contains_key(&request_id) {
+            if state.streams.outputs.contains_key(&request_id) {
                 log!(
                     Level::Warning,
                     "Received command response for download transfer: request_id={}, result={:?}",

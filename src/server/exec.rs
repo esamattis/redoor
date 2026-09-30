@@ -9,11 +9,47 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use redoor::{
-    actors::router::{ExecuteStreamRequest, RouterMsg},
+    actors::router::{ExecuteStreamRequest, OutputStreamTracking, RouterMsg},
     commands::{Command, ErrorResponse},
-    exec_protocol::{ExecEvent, ExecRequest},
-    types::AgentId,
+    exec_protocol::{CancelExecutionResponse, ExecEvent, ExecRequest},
+    types::{AgentId, RequestId},
 };
+
+/// Cancels process output through its own resource while file-transfer history stays file-only.
+pub(crate) async fn cancel_execution_handler(
+    Path((agent, execution_id)): Path<(String, u64)>,
+    State(state): State<ServerState>,
+) -> Response {
+    let request_id = RequestId::new(execution_id);
+    match state
+        .router_ref
+        .request(5_000, |reply| RouterMsg::CancelExecution {
+            agent_id: AgentId::from(agent),
+            request_id,
+            reply,
+        })
+        .await
+    {
+        Ok(true) => Json(CancelExecutionResponse {
+            execution_id: request_id,
+        })
+        .into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Execution not found".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to cancel execution: {error:?}"),
+            }),
+        )
+            .into_response(),
+    }
+}
 
 /// Returns NDJSON immediately after admission; dropping the body cancels the owned process.
 pub(crate) async fn exec_handler(
@@ -33,10 +69,7 @@ pub(crate) async fn exec_handler(
             RouterMsg::ExecuteStreamCommandRest(ExecuteStreamRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Exec { request },
-                path: "remote exec".into(),
-                total_bytes: 0,
-                full_size: None,
-                resume_offset: None,
+                tracking: OutputStreamTracking::Execution,
                 reply,
                 chunk_sender: sender,
                 rest_cancel_sender: Some(cancel_sender.clone()),

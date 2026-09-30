@@ -201,11 +201,11 @@ pub struct RouteStreamChunkRequest {
     pub reply: RouterReply<()>,
 }
 
-/// Completes one bounded direct-download chunk forward after the REST receiver accepts it.
-pub struct FinishDownloadChunkRoute {
-    /// Agent that produced the download chunk.
+/// Completes bounded output forwarding after the REST receiver accepts it.
+pub struct FinishOutputChunkRoute {
+    /// Agent that produced the output chunk.
     pub agent_id: AgentId,
-    /// Internal transfer request id for the direct download.
+    /// Internal request id for the file or execution stream.
     pub request_id: RequestId,
     /// Chunk index used for completion logging.
     pub chunk_index: ChunkIndex,
@@ -257,26 +257,33 @@ pub struct FinishCopyChunkRoute {
     pub reply: RouterReply<()>,
 }
 
-/// Starts a direct download-style streaming command for a REST caller.
+/// Starts agent-to-REST output transport with explicit resource-specific tracking.
 pub struct ExecuteStreamRequest {
-    /// Target agent that should execute the download-style command.
+    /// Target agent producing file bytes or execution events.
     pub agent_id: AgentId,
     /// Streaming command to run on the agent.
     pub command: Command,
-    /// Path used for transfer progress reporting.
-    pub path: String,
-    /// Expected total byte count used for progress reporting.
-    pub total_bytes: u64,
-    /// Full file size used to recognize a continuation after client-side range resume.
-    pub full_size: Option<u64>,
-    /// Starting file offset for a range request that may continue a canceled download.
-    pub resume_offset: Option<u64>,
+    /// File progress is independent of transport; execution has no filesystem resource.
+    pub tracking: OutputStreamTracking,
     /// Reply port that returns the allocated request id so the consumer can cancel on drop.
     pub reply: RouterReply<Result<RequestId, RouterError>>,
     /// Bounded sink that receives streamed chunks for the REST caller.
     pub chunk_sender: tokio::sync::mpsc::Sender<crate::streaming::StreamChunk>,
     /// Explicit user cancellation closes the REST body independently of payload backpressure.
     pub rest_cancel_sender: Option<tokio::sync::watch::Sender<bool>>,
+}
+
+/// Keeps filesystem progress metadata out of non-file output streams.
+pub enum OutputStreamTracking {
+    /// Downloads expose a filesystem resource and may resume a previous transfer.
+    Download {
+        path: String,
+        total_bytes: u64,
+        full_size: Option<u64>,
+        resume_offset: Option<u64>,
+    },
+    /// Executions own a live output stream but do not create file-transfer history.
+    Execution,
 }
 
 /// Outcome of waiting for an upload destination to become ready.
@@ -427,10 +434,16 @@ pub enum RouterMsg {
     PruneClosedPendingRest,
     ExecuteCommandRest(ExecuteCommandRequest),
     RouteStreamChunk(RouteStreamChunkRequest),
-    FinishRoutedDownloadChunk(FinishDownloadChunkRoute),
+    FinishRoutedOutputChunk(FinishOutputChunkRoute),
     FinishRoutedUploadChunk(FinishUploadChunkRoute),
     FinishRoutedCopyChunk(FinishCopyChunkRoute),
     ExecuteStreamCommandRest(ExecuteStreamRequest),
+    /// Cancels only an execution owned by the specified agent, independently of file progress.
+    CancelExecution {
+        agent_id: AgentId,
+        request_id: RequestId,
+        reply: RouterReply<bool>,
+    },
     StartUploadStreamRest(StartUploadRequest),
     SendStreamChunkToAgent(SendStreamChunkRequest),
     CommitDirectUpload(CommitDirectUploadRequest),

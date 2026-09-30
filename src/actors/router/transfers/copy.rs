@@ -7,7 +7,7 @@ use super::super::messages::{
 };
 use super::super::progress::{self, CopyStartContext};
 use super::super::state::{
-    CopyExecution, CopyOperation, CopyRequest, DirectDownload, DirectUpload, RouterState,
+    CopyExecution, CopyOperation, CopyRequest, DirectOutputStream, DirectUpload, RouterState,
 };
 use crate::commands::{Command, CommandResult, TransferDirection};
 use crate::log;
@@ -56,7 +56,7 @@ pub(crate) fn cleanup_copy_tracking(state: &mut RouterState, public_request_id: 
                     .copies
                     .public_id_by_internal_request
                     .remove(&dest_request_id);
-                state.streams.downloads.remove(&source_request_id);
+                state.streams.outputs.remove(&source_request_id);
                 state.streams.uploads.remove(&dest_request_id);
             }
             CopyExecution::LocalAgent { request_id, .. } => {
@@ -326,9 +326,10 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
                 },
             );
 
-            state.streams.downloads.insert(
+            state.streams.outputs.insert(
                 source_request_id,
-                DirectDownload {
+                DirectOutputStream {
+                    kind: super::super::state::DirectOutputKind::File,
                     agent_id: request.source_agent_id.clone(),
                     chunk_sender: Some(tokio::sync::mpsc::channel(1).0),
                     rest_cancel_sender: None,

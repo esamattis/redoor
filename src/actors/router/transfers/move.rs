@@ -227,7 +227,7 @@ fn begin_source_deletion(
                 .copies
                 .public_id_by_internal_request
                 .remove(&dest_request_id);
-            state.streams.downloads.remove(&source_request_id);
+            state.streams.outputs.remove(&source_request_id);
             state.streams.uploads.remove(&dest_request_id);
         }
         move_request.execution = CopyExecution::DeletingMoveSource {

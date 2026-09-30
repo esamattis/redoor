@@ -101,17 +101,13 @@ pub(crate) fn cancel_public_transfer(
 
     let download_id = state
         .streams
-        .downloads
+        .outputs
         .iter()
         .find_map(|(request_id, download)| {
-            (download
-                .progress_id
-                .unwrap_or_else(|| request_id.as_transfer_id())
-                == transfer_id)
-                .then_some(*request_id)
+            (download.progress_id == Some(transfer_id)).then_some(*request_id)
         });
     if let Some(request_id) = download_id {
-        if let Some(download) = state.streams.downloads.get_mut(&request_id) {
+        if let Some(download) = state.streams.outputs.get_mut(&request_id) {
             // Drop the REST sink immediately, but retain ownership until the
             // agent's terminal frame confirms its file and registry are released.
             download.chunk_sender.take();
@@ -159,6 +155,26 @@ pub(crate) fn cancel_public_transfer(
         transfer_id,
         status: CancelTransferStatus::Accepted,
     })
+}
+
+/// Execution cancellation uses live stream ownership rather than inventing file progress.
+pub(crate) fn cancel_execution(
+    state: &mut RouterState,
+    request_id: crate::types::RequestId,
+    agent_id: AgentId,
+) -> bool {
+    let Some(stream) = state.streams.outputs.get_mut(&request_id) else {
+        return false;
+    };
+    if stream.agent_id != agent_id || stream.kind != super::state::DirectOutputKind::Execution {
+        return false;
+    }
+    // Wake the HTTP body even when its bounded output sink is backpressured.
+    if let Some(sender) = stream.rest_cancel_sender.take() {
+        let _ = sender.send(true);
+    }
+    cancel_transfer(state, request_id, agent_id);
+    true
 }
 
 /// Cleans up all router-owned state associated with a disconnected agent.
@@ -222,7 +238,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
 
     let orphaned_downloads: Vec<_> = state
         .streams
-        .downloads
+        .outputs
         .iter()
         .filter(|(_, transfer)| &transfer.agent_id == agent_id)
         .map(|(request_id, _)| *request_id)
@@ -236,15 +252,11 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
         .collect();
 
     for request_id in &orphaned_downloads {
-        if let Some(transfer) = state.streams.downloads.remove(request_id) {
+        if let Some(transfer) = state.streams.outputs.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            settle_disconnected_transfer(
-                state,
-                transfer
-                    .progress_id
-                    .unwrap_or_else(|| request_id.as_transfer_id()),
-                disconnect_message,
-            );
+            if let Some(progress_id) = transfer.progress_id {
+                settle_disconnected_transfer(state, progress_id, disconnect_message);
+            }
             log!(
                 Level::Warning,
                 "Cleaning up orphaned download stream: request_id={}, agent_id={}",
@@ -339,20 +351,16 @@ pub(crate) async fn cleanup_agent_transfer_requests(
 
     let download_ids: Vec<_> = state
         .streams
-        .downloads
+        .outputs
         .iter()
         .filter(|(_, transfer)| &transfer.agent_id == agent_id)
         .map(|(request_id, _)| *request_id)
         .collect();
     for request_id in &download_ids {
-        if let Some(transfer) = state.streams.downloads.remove(request_id) {
-            settle_disconnected_transfer(
-                state,
-                transfer
-                    .progress_id
-                    .unwrap_or_else(|| request_id.as_transfer_id()),
-                reason.clone(),
-            );
+        if let Some(transfer) = state.streams.outputs.remove(request_id)
+            && let Some(progress_id) = transfer.progress_id
+        {
+            settle_disconnected_transfer(state, progress_id, reason.clone());
         }
     }
 
@@ -401,7 +409,7 @@ pub(crate) fn cancel_transfer(
     request_id: crate::types::RequestId,
     agent_id: AgentId,
 ) {
-    match state.streams.downloads.get_mut(&request_id) {
+    match state.streams.outputs.get_mut(&request_id) {
         Some(transfer) => {
             if transfer.agent_id != agent_id {
                 log!(
@@ -420,19 +428,21 @@ pub(crate) fn cancel_transfer(
 
             transfer.canceled_by_rest = true;
             transfer.chunk_sender.take();
-            let progress_id = transfer
-                .progress_id
-                .unwrap_or_else(|| request_id.as_transfer_id());
-            if let Some(agent_connection) = state.agents.by_id.get(&agent_id) {
-                agent_connection.send_priority_message(Message::CancelTransfer { request_id });
+            let progress_id = transfer.progress_id;
+            if let Some(agent_connection) = state.agents.by_id.get(&agent_id)
+                && !agent_connection.send_priority_message(Message::CancelTransfer { request_id })
+            {
+                agent_connection.send_message(Message::CancelTransfer { request_id });
             }
             // Downloads report cancellation immediately because the client has
             // already stopped consuming the stream at this point.
-            progress::mark_transfer_errored(
-                state,
-                progress_id,
-                "Download canceled by client".to_string(),
-            );
+            if let Some(progress_id) = progress_id {
+                progress::mark_transfer_errored(
+                    state,
+                    progress_id,
+                    "Download canceled by client".to_string(),
+                );
+            }
         }
         None => match state.streams.uploads.get_mut(&request_id) {
             Some(transfer) => {

@@ -930,12 +930,13 @@ mod tests {
 
         let download_id = state.next_id();
         let (chunk_sender, _chunk_receiver) = mpsc::channel(1);
-        state.streams.downloads.insert(
+        state.streams.outputs.insert(
             download_id,
-            super::super::state::DirectDownload {
+            super::super::state::DirectOutputStream {
                 agent_id: AgentId::from("agent"),
                 chunk_sender: Some(chunk_sender),
                 rest_cancel_sender: None,
+                kind: super::super::state::DirectOutputKind::File,
                 progress_id: Some(download_id.as_transfer_id()),
                 canceled_by_rest: false,
             },
@@ -969,7 +970,7 @@ mod tests {
         );
 
         // Stale unregister is ignored after replacement, so cleanup must happen here.
-        assert!(state.streams.downloads.is_empty());
+        assert!(state.streams.outputs.is_empty());
         assert!(state.streams.uploads.is_empty());
         // Waiting HTTP upload clients must observe the lost payload path.
         assert!(matches!(

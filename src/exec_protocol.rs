@@ -3,6 +3,13 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// Confirms which execution received cancellation without exposing a fictitious file transfer.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CancelExecutionResponse {
+    pub execution_id: crate::types::RequestId,
+}
+
 /// Keeps argv separate from environment so execution never implies shell parsing.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

@@ -11,10 +11,11 @@ pub use error::RouterError;
 pub use messages::{
     ApplyManagedLifecycleRequest, CancelPublicTransferError, CommitDirectUploadRequest,
     ExecuteCommandRequest, ExecuteStreamRequest, OpenAgentLogStreamRequest, OpenTerminalRequest,
-    RegisterAgentRequest, RegisterManagedAgentRequest, RegisterTransferConnectionRequest,
-    RegisterUiSubscriberRequest, RouteResponse, RouteStreamChunkRequest, RouteTransferReadyRequest,
-    RouterMsg, SendStreamChunkRequest, StartCopyRequest, StartUploadRequest,
-    TransferProgressUpdateRequest, UnregisterManagedAgentRequest, UploadStartOutcome,
+    OutputStreamTracking, RegisterAgentRequest, RegisterManagedAgentRequest,
+    RegisterTransferConnectionRequest, RegisterUiSubscriberRequest, RouteResponse,
+    RouteStreamChunkRequest, RouteTransferReadyRequest, RouterMsg, SendStreamChunkRequest,
+    StartCopyRequest, StartUploadRequest, TransferProgressUpdateRequest,
+    UnregisterManagedAgentRequest, UploadStartOutcome,
 };
 pub use state::CopyContentKind;
 pub use state::CopyOperation;
@@ -193,7 +194,7 @@ impl RouterState {
             return;
         }
 
-        if transfers::download::finish_rejected(self, &response) {
+        if transfers::output::finish_rejected(self, &response) {
             return;
         }
 
@@ -306,11 +307,11 @@ impl RouterState {
                     if self.copies.is_remote_copy_stream(request.chunk.request_id) {
                         transfers::copy::route_chunk(&mut self, &router_handle, request);
                     } else {
-                        transfers::download::route_chunk(&mut self, &router_handle, request);
+                        transfers::output::route_chunk(&mut self, &router_handle, request);
                     }
                 }
-                RouterMsg::FinishRoutedDownloadChunk(route) => {
-                    transfers::download::finish_routed_chunk(&mut self, &route);
+                RouterMsg::FinishRoutedOutputChunk(route) => {
+                    transfers::output::finish_routed_chunk(&mut self, &route);
                     let _ = route.reply.send(());
                 }
                 RouterMsg::FinishRoutedUploadChunk(route) => {
@@ -322,7 +323,7 @@ impl RouterState {
                     let _ = route.reply.send(());
                 }
                 RouterMsg::ExecuteStreamCommandRest(request) => {
-                    transfers::download::start(&mut self, request);
+                    transfers::output::start(&mut self, request);
                 }
                 RouterMsg::StartUploadStreamRest(request) => {
                     transfers::upload::start(&mut self, request);
@@ -348,13 +349,20 @@ impl RouterState {
                 RouterMsg::CancelPublicTransfer { transfer_id, reply } => {
                     let _ = reply.send(cleanup::cancel_public_transfer(&mut self, transfer_id));
                 }
+                RouterMsg::CancelExecution {
+                    agent_id,
+                    request_id,
+                    reply,
+                } => {
+                    let _ = reply.send(cleanup::cancel_execution(&mut self, request_id, agent_id));
+                }
                 RouterMsg::StartCopyRest(request) => {
                     transfers::copy::start(&mut self, request);
                 }
                 RouterMsg::TransferProgressUpdate(request) => {
                     // Downloads publish a discovered tar total on this message;
                     // copies still overwrite both counts through their own path.
-                    if !transfers::download::update_progress(&mut self, &request) {
+                    if !transfers::output::update_progress(&mut self, &request) {
                         transfers::copy::update_progress(&mut self, request);
                     }
                 }
