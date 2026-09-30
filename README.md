@@ -88,6 +88,9 @@ redoor remote exec --cwd /srv/project --timeout 5m agent-a -- pnpm test
 redoor remote logout
 ```
 
+Remote execution and copy automatically start disconnected managed agents and wait
+for connection, reporting startup and SSH provisioning progress to stderr.
+
 Login prompts for the server's existing username and a hidden password. Agent IDs,
 names, and connection status appear in the readable table; `--json` returns the
 complete agent-list API response. See [remote CLI reference](docs/remote-cli.md)

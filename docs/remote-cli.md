@@ -38,10 +38,24 @@ redoor remote logout
   Both commands print the agent ID and current status. With `--json`, they print
   the complete API response shaped as `{ "agent": {...} }`. Unknown IDs and
   externally managed agents fail with the server's error message.
+- `remote exec` and `remote cp` automatically start managed agents that are not
+  connected, then wait for a connection before issuing the operation. Copy checks
+  both remote endpoints, starting a shared agent only once. Agents already starting
+  are awaited without sending another start request; connected agents are left running.
+  Inventory listing, login, logout, and explicit lifecycle commands do not auto-start
+  agents. Externally managed agents are never started by the CLI.
+
 - `remote logout` calls the existing server logout API and removes local session
   state. It succeeds when already logged out or when authentication has expired.
   If a transport/API failure prevents remote invalidation, local credentials are
   still removed and the command reports the failure.
+
+Automatic startup reports the agent state and new SSH provisioning steps to stderr,
+including with `--json` or copy's `--quiet`. Startup issues, API failures, intentional
+shutdown during startup, and a five-minute connection deadline abort the operation
+and report an error to stderr. JSON commands retain their normal stdout error
+format. Interrupting execution or copy while waiting cancels the local operation;
+the managed supervisor remains under server control.
 
 Success returns exit code **0**. Authentication, transport, API, and storage
 failures return **1**, except for execution (see below); invalid command-line arguments return **2**. Diagnostics

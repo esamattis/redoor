@@ -32,7 +32,20 @@ async fn agents(headers: HeaderMap) -> impl IntoResponse {
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(serde_json::json!({"agents": []})).into_response()
+    connected_inventory().await.into_response()
+}
+
+/// Supplies a live unmanaged agent so admission tests bypass managed startup without skipping inventory.
+async fn connected_inventory() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"agents": [{
+        "id": "a", "name": "a", "cwd": null, "managed": false,
+        "configuration_editable": false, "ssh_target": null, "status": "connected",
+        "connected_at": null, "connection_id": null, "last_seen_at": null,
+        "connection_issue": null, "provisioning_status": [], "binary": null,
+        "supports_self_exec": false, "supports_native_open": false,
+        "supports_move_to_trash": false, "supports_trash": false,
+        "uid": null, "is_root": false
+    }]}))
 }
 
 /// Existing logout is public but receives cookies when available.
@@ -85,15 +98,16 @@ async fn remote_cli_persistent_session_namespace_and_output() {
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
-        serde_json::json!({"agents": []}),
-        "JSON must preserve the API-shaped empty list"
+        connected_inventory().await.0,
+        "JSON must preserve the complete inventory snapshot"
     );
     let output = cli(root.path(), &["remote", "agents", "--app-name", "isolated"]).await;
     // Global namespace flags must work after subcommands as well as before them.
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap().trim(),
-        "No agents available."
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("connected")
     );
     for (command, expected_status) in [("start", "starting"), ("stop", "stopped")] {
         let output = cli(
@@ -358,6 +372,7 @@ async fn remote_cp_interruption_during_admission_recovers_id_and_cancels() {
     let state = CopyAdmission::default();
     let app = Router::new()
         .route("/api/v1/agents/a/metadata/{*path}", get(copy_metadata))
+        .route("/api/v1/agents", get(connected_inventory))
         .route("/api/v1/copy", post(admit_copy))
         .route(
             "/api/v1/transfers/progress",
@@ -451,6 +466,7 @@ async fn remote_exec_interruption_during_admission_drops_owned_response() {
     let state = ExecAdmission::default();
     let app = Router::new()
         .route("/api/v1/agents/a/exec", post(admit_exec))
+        .route("/api/v1/agents", get(connected_inventory))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -500,4 +516,180 @@ async fn remote_exec_interruption_during_admission_drops_owned_response() {
         .await
         .unwrap();
     server.abort();
+}
+
+/// Drives inventory changes by observed requests so startup tests never depend on scheduler delays.
+#[derive(Default)]
+struct StartupFixture {
+    mode: &'static str,
+    polls: std::sync::atomic::AtomicUsize,
+    starts: std::sync::atomic::AtomicUsize,
+    executions: std::sync::atomic::AtomicUsize,
+}
+
+impl StartupFixture {
+    /// Retains the same provisioning line across polls to exercise progress deduplication.
+    async fn snapshot(&self, initial: bool) -> serde_json::Value {
+        use std::sync::atomic::Ordering;
+        let mut agent = connected_inventory().await.0["agents"][0].clone();
+        agent["managed"] = serde_json::json!(true);
+        agent["ssh_target"] = serde_json::json!("user@host");
+        let status = if initial {
+            if self.mode == "already-starting" {
+                "starting"
+            } else {
+                "stopped"
+            }
+        } else if self.polls.load(Ordering::SeqCst) < 3 {
+            "starting"
+        } else {
+            match self.mode {
+                "failure" => "disconnected",
+                "shutdown" => "stopped",
+                _ => "connected",
+            }
+        };
+        agent["status"] = serde_json::json!(status);
+        if !initial {
+            agent["provisioning_status"] =
+                serde_json::json!([{"at": 1, "message": "Uploading SSH binary"}]);
+        }
+        if status == "disconnected" {
+            agent["connection_issue"] = serde_json::json!("SSH authentication failed");
+        }
+        agent
+    }
+}
+
+/// A polling inventory lets the CLI observe provisioning before either registration or failure.
+async fn startup_inventory(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<StartupFixture>>,
+) -> Json<serde_json::Value> {
+    let initial = state
+        .polls
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        == 0;
+    Json(serde_json::json!({"agents": [state.snapshot(initial).await]}))
+}
+
+/// Only POST can accept startup; refusing admission must never reach the user command.
+async fn startup_start(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<StartupFixture>>,
+) -> axum::response::Response {
+    state
+        .starts
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if state.mode == "refused" {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Supervisor unavailable"})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({"agent": state.snapshot(false).await})).into_response()
+}
+
+/// Counts admission so a failed startup cannot be disguised by an independently successful exec fixture.
+async fn startup_exec(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<StartupFixture>>,
+) -> &'static str {
+    state
+        .executions
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    "{\"type\":\"exit\",\"code\":0,\"signal\":null}
+"
+}
+
+/// Capturing the real CLI pipes proves startup logs never corrupt JSON and failure blocks admission.
+#[tokio::test]
+async fn remote_exec_waits_for_managed_startup_and_reports_progress_and_failures() {
+    use std::sync::atomic::Ordering;
+    for mode in [
+        "stopped",
+        "already-starting",
+        "failure",
+        "shutdown",
+        "refused",
+    ] {
+        let root = test_support::TempDir::create();
+        let state = std::sync::Arc::new(StartupFixture {
+            mode,
+            ..Default::default()
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = reqwest::Url::parse(&format!(
+            "http://{}/prefix/",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let app = Router::new()
+            .route("/prefix/api/v1/agents", get(startup_inventory))
+            .route("/prefix/api/v1/agents/a/start", post(startup_start))
+            .route("/prefix/api/v1/agents/a/exec", post(startup_exec))
+            .with_state(state.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut jar = CookieStore::default();
+        jar.parse("redoor_session=startup; Path=/prefix; Max-Age=3600", &url)
+            .unwrap();
+        let directory = root.path().join(".local/share/redoor");
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let session = directory.join("remote-session.json");
+        tokio::fs::write(
+            &session,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "generation": uuid::Uuid::new_v4(), "server_url": url.as_str(),
+                "cookies": jar.iter_any().collect::<Vec<_>>()
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o600))
+            .await
+            .unwrap();
+        let output = cli(
+            root.path(),
+            &["remote", "exec", "--json", "a", "--", "true"],
+        )
+        .await;
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let event: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let success = matches!(mode, "stopped" | "already-starting");
+        // API acceptance is insufficient: the CLI must poll inventory before admitting execution.
+        assert_eq!(
+            output.status.code(),
+            Some(if success { 0 } else { 125 }),
+            "{mode}: {stderr}"
+        );
+        assert_eq!(
+            state.executions.load(Ordering::SeqCst),
+            usize::from(success)
+        );
+        assert_eq!(
+            state.starts.load(Ordering::SeqCst),
+            usize::from(mode != "already-starting")
+        );
+        assert!(stderr.contains("Agent a is not running"));
+        // A retained provisioning step must appear once, even when returned by multiple polls.
+        assert_eq!(
+            stderr.matches("Uploading SSH binary").count(),
+            usize::from(mode != "refused")
+        );
+        if success {
+            assert_eq!(event["type"], "exit");
+            assert!(stderr.contains("Agent a: connected"));
+        } else {
+            // Startup failure goes to stderr and preserves exec's structured stdout failure contract.
+            assert_eq!(event["type"], "error");
+            assert!(stderr.contains("Failed to start agent a"));
+            assert!(stderr.contains(match mode {
+                "failure" => "SSH authentication failed",
+                "shutdown" => "was stopped during startup",
+                _ => "Supervisor unavailable",
+            }));
+        }
+        server.abort();
+    }
 }

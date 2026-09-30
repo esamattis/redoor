@@ -173,6 +173,7 @@ pub async fn run(store: SessionStore, args: ExecArgs) -> i32 {
         };
         request.validate().map_err(anyhow::Error::msg)?;
         let client = RemoteClient::load(store).await?;
+        client.ensure_agent_running(&args.agent).await?;
         let mut url = client.endpoint("api/v1/agents/")?;
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("Invalid server URL"))?

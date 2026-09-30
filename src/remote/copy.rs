@@ -196,6 +196,14 @@ impl Transfer {
             "remote cp requires at least one remote endpoint"
         );
         let basename = source.basename()?;
+        if let Location::Remote(remote) = &source {
+            client.ensure_agent_running(&remote.agent.0).await?;
+        }
+        if let Location::Remote(remote) = &destination
+            && !matches!(&source, Location::Remote(source) if source.agent == remote.agent)
+        {
+            client.ensure_agent_running(&remote.agent.0).await?;
+        }
         let (directory, size) = match &source {
             Location::Local(path) => {
                 let metadata = tokio::fs::symlink_metadata(path).await?;
