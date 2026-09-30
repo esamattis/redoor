@@ -169,6 +169,9 @@ pub(crate) async fn cancel_handler(
             }),
         )
             .into_response(),
+        Ok(Err(CancelPublicTransferError::Delivery(error))) => {
+            super::responses::router_error_response(error)
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

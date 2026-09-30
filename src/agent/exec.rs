@@ -191,9 +191,10 @@ pub(super) async fn run(
         let result = redoor::commands::CommandResult::Exec { event };
         // Retain the acknowledgement while control is backpressured, but let generation
         // teardown release the worker. Its active slot bounds retained terminal results.
-        cancel.borrow_and_update();
         tokio::select! {
-            _ = cancel.changed() => {},
+            // Request cancellation does not invalidate an already reaped process's acknowledgement.
+            // Registry teardown drops its sender; only that closure may abandon retained delivery.
+            _ = async { while cancel.changed().await.is_ok() {} } => {},
             _ = super::AgentActor.send_command_response(&control, &agent_id, request_id, result) => {},
         }
     }
@@ -336,6 +337,50 @@ mod tests {
         );
     }
 
+    /// A first cancellation during control fallback must not discard the already known terminal outcome.
+    #[tokio::test]
+    async fn cancellation_during_fallback_retains_actual_error() {
+        let (write, payload) = mpsc::channel(1);
+        drop(payload);
+        let (sender, cancel) = watch::channel(false);
+        let (control, mut responses) = mpsc::channel(1);
+        control.send(Message::text("occupied")).await.unwrap();
+        let task = run(
+            RequestId::new(41),
+            ExecRequest {
+                argv: vec![],
+                cwd: None,
+                env: Default::default(),
+                timeout_ms: None,
+            },
+            write,
+            cancel,
+            control,
+            AgentId::from("terminal-test"),
+        );
+        tokio::pin!(task);
+        // Validation fails synchronously, and the closed payload lane installs a blocked control fallback.
+        assert!(poll!(&mut task).is_pending());
+        sender.send(true).unwrap();
+        // This is request cancellation, not registry teardown, so the acknowledgement must survive.
+        assert!(poll!(&mut task).is_pending());
+        responses.recv().await.unwrap();
+        task.await;
+        let Message::Text(text) = responses.recv().await.unwrap() else {
+            panic!("Expected terminal control response");
+        };
+        // Preserve the real validation failure rather than losing completion or inventing Canceled.
+        assert!(matches!(
+            serde_json::from_str::<redoor::types::Message>(&text).unwrap(),
+            redoor::types::Message::CommandResponse {
+                result: CommandResult::Exec {
+                    event: ExecEvent::Error { .. }
+                },
+                ..
+            }
+        ));
+    }
+
     /// Terminal acknowledgements remain retained under pressure until delivered or generation teardown.
     #[tokio::test(start_paused = true)]
     async fn teardown_releases_retained_fallback_on_blocked_lanes() {
@@ -384,8 +429,11 @@ mod tests {
         assert!(poll!(&mut task).is_pending());
         tokio::time::advance(Duration::from_secs(6)).await;
         assert!(poll!(&mut task).is_pending());
-        // Generation teardown sends cancellation again and must release the retained result immediately.
+        // Another request cancellation cannot discard the retained acknowledgement.
         sender.send(true).unwrap();
+        assert!(poll!(&mut task).is_pending());
+        // Generation teardown clears the registry and closes the cancellation channel.
+        drop(sender);
         assert!(poll!(&mut task).is_ready());
     }
 }

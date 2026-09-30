@@ -27,24 +27,28 @@ impl DirectOutputStream {
         if self.canceled_by_rest {
             return Ok(());
         }
-        if matches!(self.owner, OutputOwner::CopySource { .. })
-            || connection.outgoing_priority.is_closed()
-        {
+        if matches!(self.owner, OutputOwner::CopySource { .. }) {
             return Err(RouterError::ControlQueueFull {
                 agent_id: self.agent_id.to_string(),
             });
         }
-        let message = Message::CancelTransfer { request_id };
-        if !connection.send_priority_message(message.clone()) {
-            let priority = connection.outgoing_priority.clone();
-            self.cancellation_delivery = Some(tokio::spawn(async move {
-                let Ok(json) = serde_json::to_string(&message) else {
-                    return;
-                };
-                let _ = priority
-                    .send(axum::extract::ws::Message::Text(json.into()))
-                    .await;
-            }));
+        let json = serde_json::to_string(&Message::CancelTransfer { request_id })
+            .expect("Cancellation contains only a request id");
+        let frame = axum::extract::ws::Message::Text(json.into());
+        match connection.outgoing_priority.try_send(frame) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                return Err(RouterError::ControlQueueFull {
+                    agent_id: self.agent_id.to_string(),
+                });
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(frame)) => {
+                let priority = connection.outgoing_priority.clone();
+                self.cancellation_delivery = Some(tokio::spawn(async move {
+                    // Closure after admission is settled by connection teardown; saturation retains intent.
+                    let _ = priority.send(frame).await;
+                }));
+            }
         }
         self.canceled_by_rest = true;
         self.forwarding_stop.send_replace(true);
@@ -518,6 +522,64 @@ mod tests {
         reply_receiver.await.unwrap();
         assert!(fixture.terminal.borrow().is_none());
         assert!(fixture.state.streams.outputs.contains_key(&fixture.id));
+    }
+
+    /// Failed direct-download admission must not strand history or close the caller's consumer.
+    #[tokio::test]
+    async fn download_cancel_rejection_preserves_active_history_and_http_body() {
+        let mut fixture = Fixture::new().await;
+        let (sink, _output) = mpsc::channel(1);
+        let owner = download::register(
+            &mut fixture.state,
+            progress::DownloadStartContext {
+                request_id: fixture.id,
+                agent_id: fixture.agent.clone(),
+                path: "/download".into(),
+                total_bytes: 10,
+                full_size: None,
+                resume_offset: None,
+            },
+            sink,
+        );
+        let progress_id = owner.download_id().unwrap();
+        let (cancel, rest_cancel) = watch::channel(false);
+        let stream = fixture.state.streams.outputs.get_mut(&fixture.id).unwrap();
+        stream.owner = owner;
+        stream.rest_cancel_sender = Some(cancel);
+        fixture.priority.close();
+        // Closed control must reject before creating an unretryable Canceling row or stopping REST.
+        assert!(matches!(
+            cleanup::cancel_public_transfer(&mut fixture.state, progress_id),
+            Err(super::super::messages::CancelPublicTransferError::Delivery(
+                _
+            ))
+        ));
+        assert!(matches!(
+            fixture.state.progress.entries[&progress_id].state,
+            crate::commands::TransferProgressState::Active
+        ));
+        assert!(!*rest_cancel.borrow());
+        assert!(!fixture.state.streams.outputs[&fixture.id].canceled_by_rest);
+        assert!(matches!(
+            fixture.state.streams.outputs[&fixture.id].owner,
+            OutputOwner::Download { sink: Some(_), .. }
+        ));
+        let (priority, mut receiver) = mpsc::channel(1);
+        fixture
+            .state
+            .agents
+            .by_id
+            .get_mut(&fixture.agent)
+            .unwrap()
+            .outgoing_priority = priority;
+        // A retry must admit remote cleanup and only then wake REST and publish Canceling.
+        assert!(cleanup::cancel_public_transfer(&mut fixture.state, progress_id).is_ok());
+        assert!(receiver.recv().await.is_some());
+        assert!(*rest_cancel.borrow());
+        assert!(matches!(
+            fixture.state.progress.entries[&progress_id].state,
+            crate::commands::TransferProgressState::Canceling
+        ));
     }
 
     /// Bad tracking metadata must be rejected before either remote work or file history is admitted.

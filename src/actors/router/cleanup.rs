@@ -58,6 +58,34 @@ pub(crate) fn cancel_public_transfer(
         }
     }
 
+    // Direct downloads must admit cleanup before changing history or stopping the HTTP body.
+    let download_id = state
+        .streams
+        .outputs
+        .iter()
+        .find_map(|(request_id, stream)| {
+            (stream.owner.download_id() == Some(transfer_id)).then_some(*request_id)
+        });
+    if let Some(request_id) = download_id {
+        let download = state.streams.outputs.get_mut(&request_id).unwrap();
+        let connection = state.agents.by_id.get(&download.agent_id).ok_or_else(|| {
+            super::messages::CancelPublicTransferError::Delivery(RouterError::AgentNotFound {
+                agent_id: download.agent_id.to_string(),
+            })
+        })?;
+        download
+            .request_cancel(connection, request_id)
+            .map_err(super::messages::CancelPublicTransferError::Delivery)?;
+        if let Some(sender) = download.rest_cancel_sender.take() {
+            let _ = sender.send(true);
+        }
+        progress::mark_transfer_canceling(state, transfer_id);
+        return Ok(CancelTransferResponse {
+            transfer_id,
+            status: CancelTransferStatus::Accepted,
+        });
+    }
+
     progress::mark_transfer_canceling(state, transfer_id);
 
     if let Some(copy_request) = state.copies.by_public_id.get_mut(&transfer_id) {
@@ -91,30 +119,6 @@ pub(crate) fn cancel_public_transfer(
             {
                 // Falling back to the command lane is slower but must not lose accepted cleanup.
                 connection.send_message(Message::CancelTransfer { request_id });
-            }
-        }
-        return Ok(CancelTransferResponse {
-            transfer_id,
-            status: CancelTransferStatus::Accepted,
-        });
-    }
-
-    let download_id = state
-        .streams
-        .outputs
-        .iter()
-        .find_map(|(request_id, download)| {
-            (download.owner.download_id() == Some(transfer_id)).then_some(*request_id)
-        });
-    if let Some(request_id) = download_id {
-        if let Some(download) = state.streams.outputs.get_mut(&request_id) {
-            // Drop the REST sink immediately, but retain ownership until the
-            // agent's terminal frame confirms its file and registry are released.
-            if let Some(connection) = state.agents.by_id.get(&download.agent_id) {
-                let _ = download.request_cancel(connection, request_id);
-            }
-            if let Some(sender) = download.rest_cancel_sender.take() {
-                let _ = sender.send(true);
             }
         }
         return Ok(CancelTransferResponse {
@@ -167,18 +171,18 @@ pub(crate) fn cancel_execution(
     {
         return Ok(false);
     }
-    if !stream.canceled_by_rest
-        && state
+    if stream.canceled_by_rest {
+        return Ok(true);
+    }
+    let connection =
+        state
             .agents
             .by_id
             .get(&agent_id)
-            .is_none_or(|connection| connection.outgoing_priority.is_closed())
-    {
-        return Err(RouterError::ControlQueueFull {
-            agent_id: agent_id.to_string(),
-        });
-    }
-    cancel_transfer(state, request_id, agent_id);
+            .ok_or_else(|| RouterError::ControlQueueFull {
+                agent_id: agent_id.to_string(),
+            })?;
+    stream.request_cancel(connection, request_id)?;
     Ok(true)
 }
 

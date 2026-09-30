@@ -65,8 +65,8 @@ pub(crate) async fn exec_handler(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
     }
     let agent_id = AgentId::from(agent);
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let (terminal_sender, mut terminal_receiver) = tokio::sync::watch::channel(None);
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let (terminal_sender, terminal_receiver) = tokio::sync::watch::channel(None);
     let id = match state
         .router_ref
         .request(30_000, |reply| {
@@ -95,15 +95,28 @@ pub(crate) async fn exec_handler(
                 .into_response();
         }
     };
-    let mut guard = OutputCancelGuard::new(state.router_ref.clone(), agent_id, id);
+    let guard = OutputCancelGuard::new(state.router_ref.clone(), agent_id, id);
     drop(terminal_sender);
+    Response::builder()
+        .header("Content-Type", "application/x-ndjson")
+        .header("X-Redoor-Execution-Id", id.to_string())
+        .body(execution_body(receiver, terminal_receiver, guard))
+        .unwrap()
+}
+
+/// Drains already accepted payload before fallback completion so timeouts cannot erase trailing output.
+fn execution_body(
+    mut receiver: tokio::sync::mpsc::Receiver<redoor::streaming::StreamChunk>,
+    mut terminal_receiver: tokio::sync::watch::Receiver<Option<redoor::exec_protocol::ExecEvent>>,
+    mut guard: OutputCancelGuard,
+) -> Body {
     let stream = async_stream::stream! {
         let mut terminal_open = true;
         loop {
             let chunk = tokio::select! {
                 biased;
-                result = terminal_receiver.changed(), if terminal_open => Err(result.is_ok()),
                 chunk = receiver.recv() => Ok(chunk),
+                result = terminal_receiver.changed(), if terminal_open => Err(result.is_ok()),
             };
             let chunk = match chunk {
                 Ok(chunk) => chunk,
@@ -145,9 +158,58 @@ pub(crate) async fn exec_handler(
             if chunk.is_last { break; }
         }
     };
-    Response::builder()
-        .header("Content-Type", "application/x-ndjson")
-        .header("X-Redoor-Execution-Id", id.to_string())
-        .body(Body::from_stream(stream))
-        .unwrap()
+    Body::from_stream(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redoor::{
+        actors::router::spawn_router,
+        exec_protocol::ExecEvent,
+        streaming::{StreamChunk, StreamPayloadKind},
+        types::ChunkIndex,
+    };
+
+    /// A slow HTTP consumer can have buffered output when the independent fallback arrives.
+    #[tokio::test]
+    async fn fallback_drains_buffered_output_before_single_terminal_event() {
+        let (sink, receiver) = tokio::sync::mpsc::channel(1);
+        let output = ExecEvent::Stdout {
+            data: b"trailing output".to_vec(),
+        };
+        let mut data = serde_json::to_vec(&output).unwrap();
+        data.push(b'\n');
+        sink.send(StreamChunk {
+            request_id: RequestId::new(1),
+            chunk_index: ChunkIndex::new(0),
+            is_last: false,
+            is_error: false,
+            payload_kind: StreamPayloadKind::RawFile,
+            data,
+        })
+        .await
+        .unwrap();
+        let (terminal, terminal_receiver) = tokio::sync::watch::channel(None);
+        terminal.send_replace(Some(ExecEvent::TimedOut));
+        drop(sink);
+        let (router, task) = spawn_router(
+            redoor::terminal_registry::TerminalRegistry::new(),
+            redoor::log_registry::LogRegistry::new(),
+        );
+        let guard = OutputCancelGuard::new(router, AgentId::from("test"), RequestId::new(1));
+        let bytes = axum::body::to_bytes(execution_body(receiver, terminal_receiver, guard), 4096)
+            .await
+            .unwrap();
+        let events: Vec<ExecEvent> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        // Independent completion must not skip accepted stdout or emit a duplicate terminal record.
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ExecEvent::Stdout { data } if data == b"trailing output"));
+        assert!(matches!(&events[1], ExecEvent::TimedOut));
+        task.abort();
+    }
 }

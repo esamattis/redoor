@@ -18,6 +18,8 @@ pub type RouterReply<T> = tokio::sync::oneshot::Sender<T>;
 pub enum CancelPublicTransferError {
     NotFound,
     NotCancelable,
+    /// Failed cleanup admission must remain retryable rather than returning accepted cancellation.
+    Delivery(RouterError),
 }
 
 /// Payload for registering one websocket-backed agent session with the router.
