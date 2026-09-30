@@ -1,4 +1,5 @@
 use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
+use super::bounded_tar::{BoundedTarReader, InvalidMetadata};
 use super::destination::{
     DestinationPlaceError, check_existing_destination, place_temp_at_destination,
 };
@@ -37,6 +38,8 @@ pub(crate) enum TarUploadError {
     ReadTarEntries,
     #[error("Failed to read tar entry")]
     ReadTarEntry,
+    #[error("{0}")]
+    InvalidTarMetadata(String),
     #[error("Unsupported tar entry type: {0:?}")]
     UnsupportedTarEntryType(tar::EntryType),
     #[error("Failed to read tar entry path")]
@@ -60,6 +63,7 @@ impl TarUploadError {
             Self::DestinationParentNotDirectory(_) => CommandErrorKind::NotADirectory,
             Self::EscapingTarEntryPath(_)
             | Self::EmptyTarEntryPath
+            | Self::InvalidTarMetadata(_)
             | Self::DestinationParentNotFound(_)
             | Self::UnsupportedTarEntryType(_) => CommandErrorKind::InvalidInput,
             Self::ReadTarEntries
@@ -219,13 +223,21 @@ fn unpack_tar_stream_into_directory(
         offset: 0,
         finished: false,
     };
-    let mut archive = tar::Archive::new(reader);
+    let mut archive = tar::Archive::new(BoundedTarReader::new(reader));
     let entries = archive
         .entries()
         .map_err(|_| TarUploadError::ReadTarEntries)?;
 
     for entry_result in entries {
-        let mut entry = entry_result.map_err(|_| TarUploadError::ReadTarEntry)?;
+        let mut entry = entry_result.map_err(|error| {
+            match error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<InvalidMetadata>())
+            {
+                Some(error) => TarUploadError::InvalidTarMetadata(error.to_string()),
+                None => TarUploadError::ReadTarEntry,
+            }
+        })?;
 
         let entry_type = entry.header().entry_type();
         if !(entry_type.is_dir() || entry_type.is_file()) {
@@ -706,6 +718,57 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    /// Bounded validation must preserve ordinary, GNU and PAX paths through real extraction.
+    #[tokio::test]
+    async fn metadata_validation_preserves_supported_long_paths() {
+        for format in ["ordinary", "ustar", "gnu", "pax"] {
+            let temp = TempDir::create();
+            let name = if format == "ordinary" {
+                "short/file".to_string()
+            } else {
+                format!("{}/{}/file", "a".repeat(80), "b".repeat(80))
+            };
+            let mut builder = tar::Builder::new(Vec::new());
+            if format == "pax" {
+                builder
+                    .append_pax_extensions([("path", name.as_bytes())])
+                    .unwrap();
+            }
+            let mut header = if format == "ustar" {
+                tar::Header::new_ustar()
+            } else {
+                tar::Header::new_gnu()
+            };
+            header.set_mode(0o600);
+            header.set_size(7);
+            builder
+                .append_data(
+                    &mut header,
+                    if format == "pax" {
+                        "placeholder"
+                    } else {
+                        &name
+                    },
+                    b"payload".as_slice(),
+                )
+                .unwrap();
+            let bytes = builder.into_inner().unwrap();
+            let (sender, receiver) = mpsc::channel(1);
+            sender.send(bytes).await.unwrap();
+            drop(sender);
+            let root = temp.path().to_path_buf();
+            tokio::task::spawn_blocking(move || unpack_tar_stream_into_directory(receiver, &root))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read(temp.path().join(name)).await.unwrap(),
+                b"payload",
+                "validation must retain the dependency's supported path interpretation for {format}"
+            );
+        }
+    }
 
     /// A completed extractor is still reversible until the router grants placement.
     #[tokio::test]

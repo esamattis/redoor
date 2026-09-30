@@ -168,6 +168,10 @@ fails. Remote workers own upload/copy staging cleanup. SIGKILL cannot run cleanu
 
 `PUT /api/v1/agents/{agent}/archive/{absolute-path-without-leading-slash}` accepts
 a streamed **plain tar** body, including chunked bodies without Content-Length.
+GNU long-name/long-link and PAX extension members are limited to 64 KiB each,
+matching the CLI extractor's long-name limit. Oversized metadata is rejected
+from its header before its payload is buffered; ordinary file payloads remain
+streamed without this size limit.
 Members are relative to the resulting directory, with no extra source-root layer.
 It accepts `?on_existing=error|override|merge` and defaults to `error`. Existing
 raw PUT defaults remain compatible; the CLI always sends its selected policy.

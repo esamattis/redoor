@@ -461,6 +461,40 @@ describe("Remote cp and streaming archive upload", () => {
         ).toBeNull();
     });
 
+    it("rejects oversized GNU and PAX metadata declarations without publishing a tree", async () => {
+        const source = files.tempDirectory();
+        await fs.writeFile(path.join(source, "file.txt"), "payload");
+        const tarPath = files.tempFile({ suffix: ".tar" });
+        await $({ quiet: true })`tar -cf ${tarPath} -C ${source} file.txt`;
+        const tar = await fs.readFile(tarPath);
+        for (const kind of ["L", "K", "x", "g"]) {
+            const header = Buffer.from(tar.subarray(0, 512));
+            header[156] = kind.charCodeAt(0);
+            header.fill(0, 124, 136);
+            header.write((8 * 1024 ** 3).toString(8).padStart(11, "0"), 124);
+            header.fill(32, 148, 156);
+            const checksum = header.reduce((sum, byte) => sum + byte, 0);
+            header.write(checksum.toString(8).padStart(6, "0"), 148);
+            header[154] = 0;
+            header[155] = 32;
+            const parent = files.tempDirectory();
+            const response = await fetch(archiveUrl(path.join(parent, "result")), {
+                method: "PUT",
+                headers: setup.apiClient.getAuthHeaders(),
+                body: header,
+            });
+            // A header-only huge declaration must be input rejection, not truncated-metadata/internal failure.
+            expect(response.status).toBe(400);
+            expect((await response.json()).error).toContain("64 KiB limit");
+            await waitForValue({
+                description: "oversized metadata staging removed",
+                predicate: async () => (await fs.readdir(parent)).length === 0,
+            });
+            // Rejected metadata must leave neither a published destination nor staging state.
+            expect(await fs.readdir(parent)).toEqual([]);
+        }
+    });
+
     it("rejects escaping, linked and truncated archive members without publishing partial trees", async () => {
         const source = files.tempDirectory();
         await fs.writeFile(path.join(source, "file.txt"), "payload");
