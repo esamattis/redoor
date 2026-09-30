@@ -560,7 +560,7 @@ test.describe.serial("File Browser Navigation", () => {
         ).toHaveCount(0);
         await page.getByRole("button", { name: "More", exact: true }).click();
         const moreMenu = page.getByRole("dialog", { name: "More" });
-        // The removed queue route is no longer exposed through the secondary action menu either.
+        // The secondary action menu must not offer an unavailable queue destination.
         await expect(
             moreMenu.getByRole("link", { name: "Upload queue", exact: true }),
         ).toHaveCount(0);

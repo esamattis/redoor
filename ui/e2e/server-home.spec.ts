@@ -348,7 +348,7 @@ server = "${serverProtocol}//${browserUrl.host}"
         const openSidebar = agentNames.getByRole("button", {
             name: "Open device sidebar",
         });
-        // The persistent right sidebar is gone, so the list must expose a drawer control.
+        // The device list must expose a control for opening the navigation drawer.
         await expect(openSidebar).toBeVisible();
         await openSidebar.click();
 

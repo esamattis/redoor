@@ -354,7 +354,7 @@ describe("Remote exec and non-shell streaming API", () => {
             description: "backpressured exec reaped",
             predicate: async () => gone(pid),
         });
-        // Cancellation must not leave a synthetic download in completed transfer history either.
+        // Canceled executions must stay out of filesystem transfer history.
         expect((await setup.apiClient.getTransferProgress()).transfers).toEqual([]);
     });
 

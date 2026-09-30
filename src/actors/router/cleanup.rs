@@ -157,7 +157,7 @@ pub(crate) fn cancel_public_transfer(
     })
 }
 
-/// Execution cancellation uses live stream ownership rather than inventing file progress.
+/// Uses live stream ownership to validate and deliver execution cancellation.
 pub(crate) fn cancel_execution(
     state: &mut RouterState,
     request_id: crate::types::RequestId,

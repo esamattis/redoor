@@ -142,7 +142,7 @@ pub struct DirectOutputStream {
     pub(crate) forwarding_stop: tokio::sync::watch::Sender<bool>,
 }
 
-/// Couples each resource to its real sink so copy sources cannot masquerade as REST downloads.
+/// Associates each output resource with its delivery sink and completion tracking.
 pub(crate) enum OutputOwner {
     Download {
         progress_id: TransferId,
@@ -166,7 +166,7 @@ impl OutputOwner {
         }
     }
 
-    /// Copy bytes use the copy router's destination socket rather than a dummy REST receiver.
+    /// Returns REST sinks only; copy sources deliver through the destination agent's socket.
     pub(crate) fn sink_mut(
         &mut self,
     ) -> Option<&mut Option<tokio::sync::mpsc::Sender<StreamChunk>>> {

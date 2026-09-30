@@ -105,7 +105,7 @@ impl RouterHandle {
     }
 }
 
-/// Stable error type used by server code that previously relied on `call_t!`.
+/// Distinguishes request timeouts from router shutdown so callers can report the failure cause.
 #[derive(Debug)]
 pub enum RouterCallError {
     TimedOut(Elapsed),

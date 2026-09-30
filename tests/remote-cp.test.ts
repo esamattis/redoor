@@ -112,7 +112,7 @@ describe("Remote cp and streaming archive upload", () => {
             `${remote}/${path.basename(source)}`,
         );
         const conflict = await cp("--json", source, remote);
-        // The default must be strict even though legacy raw PUT defaults to override.
+        // Archive uploads must require an explicit choice to replace an existing destination.
         expect(conflict.exitCode).toBe(1);
         expect(JSON.parse(conflict.stdout).status).toBe("failed");
         await fs.writeFile(source, "replacement");

@@ -82,8 +82,8 @@ impl<R: Read> BoundedTarReader<R> {
                 )),
             ));
         }
-        // Sparse entries have a separate extension-block layout and were never
-        // supported by uploads. Reject them before the iterator parses that layout.
+        // Sparse entries use an unsupported extension-block layout. Reject them
+        // before the iterator parses it so framing validation stays bounded.
         if kind.is_gnu_sparse() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

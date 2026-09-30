@@ -447,7 +447,7 @@ mod tests {
         );
         assert!(fixture.priority.try_recv().is_err());
         assert!(fixture.commands.try_recv().is_ok());
-        // Only the agent's terminal frame now permits a canceled NDJSON event and ownership removal.
+        // The agent's terminal frame confirms cleanup before a canceled NDJSON event and ownership removal.
         let (sender, _receiver) = mpsc::channel(1);
         let request = fixture.terminal_chunk(ExecEvent::Canceled);
         route_chunk(&mut fixture.state, &RouterHandle::new(sender), request);

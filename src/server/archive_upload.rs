@@ -18,7 +18,7 @@ use redoor::{
     types::AgentId,
 };
 
-/// Uses strict creation by default, matching server-side copy rather than legacy raw PUT.
+/// Defaults to strict creation so replacing an existing destination requires an explicit choice.
 #[derive(serde::Deserialize)]
 pub(crate) struct ArchiveQuery {
     #[serde(default)]

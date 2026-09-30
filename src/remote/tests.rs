@@ -203,7 +203,7 @@ async fn failure() -> impl IntoResponse {
     )
 }
 
-/// File permission errors use 403 in Redoor and must remain API errors for future transfers.
+/// File permission errors use 403 in Redoor and must remain API errors without invalidating authentication.
 async fn permission() -> impl IntoResponse {
     (
         StatusCode::FORBIDDEN,

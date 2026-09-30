@@ -553,7 +553,7 @@ test.describe.serial("Agent management", () => {
         await page
             .getByRole("button", { name: "Connect", exact: true })
             .click();
-        // Live auth must now succeed as the key user after the password is removed.
+        // Removing the password must allow authentication as the configured key user.
         await expect(
             page.getByRole("link", {
                 name: `${CREATED_SSH_MODE_SWITCH_AGENT}, connected`,

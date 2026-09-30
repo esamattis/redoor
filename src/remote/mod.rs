@@ -1,4 +1,4 @@
-//! Remote CLI commands share one durable authentication boundary for inventory, transfers and future execution.
+//! Remote CLI commands share durable authentication for device inventory, transfers, execution, and agent lifecycle control.
 
 mod archive;
 pub mod client;
