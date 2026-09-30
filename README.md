@@ -71,6 +71,28 @@ Open `http://127.0.0.1:7666` and log in with username `redoor` and password `red
 
 These credentials and the agent token built into the image are only for a local demo. See [Docker Compose deployment](docs/docker.md) for persistent storage and private credentials.
 
+## Remote CLI
+
+Log in once, then list agents, copy files, and execute commands from separate invocations:
+
+```sh
+redoor remote login https://redoor.example.com
+redoor remote agents
+redoor remote agents --json
+redoor remote cp ./report.csv agent-a:/srv/report.csv
+redoor remote cp agent-a:/srv/report.csv ./report.csv
+redoor remote cp -r agent-a:/srv/project agent-b:/srv/project
+redoor remote exec --cwd /srv/project --timeout 5m agent-a -- pnpm test
+redoor remote logout
+```
+
+Login prompts for the server's existing username and a hidden password. Agent IDs,
+names, and connection status appear in the readable table; `--json` returns the
+complete agent-list API response. See [remote CLI reference](docs/remote-cli.md)
+for session storage, namespaces, copy destination/conflict semantics, execution
+options, streaming JSON events, and exit behavior. Execution preserves arguments
+without an implicit shell and streams stdout/stderr separately.
+
 ## Configuration
 
 Server and agent can share the same TOML file. Put it in `~/.config/redoor/config.toml` (or `/etc/redoor/config.toml` as root).

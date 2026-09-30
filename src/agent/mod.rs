@@ -1,5 +1,6 @@
 mod actor;
 mod connection;
+mod exec;
 mod logs;
 mod messages;
 mod notification;
@@ -8,7 +9,7 @@ mod raw;
 pub(crate) mod state;
 mod terminal;
 mod transfer;
-mod transfers;
+pub(crate) mod transfers;
 mod trash;
 mod ws;
 

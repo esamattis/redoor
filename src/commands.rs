@@ -193,6 +193,10 @@ impl CreationOwnershipOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
+    /// Streams non-shell process output through the existing bounded data lane.
+    Exec {
+        request: crate::exec_protocol::ExecRequest,
+    },
     Ls {
         path: Option<String>,
     },
@@ -445,6 +449,7 @@ impl Command {
             Self::TarDownload { path, include_root } => {
                 format!("TarDownload path={path} include_root={include_root}")
             }
+            Self::Exec { .. } => "Exec".to_owned(),
             Self::RawUpload {
                 path, on_existing, ..
             } => {
@@ -1583,6 +1588,24 @@ pub struct CopyFileRequest {
 #[ts(export)]
 pub struct CopyFileResponse {
     pub copy_request_id: TransferId,
+}
+
+/// Confirms the extracted directory was published, rather than merely accepting its HTTP body.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ArchiveUploadResponse {
+    pub path: String,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+}
+
+/// Correlates cancellation with a caller-owned upload without scanning another client's transfer paths.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CancelUploadRequestResponse {
+    pub request_token: String,
+    /// None means cancellation was accepted while destination setup was still pending.
+    pub transfer: Option<CancelTransferResponse>,
 }
 
 /// Starts one logical move between agent filesystem endpoints.

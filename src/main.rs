@@ -6,6 +6,7 @@ mod desktop;
 mod launchd;
 mod process_control;
 mod process_logs;
+mod remote;
 mod server;
 mod server_address;
 mod service_management;
@@ -70,6 +71,8 @@ enum Commands {
     Server(ServerArgs),
     /// Run the agent or use its role-specific utilities.
     Agent(Box<AgentCommandArgs>),
+    /// Authenticate and operate on agents through a remote server.
+    Remote(remote::RemoteArgs),
 }
 
 /// Process role selected by the parent CLI command for service management.
@@ -266,6 +269,16 @@ async fn main() {
         stale_check_interval: cli.websocket_stale_check_interval,
     });
     match cli.command {
+        Commands::Remote(args) => {
+            let code = match remote::run(args).await {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        }
         Commands::Server(args) => match args.command {
             Some(ServerCommand::Logs(logs)) => {
                 run_utility(process_logs::run(
@@ -657,6 +670,7 @@ async fn run_server(args: server::CoordinatorArgs) -> anyhow::Result<()> {
         terminal_registry,
         log_registry,
         one_time_token_registry,
+        upload_requests: server::upload_requests::UploadRequests::default(),
         auth,
         config_path,
         config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),

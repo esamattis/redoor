@@ -193,6 +193,10 @@ impl RouterState {
             return;
         }
 
+        if transfers::download::finish_rejected(self, &response) {
+            return;
+        }
+
         transfers::upload::finish_transfer(
             self,
             response.agent_id,

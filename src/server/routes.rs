@@ -81,6 +81,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route("/api/v1/server", get(server_info_handler))
         .route(
+            "/api/v1/agents/{agent}/exec",
+            post(super::exec::exec_handler),
+        )
+        .route(
             "/api/v1/server/logging-level",
             get(get_server_logging_level_handler).put(update_server_logging_level_handler),
         )
@@ -207,6 +211,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
                 .delete(raw_agent_delete_handler),
         )
         .route("/api/v1/agents/{agent}/edit", put(file_edit_handler))
+        .route(
+            "/api/v1/upload-requests/{token}",
+            axum::routing::delete(super::upload_requests::cancel_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/archive/{*path}",
+            put(super::archive_upload::upload_handler),
+        )
         .route(
             "/api/v1/agents/{agent}/edit/{*path}",
             put(file_edit_handler),

@@ -53,6 +53,10 @@ impl CommandHandler {
     /// Routes a wire command to its agent-local implementation or runtime marker.
     pub async fn execute(&self, command: Command) -> CommandResult {
         match command {
+            Command::Exec { .. } => CommandResult::error(
+                CommandErrorKind::Internal,
+                "Exec requires the streaming agent runtime",
+            ),
             Command::Ls { path } => self.ls(path).await,
             Command::FileSearch {
                 path,

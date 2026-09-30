@@ -12,6 +12,47 @@ use crate::log;
 use crate::logging::Level;
 use crate::types::Message;
 
+/// Converts pre-worker rejections into stream failure instead of leaving HTTP consumers waiting forever.
+pub(crate) fn finish_rejected(
+    state: &mut RouterState,
+    response: &super::super::messages::RouteResponse,
+) -> bool {
+    let crate::commands::CommandResult::Error { message, .. } = &response.result else {
+        return false;
+    };
+    if !state
+        .streams
+        .downloads
+        .get(&response.request_id)
+        .is_some_and(|stream| stream.agent_id == response.agent_id)
+    {
+        return false;
+    }
+    let Some(stream) = state.streams.downloads.remove(&response.request_id) else {
+        return false;
+    };
+    let id = stream
+        .progress_id
+        .unwrap_or_else(|| response.request_id.as_transfer_id());
+    progress::mark_transfer_errored(state, id, message.clone());
+    ui::notify_transfer_refresh(state);
+    if let Some(sender) = stream.chunk_sender {
+        let chunk = crate::streaming::StreamChunk {
+            request_id: response.request_id,
+            chunk_index: crate::types::ChunkIndex::new(0),
+            is_last: true,
+            is_error: true,
+            payload_kind: crate::streaming::StreamPayloadKind::RawFile,
+            data: message.as_bytes().to_vec(),
+        };
+        // Waiting for a saturated consumer here would block unrelated control commands.
+        tokio::spawn(async move {
+            let _ = sender.send(chunk).await;
+        });
+    }
+    true
+}
+
 /// Applies a download-only total discovered after the stream already started.
 ///
 /// Copy updates stay on their overwrite path. Returning false lets the router
@@ -58,7 +99,7 @@ pub(crate) fn start(state: &mut RouterState, request: ExecuteStreamRequest) {
         "Routing REST streaming command: agent_id={}, request_id={}, command={:?}",
         request.agent_id,
         request_id,
-        request.command
+        request.command.summary()
     );
 
     if let Some(agent_connection) = state.agents.by_id.get(&request.agent_id).cloned() {

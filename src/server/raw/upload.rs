@@ -74,12 +74,15 @@ pub(crate) struct AgentUpload {
     path: String,
     total_bytes: u64,
     bytes_written: u64,
-    request_id: RequestId,
+    /// Lets owning HTTP handlers correlate cancellation without scanning shared progress paths.
+    pub(crate) request_id: RequestId,
     chunk_index: ChunkIndex,
     completion_receiver:
         tokio::sync::oneshot::Receiver<Result<CommandResult, actors::router::RouterError>>,
     cancel_guard: UploadCancelGuard,
     is_edit: bool,
+    /// Archive bodies have unknown length and must keep tar framing through the transfer lane.
+    is_tar: bool,
 }
 
 /// Parses the required byte count shared by streamed write endpoints.
@@ -148,6 +151,7 @@ impl AgentUpload {
         total_bytes: u64,
     ) -> Result<Self, AgentUploadStartError> {
         let is_edit = matches!(command, Command::EditFile { .. });
+        let is_tar = matches!(command, Command::TarUpload { .. });
         let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let request_id = match state
@@ -234,13 +238,14 @@ impl AgentUpload {
             completion_receiver,
             cancel_guard,
             is_edit,
+            is_tar,
         })
     }
 
     /// Forwards one producer chunk while enforcing the declared total byte count.
     pub(crate) async fn send(&mut self, data: &[u8]) -> Result<(), Response> {
         self.bytes_written += data.len() as u64;
-        if self.bytes_written > self.total_bytes {
+        if !self.is_tar && self.bytes_written > self.total_bytes {
             let message = format!(
                 "{} exceeded Content-Length header: expected {} bytes, received {}",
                 self.operation_name(),
@@ -262,18 +267,21 @@ impl AgentUpload {
             )
                 .into_response());
         }
+        let payload_kind = self.payload_kind();
         forward_split_stream_chunk(
             &self.state,
             &self.agent_id,
             &mut self.chunk_index,
-            StreamChunkFrameRequest::new(self.request_id, data).is_last(false),
+            StreamChunkFrameRequest::new(self.request_id, data)
+                .payload_kind(payload_kind)
+                .is_last(false),
         )
         .await
     }
 
     /// Hands edit terminal ownership to the router, then awaits destination completion.
     pub(crate) async fn finish(mut self) -> Result<(CommandResult, u64), Response> {
-        if self.bytes_written != self.total_bytes {
+        if !self.is_tar && self.bytes_written != self.total_bytes {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -290,17 +298,20 @@ impl AgentUpload {
         if self.is_edit {
             self.commit_edit().await?;
         } else {
+            let payload_kind = self.payload_kind();
             forward_split_stream_chunk(
                 &self.state,
                 &self.agent_id,
                 &mut self.chunk_index,
-                StreamChunkFrameRequest::new(self.request_id, &[]),
+                StreamChunkFrameRequest::new(self.request_id, &[]).payload_kind(payload_kind),
             )
             .await?;
-            self.cancel_guard.disarm();
         }
         match self.completion_receiver.await {
-            Ok(Ok(completion)) => Ok((completion, self.bytes_written)),
+            Ok(Ok(completion)) => {
+                self.cancel_guard.disarm();
+                Ok((completion, self.bytes_written))
+            }
             Ok(Err(error)) => Err(router_error_response(error)),
             Err(error) => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -320,6 +331,15 @@ impl AgentUpload {
     /// Names the semantic operation in transport errors without changing shared streaming logic.
     fn operation_name(&self) -> &'static str {
         if self.is_edit { "File edit" } else { "Upload" }
+    }
+
+    /// Preserves the agent worker's payload contract for data and terminal frames alike.
+    fn payload_kind(&self) -> redoor::streaming::StreamPayloadKind {
+        if self.is_tar {
+            redoor::streaming::StreamPayloadKind::Tar
+        } else {
+            redoor::streaming::StreamPayloadKind::RawFile
+        }
     }
 
     /// Atomically publishes the edit boundary with router ownership of its terminal frame.
@@ -507,6 +527,10 @@ pub(crate) async fn raw_agent_put_handler(
     };
 
     let resolved_path = path;
+    let request_guard = match state.upload_requests.reserve(&headers) {
+        Ok(guard) => guard,
+        Err(response) => return *response,
+    };
     let mut upload = match AgentUpload::start(
         &state,
         agent_id,
@@ -527,6 +551,18 @@ pub(crate) async fn raw_agent_put_handler(
         }
     };
 
+    if request_guard
+        .as_ref()
+        .is_some_and(|guard| !guard.activate(upload.request_id.as_transfer_id()))
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "Upload request canceled during setup".into(),
+            }),
+        )
+            .into_response();
+    }
     if let Err(response) = forward_request_body(body, &mut upload).await {
         return *response;
     }
