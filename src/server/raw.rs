@@ -9,7 +9,7 @@ use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 use redoor::{
     actors,
     commands::{Command, CommandResult, CreateOneTimeTokenResponse, ErrorResponse},
-    types::{AgentId, RequestId},
+    types::AgentId,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ use super::{
     agent_helpers::{AgentFilePath, absolute_path_from_url},
     responses::{command_error_status, router_error_response},
     state::ServerState,
+    streaming::OutputCancelGuard,
 };
 
 mod upload;
@@ -36,64 +37,6 @@ struct OneTimeDownloadProgress {
     start: u64,
     next_offset: u64,
     file_size: u64,
-}
-
-/// Cancels a direct download when its HTTP or request consumer disappears early.
-pub(crate) struct DownloadCancelGuard {
-    router_ref: actors::router::RouterHandle,
-    agent_id: AgentId,
-    request_id: RequestId,
-    active: bool,
-}
-
-impl DownloadCancelGuard {
-    /// Arms cancellation after the router has allocated the stream request id.
-    pub(crate) fn new(
-        router_ref: actors::router::RouterHandle,
-        agent_id: AgentId,
-        request_id: RequestId,
-    ) -> Self {
-        Self {
-            router_ref,
-            agent_id,
-            request_id,
-            active: true,
-        }
-    }
-
-    /// Prevents duplicate cancellation after a terminal frame has been consumed.
-    pub(crate) fn disarm(&mut self) {
-        self.active = false;
-    }
-}
-
-impl Drop for DownloadCancelGuard {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-
-        let router_ref = self.router_ref.clone();
-        let agent_id = self.agent_id.clone();
-        let request_id = self.request_id;
-        tokio::spawn(async move {
-            if let Err(error) = router_ref
-                .send_async(actors::router::RouterMsg::CancelTransfer {
-                    agent_id: agent_id.clone(),
-                    request_id,
-                })
-                .await
-            {
-                redoor::log_failure!(
-                    Level::Error,
-                    "Failed to queue dropped download cleanup: agent_id={}, request_id={}, error={}",
-                    agent_id,
-                    request_id,
-                    error
-                );
-            }
-        });
-    }
 }
 
 impl OneTimeDownloadProgress {
@@ -307,7 +250,7 @@ pub(crate) async fn raw_agent_handler(
     };
 
     let cancel_guard =
-        DownloadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
+        OutputCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
 
     let one_time_progress = params.one_time_token.map(|token| OneTimeDownloadProgress {
         registry: state.one_time_token_registry.clone(),
@@ -427,7 +370,7 @@ async fn stream_directory_archive(
     };
 
     let cancel_guard =
-        DownloadCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
+        OutputCancelGuard::new(state.router_ref.clone(), agent_id.clone(), request_id);
 
     let body_stream = match begin_download_body_stream(
         response_receiver,
@@ -477,7 +420,7 @@ async fn begin_download_body_stream(
     mut rest_cancel_receiver: tokio::sync::watch::Receiver<bool>,
     path: &str,
     mut one_time_progress: Option<OneTimeDownloadProgress>,
-    mut cancel_guard: DownloadCancelGuard,
+    mut cancel_guard: OutputCancelGuard,
 ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + use<>, Response>
 {
     let first_chunk = match response_receiver.recv().await {
@@ -768,8 +711,7 @@ mod tests {
             }))
             .await
             .expect("first chunk queued");
-        let cancel_guard =
-            DownloadCancelGuard::new(router_ref.clone(), agent_id.clone(), request_id);
+        let cancel_guard = OutputCancelGuard::new(router_ref.clone(), agent_id.clone(), request_id);
         let mut body = Box::pin(
             begin_download_body_stream(
                 chunk_receiver,

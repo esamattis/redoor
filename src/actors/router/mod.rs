@@ -4,6 +4,7 @@ mod error;
 mod messages;
 mod progress;
 mod state;
+mod streaming;
 mod transfers;
 mod ui;
 
@@ -194,7 +195,7 @@ impl RouterState {
             return;
         }
 
-        if transfers::output::finish_rejected(self, &response) {
+        if streaming::finish_response(self, &response) {
             return;
         }
 
@@ -304,14 +305,17 @@ impl RouterState {
                     agents::execute_command_rest(&mut self, request);
                 }
                 RouterMsg::RouteStreamChunk(request) => {
-                    if self.copies.is_remote_copy_stream(request.chunk.request_id) {
+                    if self.streams.outputs.get(&request.chunk.request_id).is_some_and(|stream| {
+                        matches!(stream.owner, state::OutputOwner::CopySource { copy_id }
+                            if self.copies.public_id_for_internal(request.chunk.request_id) == Some(copy_id))
+                    }) && self.copies.is_remote_copy_stream(request.chunk.request_id) {
                         transfers::copy::route_chunk(&mut self, &router_handle, request);
                     } else {
-                        transfers::output::route_chunk(&mut self, &router_handle, request);
+                        streaming::route_chunk(&mut self, &router_handle, request);
                     }
                 }
                 RouterMsg::FinishRoutedOutputChunk(route) => {
-                    transfers::output::finish_routed_chunk(&mut self, &route);
+                    streaming::finish_routed_chunk(&mut self, &route);
                     let _ = route.reply.send(());
                 }
                 RouterMsg::FinishRoutedUploadChunk(route) => {
@@ -323,7 +327,7 @@ impl RouterState {
                     let _ = route.reply.send(());
                 }
                 RouterMsg::ExecuteStreamCommandRest(request) => {
-                    transfers::output::start(&mut self, request);
+                    streaming::start(&mut self, request);
                 }
                 RouterMsg::StartUploadStreamRest(request) => {
                     transfers::upload::start(&mut self, request);
@@ -362,7 +366,7 @@ impl RouterState {
                 RouterMsg::TransferProgressUpdate(request) => {
                     // Downloads publish a discovered tar total on this message;
                     // copies still overwrite both counts through their own path.
-                    if !transfers::output::update_progress(&mut self, &request) {
+                    if !transfers::download::update_progress(&mut self, &request) {
                         transfers::copy::update_progress(&mut self, request);
                     }
                 }

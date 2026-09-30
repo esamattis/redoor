@@ -2,6 +2,6 @@
 import type { RequestId } from "./RequestId";
 
 /**
- * Confirms which execution received cancellation without exposing a fictitious file transfer.
+ * HTTP 202 accepts retained cancellation delivery; only an agent terminal event acknowledges termination.
  */
 export type CancelExecutionResponse = { execution_id: RequestId, };

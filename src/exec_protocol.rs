@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Confirms which execution received cancellation without exposing a fictitious file transfer.
+/// HTTP 202 accepts retained cancellation delivery; only an agent terminal event acknowledges termination.
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CancelExecutionResponse {

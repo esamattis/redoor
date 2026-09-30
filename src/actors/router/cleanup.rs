@@ -104,21 +104,17 @@ pub(crate) fn cancel_public_transfer(
         .outputs
         .iter()
         .find_map(|(request_id, download)| {
-            (download.progress_id == Some(transfer_id)).then_some(*request_id)
+            (download.owner.download_id() == Some(transfer_id)).then_some(*request_id)
         });
     if let Some(request_id) = download_id {
         if let Some(download) = state.streams.outputs.get_mut(&request_id) {
             // Drop the REST sink immediately, but retain ownership until the
             // agent's terminal frame confirms its file and registry are released.
-            download.chunk_sender.take();
-            download.canceled_by_rest = true;
+            if let Some(connection) = state.agents.by_id.get(&download.agent_id) {
+                let _ = download.request_cancel(connection, request_id);
+            }
             if let Some(sender) = download.rest_cancel_sender.take() {
                 let _ = sender.send(true);
-            }
-            if let Some(connection) = state.agents.by_id.get(&download.agent_id)
-                && !connection.send_priority_message(Message::CancelTransfer { request_id })
-            {
-                connection.send_message(Message::CancelTransfer { request_id });
             }
         }
         return Ok(CancelTransferResponse {
@@ -162,19 +158,28 @@ pub(crate) fn cancel_execution(
     state: &mut RouterState,
     request_id: crate::types::RequestId,
     agent_id: AgentId,
-) -> bool {
+) -> Result<bool, RouterError> {
     let Some(stream) = state.streams.outputs.get_mut(&request_id) else {
-        return false;
+        return Ok(false);
     };
-    if stream.agent_id != agent_id || stream.kind != super::state::DirectOutputKind::Execution {
-        return false;
+    if stream.agent_id != agent_id
+        || !matches!(stream.owner, super::state::OutputOwner::Execution { .. })
+    {
+        return Ok(false);
     }
-    // Wake the HTTP body even when its bounded output sink is backpressured.
-    if let Some(sender) = stream.rest_cancel_sender.take() {
-        let _ = sender.send(true);
+    if !stream.canceled_by_rest
+        && state
+            .agents
+            .by_id
+            .get(&agent_id)
+            .is_none_or(|connection| connection.outgoing_priority.is_closed())
+    {
+        return Err(RouterError::ControlQueueFull {
+            agent_id: agent_id.to_string(),
+        });
     }
     cancel_transfer(state, request_id, agent_id);
-    true
+    Ok(true)
 }
 
 /// Cleans up all router-owned state associated with a disconnected agent.
@@ -254,7 +259,7 @@ pub(crate) async fn cleanup_agent_requests(state: &mut RouterState, agent_id: &A
     for request_id in &orphaned_downloads {
         if let Some(transfer) = state.streams.outputs.remove(request_id) {
             let disconnect_message = format!("Agent disconnected: {}", agent_id);
-            if let Some(progress_id) = transfer.progress_id {
+            if let Some(progress_id) = transfer.owner.download_id() {
                 settle_disconnected_transfer(state, progress_id, disconnect_message);
             }
             log!(
@@ -358,7 +363,7 @@ pub(crate) async fn cleanup_agent_transfer_requests(
         .collect();
     for request_id in &download_ids {
         if let Some(transfer) = state.streams.outputs.remove(request_id)
-            && let Some(progress_id) = transfer.progress_id
+            && let Some(progress_id) = transfer.owner.download_id()
         {
             settle_disconnected_transfer(state, progress_id, reason.clone());
         }
@@ -422,18 +427,22 @@ pub(crate) fn cancel_transfer(
                 return;
             }
 
+            // Copy cancellation must settle both agents through the public copy operation.
+            if matches!(transfer.owner, super::state::OutputOwner::CopySource { .. }) {
+                return;
+            }
+
             if transfer.canceled_by_rest {
                 return;
             }
 
-            transfer.canceled_by_rest = true;
-            transfer.chunk_sender.take();
-            let progress_id = transfer.progress_id;
-            if let Some(agent_connection) = state.agents.by_id.get(&agent_id)
-                && !agent_connection.send_priority_message(Message::CancelTransfer { request_id })
-            {
-                agent_connection.send_message(Message::CancelTransfer { request_id });
+            let Some(connection) = state.agents.by_id.get(&agent_id) else {
+                return;
+            };
+            if transfer.request_cancel(connection, request_id).is_err() {
+                return;
             }
+            let progress_id = transfer.owner.download_id();
             // Downloads report cancellation immediately because the client has
             // already stopped consuming the stream at this point.
             if let Some(progress_id) = progress_id {

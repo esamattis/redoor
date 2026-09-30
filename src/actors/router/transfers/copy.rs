@@ -329,12 +329,14 @@ pub(crate) fn start(state: &mut RouterState, request: StartCopyRequest) {
             state.streams.outputs.insert(
                 source_request_id,
                 DirectOutputStream {
-                    kind: super::super::state::DirectOutputKind::File,
+                    owner: super::super::state::OutputOwner::CopySource {
+                        copy_id: public_request_id,
+                    },
                     agent_id: request.source_agent_id.clone(),
-                    chunk_sender: Some(tokio::sync::mpsc::channel(1).0),
                     rest_cancel_sender: None,
-                    progress_id: None,
                     canceled_by_rest: false,
+                    cancellation_delivery: None,
+                    forwarding_stop: tokio::sync::watch::channel(false).0,
                 },
             );
             state.streams.uploads.insert(

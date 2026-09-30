@@ -269,9 +269,12 @@ describe("Remote exec and non-shell streaming API", () => {
             });
             await command.kill(signal);
             const output = await command;
-            // A handled signal produces a terminal JSON cancellation and remote cleanup, not default signal death.
+            // Local interruption keeps exit 130 but cannot claim agent-acknowledged termination after closing HTTP.
             expect(output.exitCode, output.stderr).toBe(130);
-            expect(events(output.stdout).at(-1)).toEqual({ type: "canceled" });
+            expect(events(output.stdout).at(-1)).toEqual({
+                type: "error",
+                message: expect.stringContaining("termination not acknowledged"),
+            });
             await waitForValue({
                 description: "interrupted remote child reaped",
                 predicate: async () => gone(pid),
@@ -332,11 +335,21 @@ describe("Remote exec and non-shell streaming API", () => {
             { method: "DELETE", headers: setup.apiClient.getAuthHeaders() },
         );
         // Independent control must stop the worker even when the consumer stops reading its infinite output.
-        expect(canceled.status).toBe(200);
+        expect(canceled.status).toBe(202);
         const cancellation: CancelExecutionResponse = await canceled.json();
         // The execution endpoint returns an execution handle, not a transfer-progress handle.
         expect(cancellation.execution_id).toBe(Number(id));
         const pid = Number(await fs.readFile(pidFile, "utf8"));
+        // Fetch can split NDJSON across reads, so retain the initial bytes when decoding the terminal record.
+        let tail = first.value === undefined ? "" : Buffer.from(first.value).toString();
+        for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            tail += Buffer.from(chunk.value).toString();
+        }
+        // The terminal record is an agent acknowledgement, so the child is already reaped when observed.
+        expect(events(tail).at(-1)).toEqual({ type: "canceled" });
+        expect(gone(pid)).toBe(true);
         await waitForValue({
             description: "backpressured exec reaped",
             predicate: async () => gone(pid),

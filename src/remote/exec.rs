@@ -189,8 +189,8 @@ pub async fn run(store: SessionStore, args: ExecArgs) -> i32 {
     };
     let result = tokio::select! {
         result = operation => result,
-        _ = interrupt.recv() => Err(anyhow::anyhow!("interrupted: remote execution canceled by closing its stream")),
-        _ = terminate.recv() => Err(anyhow::anyhow!("interrupted: remote execution canceled by closing its stream")),
+        _ = interrupt.recv() => Err(anyhow::anyhow!("interrupted: remote cancellation requested by closing its stream; termination not acknowledged")),
+        _ = terminate.recv() => Err(anyhow::anyhow!("interrupted: remote cancellation requested by closing its stream; termination not acknowledged")),
     };
     match result {
         Ok(code) => code,
@@ -198,12 +198,9 @@ pub async fn run(store: SessionStore, args: ExecArgs) -> i32 {
             let interrupted = error.to_string().starts_with("interrupted:");
             let message = format!("{error:#}");
             if args.json {
-                let event = if interrupted {
-                    ExecEvent::Canceled
-                } else {
-                    ExecEvent::Error {
-                        message: message.clone(),
-                    }
+                // Closing our own HTTP consumer requests cleanup but cannot acknowledge remote termination.
+                let event = ExecEvent::Error {
+                    message: message.clone(),
                 };
                 // A blocked local JSON pipe must not prevent interruption from finishing remote cleanup.
                 let _ =

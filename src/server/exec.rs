@@ -1,6 +1,6 @@
 //! Dedicated non-PTY execution endpoint reuses stream routing and drop-triggered cancellation.
 
-use super::{raw::DownloadCancelGuard, responses::router_error_response, state::ServerState};
+use super::{responses::router_error_response, state::ServerState, streaming::OutputCancelGuard};
 use axum::{
     Json,
     body::Body,
@@ -11,7 +11,7 @@ use axum::{
 use redoor::{
     actors::router::{ExecuteStreamRequest, OutputStreamTracking, RouterMsg},
     commands::{Command, ErrorResponse},
-    exec_protocol::{CancelExecutionResponse, ExecEvent, ExecRequest},
+    exec_protocol::{CancelExecutionResponse, ExecRequest},
     types::{AgentId, RequestId},
 };
 
@@ -30,17 +30,21 @@ pub(crate) async fn cancel_execution_handler(
         })
         .await
     {
-        Ok(true) => Json(CancelExecutionResponse {
-            execution_id: request_id,
-        })
-        .into_response(),
-        Ok(false) => (
+        Ok(Ok(true)) => (
+            StatusCode::ACCEPTED,
+            Json(CancelExecutionResponse {
+                execution_id: request_id,
+            }),
+        )
+            .into_response(),
+        Ok(Ok(false)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "Execution not found".to_string(),
             }),
         )
             .into_response(),
+        Ok(Err(error)) => router_error_response(error),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -62,17 +66,19 @@ pub(crate) async fn exec_handler(
     }
     let agent_id = AgentId::from(agent);
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    let (terminal_sender, mut terminal_receiver) = tokio::sync::watch::channel(None);
     let id = match state
         .router_ref
         .request(30_000, |reply| {
             RouterMsg::ExecuteStreamCommandRest(ExecuteStreamRequest {
                 agent_id: agent_id.clone(),
                 command: Command::Exec { request },
-                tracking: OutputStreamTracking::Execution,
+                tracking: OutputStreamTracking::Execution {
+                    terminal: terminal_sender.clone(),
+                },
                 reply,
                 chunk_sender: sender,
-                rest_cancel_sender: Some(cancel_sender.clone()),
+                rest_cancel_sender: None,
             })
         })
         .await
@@ -89,27 +95,45 @@ pub(crate) async fn exec_handler(
                 .into_response();
         }
     };
-    let mut guard = DownloadCancelGuard::new(state.router_ref.clone(), agent_id, id);
+    let mut guard = OutputCancelGuard::new(state.router_ref.clone(), agent_id, id);
+    drop(terminal_sender);
     let stream = async_stream::stream! {
-        // Keep normal router completion from looking like watch-channel cancellation before the last chunk is read.
-        let _cancel_keepalive = cancel_sender;
+        let mut terminal_open = true;
         loop {
             let chunk = tokio::select! {
+                biased;
+                result = terminal_receiver.changed(), if terminal_open => Err(result.is_ok()),
                 chunk = receiver.recv() => Ok(chunk),
-                _ = cancel_receiver.changed() => Err(()),
             };
             let chunk = match chunk {
                 Ok(chunk) => chunk,
-                Err(()) => {
-                    // Explicit API cancellation has a typed terminal result, unlike an unexplained disconnect.
-                    let mut data = serde_json::to_vec(&ExecEvent::Canceled).unwrap();
+                Err(false) => { terminal_open = false; continue; }
+                Err(true) => {
+                    let event = terminal_receiver.borrow_and_update().clone();
+                    let Some(event) = event else { break; };
+                    // Only agent terminal acknowledgements can describe process termination.
+                    guard.disarm();
+                    let mut data = serde_json::to_vec(&event).unwrap();
                     data.push(b'\n');
                     yield Ok(bytes::Bytes::from(data));
                     break;
                 }
             };
             let Some(chunk) = chunk else {
-                yield Err(std::io::Error::other("Execution stream ended before completion"));
+                // Accepted cancellation drops the payload sink to release backpressure,
+                // but termination is still pending on the independent acknowledgement lane.
+                if terminal_open && terminal_receiver.borrow().is_none() {
+                    let _ = terminal_receiver.changed().await;
+                }
+                let event = terminal_receiver.borrow_and_update().clone();
+                if let Some(event) = event {
+                    guard.disarm();
+                    let mut data = serde_json::to_vec(&event).unwrap();
+                    data.push(b'\n');
+                    yield Ok(bytes::Bytes::from(data));
+                } else {
+                    yield Err(std::io::Error::other("Execution stream ended before completion"));
+                }
                 break;
             };
             if chunk.is_error {

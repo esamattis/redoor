@@ -9,9 +9,9 @@ use redoor::{
 
 use super::{
     agent_helpers::require_absolute_path,
-    raw::DownloadCancelGuard,
     responses::{command_error_status, router_error_response},
     state::ServerState,
+    streaming::OutputCancelGuard,
 };
 
 /// Route: `POST /api/v1/diff`
@@ -160,7 +160,7 @@ async fn download_editable_file(
         }
     };
     let mut cancel_guard =
-        DownloadCancelGuard::new(state.router_ref.clone(), endpoint.agent.clone(), request_id);
+        OutputCancelGuard::new(state.router_ref.clone(), endpoint.agent.clone(), request_id);
 
     let capacity = match usize::try_from(expected_size) {
         Ok(capacity) => capacity,

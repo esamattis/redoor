@@ -508,11 +508,16 @@ async fn remote_exec_interruption_during_admission_drops_owned_response() {
         .await
         .unwrap()
         .unwrap();
-    // Receiving canceled JSON before admission is released proves the CLI did not wait indefinitely for headers.
+    // Interruption must finish before headers arrive without falsely acknowledging remote termination.
     assert_eq!(output.status.code(), Some(130));
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["type"],
-        "canceled"
+    let event = serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+    assert_eq!(event["type"], "error");
+    // Admission has not completed, so the CLI can only report an unacknowledged cleanup request.
+    assert!(
+        event["message"]
+            .as_str()
+            .unwrap()
+            .contains("termination not acknowledged")
     );
     state.release.notify_one();
     // The body may never be polled, but ownership must still be dropped after the disconnected response is built.

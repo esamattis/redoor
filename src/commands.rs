@@ -969,6 +969,10 @@ impl CommandErrorKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CommandResult {
+    /// Carries an agent-reaped execution result independently of saturated payload transport.
+    Exec {
+        event: crate::exec_protocol::ExecEvent,
+    },
     LsDirectory(LsDirectoryResult),
     LsFile(LsFileResult),
     FileSearch(FileSearchResponse),
@@ -1727,6 +1731,7 @@ impl CommandResult {
     pub fn summary(&self) -> String {
         match self {
             Self::LsDirectory(_) => "ok LsDirectory".to_string(),
+            Self::Exec { event } => format!("ok Exec {event:?}"),
             Self::LsFile(_) => "ok LsFile".to_string(),
             Self::FileSearch(result) => format!(
                 "ok FileSearch results={} timed_out={}",

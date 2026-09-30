@@ -186,17 +186,16 @@ pub(super) async fn run(
         .unwrap_or_else(|error| ExecEvent::Error {
             message: error.to_string(),
         });
-    if worker.terminal(event, &mut cancel).await.is_err() {
+    if worker.terminal(event.clone(), &mut cancel).await.is_err() {
         // If the payload lane cannot deliver completion, the independent control lane closes server ownership.
-        let result = redoor::commands::CommandResult::error(
-            redoor::commands::CommandErrorKind::ServiceUnavailable,
-            "Execution terminal event could not be delivered",
-        );
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            super::AgentActor.send_command_response(&control, &agent_id, request_id, result),
-        )
-        .await;
+        let result = redoor::commands::CommandResult::Exec { event };
+        // Retain the acknowledgement while control is backpressured, but let generation
+        // teardown release the worker. Its active slot bounds retained terminal results.
+        cancel.borrow_and_update();
+        tokio::select! {
+            _ = cancel.changed() => {},
+            _ = super::AgentActor.send_command_response(&control, &agent_id, request_id, result) => {},
+        }
     }
 }
 
@@ -337,9 +336,9 @@ mod tests {
         );
     }
 
-    /// Teardown may wait briefly for terminal delivery, but even blocked control cannot prevent joining.
+    /// Terminal acknowledgements remain retained under pressure until delivered or generation teardown.
     #[tokio::test(start_paused = true)]
-    async fn teardown_fallback_is_bounded_on_both_lanes() {
+    async fn teardown_releases_retained_fallback_on_blocked_lanes() {
         let (worker, _payload) = blocked_worker().await;
         let (_sender, cancel) = watch::channel(true);
         let (control, mut responses) = mpsc::channel(1);
@@ -362,11 +361,11 @@ mod tests {
         };
         // The fallback must name the affected execution, rather than abandoning server ownership.
         assert!(
-            matches!(serde_json::from_str::<redoor::types::Message>(&text).unwrap(), redoor::types::Message::CommandResponse { request_id, .. } if request_id == RequestId::new(41))
+            matches!(serde_json::from_str::<redoor::types::Message>(&text).unwrap(), redoor::types::Message::CommandResponse { request_id, result: redoor::commands::CommandResult::Exec { event: ExecEvent::Canceled }, .. } if request_id == RequestId::new(41))
         );
 
         let (worker, _payload) = blocked_worker().await;
-        let (_sender, cancel) = watch::channel(true);
+        let (sender, cancel) = watch::channel(true);
         let (control, _responses) = mpsc::channel(1);
         control.send(Message::text("occupied")).await.unwrap();
         let task = run(
@@ -381,10 +380,12 @@ mod tests {
         // Saturating control as well exercises the second cleanup deadline.
         assert!(poll!(&mut task).is_pending());
         tokio::time::advance(Duration::from_secs(6)).await;
-        // The fallback is now blocked, but retains its own finite cleanup budget.
+        // Saturated control retains the actual acknowledgement rather than losing it to a deadline.
         assert!(poll!(&mut task).is_pending());
         tokio::time::advance(Duration::from_secs(6)).await;
-        // Joining the worker cannot hang even when neither lane drains.
+        assert!(poll!(&mut task).is_pending());
+        // Generation teardown sends cancellation again and must release the retained result immediately.
+        sender.send(true).unwrap();
         assert!(poll!(&mut task).is_ready());
     }
 }

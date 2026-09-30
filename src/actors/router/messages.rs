@@ -203,6 +203,8 @@ pub struct RouteStreamChunkRequest {
 
 /// Completes bounded output forwarding after the REST receiver accepts it.
 pub struct FinishOutputChunkRoute {
+    /// Preserves an agent terminal acknowledgement when cancellation races an already-forwarding frame.
+    pub execution_terminal: Option<crate::exec_protocol::ExecEvent>,
     /// Agent that produced the output chunk.
     pub agent_id: AgentId,
     /// Internal request id for the file or execution stream.
@@ -283,7 +285,10 @@ pub enum OutputStreamTracking {
         resume_offset: Option<u64>,
     },
     /// Executions own a live output stream but do not create file-transfer history.
-    Execution,
+    Execution {
+        /// Independent terminal acknowledgement stays observable when output is saturated.
+        terminal: tokio::sync::watch::Sender<Option<crate::exec_protocol::ExecEvent>>,
+    },
 }
 
 /// Outcome of waiting for an upload destination to become ready.
@@ -442,7 +447,7 @@ pub enum RouterMsg {
     CancelExecution {
         agent_id: AgentId,
         request_id: RequestId,
-        reply: RouterReply<bool>,
+        reply: RouterReply<Result<bool, RouterError>>,
     },
     StartUploadStreamRest(StartUploadRequest),
     SendStreamChunkToAgent(SendStreamChunkRequest),

@@ -23,6 +23,7 @@ mod retry_agent_start;
 mod routes;
 mod server_info;
 pub(crate) mod state;
+mod streaming;
 mod terminals;
 mod transfer_cancellation;
 mod transfer_progress;

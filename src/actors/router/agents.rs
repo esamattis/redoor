@@ -934,11 +934,14 @@ mod tests {
             download_id,
             super::super::state::DirectOutputStream {
                 agent_id: AgentId::from("agent"),
-                chunk_sender: Some(chunk_sender),
                 rest_cancel_sender: None,
-                kind: super::super::state::DirectOutputKind::File,
-                progress_id: Some(download_id.as_transfer_id()),
+                owner: super::super::state::OutputOwner::Download {
+                    progress_id: download_id.as_transfer_id(),
+                    sink: Some(chunk_sender),
+                },
                 canceled_by_rest: false,
+                cancellation_delivery: None,
+                forwarding_stop: tokio::sync::watch::channel(false).0,
             },
         );
 
