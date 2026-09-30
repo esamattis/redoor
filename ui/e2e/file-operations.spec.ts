@@ -1066,7 +1066,7 @@ test.describe.serial("File Operations", () => {
         }
 
         await page
-            .getByLabel("Agent view")
+            .getByLabel("Device view")
             .getByRole("link", { name: "Trash", exact: true })
             .click();
         const trashedRows = page.getByRole("article");
@@ -1117,7 +1117,7 @@ test.describe.serial("File Operations", () => {
             .getByRole("button", { name: "Cancel" })
             .click();
         await page
-            .getByLabel("Agent view")
+            .getByLabel("Device view")
             .getByRole("link", { name: "Trash", exact: true })
             .click();
         const refreshedSecondRow = page.getByRole("article", {

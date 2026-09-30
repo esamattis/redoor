@@ -30,7 +30,7 @@ export function AgentNavigation(props: {
     return (
         <SideMenu
             placement="right"
-            label="Agent menu"
+            label="Device menu"
             drawerId="agent-menu-drawer"
             isOpen={props.isOpen}
             triggerRef={props.triggerRef}
@@ -55,15 +55,15 @@ function AgentMenu(props: {
     const [userState, setUserState] = useUserState();
 
     return (
-        <nav aria-label="Agents" className="flex min-h-0 flex-1 flex-col">
+        <nav aria-label="Devices" className="flex min-h-0 flex-1 flex-col">
             <div className="mb-3 flex items-center justify-between gap-2 px-2">
                 <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-                    Agents
+                    Devices
                 </h2>
-                <AddButton tooltip="Add managed agent">
+                <AddButton tooltip="Add device">
                     <Link
                         to="/agents/new"
-                        aria-label="Add managed agent"
+                        aria-label="Add device"
                         onClick={props.onClose}
                     />
                 </AddButton>
@@ -71,7 +71,7 @@ function AgentMenu(props: {
             <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
                 {props.agents.length === 0 ? (
                     <span className="px-2 py-3 text-sm text-slate-500">
-                        No agents configured or connected
+                        No devices configured or connected
                     </span>
                 ) : (
                     props.agents.map((agent) => {
@@ -120,7 +120,7 @@ function AgentMenu(props: {
                                         </span>
                                         {isActive ? (
                                             <span className="sr-only">
-                                                Current agent
+                                                Current device
                                             </span>
                                         ) : null}
                                     </Link>

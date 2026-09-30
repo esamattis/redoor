@@ -123,10 +123,10 @@ function AgentManagement() {
     return (
         <div className="p-8">
             <div className="mx-auto max-w-7xl">
-                <h1 className="text-2xl font-bold text-slate-100">Agents</h1>
+                <h1 className="text-2xl font-bold text-slate-100">Devices</h1>
                 <p className="mt-2 text-sm text-slate-400">
-                    Manage TOML agents and observe external connections known
-                    during this server run.
+                    Manage configured devices and view devices whose agents were
+                    started independently during this server run.
                 </p>
                 <AgentTable
                     agents={sortedAgents}
@@ -145,12 +145,12 @@ function AgentManagement() {
                 isOpen={shutdownAgent !== null}
                 title={
                     shutdownAgent
-                        ? `Shut down ${shutdownAgent.name}?`
-                        : "Shut down agent?"
+                        ? `Disconnect ${shutdownAgent.name}?`
+                        : "Disconnect device?"
                 }
-                description="Active transfers and terminals for this agent will be interrupted."
-                confirmLabel="Shutdown"
-                busyLabel="Shutting down…"
+                description="Stops the Redoor agent and disables automatic reconnection. Active transfers and terminals for this device will be interrupted."
+                confirmLabel="Disconnect"
+                busyLabel="Disconnecting…"
                 isBusy={
                     shutdownAgent !== null &&
                     mutations[shutdownAgent.id] === "shutdown"
@@ -199,7 +199,7 @@ function AgentTable(props: {
                     {props.agents.map((agent) => (
                         <tr
                             key={agent.id}
-                            aria-label={`Agent ${agent.name}`}
+                            aria-label={`Device ${agent.name}`}
                             className="bg-[#0f1218] text-slate-200"
                         >
                             <td className="px-4 py-3">
@@ -212,7 +212,9 @@ function AgentTable(props: {
                                 </Link>
                             </td>
                             <td className="px-4 py-3">
-                                {agent.managed ? "Managed (TOML)" : "External"}
+                                {agent.managed
+                                    ? "Managed by Redoor"
+                                    : "Started independently"}
                             </td>
                             <td className="px-4 py-3 capitalize">
                                 {agent.status}
@@ -285,7 +287,7 @@ function AgentActionsMenu(props: {
             label="Actions"
             triggerAriaLabel={`Open actions for ${props.agent.name}`}
             title={`${props.agent.name} actions`}
-            closeAriaLabel="Close agent actions"
+            closeAriaLabel="Close device actions"
             icon={<MoreHorizontal className="h-4 w-4" />}
             disabled={props.disabled}
             className="gap-1 rounded border border-slate-700 px-3 py-1.5"
@@ -301,7 +303,7 @@ function AgentActionsMenu(props: {
                                 close();
                             }}
                         >
-                            <Play className="h-4 w-4" /> Start
+                            <Play className="h-4 w-4" /> Connect
                         </ActionMenuButton>
                     ) : null}
                     {props.agent.status === "connected" ? (
@@ -347,7 +349,7 @@ function AgentActionsMenu(props: {
                                 close();
                             }}
                         >
-                            <Power className="h-4 w-4" /> Shutdown
+                            <Power className="h-4 w-4" /> Disconnect
                         </ActionMenuButton>
                     ) : null}
                     {props.agent.status === "connected" &&

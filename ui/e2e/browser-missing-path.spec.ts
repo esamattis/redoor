@@ -34,7 +34,7 @@ test.describe.serial("Missing path creation", () => {
         await expect(page).toHaveURL(missingUrl);
         // Browser chrome stays mounted so parent and breadcrumb navigation remain available.
         await expect(
-            page.getByRole("link", { name: "Agent home" }),
+            page.getByRole("link", { name: "Device home" }),
         ).toBeVisible();
         await expect(
             page.getByRole("navigation", { name: "Breadcrumbs" }),

@@ -45,7 +45,7 @@ test.describe("Restart", () => {
         ).toBeVisible();
         // Agents in the right menu prove the suite's external processes are connected before restart.
         const agentNavigation = page.getByRole("navigation", {
-            name: "Agents",
+            name: "Devices",
         });
         await expect(
             agentNavigation.getByRole("link", { name: /agent1_src/ }),
@@ -97,7 +97,7 @@ test.describe("Restart", () => {
         expect(startupsBefore).toBeGreaterThanOrEqual(1);
 
         await page.goto(`${WEB_BASE_URL}/agents`);
-        const row = page.getByRole("row", { name: "Agent agent1_src" });
+        const row = page.getByRole("row", { name: "Device agent1_src" });
         await expect(row).toBeVisible();
         await row
             .getByRole("button", { name: "Open actions for agent1_src" })

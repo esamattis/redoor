@@ -554,7 +554,7 @@ export function DirectoryFilesActions(props: {
                     downloadTooltip="Downloads this directory as a .tar.gz archive."
                     secondaryDownload
                     afterDownload={
-                        <Tooltip content="Reload directory listing from the agent">
+                        <Tooltip content="Reload directory listing from the device">
                             <Button
                                 type="button"
                                 variant="subtle"

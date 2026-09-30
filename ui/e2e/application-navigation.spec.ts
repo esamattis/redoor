@@ -12,7 +12,7 @@ test.describe("Application navigation", () => {
         });
         await expect(applicationNavigation).toBeVisible();
         const agentNavigation = page.getByRole("navigation", {
-            name: "Agents",
+            name: "Devices",
         });
         // Agent selection persists on the opposite side of the central route content.
         await expect(agentNavigation).toBeVisible();
@@ -42,7 +42,7 @@ test.describe("Application navigation", () => {
             page.getByRole("button", { name: "Open application menu" }),
         ).toBeHidden();
         await expect(
-            page.getByRole("button", { name: "Open agent menu" }),
+            page.getByRole("button", { name: "Open device menu" }),
         ).toBeHidden();
     });
 
@@ -63,13 +63,13 @@ test.describe("Application navigation", () => {
         await themeButton.click();
         // Click focuses the control, but the tooltip must follow the cursor rather than stay pinned.
         await page
-            .getByRole("region", { name: "Agent names" })
-            .getByRole("heading", { name: "Agents" })
+            .getByRole("region", { name: "Device names" })
+            .getByRole("heading", { name: "Devices" })
             .hover();
         await expect(page.getByRole("tooltip")).toHaveCount(0);
 
         const agentLink = page
-            .getByRole("region", { name: "Agent names" })
+            .getByRole("region", { name: "Device names" })
             .getByRole("link")
             .first();
         await agentLink.hover();
@@ -139,14 +139,14 @@ test.describe("Application navigation", () => {
             page.getByRole("navigation", { name: "Application" }),
         ).toBeHidden();
         await expect(
-            page.getByRole("navigation", { name: "Agents" }),
+            page.getByRole("navigation", { name: "Devices" }),
         ).toBeHidden();
         // Both edge drawers remain independently reachable at this breakpoint.
         await expect(
             page.getByRole("button", { name: "Open application menu" }),
         ).toBeVisible();
         await expect(
-            page.getByRole("button", { name: "Open agent menu" }),
+            page.getByRole("button", { name: "Open device menu" }),
         ).toBeVisible();
     });
 
@@ -174,13 +174,13 @@ test.describe("Application navigation", () => {
             page.getByRole("navigation", { name: "Application" }),
         ).toBeVisible();
         await expect(
-            page.getByRole("navigation", { name: "Agents" }),
+            page.getByRole("navigation", { name: "Devices" }),
         ).toBeVisible();
         await expect(
             page.getByRole("button", { name: "Open application menu" }),
         ).toBeHidden();
         await expect(
-            page.getByRole("button", { name: "Open agent menu" }),
+            page.getByRole("button", { name: "Open device menu" }),
         ).toBeHidden();
 
         await page.getByRole("button", { name: "Sidebar mode: Show" }).hover();
@@ -231,7 +231,7 @@ test.describe("Application navigation", () => {
             name: "Open application menu",
         });
         const agentTrigger = page.getByRole("button", {
-            name: "Open agent menu",
+            name: "Open device menu",
         });
 
         await applicationTrigger.click();
@@ -244,7 +244,7 @@ test.describe("Application navigation", () => {
         await expect(
             page.getByRole("dialog", { name: "Application menu" }),
         ).toBeHidden();
-        const agentDialog = page.getByRole("dialog", { name: "Agent menu" });
+        const agentDialog = page.getByRole("dialog", { name: "Device menu" });
         await expect(agentDialog).toBeVisible();
         const dialogBox = await agentDialog.locator("aside").boundingBox();
         // The agent drawer enters from and remains aligned to the viewport's right edge.

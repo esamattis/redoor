@@ -184,6 +184,7 @@ impl RawUploadWorker {
             tx,
             agent_id,
             request_id,
+            mut cancel_receiver,
             ..
         } = self;
         let RawUploadSession {
@@ -234,6 +235,29 @@ impl RawUploadWorker {
                     AgentCommandError::raw_upload(
                         CommandErrorKind::from_io_error(&error),
                         error_message,
+                    )
+                    .into(),
+                )
+                .await;
+            active_uploads.remove(request_id);
+            return;
+        }
+
+        // Metadata preparation touches only owned staging. The router must order
+        // cancellation before the first rename, backup, or merge can affect users' data.
+        if !active_uploads
+            .begin_publication(&tx, &agent_id, request_id, &mut cancel_receiver)
+            .await
+        {
+            remove_upload_temp_file(&temp_path).await;
+            AgentActor
+                .send_command_response(
+                    &tx,
+                    &agent_id,
+                    request_id,
+                    AgentCommandError::raw_upload(
+                        CommandErrorKind::InvalidInput,
+                        "Upload publication was not authorized".to_string(),
                     )
                     .into(),
                 )
@@ -547,6 +571,83 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    /// Waits for the real worker's publication request so cancellation cannot depend on IO timing.
+    #[tokio::test]
+    async fn cancellation_at_raw_publication_gate_preserves_destination_and_cleans_staging() {
+        crate::logging::init(None).await.unwrap();
+        let temp = TempDir::create();
+        let destination = temp.path().join("destination");
+        tokio::fs::write(&destination, b"original").await.unwrap();
+        let uploads = ActiveUploads::new();
+        let (tx, mut responses) = mpsc::channel(4);
+        let request_id = RequestId::new(3);
+        AgentActor
+            .start_raw_upload_session(
+                uploads.clone(),
+                &tx,
+                &AgentId::new("test-agent"),
+                request_id,
+                RawUploadDestination {
+                    path: destination.display().to_string(),
+                    on_existing: CopyExistingMode::Override,
+                    ownership: CreationOwnershipOptions::default(),
+                },
+            )
+            .await;
+        let handle = uploads.get(request_id).unwrap();
+        handle
+            .chunk_sender
+            .send(streaming::StreamChunk {
+                request_id,
+                chunk_index: redoor::types::ChunkIndex::new(0),
+                is_last: true,
+                is_error: false,
+                payload_kind: StreamPayloadKind::RawFile,
+                data: b"replacement".to_vec(),
+            })
+            .await
+            .unwrap();
+        let request = responses.recv().await.unwrap();
+        assert!(
+            matches!(
+                serde_json::from_str::<redoor::types::Message>(request.to_text().unwrap()).unwrap(),
+                redoor::types::Message::UploadPublicationRequest { .. }
+            ),
+            "raw finalization must ask the router before changing the destination"
+        );
+        handle
+            .cancel_sender
+            .send(true)
+            .expect("post-body worker must retain cancellation ownership");
+        let response = responses.recv().await.unwrap();
+        assert!(
+            matches!(
+                serde_json::from_str::<redoor::types::Message>(response.to_text().unwrap())
+                    .unwrap(),
+                redoor::types::Message::CommandResponse {
+                    result: CommandResult::Error { .. },
+                    ..
+                }
+            ),
+            "canceling a publication wait must produce failure rather than success"
+        );
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"original",
+            "post-body cancellation must never overwrite the existing file"
+        );
+        let mut entries = tokio::fs::read_dir(temp.path()).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name());
+        }
+        assert_eq!(
+            names,
+            vec![destination.file_name().unwrap().to_os_string()],
+            "canceled raw finalization must remove all owned staging siblings"
+        );
+    }
 
     #[tokio::test]
     async fn permission_capture_uses_destination_entry_without_following_symlinks() {

@@ -193,6 +193,10 @@ impl RouterState {
             return;
         }
 
+        if transfers::download::finish_rejected(self, &response) {
+            return;
+        }
+
         transfers::upload::finish_transfer(
             self,
             response.agent_id,
@@ -328,6 +332,12 @@ impl RouterState {
                 }
                 RouterMsg::CommitDirectUpload(request) => {
                     transfers::upload::commit(&mut self, &router_handle, request);
+                }
+                RouterMsg::BeginUploadPublication {
+                    agent_id,
+                    request_id,
+                } => {
+                    transfers::upload::begin_publication(&mut self, agent_id, request_id);
                 }
                 RouterMsg::CancelTransfer {
                     agent_id,

@@ -295,7 +295,7 @@ server = "${serverProtocol}//${browserUrl.host}"
     }) => {
         await page.goto(`${WEB_BASE_URL}/`);
 
-        const agentNames = page.getByRole("region", { name: "Agent names" });
+        const agentNames = page.getByRole("region", { name: "Device names" });
         const serverHeading = page.getByRole("heading", {
             name: "Server",
             exact: true,
@@ -320,7 +320,7 @@ server = "${serverProtocol}//${browserUrl.host}"
 
         // The persistent desktop sidebar already shows agents, so no extra drawer control.
         await expect(
-            page.getByRole("button", { name: "Open agent sidebar" }),
+            page.getByRole("button", { name: "Open device sidebar" }),
         ).toHaveCount(0);
 
         // Several names share a row instead of stacking as a single-column list.
@@ -334,7 +334,7 @@ server = "${serverProtocol}//${browserUrl.host}"
         // A name is a shortcut to that agent's own home.
         await expect(page).toHaveURL(/\/agents\/[^/]+$/);
         await expect(
-            page.getByRole("heading", { name: "Agent name" }),
+            page.getByRole("heading", { name: "Device name" }),
         ).toContainText("agent1_src");
     });
 
@@ -344,19 +344,19 @@ server = "${serverProtocol}//${browserUrl.host}"
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`${WEB_BASE_URL}/`);
 
-        const agentNames = page.getByRole("region", { name: "Agent names" });
+        const agentNames = page.getByRole("region", { name: "Device names" });
         const openSidebar = agentNames.getByRole("button", {
-            name: "Open agent sidebar",
+            name: "Open device sidebar",
         });
         // The persistent right sidebar is gone, so the list must expose a drawer control.
         await expect(openSidebar).toBeVisible();
         await openSidebar.click();
 
-        const agentMenu = page.getByRole("dialog", { name: "Agent menu" });
+        const agentMenu = page.getByRole("dialog", { name: "Device menu" });
         // The home control must open the same drawer as the top-bar trigger.
         await expect(agentMenu).toBeVisible();
         await expect(
-            agentMenu.getByRole("navigation", { name: "Agents" }),
+            agentMenu.getByRole("navigation", { name: "Devices" }),
         ).toBeVisible();
     });
 });

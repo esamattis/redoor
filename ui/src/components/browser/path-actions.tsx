@@ -456,7 +456,7 @@ function OpenNativelyAction(props: {
                               openMutation.error,
                               "Could not open the path",
                           )
-                        : "Opened on the agent computer"}
+                        : "Opened on the device"}
                 </Toast>
             ) : null,
     });
@@ -812,8 +812,8 @@ export function PersistentPathActions(props: {
                             {props.currentName}
                         </span>
                         {props.agent.supportsTrash
-                            ? "to the agent trash. You can restore it later from the Trash tab."
-                            : "to the native agent Trash."}
+                            ? "to the device trash. You can restore it later from the Trash tab."
+                            : "to the device's native Trash."}
                     </>
                 }
                 targets={[{ agent: props.agent, path: props.path }]}

@@ -533,7 +533,7 @@ function FileEntryActions(props: {
                 onClose={() => setIsDownloadDialogOpen(false)}
             >
                 <p className="mt-4 text-sm leading-relaxed text-slate-400">
-                    The archive is created on the agent as data is sent, so the
+                    The archive is created on the device as data is sent, so the
                     complete directory is not buffered in memory first.
                 </p>
                 <DialogActions>
@@ -560,8 +560,8 @@ function FileEntryActions(props: {
                 title={`Delete this ${entryType}?`}
                 description={
                     props.agent.supportsTrash
-                        ? `Move ${props.entryName} to the agent trash. You can restore it later from the Trash tab.`
-                        : `Move ${props.entryName} to the native agent Trash.`
+                        ? `Move ${props.entryName} to the device trash. You can restore it later from the Trash tab.`
+                        : `Move ${props.entryName} to the device's native Trash.`
                 }
                 targets={[{ agent: props.agent, path: props.fullPath }]}
                 trashConfirmLabel="Move to trash"

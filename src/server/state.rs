@@ -27,6 +27,8 @@ pub(crate) struct ServerState {
     pub(crate) log_registry: LogRegistry,
     /// Keeps download credentials process-local and atomically single-use.
     pub(crate) one_time_token_registry: OneTimeTokenRegistry,
+    /// Correlates client-owned upload requests while their destination workers are still active.
+    pub(crate) upload_requests: super::upload_requests::UploadRequests,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
     /// Absolute path of the TOML config loaded at process start (for the server

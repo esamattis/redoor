@@ -33,6 +33,9 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 anyhow = "1.0.104"
 thiserror = "2.0.20"
 reqwest = { version = "0.13.4", features = ["stream"] }
+cookie_store = { version = "0.22", features = ["serde"] }
+fs2 = "0.4"
+rpassword = "7"
 semver = "1.0.27"
 axum-embed = "0.1.0"
 rust-embed = "8.12.0"
@@ -65,5 +68,6 @@ objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "FoundationErrors", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
 
 [dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util"] }
 rcgen = "0.14.5"
 tokio-rustls = "0.26.4"

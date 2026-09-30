@@ -288,7 +288,7 @@ export function SearchDialog(props: { agent: Agent }) {
     return (
         <Dialog
             isOpen={isOpen}
-            title="Search agent"
+            title="Search device"
             description={
                 searchDirectory ? (
                     <span>
@@ -298,7 +298,7 @@ export function SearchDialog(props: { agent: Agent }) {
                         </span>
                     </span>
                 ) : (
-                    "Search is unavailable while this agent is disconnected."
+                    "Search is unavailable while this device is disconnected."
                 )
             }
             closeAriaLabel="Close search"
@@ -777,7 +777,7 @@ function SearchStatus(props: {
                 <span>{data.results.length}</span>
             </Tooltip>{" "}
             {data.results.length === 1 ? "result" : "results"} in{" "}
-            <Tooltip content="Search duration was measured on the agent.">
+            <Tooltip content="Search duration was measured on the device.">
                 <span>{data.duration_ms}ms</span>
             </Tooltip>
             . {data.timed_out ? "Search timed out." : ""}

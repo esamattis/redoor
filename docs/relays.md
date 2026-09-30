@@ -23,7 +23,7 @@ server = "https://staging-redoor.example.com"
 ssh_port = 2222
 ```
 
-An ID may contain ASCII letters, numbers, `.`, `_`, and `-`. It identifies local lifecycle state and remains independent from `name`, which identifies the remote agent on the server. Relay IDs must be unique.
+An ID may contain ASCII letters, numbers, `.`, `_`, and `-`. It identifies local lifecycle state and remains independent from `name`, which names the remote device in the UI and remote CLI. Relay IDs must be unique.
 
 `agent_app_name` isolates the remote agent's PID and data files. When omitted, it defaults to `<local-app-name>-relay-<relay-id>`, allowing multiple relays to run concurrently on the same SSH host. Explicit values use the same validation as `--app-name`.
 

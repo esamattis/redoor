@@ -189,7 +189,7 @@ test.describe.serial("File Detail View", () => {
         await expect(
             page.getByRole("checkbox", { name: "Override existing" }),
         ).toHaveCount(0);
-        await expect(page.getByLabel("Sync agent")).toHaveValue(ctx.agent2Id);
+        await expect(page.getByLabel("Sync device")).toHaveValue(ctx.agent2Id);
         await page.getByLabel("Sync path").fill(destinationPath);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
 
@@ -452,7 +452,7 @@ test.describe.serial("File Detail View", () => {
         // Endpoint order cannot change while the reverse move request is in flight.
         await expect(forwardDirection).toBeDisabled();
         await expect(reverseDirection).toBeDisabled();
-        await expect(page.getByLabel("Sync agent")).toBeDisabled();
+        await expect(page.getByLabel("Sync device")).toBeDisabled();
         await expect(page.getByLabel("Sync path")).toBeDisabled();
         releaseMoveRequest?.();
         await expect(page.getByRole("status")).toContainText(

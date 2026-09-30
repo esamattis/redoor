@@ -213,7 +213,7 @@ function AgentLifecycle(props: { agent: Agent }) {
                 )}
                 <h1 className="mt-4 text-2xl font-semibold text-slate-100">
                     {shouldAppearStarting
-                        ? `Starting ${props.agent.name}`
+                        ? `Connecting ${props.agent.name}`
                         : props.agent.name}
                 </h1>
                 {shouldAppearStarting &&
@@ -228,8 +228,8 @@ function AgentLifecycle(props: { agent: Agent }) {
                         {shouldAppearStarting
                             ? "The server is waiting for the agent connection."
                             : props.agent.managed
-                              ? "This managed agent is stopped."
-                              : "This external agent is currently disconnected."}
+                              ? "This device is disconnected. Connect it to start its Redoor agent."
+                              : "This device is disconnected. Start the Redoor agent on this device to connect it."}
                     </p>
                 )}
                 <p className="mt-2 text-sm text-slate-500">
@@ -267,7 +267,7 @@ function AgentLifecycle(props: { agent: Agent }) {
                                     variant="secondary"
                                     onClick={() => setIsShutdownOpen(true)}
                                 >
-                                    Shutdown
+                                    Disconnect
                                 </Button>
                             </>
                         ) : (
@@ -283,10 +283,10 @@ function AgentLifecycle(props: { agent: Agent }) {
                 ) : null}
                 <ConfirmationDialog
                     isOpen={isShutdownOpen}
-                    title={`Shut down ${props.agent.name}?`}
-                    description="Active transfers and terminals for this agent will be interrupted."
-                    confirmLabel="Shutdown"
-                    busyLabel="Shutting down…"
+                    title={`Disconnect ${props.agent.name}?`}
+                    description="Stops the Redoor agent and disables automatic reconnection. Active transfers and terminals for this device will be interrupted."
+                    confirmLabel="Disconnect"
+                    busyLabel="Disconnecting…"
                     isBusy={shutdownMutation.isPending}
                     errorMessage={shutdownError}
                     onClose={closeShutdown}
@@ -422,7 +422,7 @@ function AgentDetails(props: { agent: Agent; details: AgentDetailsResponse }) {
                 />
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <DetailCard
-                        title="Process Information"
+                        title="Redoor agent"
                         icon={<Cpu className="h-5 w-5" />}
                     >
                         <DetailItem label="PID" value={props.details.pid} />
@@ -701,7 +701,7 @@ function AgentDetailsHeader(props: {
         <div className="mb-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h1
-                    aria-label="Agent name"
+                    aria-label="Device name"
                     className="flex min-w-0 items-center gap-3 text-2xl font-bold text-slate-100"
                 >
                     <HardDrive className="h-8 w-8 shrink-0 text-blue-400" />

@@ -303,6 +303,20 @@ pub enum Message {
         total_bytes: Option<u64>,
     },
 
+    /// Requests router authorization before staged upload content can change the destination.
+    #[serde(rename = "upload_publication_request")]
+    UploadPublicationRequest {
+        agent_id: AgentId,
+        request_id: RequestId,
+    },
+
+    /// Orders publication against accepted cancellation in the router's authoritative lifecycle.
+    #[serde(rename = "upload_publication_decision")]
+    UploadPublicationDecision {
+        request_id: RequestId,
+        allowed: bool,
+    },
+
     /// Sent by the router to ask an agent to abort an active download-style
     /// stream for the given request id.
     ///

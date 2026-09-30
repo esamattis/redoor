@@ -1,10 +1,12 @@
 # redoor
 
-Manual computer management using server-agent architecture.
+Manage servers, laptops, workstations, and Android phones running Termux from one place.
 
 Agents connect directly to the server via HTTP/WebSocket, or the server can provision and spawn agents using SSH. When direct connection is not possible in either direction, agents can connect via a relay agent that can reach both the server and the agent.
 
-The server provides an unified Web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
+The server provides a unified Web UI for your devices with a file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between devices.
+
+A **device** is a machine you access through Redoor. A **Redoor agent** is the process running on that device. Connecting or disconnecting a managed device starts or stops its agent; restarting or updating an agent does not reboot or update the device's operating system.
 
 ### Screenshots
 
@@ -70,6 +72,19 @@ docker run --rm --init --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:la
 Open `http://127.0.0.1:7666` and log in with username `redoor` and password `redoor`.
 
 These credentials and the agent token built into the image are only for a local demo. See [Docker Compose deployment](docs/docker.md) for persistent storage and private credentials.
+
+## Remote CLI
+
+The `redoor remote` subcommand lists devices, copies files, and executes commands through your Redoor server. Use it to give AI agents control of multiple servers at once.
+
+```sh
+redoor remote login https://redoor.example.com
+redoor remote devices
+redoor remote cp ./report.csv workstation:/srv/report.csv
+redoor remote exec workstation -- uptime
+```
+
+See `redoor remote --help` for available commands and options.
 
 ## Configuration
 

@@ -70,6 +70,19 @@ async fn handle_command_message(
         trash,
     } = context;
     match command {
+        Command::Exec { request } => {
+            if let Some(cancel) = command_cancel {
+                super::exec::run(
+                    request_id,
+                    request,
+                    write_binary,
+                    cancel,
+                    write_text,
+                    agent_id,
+                )
+                .await;
+            }
+        }
         Command::RawDownload {
             path,
             range_start,
@@ -462,7 +475,8 @@ impl AgentActor {
                     );
                     let requires_transfer = matches!(
                         command,
-                        Command::RawUpload { .. }
+                        Command::Exec { .. }
+                            | Command::RawUpload { .. }
                             | Command::EditFile { .. }
                             | Command::TarUpload { .. }
                             | Command::RawDownload { .. }
@@ -538,7 +552,8 @@ impl AgentActor {
                         let trash = state.trash.clone();
                         let is_local_transfer = matches!(
                             command,
-                            Command::LocalCopyFile { .. }
+                            Command::Exec { .. }
+                                | Command::LocalCopyFile { .. }
                                 | Command::LocalCopyDirectory { .. }
                                 | Command::LocalMove { .. }
                                 | Command::RestoreTrash { .. }
@@ -553,7 +568,8 @@ impl AgentActor {
                         command_tasks.spawn(async move {
                             let handles_cancellation = matches!(
                                 command,
-                                Command::LocalCopyFile { .. }
+                                Command::Exec { .. }
+                                    | Command::LocalCopyFile { .. }
                                     | Command::LocalCopyDirectory { .. }
                                     | Command::LocalMove { .. }
                                     | Command::Trash { .. }
@@ -602,6 +618,14 @@ impl AgentActor {
                             }
                         });
                     }
+                }
+                Message::UploadPublicationDecision {
+                    request_id,
+                    allowed,
+                } => {
+                    state
+                        .active_uploads
+                        .resolve_publication(request_id, allowed);
                 }
                 Message::CancelTransfer { request_id } => {
                     // The router uses the same cancel message for both transfer

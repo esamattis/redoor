@@ -110,9 +110,63 @@ pub(crate) struct UploadSessionHandle {
 /// Tracks active upload workers so stream chunks and cancels can be routed by request id.
 pub(crate) struct ActiveUploads {
     inner: Arc<Mutex<HashMap<RequestId, UploadSessionHandle>>>,
+    publication_replies: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<bool>>>>,
 }
 
 impl ActiveUploads {
+    /// Keeps cancellation owned while the router orders publication against public cancel requests.
+    pub(crate) async fn begin_publication(
+        &self,
+        tx: &mpsc::Sender<WsMessage>,
+        agent_id: &AgentId,
+        request_id: RequestId,
+        cancel_receiver: &mut watch::Receiver<bool>,
+    ) -> bool {
+        if *cancel_receiver.borrow() || cancel_receiver.has_changed().is_err() {
+            return false;
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.publication_replies
+            .lock()
+            .expect("publication replies mutex poisoned")
+            .insert(request_id, sender);
+        let message = redoor::types::Message::UploadPublicationRequest {
+            agent_id: agent_id.clone(),
+            request_id,
+        };
+        let allowed = match serde_json::to_string(&message) {
+            Ok(text) => {
+                let authorization = async {
+                    tx.send(WsMessage::Text(text.into())).await.ok()?;
+                    receiver.await.ok()
+                };
+                tokio::select! {
+                    biased;
+                    _ = cancel_receiver.wait_for(|cancel| *cancel) => false,
+                    result = tokio::time::timeout(std::time::Duration::from_secs(30), authorization) => result.ok().flatten().unwrap_or(false),
+                }
+            }
+            Err(_) => false,
+        };
+        self.publication_replies
+            .lock()
+            .expect("publication replies mutex poisoned")
+            .remove(&request_id);
+        allowed && !*cancel_receiver.borrow() && cancel_receiver.has_changed().is_ok()
+    }
+
+    /// Delivers the decision only to the worker that still owns this publication wait.
+    pub(crate) fn resolve_publication(&self, request_id: RequestId, allowed: bool) {
+        if let Some(sender) = self
+            .publication_replies
+            .lock()
+            .expect("publication replies mutex poisoned")
+            .remove(&request_id)
+        {
+            let _ = sender.send(allowed);
+        }
+    }
+
     /// Creates the shared upload registry used across protocol handlers and workers.
     pub(crate) fn new() -> Self {
         Self::default()
@@ -158,6 +212,10 @@ impl ActiveUploads {
             let _ = upload.cancel_sender.send(true);
         }
         active_uploads.clear();
+        self.publication_replies
+            .lock()
+            .expect("publication replies mutex poisoned")
+            .clear();
     }
 }
 
