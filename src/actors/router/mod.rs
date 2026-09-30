@@ -333,6 +333,12 @@ impl RouterState {
                 RouterMsg::CommitDirectUpload(request) => {
                     transfers::upload::commit(&mut self, &router_handle, request);
                 }
+                RouterMsg::BeginUploadPublication {
+                    agent_id,
+                    request_id,
+                } => {
+                    transfers::upload::begin_publication(&mut self, agent_id, request_id);
+                }
                 RouterMsg::CancelTransfer {
                     agent_id,
                     request_id,

@@ -434,6 +434,11 @@ pub enum RouterMsg {
     StartUploadStreamRest(StartUploadRequest),
     SendStreamChunkToAgent(SendStreamChunkRequest),
     CommitDirectUpload(CommitDirectUploadRequest),
+    /// Serializes staged publication with public cancellation before filesystem mutation.
+    BeginUploadPublication {
+        agent_id: AgentId,
+        request_id: RequestId,
+    },
     CancelTransfer {
         agent_id: AgentId,
         request_id: RequestId,

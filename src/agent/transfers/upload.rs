@@ -408,10 +408,19 @@ impl TarUploadWorker {
             tx,
             agent_id,
             request_id,
+            mut cancel_receiver,
             ..
         } = self;
 
-        finalize_tar_upload(&tx, &agent_id, request_id, session).await;
+        finalize_tar_upload(
+            &tx,
+            &agent_id,
+            request_id,
+            session,
+            &active_uploads,
+            &mut cancel_receiver,
+        )
+        .await;
         active_uploads.remove(request_id);
     }
 
@@ -596,6 +605,8 @@ async fn finalize_tar_upload(
     agent_id: &AgentId,
     request_id: RequestId,
     mut session: TarUploadSession,
+    active_uploads: &ActiveUploads,
+    cancel_receiver: &mut watch::Receiver<bool>,
 ) {
     let final_path = session.path.clone();
     let temp_path = session.temp_path.clone();
@@ -604,8 +615,46 @@ async fn finalize_tar_upload(
 
     let unpack_result = session.join_unpacker().await;
 
+    // The extractor owns the staging tree until joined. A cancel received while
+    // it finishes must discard that tree, never publish it over the destination.
+    if *cancel_receiver.borrow() || cancel_receiver.has_changed().is_err() {
+        remove_upload_temp_directory(&temp_path).await;
+        AgentActor
+            .send_command_response(
+                tx,
+                agent_id,
+                request_id,
+                AgentCommandError::raw_upload(
+                    CommandErrorKind::InvalidInput,
+                    "Upload canceled before publication".to_string(),
+                )
+                .into(),
+            )
+            .await;
+        return;
+    }
+
     match unpack_result {
         Ok(()) => {
+            if !active_uploads
+                .begin_publication(tx, agent_id, request_id, cancel_receiver)
+                .await
+            {
+                remove_upload_temp_directory(&temp_path).await;
+                AgentActor
+                    .send_command_response(
+                        tx,
+                        agent_id,
+                        request_id,
+                        AgentCommandError::raw_upload(
+                            CommandErrorKind::InvalidInput,
+                            "Upload publication was not authorized".to_string(),
+                        )
+                        .into(),
+                    )
+                    .await;
+                return;
+            }
             if let Err(error) =
                 place_temp_at_destination(&temp_path, Path::new(&final_path), on_existing, true)
                     .await
@@ -657,6 +706,148 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    /// A completed extractor is still reversible until the router grants placement.
+    #[tokio::test]
+    async fn denied_archive_publication_preserves_destination_and_cleans_staging() {
+        crate::logging::init(None).await.unwrap();
+        let temp = TempDir::create();
+        let destination = temp.path().join("destination");
+        let staging = temp.path().join("staging");
+        tokio::fs::create_dir(&destination).await.unwrap();
+        tokio::fs::write(destination.join("original"), b"keep")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(&staging).await.unwrap();
+        tokio::fs::write(staging.join("replacement"), b"new")
+            .await
+            .unwrap();
+        let uploads = ActiveUploads::new();
+        let (cancel, cancel_receiver) = watch::channel(false);
+        let (_chunks, chunk_receiver) = mpsc::channel(1);
+        let (tx, mut responses) = mpsc::channel(2);
+        let request_id = RequestId::new(4);
+        let worker = TarUploadWorker {
+            active_uploads: uploads.clone(),
+            chunk_receiver,
+            cancel_receiver,
+            session: TarUploadSession {
+                path: destination.display().to_string(),
+                temp_path: staging.clone(),
+                on_existing: CopyExistingMode::Merge,
+                chunk_sender: None,
+                unpacker_handle: Some(tokio::spawn(async { Ok(()) })),
+                bytes_written: 1,
+            },
+            tx,
+            agent_id: AgentId::new("test-agent"),
+            request_id,
+        };
+        let task = tokio::spawn(worker.finalize());
+        let request = responses.recv().await.unwrap();
+        assert!(
+            matches!(
+                serde_json::from_str::<redoor::types::Message>(request.to_text().unwrap()).unwrap(),
+                redoor::types::Message::UploadPublicationRequest { .. }
+            ),
+            "completed extraction must not begin even a merge before router authorization"
+        );
+        // Simulate cancellation winning in the router before its separate cancel control arrives.
+        uploads.resolve_publication(request_id, false);
+        task.await.unwrap();
+        assert_eq!(
+            tokio::fs::read(destination.join("original")).await.unwrap(),
+            b"keep",
+            "denied publication must leave destination-only content intact"
+        );
+        assert!(
+            !tokio::fs::try_exists(destination.join("replacement"))
+                .await
+                .unwrap(),
+            "denied publication must not merge any staged entries"
+        );
+        assert!(
+            !tokio::fs::try_exists(staging).await.unwrap(),
+            "a router denial must release the owned extracted tree"
+        );
+        drop(cancel);
+    }
+
+    /// Holds extraction after body completion to reproduce cancellation before overwrite deterministically.
+    #[tokio::test]
+    async fn cancellation_during_final_extraction_preserves_destination_and_cleans_staging() {
+        crate::logging::init(None).await.unwrap();
+        let temp = TempDir::create();
+        let destination = temp.path().join("destination");
+        let staging = temp.path().join("staging");
+        tokio::fs::create_dir(&destination).await.unwrap();
+        tokio::fs::write(destination.join("original"), b"keep")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(&staging).await.unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let staging_in_worker = staging.clone();
+        let unpacker = tokio::spawn(async move {
+            released.await.unwrap();
+            tokio::fs::write(staging_in_worker.join("replacement"), b"new")
+                .await
+                .unwrap();
+            Ok(())
+        });
+        let (cancel, cancel_receiver) = watch::channel(false);
+        let (_chunks, chunk_receiver) = mpsc::channel(1);
+        let (tx, mut responses) = mpsc::channel(2);
+        let worker = TarUploadWorker {
+            active_uploads: ActiveUploads::new(),
+            chunk_receiver,
+            cancel_receiver,
+            session: TarUploadSession {
+                path: destination.display().to_string(),
+                temp_path: staging.clone(),
+                on_existing: CopyExistingMode::Override,
+                chunk_sender: None,
+                unpacker_handle: Some(unpacker),
+                bytes_written: 1,
+            },
+            tx,
+            agent_id: AgentId::new("test-agent"),
+            request_id: RequestId::new(2),
+        };
+        let mut finalization = Box::pin(worker.finalize());
+        assert!(
+            matches!(
+                futures_util::poll!(&mut finalization),
+                std::task::Poll::Pending
+            ),
+            "post-body finalization must still own the unfinished extractor"
+        );
+        cancel
+            .send(true)
+            .expect("finalization must retain its cancellation receiver");
+        release.send(()).unwrap();
+        finalization.await;
+        assert_eq!(
+            tokio::fs::read(destination.join("original")).await.unwrap(),
+            b"keep",
+            "cancellation during extraction must preserve the existing destination"
+        );
+        assert!(
+            !tokio::fs::try_exists(&staging).await.unwrap(),
+            "staging must be removed only after the extractor finishes writing"
+        );
+        let response = responses.recv().await.unwrap();
+        assert!(
+            matches!(
+                serde_json::from_str::<redoor::types::Message>(response.to_text().unwrap())
+                    .unwrap(),
+                redoor::types::Message::CommandResponse {
+                    result: CommandResult::Error { .. },
+                    ..
+                }
+            ),
+            "canceled extraction must not report success or request publication"
+        );
+    }
 
     #[tokio::test]
     async fn full_unpacker_queue_keeps_cancellation_async_and_joins_before_cleanup() {

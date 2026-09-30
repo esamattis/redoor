@@ -13,6 +13,67 @@ use crate::log;
 use crate::logging::Level;
 use crate::types::{AgentId, Message};
 
+/// Reserves the irreversible boundary only for the live destination worker, never after cancellation.
+fn authorize_publication(
+    state: &mut RouterState,
+    agent_id: &AgentId,
+    request_id: crate::types::RequestId,
+) -> bool {
+    // Remote copies also have an upload transport entry, but only their public
+    // copy/move id owns progress and cancellation. Resolve that identity first.
+    let transfer_id = if let Some(public_id) = state.copies.public_id_for_internal(request_id) {
+        let Some(copy) = state.copies.by_public_id.get(&public_id) else {
+            return false;
+        };
+        if &copy.dest_agent_id != agent_id
+            || !matches!(copy.execution,
+            super::super::state::CopyExecution::RemoteStream { dest_request_id, .. } if dest_request_id == request_id)
+        {
+            return false;
+        }
+        public_id
+    } else if let Some(upload) = state.streams.uploads.get(&request_id) {
+        if &upload.agent_id != agent_id
+            || upload.kind == DirectUploadKind::EditFile
+            || upload.canceled_by_rest
+        {
+            return false;
+        }
+        request_id.as_transfer_id()
+    } else {
+        return false;
+    };
+    let Some(entry) = state.progress.entries.get_mut(&transfer_id) else {
+        return false;
+    };
+    if !matches!(entry.state, crate::commands::TransferProgressState::Active) || !entry.cancelable {
+        return false;
+    }
+    entry.cancelable = false;
+    true
+}
+
+/// Sends a grant only after cancellation becomes unavailable in the same router turn.
+pub(crate) fn begin_publication(
+    state: &mut RouterState,
+    agent_id: AgentId,
+    request_id: crate::types::RequestId,
+) {
+    let allowed = authorize_publication(state, &agent_id, request_id);
+    if let Some(connection) = state.agents.by_id.get(&agent_id) {
+        let decision = Message::UploadPublicationDecision {
+            request_id,
+            allowed,
+        };
+        if !connection.send_priority_message(decision.clone()) {
+            connection.send_message(decision);
+        }
+    }
+    if allowed {
+        ui::notify_transfer_refresh_immediately(state);
+    }
+}
+
 /// Starts a direct upload stream and records its progress entry.
 ///
 /// Returns the request id immediately so the HTTP layer can arm cancellation
@@ -536,6 +597,109 @@ mod tests {
     use super::*;
     use crate::commands::{Command, TransferProgressState};
     use crate::types::RequestId;
+
+    /// Remote copy/move uploads share transport entries but must reserve their public lifecycle boundary.
+    #[tokio::test]
+    async fn remote_upload_publication_uses_copy_or_move_identity() {
+        crate::logging::init(None).await.unwrap();
+        use super::super::super::state::{
+            CopyContentKind, CopyExecution, CopyOperation, CopyRequest,
+        };
+        for operation in [CopyOperation::Copy, CopyOperation::Move] {
+            let mut state = router_state();
+            let destination_id = RequestId::new(62);
+            let source_id = RequestId::new(61);
+            let public_id = crate::types::TransferId::new(60);
+            let _completion =
+                record_direct_write(&mut state, destination_id, DirectUploadKind::TarUpload);
+            let mut entry = state
+                .progress
+                .entries
+                .remove(&destination_id.as_transfer_id())
+                .unwrap();
+            entry.request_id = public_id;
+            state.progress.entries.insert(public_id, entry);
+            state
+                .copies
+                .public_id_by_internal_request
+                .insert(destination_id, public_id);
+            state
+                .copies
+                .public_id_by_internal_request
+                .insert(source_id, public_id);
+            state.copies.by_public_id.insert(
+                public_id,
+                CopyRequest {
+                    source_agent_id: AgentId::from("source"),
+                    dest_agent_id: AgentId::from("agent-1"),
+                    execution: CopyExecution::RemoteStream {
+                        source_request_id: source_id,
+                        dest_request_id: destination_id,
+                        next_chunk_index: crate::types::ChunkIndex::new(0),
+                    },
+                    content_kind: CopyContentKind::TarDirectory,
+                    pending_source_command: None,
+                    operation,
+                    source_path: "/source".into(),
+                    source_identity: None,
+                    source_cancel_acknowledged: false,
+                    dest_cancel_acknowledged: false,
+                },
+            );
+            assert!(
+                !authorize_publication(&mut state, &AgentId::from("source"), source_id),
+                "the source worker cannot reserve the destination's publication boundary"
+            );
+            assert!(
+                authorize_publication(&mut state, &AgentId::from("agent-1"), destination_id),
+                "a remote destination must use public copy progress even with an upload transport entry"
+            );
+            assert!(
+                !state.progress.entries.get(&public_id).unwrap().cancelable,
+                "the copy or move must become noncancelable before destination placement starts"
+            );
+            state.ui.refresh_check_task.abort();
+        }
+    }
+
+    /// Exercises both router orderings so accepted cancellation cannot race a later publication grant.
+    #[tokio::test]
+    async fn publication_boundary_orders_cancellation_for_raw_and_tar_uploads() {
+        crate::logging::init(None).await.unwrap();
+        for kind in [DirectUploadKind::RawUpload, DirectUploadKind::TarUpload] {
+            let mut state = router_state();
+            let request_id = RequestId::new(51);
+            let _completion = record_direct_write(&mut state, request_id, kind);
+            assert!(
+                !authorize_publication(&mut state, &AgentId::from("other-agent"), request_id),
+                "another agent must not make a live upload noncancelable"
+            );
+            assert!(
+                cleanup::cancel_public_transfer(&mut state, request_id.as_transfer_id()).is_ok(),
+                "post-body cancellation must remain accepted before publication authorization"
+            );
+            assert!(
+                !authorize_publication(&mut state, &AgentId::from("agent-1"), request_id),
+                "an accepted cancel must prevent publication even before its control reaches the agent"
+            );
+            state.ui.refresh_check_task.abort();
+
+            let mut state = router_state();
+            let _completion = record_direct_write(&mut state, request_id, kind);
+            assert!(
+                authorize_publication(&mut state, &AgentId::from("agent-1"), request_id),
+                "the owning prepared worker must be able to reserve publication"
+            );
+            assert!(
+                matches!(
+                    cleanup::cancel_public_transfer(&mut state, request_id.as_transfer_id()),
+                    Err(super::super::super::messages::CancelPublicTransferError::NotCancelable)
+                ),
+                "cancellation after the irreversible grant must be rejected rather than falsely accepted"
+            );
+            state.ui.refresh_check_task.abort();
+        }
+    }
 
     /// Builds isolated router state for direct-write transition tests.
     fn router_state() -> RouterState {

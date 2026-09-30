@@ -619,6 +619,14 @@ impl AgentActor {
                         });
                     }
                 }
+                Message::UploadPublicationDecision {
+                    request_id,
+                    allowed,
+                } => {
+                    state
+                        .active_uploads
+                        .resolve_publication(request_id, allowed);
+                }
                 Message::CancelTransfer { request_id } => {
                     // The router uses the same cancel message for both transfer
                     // directions, so the agent checks downloads and uploads.

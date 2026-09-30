@@ -230,6 +230,20 @@ impl SessionRuntime {
                         result,
                     }));
             }
+            Message::UploadPublicationRequest {
+                agent_id,
+                request_id,
+            } => {
+                if self.agent_id.as_ref() == Some(&agent_id) {
+                    let _ = self
+                        .router_ref
+                        .send_async(RouterMsg::BeginUploadPublication {
+                            agent_id,
+                            request_id,
+                        })
+                        .await;
+                }
+            }
             Message::TransferProgressUpdate {
                 agent_id,
                 request_id,
