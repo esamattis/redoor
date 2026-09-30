@@ -418,7 +418,7 @@ function Breadcrumbs(props: {
         setIsEditing(true);
     };
 
-    /** Navigates to the entered path, treating an empty or relative value helpfully. */
+    /** Resolves the agent's home shorthand before navigating to an entered path. */
     const navigateToEditedPath = async (
         event: React.FormEvent<HTMLFormElement>,
     ) => {
@@ -426,9 +426,13 @@ function Breadcrumbs(props: {
         const targetPath =
             editedPath === ""
                 ? "/"
-                : editedPath.startsWith("/")
-                  ? editedPath
-                  : `/${editedPath}`;
+                : props.agent.cwd !== null && editedPath === "~"
+                  ? props.agent.cwd
+                  : props.agent.cwd !== null && editedPath.startsWith("~/")
+                    ? `${props.agent.cwd.replace(/\/+$/, "")}/${editedPath.slice(2)}`
+                    : editedPath.startsWith("/")
+                      ? editedPath
+                      : `/${editedPath}`;
 
         setIsEditing(false);
         if (targetPath === props.path) {

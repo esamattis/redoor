@@ -960,6 +960,35 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should expand the agent home in an edited breadcrumb path", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
+        await page.goto(directoryUrl);
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        await page.getByRole("textbox", { name: "File path" }).fill("~");
+        await page.getByRole("textbox", { name: "File path" }).press("Enter");
+        // Bare ~ opens the connected agent's home rather than a literal /~ directory.
+        await expect(page).toHaveURL(ctx.agentBrowserUrl);
+
+        await page.getByRole("button", { name: "Edit file path" }).click();
+        await page
+            .getByRole("textbox", { name: "File path" })
+            .fill("~/breadcrumb-missing-file.txt");
+        await page.getByRole("button", { name: "Navigate to path" }).click();
+        // A pasted home-relative file path resolves against the agent's home.
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.agentHome, "breadcrumb-missing-file.txt"))}`,
+        );
+        // The missing-file creation form confirms the route looked up the expanded path.
+        await expect(
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
+        ).toBeVisible();
+    });
+
     test("should navigate using the parent directory button", async ({
         page,
     }) => {
