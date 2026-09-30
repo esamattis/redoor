@@ -72,12 +72,12 @@ function PathField(props: {
 /** Distinguishes TOML-owned local/SSH agents from observation-only remotes. */
 function agentOriginTooltip(agent: Agent): string {
     if (!agent.managed) {
-        return "Remote";
+        return "Agent started independently";
     }
     if (agent.sshTarget) {
-        return `Managed, ssh ${agent.sshTarget}`;
+        return `Managed by Redoor, SSH ${agent.sshTarget}`;
     }
-    return "Managed, local";
+    return "Managed by Redoor, local agent";
 }
 
 /** Packs known agent names into a dense wrap so several fit on one home row. */
@@ -89,10 +89,10 @@ function AgentNameGrid(props: { agents: Agent[] }) {
     );
 
     return (
-        <section aria-label="Agent names" className="mb-6">
-            <h2 className="mb-2 text-sm font-medium text-slate-400">Agents</h2>
+        <section aria-label="Device names" className="mb-6">
+            <h2 className="mb-2 text-sm font-medium text-slate-400">Devices</h2>
             {sortedAgents.length === 0 ? (
-                <p className="text-sm text-slate-500">No agents</p>
+                <p className="text-sm text-slate-500">No devices</p>
             ) : (
                 <div className="flex flex-wrap gap-1.5">
                     {sortedAgents.map((agent) => (
@@ -126,11 +126,11 @@ function OpenAgentSidebarButton() {
     }
 
     return (
-        <Tooltip content="Open agent sidebar">
+        <Tooltip content="Open device sidebar">
             <Button
                 type="button"
                 variant="subtle"
-                aria-label="Open agent sidebar"
+                aria-label="Open device sidebar"
                 aria-haspopup="dialog"
                 aria-controls="agent-menu-drawer"
                 aria-expanded={openMenu === "agents"}
@@ -138,7 +138,7 @@ function OpenAgentSidebarButton() {
                 className="mt-2 inline-flex items-center gap-1.5 rounded border border-slate-800 bg-[#11141b] px-2 py-0.5 text-sm font-normal text-slate-200 hover:border-slate-600 hover:bg-white/5"
             >
                 <PanelRightOpen className="h-3.5 w-3.5" aria-hidden="true" />
-                Agent menu
+                Device menu
             </Button>
         </Tooltip>
     );
@@ -228,14 +228,14 @@ server = ${JSON.stringify(serverAddress)}
                 <div className="mt-6">
                     <div className="mb-3">
                         <h2 className="text-lg font-semibold text-slate-100">
-                            Connect an agent
+                            Connect a device
                         </h2>
                         <p className="mt-1 text-sm text-slate-400">
-                            Save this as config.toml and run{" "}
+                            Save this as config.toml on the device and run{" "}
                             <code className="font-mono text-slate-200">
                                 redoor agent --config config.toml
                             </code>
-                            . The agent uses the computer hostname as its name.
+                            . The device name defaults to its hostname.
                         </p>
                     </div>
                     <CopyableCodeRow

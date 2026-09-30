@@ -39,12 +39,12 @@ export function BrowserPageHeader(props: {
         <header className="mb-4">
             <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
                 <div className="flex w-max min-w-full items-center gap-3">
-                    <Tooltip content="Open agent home directory">
+                    <Tooltip content="Open device home directory">
                         <Link
                             to={props.agent.getBrowserUrl(
                                 props.agent.cwd ?? "/",
                             )}
-                            aria-label="Agent home"
+                            aria-label="Device home"
                             className="inline-flex shrink-0 items-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
                         >
                             <Home className="h-4 w-4" aria-hidden="true" />

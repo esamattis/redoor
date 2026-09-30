@@ -9,7 +9,7 @@ export const Route = createFileRoute("/agents/$agentId/logs")({
         const agentMatch = await parentMatchPromise;
         const loaderData = agentMatch.loaderData;
         if (!loaderData) {
-            throw new Error("Agent loader data is unavailable");
+            throw new Error("Device loader data is unavailable");
         }
         const agent = loaderData.agent;
         if (agent.status === "connected") {
@@ -34,7 +34,8 @@ function AgentLogsPage() {
                         {agent.name} is disconnected
                     </h1>
                     <p className="mt-2 text-slate-400">
-                        Connect the agent before opening its live logs.
+                        Start the Redoor agent on this device to view its live
+                        logs.
                     </p>
                     <Link
                         to="/agents/$agentId"
@@ -42,7 +43,7 @@ function AgentLogsPage() {
                         className="mt-6 inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-500"
                     >
                         <HardDrive className="h-4 w-4" />
-                        Agent
+                        Device
                     </Link>
                 </section>
             </div>

@@ -92,7 +92,7 @@ function EditManagedAgentPage() {
     const mutationError = updateMutation.isError
         ? updateMutation.error instanceof Error
             ? updateMutation.error.message
-            : "Failed to update managed agent"
+            : "Failed to update device"
         : null;
     const isBusy = updateMutation.isPending || deleteMutation.isPending;
     const kindLabel = configuration.kind === "local" ? "local" : "SSH";
@@ -105,9 +105,9 @@ function EditManagedAgentPage() {
                 configPath={serverInfo.config_path}
                 isSubmitting={updateMutation.isPending}
                 isDisabled={isBusy}
-                submitLabel={isRunning ? "Stop and Save" : "Save managed agent"}
+                submitLabel={isRunning ? "Stop agent and save" : "Save device"}
                 submittingLabel={
-                    isRunning ? "Stopping and saving..." : "Saving agent..."
+                    isRunning ? "Stopping and saving..." : "Saving device..."
                 }
                 submitDescription={
                     isRunning
@@ -131,8 +131,8 @@ function EditManagedAgentPage() {
                             isBusy
                                 ? "Wait for the current save or delete to finish"
                                 : isRunning
-                                  ? "Stop the agent if it is running, then permanently delete it"
-                                  : "Permanently delete this managed agent"
+                                  ? "Stop the agent and remove this device from Redoor"
+                                  : "Remove this device from Redoor"
                         }
                     >
                         <Button
@@ -143,23 +143,23 @@ function EditManagedAgentPage() {
                             className="rounded-md disabled:opacity-60"
                         >
                             <Trash2 className="h-4 w-4" aria-hidden="true" />
-                            Delete managed agent
+                            Remove device
                         </Button>
                     </Tooltip>
                 </div>
             </ManagedAgentForm>
             <ConfirmationDialog
                 isOpen={isDeleteOpen}
-                title={`Delete ${agentId}?`}
-                description="This stops the agent if it is running, then permanently removes the managed entry from the TOML configuration."
-                confirmLabel="Delete managed agent"
-                busyLabel="Deleting agent..."
+                title={`Remove ${agentId} from Redoor?`}
+                description="Stops its agent and removes the device from the TOML configuration. Files on the device are not deleted."
+                confirmLabel="Remove device"
+                busyLabel="Removing device..."
                 isBusy={deleteMutation.isPending}
                 errorMessage={
                     deleteMutation.isError
                         ? deleteMutation.error instanceof Error
                             ? deleteMutation.error.message
-                            : "Failed to delete managed agent"
+                            : "Failed to remove device"
                         : null
                 }
                 onClose={() => {

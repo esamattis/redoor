@@ -610,7 +610,7 @@ fn readable_and_json_agent_output() {
     let empty = AgentListResponse { agents: vec![] };
     assert_eq!(
         format_agents(&empty, false).unwrap(),
-        "No agents available.",
+        "No devices available.",
         "Empty readable inventories should succeed"
     );
     assert_eq!(

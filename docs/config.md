@@ -2,6 +2,10 @@
 
 Server, agent, and relays share one TOML file. The same file can hold `[server]`, `[agent]`, `[[agents]]`, and `[[relays]]`.
 
+The UI and remote CLI call the machines you access **devices**. A **Redoor agent**
+is the process running on a device. Configuration keys, environment variables,
+and process commands retain `agent` terminology.
+
 ## Location
 
 When `--config` is omitted, Redoor loads (and may create) a conventional path:
@@ -87,7 +91,7 @@ Used by a standalone `redoor agent` process (and by systemd/launchd agent units)
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `server` | string | none (required to connect) | Redoor server URL (`http(s)://` or `ws(s)://`). Path is optional and forced to `/ws`. Override with positional `SERVER` / `REDOOR_AGENT_WS`. |
-| `name` | string | computer hostname | Registration name shown in the UI. Override with `--name` / `REDOOR_AGENT_NAME`. |
+| `name` | string | computer hostname | Device name shown in the UI and remote CLI. Override with `--name` / `REDOOR_AGENT_NAME`. |
 | `home` | string | process user home directory | Home directory opened in the UI; does not limit filesystem access. Override with `--home` / `REDOOR_AGENT_HOME`. |
 | `log` | string | platform default\* | Agent log file path. Override with `--log` / `REDOOR_AGENT_LOG`. |
 | `log_level` | string | `info` | Initial threshold. Override with `--log-level` or `REDOOR_AGENT_LOG_LEVEL`. Runtime changes are not written to TOML. |
@@ -111,7 +115,7 @@ CLI values take precedence over role-specific environment variables, which take 
 
 ## `[[agents]]`
 
-Optional array of server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Entries start lazily from the UI or management API.
+Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start lazily when you connect a device from the UI or management API. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent and removes its configuration, without deleting files on the device.
 
 ### SSH-backed agent
 
@@ -123,9 +127,9 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `local` | bool | no | Must be absent or `false`. |
 | `username` | string | no | SSH login via `ssh -l`. When omitted, OpenSSH config or `user@host` supplies it. |
 | `ssh_port` | integer (u16) | no | SSH port. When omitted, OpenSSH host config / default applies (not forced to 22). |
-| `name` | string | no | Registration name. Defaults to the host portion of `target`. |
+| `name` | string | no | Device name. Defaults to the host portion of `target`. |
 | `remote_bin` | string | no | Path to the redoor binary on the remote host. When omitted, uses the versioned install layout under `${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/<version>/redoor`. |
-| `home` | string | no | Home directory opened on the remote agent. When omitted, the remote process user's home directory is published. |
+| `home` | string | no | Home directory opened on the remote device. When omitted, the remote process user's home directory is published. |
 | `log` | string | no | Local file that captures the SSH process stdout/stderr (append mode). |
 | `password` | string | no | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible. |
 
@@ -148,7 +152,7 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | Key | Type | Required | Description |
 | --- | --- | --- | --- |
 | `local` | bool | yes | Must be `true`. |
-| `name` | string | no | Registration name. Defaults to the system hostname. |
+| `name` | string | no | Device name. Defaults to the system hostname. |
 | `home` | string | no | Home directory opened in the UI. Defaults to the spawned process user's home directory. |
 | `log` | string | no | File for the spawned agent stdout/stderr (append). When omitted, stdio is inherited from the server. |
 
@@ -173,7 +177,7 @@ Optional named SSH relays started explicitly with `redoor agent relay start ID`.
 | `server` | string | yes | Redoor server URL reached by the relay machine (`http(s)://` or `ws(s)://`). |
 | `username` | string | no | SSH login via `ssh -l`. |
 | `ssh_port` | integer (u16) | no | SSH port; omission preserves OpenSSH configuration. |
-| `name` | string | no | Server-side agent name. Defaults to the host portion of `target`. |
+| `name` | string | no | Device name shown by the server. Defaults to the host portion of `target`. |
 | `agent_app_name` | string | no | Remote agent process namespace. Defaults to `<local-app-name>-relay-<id>`. |
 | `remote_bin` | string | no | Remote Redoor binary path. |
 | `binary_source` | string | no | Local Redoor binary to upload unconditionally. |

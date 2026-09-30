@@ -118,9 +118,9 @@ test.describe.serial("User state", () => {
     }) => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${ctx.testDirUrlPath}`;
         await page.goto(directoryUrl);
-        await page.getByRole("button", { name: "Search agent" }).click();
+        await page.getByRole("button", { name: "Search device" }).click();
 
-        const dialog = page.getByRole("dialog", { name: "Search agent" });
+        const dialog = page.getByRole("dialog", { name: "Search device" });
         const timeoutInput = dialog.getByRole("spinbutton", {
             name: "Search timeout in seconds",
         });
@@ -169,7 +169,7 @@ test.describe.serial("User state", () => {
         });
         const triggerBox = await themeButton.boundingBox();
         const agentMenuBox = await page
-            .getByRole("navigation", { name: "Agents" })
+            .getByRole("navigation", { name: "Devices" })
             .boundingBox();
         // The compact control remains at the right edge of central chrome, immediately before the agent menu.
         expect(

@@ -20,6 +20,8 @@ pub struct ExecArgs {
     /// Emit lossless newline-delimited JSON output and terminal events.
     #[arg(long)]
     json: bool,
+    /// Device ID from `redoor remote devices`.
+    #[arg(value_name = "DEVICE")]
     agent: String,
     #[arg(last = true, required = true, num_args = 1..)]
     argv: Vec<String>,

@@ -844,7 +844,7 @@ gamma
         await searchSelectionButton.click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         // The URL-owned dialog must open with the editor selection and git-root scope requested.
         await expect(

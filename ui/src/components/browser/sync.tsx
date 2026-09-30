@@ -38,9 +38,9 @@ export function AgentPathFields(props: {
     return (
         <div className="grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
             <label className="grid gap-2 text-sm font-medium text-slate-200">
-                Agent
+                Device
                 <Select
-                    aria-label="Sync agent"
+                    aria-label="Sync device"
                     value={props.agentId}
                     onChange={(event) =>
                         props.onAgentChange(event.target.value)
@@ -68,7 +68,7 @@ export function AgentPathFields(props: {
                     className="h-11 rounded-lg bg-slate-950 font-mono text-sm focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
             </label>
-            <Tooltip content="Open the selected agent and path">
+            <Tooltip content="Open the selected device and path">
                 {props.viewHref === null ? (
                     <span
                         aria-disabled="true"
@@ -270,7 +270,7 @@ function useSyncWorkspace(props: {
             mode: CopyExistingMode;
         }) => {
             if (sourceEndpoint === null || destinationEndpoint === null) {
-                throw new Error("Selected agent is unavailable");
+                throw new Error("Selected device is unavailable");
             }
             const destination = {
                 agent: destinationEndpoint.agent.id,
@@ -301,7 +301,7 @@ function useSyncWorkspace(props: {
     const prepareTransferMutation = useMutation({
         mutationFn: async (operation: TransferOperation) => {
             if (destinationEndpoint === null) {
-                throw new Error("Selected agent is unavailable");
+                throw new Error("Selected device is unavailable");
             }
             const exists = await destinationExists(
                 destinationEndpoint.agent,
@@ -323,7 +323,7 @@ function useSyncWorkspace(props: {
     const diffMutation = useMutation({
         mutationFn: () => {
             if (sourceEndpoint === null || destinationEndpoint === null) {
-                throw new Error("Selected agent is unavailable");
+                throw new Error("Selected device is unavailable");
             }
             return props.api.diffFiles(
                 { agent: sourceEndpoint.agent.id, path: sourceEndpoint.path },
@@ -513,7 +513,7 @@ function SyncDirectionFields(props: {
         path: props.currentPath,
     };
     const selectedPath = {
-        agentName: workspace.selectedAgent?.name ?? "Unavailable agent",
+        agentName: workspace.selectedAgent?.name ?? "Unavailable device",
         path: workspace.selectedEndpoint?.path ?? workspace.selectedPath,
     };
     return (
@@ -827,8 +827,8 @@ export function SyncView(props: {
                 </h1>
                 <p className="mt-3 max-w-3xl text-sm text-slate-400">
                     {props.entryType === "file"
-                        ? "Choose an absolute path or use ~ for the home directory on a connected agent, then copy, move, or compare in either direction."
-                        : "Choose an absolute path or use ~ for the home directory on a connected agent, then copy or move in either direction."}
+                        ? "Choose an absolute path or use ~ for the home directory on a connected device, then copy, move, or compare in either direction."
+                        : "Choose an absolute path or use ~ for the home directory on a connected device, then copy or move in either direction."}
                 </p>
             </header>
 

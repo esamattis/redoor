@@ -100,7 +100,7 @@ home = "${agentHome}/missing"
         expect(first.exitCode, first.stderr).toBe(0);
         expect(first.stdout).toBe("ready");
         expect(first.stderr).toContain(`Agent ${sourceId} is not running`);
-        expect(first.stderr).toContain(`Agent ${sourceId}: connected`);
+        expect(first.stderr).toContain(`Device ${sourceId}: connected`);
         const connected = (await api.listAgents()).find((agent) => agent.id === sourceId);
         const second = await remote("exec", sourceId, "--", "printf", "again");
         // A live connection must not be restarted or produce spurious startup diagnostics.
@@ -121,8 +121,8 @@ home = "${agentHome}/missing"
         // Both remote endpoints must connect before copy metadata or job admission can succeed.
         expect(copy.exitCode, copy.stderr).toBe(0);
         expect(JSON.parse(copy.stdout).status).toBe("completed");
-        expect(copy.stderr).toContain(`Agent ${sourceId}: connected`);
-        expect(copy.stderr).toContain(`Agent ${destinationId}: connected`);
+        expect(copy.stderr).toContain(`Device ${sourceId}: connected`);
+        expect(copy.stderr).toContain(`Device ${destinationId}: connected`);
         expect(await fs.readFile(destination, "utf8")).toBe("automatic startup payload");
 
         await stop(sourceId, destinationId);
@@ -130,13 +130,13 @@ home = "${agentHome}/missing"
         const upload = await remote("cp", "--quiet", source, `${destinationId}:${uploaded}`);
         // Quiet suppresses transfer progress but startup remains visible on stderr.
         expect(upload.exitCode, upload.stderr).toBe(0);
-        expect(upload.stderr).toContain(`Agent ${destinationId}: connected`);
+        expect(upload.stderr).toContain(`Device ${destinationId}: connected`);
         expect(upload.stdout).toBe("");
         const downloaded = path.join(root, "downloaded.txt");
         const download = await remote("cp", "--json", `${sourceId}:${source}`, downloaded);
         // Downloading must start its remote source before opening the raw stream.
         expect(download.exitCode, download.stderr).toBe(0);
-        expect(download.stderr).toContain(`Agent ${sourceId}: connected`);
+        expect(download.stderr).toContain(`Device ${sourceId}: connected`);
         expect(await fs.readFile(downloaded, "utf8")).toBe("automatic startup payload");
 
         await stop(sourceId);

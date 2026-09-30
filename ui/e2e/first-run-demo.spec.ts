@@ -211,7 +211,7 @@ test.describe("First-run demo", () => {
                 .getByRole("button", { name: "Connect", exact: true })
                 .click();
             await expect(
-                page.getByRole("heading", { name: "Starting local" }),
+                page.getByRole("heading", { name: "Connecting local" }),
             ).toBeVisible();
             await expect(
                 page.getByRole("link", { name: "local, connected" }),

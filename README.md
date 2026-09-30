@@ -1,10 +1,12 @@
 # redoor
 
-Manual computer management using server-agent architecture.
+Manage servers, laptops, workstations, and Android phones running Termux from one place.
 
 Agents connect directly to the server via HTTP/WebSocket, or the server can provision and spawn agents using SSH. When direct connection is not possible in either direction, agents can connect via a relay agent that can reach both the server and the agent.
 
-The server provides an unified Web UI for the agents with file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between agents.
+The server provides a unified Web UI for your devices with a file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between devices.
+
+A **device** is a machine you access through Redoor. A **Redoor agent** is the process running on that device. Connecting or disconnecting a managed device starts or stops its agent; restarting or updating an agent does not reboot or update the device's operating system.
 
 ### Screenshots
 
@@ -73,27 +75,29 @@ These credentials and the agent token built into the image are only for a local 
 
 ## Remote CLI
 
-Log in once, then list agents, copy files, and execute commands from separate invocations:
+Log in once, then list devices, copy files, and execute commands from separate invocations:
 
 ```sh
 redoor remote login https://redoor.example.com
-redoor remote agents
-redoor remote agents --json
-redoor remote start agent-a
-redoor remote stop agent-a
-redoor remote cp ./report.csv agent-a:/srv/report.csv
-redoor remote cp agent-a:/srv/report.csv ./report.csv
-redoor remote cp -r agent-a:/srv/project agent-b:/srv/project
-redoor remote exec --cwd /srv/project --timeout 5m agent-a -- pnpm test
+redoor remote devices
+redoor remote devices --json
+redoor remote start workstation
+redoor remote stop workstation
+redoor remote cp ./report.csv workstation:/srv/report.csv
+redoor remote cp workstation:/srv/report.csv ./report.csv
+redoor remote cp -r workstation:/srv/project server:/srv/project
+redoor remote exec --cwd /srv/project --timeout 5m workstation -- pnpm test
 redoor remote logout
 ```
 
 Remote execution and copy automatically start disconnected managed agents and wait
 for connection, reporting startup and SSH provisioning progress to stderr.
 
-Login prompts for the server's existing username and a hidden password. Agent IDs,
+Login prompts for the server's existing username and a hidden password. Device IDs,
 names, and connection status appear in the readable table; `--json` returns the
-complete agent-list API response. See [remote CLI reference](docs/remote-cli.md)
+complete inventory API response (with the internal `agents` JSON key).
+The `start` and `stop` commands control the
+agent on the selected device. See [remote CLI reference](docs/remote-cli.md)
 for session storage, namespaces, copy destination/conflict semantics, execution
 options, streaming JSON events, and exit behavior. Execution preserves arguments
 without an implicit shell and streams stdout/stderr separately.

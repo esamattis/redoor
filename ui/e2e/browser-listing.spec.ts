@@ -33,7 +33,7 @@ test.describe.serial("File Browser Listing", () => {
 
         // The icon link must return directly to the agent's published home from nested paths.
         await expect(
-            page.getByRole("link", { name: "Agent home" }),
+            page.getByRole("link", { name: "Device home" }),
         ).toHaveAttribute("href", new URL(ctx.agentBrowserUrl).pathname);
         const backToAgentButton = page.getByRole("link", {
             name: ctx.agentName,
@@ -294,7 +294,7 @@ test.describe.serial("File Browser Listing", () => {
                 control: filesActions.getByRole("button", {
                     name: "Reload directory listing",
                 }),
-                text: "Reload directory listing from the agent",
+                text: "Reload directory listing from the device",
             },
         ] as const;
 
@@ -319,7 +319,7 @@ test.describe.serial("File Browser Listing", () => {
         // A second trigger must replace the first tooltip instead of stacking.
         await expect(page.getByRole("tooltip")).toHaveCount(1);
         await expect(page.getByRole("tooltip")).toHaveText(
-            "Reload directory listing from the agent",
+            "Reload directory listing from the device",
         );
 
         await page.mouse.move(0, 0);

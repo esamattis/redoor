@@ -440,7 +440,7 @@ export function TerminalPanel(props: {
                 ))}
                 {tabs.length === 0 ? (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-slate-500">
-                        Open a terminal for a connected agent to start a shell.
+                        Open a terminal for a connected device to start a shell.
                     </div>
                 ) : null}
             </div>
@@ -567,14 +567,14 @@ function TerminalTabActions(props: {
                 </AddButton>
             ) : null}
             <ActionMenu
-                label="Choose agent for new terminal"
+                label="Choose device for new terminal"
                 title="New terminal"
-                closeAriaLabel="Close agent picker"
+                closeAriaLabel="Close device picker"
                 hideTitle={false}
                 tooltip={
                     props.activeTarget
-                        ? "New terminal in another agent"
-                        : "Choose agent for new terminal (t)"
+                        ? "New terminal on another device"
+                        : "Choose device for new terminal (t)"
                 }
                 icon={<MoreHorizontal className="h-4 w-4" />}
                 variant="icon"
@@ -600,7 +600,7 @@ function TerminalTabActions(props: {
                         ))}
                         {availableAgents.length === 0 ? (
                             <p className="px-3 py-2 text-sm text-slate-500">
-                                No connected agents
+                                No connected devices
                             </p>
                         ) : null}
                     </>

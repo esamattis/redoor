@@ -90,9 +90,9 @@ last line`,
             }
         });
         await page.goto(directoryUrl);
-        await page.getByRole("button", { name: "Search agent" }).click();
+        await page.getByRole("button", { name: "Search device" }).click();
 
-        const dialog = page.getByRole("dialog", { name: "Search agent" });
+        const dialog = page.getByRole("dialog", { name: "Search device" });
         const pathInput = dialog.getByRole("searchbox", {
             name: "Search file paths",
         });
@@ -273,9 +273,9 @@ last line`,
         await page.goto(directoryUrl);
 
         const launcher = page.getByRole("button", {
-            name: "Search agent",
+            name: "Search device",
         });
-        const home = page.getByRole("link", { name: "Agent home" });
+        const home = page.getByRole("link", { name: "Device home" });
         const up = page.getByRole("link", {
             name: "Go to the parent directory",
         });
@@ -292,13 +292,13 @@ last line`,
         // The launcher advertises the cross-platform chord rather than hiding the workflow.
         await expect(
             page.getByRole("tooltip", {
-                name: "Search agent (s, Cmd/Ctrl+K)",
+                name: "Search device (s, Cmd/Ctrl+K)",
             }),
         ).toBeVisible();
         await launcher.click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         // Directory metadata must scope grep to the directory currently being browsed.
         await expect(dialog).toContainText(
@@ -408,7 +408,7 @@ last line`,
         await expect(dialog).toBeHidden();
         await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}/logs`);
         await expect(
-            page.getByRole("button", { name: "Search agent" }),
+            page.getByRole("button", { name: "Search device" }),
         ).toBeVisible();
         await page.keyboard.press("ControlOrMeta+k");
         // The route-level shortcut also works outside the browser and falls back to agent home.
@@ -448,7 +448,7 @@ last line`,
         );
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         // Content search follows the same remembered defaults as recursive filename search.
         await expect(
@@ -499,7 +499,7 @@ last line`,
         );
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         // A directly loaded q opens search and a file route searches its parent.
         await expect(dialog).toBeVisible();
@@ -564,7 +564,7 @@ last line`,
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(gitRootNestedPath)}?q=git-root-unique-value&mode=content`,
         );
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         const gitRootButton = dialog.getByRole("button", {
             name: "Search from git root",
@@ -619,7 +619,7 @@ test.describe("Mobile agent search", () => {
         await page.goto(`${WEB_BASE_URL}/agents/${ctx.agentId}?q=`);
 
         const dialog = page.getByRole("dialog", {
-            name: "Search agent",
+            name: "Search device",
         });
         const bounds = await dialog.boundingBox();
         // Mobile search consumes the complete viewport so controls and results have maximum room.

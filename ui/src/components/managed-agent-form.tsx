@@ -294,9 +294,7 @@ function FormHeader(props: { mode: "add" | "edit"; kind: ManagedAgentKind }) {
                 </div>
                 <div>
                     <h1 className="text-2xl font-bold text-slate-100">
-                        {props.mode === "edit"
-                            ? "Edit managed agent"
-                            : "Add managed agent"}
+                        {props.mode === "edit" ? "Edit device" : "Add device"}
                     </h1>
                     <p className="mt-1 text-sm text-slate-400">
                         {props.kind === "local"
@@ -327,14 +325,14 @@ function FormActions(props: {
         : props.kind === "local"
           ? isEdit
               ? "Save the managed local configuration"
-              : "Add this local agent to the server configuration"
+              : "Add this device to the server configuration with a local agent"
           : isEdit
             ? "Save the managed SSH configuration"
-            : "Add this SSH-backed agent to the server configuration";
+            : "Add this device to the server configuration using SSH";
     return (
         <div className="flex flex-col gap-4 border-t border-slate-800 pt-6 sm:flex-row sm:items-end sm:justify-between">
             <p className="min-w-0 text-xs text-slate-500">
-                Agent configuration will be saved to
+                Device connection settings will be saved to
                 <code className="mt-1 block break-all text-slate-400">
                     {props.configPath}
                 </code>
@@ -360,11 +358,9 @@ function FormActions(props: {
                     ) : null}
                     {props.isSubmitting
                         ? (props.submittingLabel ??
-                          (isEdit ? "Saving agent..." : "Adding agent..."))
+                          (isEdit ? "Saving device..." : "Adding device..."))
                         : (props.submitLabel ??
-                          (isEdit
-                              ? "Save managed agent"
-                              : "Add managed agent"))}
+                          (isEdit ? "Save device" : "Add device"))}
                 </Button>
             </Tooltip>
         </div>
@@ -379,7 +375,7 @@ function KindFields(props: {
 }) {
     return (
         <RadioCardGroup
-            legend="Agent type"
+            legend="Connection type"
             disabled={props.disabled}
             description={
                 <p className="text-xs text-slate-500">
@@ -426,7 +422,7 @@ function LocalFields(props: {
             </h2>
             <div className="mt-4 grid gap-5 sm:grid-cols-2">
                 <TextField
-                    label="Agent name"
+                    label="Device name"
                     value={props.form.name}
                     placeholder="Defaults to hostname"
                     description="Name shown in the UI. Defaults to this server's hostname when omitted."
@@ -486,7 +482,7 @@ function ConnectionFields(props: {
                     onChange={(value) => props.onChange("target", value)}
                 />
                 <TextField
-                    label="Agent name"
+                    label="Device name"
                     value={props.form.name}
                     placeholder="Defaults to target hostname"
                     description="Name shown in the UI. Defaults to the target hostname when omitted."

@@ -118,7 +118,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
         const agentMatch = await parentMatchPromise;
         const agentLoaderData = agentMatch.loaderData;
         if (!agentLoaderData) {
-            throw new Error("Agent details unavailable");
+            throw new Error("Device details unavailable");
         }
 
         const agent = agentLoaderData.agent;

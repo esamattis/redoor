@@ -62,8 +62,8 @@ function ApplicationMenu(props: {
         { to: "/", label: "Home", ariaLabel: "Server home", icon: Home },
         {
             to: "/agents",
-            label: "Agents",
-            ariaLabel: "Manage agents",
+            label: "Devices",
+            ariaLabel: "Manage devices",
             icon: Users,
         },
         { to: "/logs", label: "Server logs", icon: ScrollText },

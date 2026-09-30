@@ -36,7 +36,7 @@ function NewManagedAgentPage() {
     const mutationError = createMutation.isError
         ? createMutation.error instanceof Error
             ? createMutation.error.message
-            : "Failed to add managed agent"
+            : "Failed to add device"
         : null;
 
     return (

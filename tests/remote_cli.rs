@@ -83,7 +83,7 @@ async fn remote_cli_persistent_session_namespace_and_output() {
         .unwrap();
     let output = cli(
         root.path(),
-        &["--app-name", "isolated", "remote", "agents", "--json"],
+        &["--app-name", "isolated", "remote", "devices", "--json"],
     )
     .await;
     // JSON stdout must be directly parseable by scripts, without progress or login messages.
@@ -101,7 +101,11 @@ async fn remote_cli_persistent_session_namespace_and_output() {
         connected_inventory().await.0,
         "JSON must preserve the complete inventory snapshot"
     );
-    let output = cli(root.path(), &["remote", "agents", "--app-name", "isolated"]).await;
+    let output = cli(
+        root.path(),
+        &["remote", "devices", "--app-name", "isolated"],
+    )
+    .await;
     // Global namespace flags must work after subcommands as well as before them.
     assert!(output.status.success());
     assert!(
@@ -163,7 +167,7 @@ async fn remote_cli_persistent_session_namespace_and_output() {
         assert_eq!(output.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&output.stderr).contains("remote login"));
     }
-    let output = cli(root.path(), &["remote", "agents"]).await;
+    let output = cli(root.path(), &["remote", "devices"]).await;
     // A different namespace must not borrow credentials, even with the same HOME.
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -679,7 +683,7 @@ async fn remote_exec_waits_for_managed_startup_and_reports_progress_and_failures
         );
         if success {
             assert_eq!(event["type"], "exit");
-            assert!(stderr.contains("Agent a: connected"));
+            assert!(stderr.contains("Device a: connected"));
         } else {
             // Startup failure goes to stderr and preserves exec's structured stdout failure contract.
             assert_eq!(event["type"], "error");

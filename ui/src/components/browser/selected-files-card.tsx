@@ -187,7 +187,7 @@ function TransferSelectedFilesAction(props: {
 
                     if (!sourceAgent) {
                         throw new Error(
-                            `Source agent unavailable for selected item: ${file.agentId}`,
+                            `Source device unavailable for selected item: ${file.agentId}`,
                         );
                     }
 

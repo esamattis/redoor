@@ -31,13 +31,14 @@ enum RemoteCommand {
     Stop(lifecycle::LifecycleArgs),
     /// Execute argv without a shell, streaming output until the remote process exits.
     Exec(exec::ExecArgs),
-    /// Stream files or recursively copy directories between local and agent paths.
+    /// Stream files or recursively copy directories between local and device paths.
     Cp(copy::CopyArgs),
     /// Prompt for username/password and select a server for subsequent commands.
     Login { server_url: String },
     /// Invalidate the selected session remotely and remove local credentials.
     Logout,
-    /// List agent IDs, names, and connection status.
+    /// List device IDs, names, and connection status.
+    #[command(name = "devices")]
     Agents {
         /// Print the complete agent-list API response for scripts.
         #[arg(long)]
@@ -91,7 +92,7 @@ fn format_agents(agents: &AgentListResponse, json: bool) -> Result<String> {
         return Ok(serde_json::to_string_pretty(agents)?);
     }
     if agents.agents.is_empty() {
-        return Ok("No agents available.".to_owned());
+        return Ok("No devices available.".to_owned());
     }
     let mut rows = vec![("ID".to_owned(), "NAME".to_owned(), "STATUS".to_owned())];
     for agent in &agents.agents {

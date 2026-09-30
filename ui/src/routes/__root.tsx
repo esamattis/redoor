@@ -656,7 +656,7 @@ function SelectedFilesTable(props: {
                 <thead className="sticky top-0 bg-[#1a1f2a]">
                     <tr className="border-b border-slate-800">
                         <th className="p-3 text-left text-sm font-medium text-slate-400">
-                            Agent
+                            Device
                         </th>
                         <th className="p-3 text-left text-sm font-medium text-slate-400">
                             Item

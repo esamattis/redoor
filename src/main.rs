@@ -71,7 +71,7 @@ enum Commands {
     Server(ServerArgs),
     /// Run the agent or use its role-specific utilities.
     Agent(Box<AgentCommandArgs>),
-    /// Authenticate and operate on agents through a remote server.
+    /// Authenticate and operate on devices through a remote server.
     Remote(remote::RemoteArgs),
 }
 

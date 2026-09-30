@@ -42,7 +42,7 @@ impl RemoteClient {
             .agents
             .into_iter()
             .find(|entry| entry.id.0 == agent)
-            .with_context(|| format!("Agent not found: {}", agent.escape_debug()))
+            .with_context(|| format!("Device not found: {}", agent.escape_debug()))
     }
 
     /// Polls bounded control requests so SSH provisioning progress can be reported before execution.
@@ -74,7 +74,7 @@ impl RemoteClient {
         loop {
             if previous_status.as_ref() != Some(&snapshot.status) {
                 let status = serde_json::to_value(&snapshot.status)?;
-                eprintln!("Agent {label}: {}", status.as_str().unwrap_or("unknown"));
+                eprintln!("Device {label}: {}", status.as_str().unwrap_or("unknown"));
                 previous_status = Some(snapshot.status.clone());
             }
             for step in &snapshot.provisioning_status {
@@ -102,7 +102,8 @@ impl RemoteClient {
 /// Selects an inventory ID rather than requiring a live SSH or WebSocket connection.
 #[derive(Args)]
 pub(super) struct LifecycleArgs {
-    /// Agent ID from `redoor remote agents`.
+    /// Device ID from `redoor remote devices`; starts or stops its Redoor agent.
+    #[arg(value_name = "DEVICE")]
     agent: String,
     /// Print the complete lifecycle API response for scripts.
     #[arg(long)]

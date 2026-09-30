@@ -83,11 +83,11 @@ impl Location {
         {
             ensure!(
                 !agent.is_empty() && path.starts_with('/'),
-                "Remote paths must use AGENT:/absolute/path; prefix local colon paths with ./"
+                "Remote paths must use DEVICE:/absolute/path; prefix local colon paths with ./"
             );
             ensure!(
                 agent != "." && agent != ".." && !agent.contains('/'),
-                "Invalid agent ID"
+                "Invalid device ID"
             );
             ensure!(
                 !path.split('/').any(|part| part == "." || part == ".."),

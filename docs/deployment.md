@@ -4,7 +4,7 @@ Run Redoor behind an HTTPS reverse proxy when exposing it outside a trusted netw
 
 ## Streaming request bodies
 
-Redoor streams uploads to the destination agent with bounded memory use. Configure reverse proxies to forward request bodies as they arrive. Otherwise, the proxy receives the complete file before Redoor starts uploading it to the agent, causing a long `(pending)` interval and using temporary storage proportional to the file size.
+Redoor streams uploads to the destination device through its agent with bounded memory use. Configure reverse proxies to forward request bodies as they arrive. Otherwise, the proxy receives the complete file before Redoor starts uploading it to the device, causing a long `(pending)` interval and using temporary storage proportional to the file size.
 
 ## Nginx
 

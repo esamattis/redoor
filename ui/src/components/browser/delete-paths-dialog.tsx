@@ -58,7 +58,7 @@ export function DeletePathsDialog(props: {
                 targets.map((target) => {
                     if (!target.agent) {
                         return Promise.reject(
-                            new Error("Agent unavailable for selected item"),
+                            new Error("Device unavailable for selected item"),
                         );
                     }
                     return target.agent.deleteFile(target.path, {

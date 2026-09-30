@@ -2,6 +2,10 @@
 
 Shared names for talking about the Web UI. Prefer these over informal words like “sidebar”, “header”, or “panel” when more than one of those exists.
 
+Use **device** for a machine accessed through Redoor and **Redoor agent** for the
+process running on it. Restart, update, version, and process logs refer to the
+agent. Route paths use the internal agent terminology (`/agents`).
+
 Login has no application chrome. Every other route uses the app shell.
 
 Breakpoint: at `xl` and up the side menus stay on screen. Below `xl` they become modal edge drawers. The bottom drawer is always an overlay; it never shrinks main.
@@ -13,9 +17,9 @@ Breakpoint: at `xl` and up the side menus stay on screen. Below `xl` they become
 | Say this | Also acceptable | Do not say |
 |---|---|---|
 | Application menu | left menu | the sidebar (ambiguous) |
-| Agent menu | right menu | the agent list (that is the `/agents` page) |
+| Device menu | right menu | the device list (that is the `/agents` page) |
 | Top bar | View navigation | header (the file browser has its own) |
-| Agent view tabs | — | top tabs (browser has view tabs too) |
+| Device view tabs | — | top tabs (browser has view tabs too) |
 | Main | page, route content | content area |
 | Browser header | breadcrumbs, path bar | header |
 | Directory view tabs / File view tabs | Files / Details / Sync, Edit / View | the tabs |
@@ -36,14 +40,14 @@ Side menus are persistent columns. Top bar and application tools overlay main; m
 +------------+------------------------------------------+------------+
 |            | TOP BAR                                  |            |
 |            | View navigation                          |            |
-| APPLICATION| [ Agent view tabs ]            [theme]   | AGENT MENU |
+| APPLICATION| [ Device view tabs ]           [theme]   | DEVICE MENU|
 | MENU       +------------------------------------------+            |
 |            |                                          |            |
-| Home       | MAIN                                     | Agents  [+] |
-| Agents     |                                          |            |
-| Server logs|   (current route)                        | agent name |
+| Home       | MAIN                                     | Devices [+] |
+| Devices    |                                          |            |
+| Server logs|   (current route)                        | device name|
 | Transfers  |                                          |   bookmark |
-|            |                                          | agent name |
+|            |                                          | device name|
 | [Restart]  |                                          |            |
 | [Log out]  |                                          |            |
 |            +------------------------------------------+            |
@@ -61,8 +65,8 @@ Main is full width. Burgers on the top bar open one side menu at a time as a mod
 ```
 +------------------------------------------------------+
 | TOP BAR                                              |
-| [open application menu]  Agent view tabs  [theme]    |
-|                                       [open agent menu]
+| [open application menu]  Device view tabs [theme]    |
+|                                      [open device menu]
 +------------------------------------------------------+
 | MAIN                                                 |
 |                                                      |
@@ -76,15 +80,16 @@ Either menu open (never both):
 +------------------------------------------------------+
 | dimmed backdrop                                      |
 | +----------+                        +--------------+ |
-| |APPLICATION|                       |   AGENT MENU | |
+| |APPLICATION|                       |  DEVICE MENU | |
 | |MENU       |                       |              | |
 | |     w-72  |                       |        w-72  | |
 | +----------+                        +--------------+ |
 +------------------------------------------------------+
 ```
 
-Open controls: **Open application menu**, **Open agent menu**.  
-Close controls: **Close application menu**, **Close agent menu**.
+Open controls: **Open application menu**, **Open device menu**.
+
+Close controls: **Close application menu**, **Close device menu**.
 
 ---
 
@@ -97,7 +102,7 @@ Left. Brand mark goes to Server home.
 | [logo] Redoor        |
 |                      |
 | Home                 |   /
-| Agents               |   /agents
+| Devices              |   /agents
 | Server logs          |   /logs
 | Transfers            |   /transfers
 |                      |
@@ -108,50 +113,50 @@ Left. Brand mark goes to Server home.
 
 ---
 
-## Agent menu
+## Device menu
 
-Right. Not the Agents inventory page.
+Right. Not the Devices inventory page.
 
 ```
 +---------------------------+
-| AGENTS                 [+] |   Add managed agent
+| DEVICES                [+] |   Add device
 |                            |
-| agent name                 |
+| device name                |
 |   connected            [✎] |   edit when configuration is editable
 |     bookmark               |
 |     bookmark           [x] |   Remove bookmark
-| agent name                 |
+| device name                |
 |   stopped                  |
 +---------------------------+
 ```
 
-Empty copy: **No agents configured or connected**.
+Empty copy: **No devices configured or connected**.
 
 ---
 
 ## Top bar
 
-Always present after login. Agent view tabs only appear on an agent route.
+Always present after login. Device view tabs only appear on a device route.
 
 ```
-[ Open application menu ] | AGENT VIEW TABS | [theme] | [ Open agent menu ]
+[ Open application menu ] | DEVICE VIEW TABS | [theme] | [ Open device menu ]
      (narrow only)            flex-1                     (narrow only)
 ```
 
-### Agent view tabs
+### Device view tabs
 
-Shown when viewing a specific agent.
+Shown when viewing a specific device.
 
 ```
-[ {agent name} ] [ Files ] [ Configuration ] [ Logs ]
+[ {device name} ] [ Files ] [ Configuration ] [ Logs ]
 ```
 
-- **{agent name}** — agent details (or lifecycle if not connected)
+- **{device name}** — device details (or lifecycle if not connected)
 - **Files** — file browser; only when connected and `cwd` is known
-- **Configuration** — edit managed agent; only when editable
+- **Configuration** — edit device connection settings; only when editable
 - **Logs** — that agent's logs; only when connected
 
-On Server home, Agents, Transfers, Server logs, and Add managed agent the tab strip is empty. The top bar still holds the menu buttons and theme toggle.
+On Server home, Devices, Transfers, Server logs, and Add device the tab strip is empty. The top bar still holds the menu buttons and theme toggle.
 
 ---
 
@@ -179,7 +184,7 @@ Resize: **Resize bottom drawer**.
 
 ### Selected
 
-Global file/directory selection across agents. Empty: **Select files or directories to review them here.**
+Global file/directory selection across devices. Empty: **Select files or directories to review them here.**
 
 ### Transfers
 
@@ -187,7 +192,7 @@ Active transfers only. **View all** goes to Transfer history (`/transfers`).
 
 ### Terminal
 
-Remote shells. Tabs are `{agent name} 1`, …  Lives across route changes.
+Remote shells. Tabs are `{device name} 1`, …  Lives across route changes.
 
 ```
 +------------------------------------------------------------------+
@@ -249,7 +254,7 @@ Route `/`. Heading **Server**.
 ```
 MAIN
   Server
-  Agents   [dot] name  [dot] name   [Agent menu]   (narrow only)
+  Devices  [dot] name  [dot] name   [Device menu]  (narrow only)
 
   +------------------+
   | App name         |
@@ -260,30 +265,30 @@ MAIN
   | Binary identity  |
   +------------------+
 
-  Connect an agent
+  Connect a device
     config.toml snippet
 ```
 
 ---
 
-## Agents inventory
+## Devices inventory
 
-Route `/agents`. Heading **Agents**. This is a page, not the Agent menu.
+Route `/agents`. Heading **Devices**. This is a page, not the Device menu.
 
 ```
 MAIN
-  Agents
+  Devices
 
   Name | Source | Status | Version | Rev | Connection | Issue | Actions
   ...
-  {name} actions: Start, Restart, Shutdown, Browse files
+  {name} actions: Connect, Restart, Disconnect, Browse files
 ```
 
 ---
 
-## Agent details
+## Device details
 
-Route `/agents/$id` when connected. Agent view tab **{agent name}**.
+Route `/agents/$id` when connected. Device view tab **{device name}**.
 
 ```
 MAIN
@@ -291,7 +296,7 @@ MAIN
   ID: {id}
 
   +------------------+ +------------------+
-  | Process Info     | | System Load      |
+  | Redoor agent     | | System Load      |
   | System Info      | | User Info        |
   | Uptime           | | Binary           |
   +------------------+ +------------------+
@@ -300,28 +305,29 @@ MAIN
   +---------------------------------------+
 ```
 
-When the agent is not connected, same URL, no card grid: centered lifecycle (**Starting {name}**, stopped, disconnected) with **Retry Start** / **Shutdown** when managed.
+When the device is not connected, same URL, no card grid: centered lifecycle (**Connecting {name}**, stopped, disconnected) with **Retry Start** / **Disconnect** when managed. Connect and disconnect start or stop the agent, not the operating system. Inventory sources are **Managed by Redoor** and **Started independently**.
 
 ---
 
-## Add / Edit managed agent
+## Add / Edit device
 
-`/agents/new` — **Add managed agent**.  
-`/agents/$id/edit` — **Edit managed agent** (agent view tab **Configuration**).
+`/agents/new` — **Add device**.
+
+`/agents/$id/edit` — **Edit device** (device view tab **Configuration**).
 
 ```
 MAIN
-  Add/Edit managed agent
+  Add/Edit device
 
   Connection
-    SSH target, Agent name, SSH username, SSH port
+    SSH target, Device name, SSH username, SSH port
     key or password
 
   Advanced
     Remote binary, Home directory, Diagnostic log
 
   [Save…]
-  [Delete managed agent]    (edit only)
+  [Remove device]    (edit only; stops its agent, preserves device files)
 ```
 
 ---
@@ -329,7 +335,7 @@ MAIN
 ## Logs
 
 `/logs` — **Server logs**.  
-`/agents/$id/logs` — **{name} logs** (agent view tab **Logs**).
+`/agents/$id/logs` — **{name} logs** (device view tab **Logs**, showing agent process logs).
 
 ```
 MAIN
@@ -352,7 +358,7 @@ Full list of every transfer. The Transfers tab in application tools is the activ
 
 ## File browser
 
-Route `/agents/$id/browser/$`. Agent view tab **Files**.
+Route `/agents/$id/browser/$`. Device view tab **Files**.
 
 All browser views share the browser header. Directory vs file then has its own view tabs.
 
@@ -422,7 +428,7 @@ Directory or file. Copies, moves, or compares the current path with another sele
   {basename}
 
   [ current --> selected | selected --> current ]
-  agent + path
+  device + path
   [copy] [move] [compare]
   transfer status
   file diff                         (files only)
@@ -445,8 +451,8 @@ The path editor in the browser header opens so the URL can be corrected.
 ## What changes per route
 
 ```
-APPLICATION MENU and AGENT MENU   same on every chrome route
-TOP BAR                           always; agent view tabs only on agent routes
+APPLICATION MENU and DEVICE MENU  same on every chrome route
+TOP BAR                           always; device view tabs only on device routes
 APPLICATION TOOLS                 always; same tabs everywhere
 MAIN                              the only region that swaps by route
 BROWSER HEADER                    only inside the file browser

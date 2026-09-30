@@ -51,7 +51,7 @@ function titleForError(cause: unknown): string {
     if (cause instanceof Error) {
         const message = cause.message.toLowerCase();
         if (message.includes("agent not found")) {
-            return "Agent not found";
+            return "Device not found";
         }
         if (
             message.includes("no such file or directory") ||

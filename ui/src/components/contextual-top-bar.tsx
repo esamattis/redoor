@@ -73,7 +73,7 @@ export function ContextualTopBar(props: {
                 <IconButton
                     ref={props.agentTriggerRef}
                     type="button"
-                    label="Open agent menu"
+                    label="Open device menu"
                     tooltip={false}
                     aria-haspopup="dialog"
                     aria-controls="agent-menu-drawer"
@@ -109,7 +109,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
             : agentTarget;
     if (!isFilesystemContext) {
         return (
-            <ViewSwitch label="Agent view">
+            <ViewSwitch label="Device view">
                 <ViewLink
                     to={agentTarget}
                     label={agent.name}
@@ -160,7 +160,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
     }
 
     return (
-        <ViewSwitch label="Agent view">
+        <ViewSwitch label="Device view">
             <ViewLink
                 to={agentTarget}
                 label={agent.name}

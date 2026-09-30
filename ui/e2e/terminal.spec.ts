@@ -198,13 +198,13 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(terminalSockets).toHaveLength(0);
 
         await page
-            .getByRole("button", { name: "Choose agent for new terminal" })
+            .getByRole("button", { name: "Choose device for new terminal" })
             .click();
         // The picker must escape the collapsed panel's clipping boundary.
         await expect(
             page.getByRole("dialog", { name: "New terminal" }),
         ).toBeVisible();
-        await page.getByRole("button", { name: "Close agent picker" }).click();
+        await page.getByRole("button", { name: "Close device picker" }).click();
 
         await page
             .getByRole("button", { name: "New terminal", exact: true })
@@ -390,12 +390,12 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("button", { name: "New terminal", exact: true }),
         ).toHaveCount(0);
         await page
-            .getByRole("button", { name: "Choose agent for new terminal" })
+            .getByRole("button", { name: "Choose device for new terminal" })
             .hover();
         // Application routes advertise that the shortcut opens the required agent choice.
         await expect(
             page.getByRole("tooltip", {
-                name: "Choose agent for new terminal (t)",
+                name: "Choose device for new terminal (t)",
             }),
         ).toBeVisible();
         await page.mouse.move(0, 0);

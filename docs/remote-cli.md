@@ -3,16 +3,21 @@
 The `redoor remote` namespace talks to an existing server over its REST API.
 Start with login; subsequent invocations use the selected server automatically.
 
+A **device** is a server, laptop, workstation, or phone running Termux that you
+access through Redoor. Its **Redoor agent** is the process providing that access.
+Device IDs identify remote targets; agent lifecycle commands control the Redoor
+process, not the device's operating system.
+
 ```sh
 redoor remote login https://redoor.example.com
-redoor remote agents
-redoor remote agents --json
-redoor remote start agent-a
-redoor remote stop agent-a --json
-redoor remote cp ./report.csv agent-a:/srv/report.csv
-redoor remote cp agent-a:/srv/report.csv ./report.csv
-redoor remote cp -r agent-a:/srv/project agent-b:/srv/project
-redoor remote exec --cwd /srv/project --timeout 5m agent-a -- pnpm test
+redoor remote devices
+redoor remote devices --json
+redoor remote start workstation
+redoor remote stop workstation --json
+redoor remote cp ./report.csv workstation:/srv/report.csv
+redoor remote cp workstation:/srv/report.csv ./report.csv
+redoor remote cp -r workstation:/srv/project server:/srv/project
+redoor remote exec --cwd /srv/project --timeout 5m workstation -- pnpm test
 redoor remote logout
 ```
 
@@ -25,17 +30,18 @@ redoor remote logout
   Reverse-proxy prefixes such as `https://example.com/redoor/` are supported.
   A successful login selects that server. Any failed login preserves the prior
   saved session. HTTPS is required when the server issues a Secure cookie.
-- `remote agents` prints a table with ID, name, and connection status. IDs are the
+- `remote devices` prints a table with ID, name, and connection status. IDs are the
   identifiers for subsequent remote operations. An empty inventory prints
-  `No agents available.` and succeeds.
-- `remote agents --json` prints the full API response object, shaped as
-  `{ "agents": [...] }`, preserving agent details and a successful empty array.
-- `remote start <AGENT>` starts a server-managed agent, including SSH agents.
-  Use an ID from `remote agents`. The request is idempotent and returns immediately
-  after the supervisor accepts it; check `remote agents` for connection progress.
-- `remote stop <AGENT>` intentionally stops a server-managed agent, waits for
+  `No devices available.` and succeeds.
+- `remote devices --json` prints the full API response object, shaped as
+  `{ "agents": [...] }`, preserving device details and a successful empty array.
+  JSON keys and REST API paths use the internal agent terminology.
+- `remote start <DEVICE>` starts the server-managed agent on a device, including over SSH.
+  Use an ID from `remote devices`. The request is idempotent and returns immediately
+  after the supervisor accepts it; check `remote devices` for connection progress.
+- `remote stop <DEVICE>` intentionally stops the server-managed agent on a device, waits for
   shutdown cleanup, and disables automatic reconnects until it is started again.
-  Both commands print the agent ID and current status. With `--json`, they print
+  Both commands print the device ID and current status. With `--json`, they print
   the complete API response shaped as `{ "agent": {...} }`. Unknown IDs and
   externally managed agents fail with the server's error message.
 - `remote exec` and `remote cp` automatically start managed agents that are not
@@ -69,7 +75,7 @@ sessions using the global `--app-name <NAME>` option or `REDOOR_APP_NAME`:
 
 ```sh
 redoor --app-name production remote login https://redoor.example.com
-redoor --app-name production remote agents
+redoor --app-name production remote devices
 redoor --app-name production remote logout
 ```
 
@@ -120,8 +126,8 @@ redoor remote cp [-r|--recursive] [--on-existing error|override|merge]
                  [--quiet] [--json] <SOURCE> <DESTINATION>
 ```
 
-At least one endpoint must be remote: `AGENT:/absolute/path`. Use the IDs from
-`remote agents`. Local relative paths resolve against the current working
+At least one endpoint must be remote: `DEVICE:/absolute/path`. Use the IDs from
+`remote devices`. Local relative paths resolve against the current working
 directory. Prefix local colon filenames with `./`, for example `./report:2026.csv`.
 Quote paths containing spaces or shell metacharacters. Remote paths must be
 resolved absolute paths without `.` or `..` components; filesystem roots are not
@@ -129,7 +135,7 @@ supported as sources because they have no source basename.
 
 An existing destination directory receives the source basename. Otherwise the
 destination names the resulting file or directory. This applies equally to
-uploads, downloads, and agent-to-agent copies. A destination ending in `/` must
+uploads, downloads, and device-to-device copies. A destination ending in `/` must
 already be a directory. Parent directories must already exist. Directories
 require `-r`; files do not.
 
@@ -141,7 +147,7 @@ The conflict policy applies to the **resolved resulting path**:
 | `override` | Replace the entire resulting file or directory, including destination-only entries. |
 | `merge` | Merge directory trees and preserve destination-only entries; replace conflicting files. File-to-file merge replaces contents. Root type mismatches and symlink roots are rejected. |
 
-For example, copying `agent-a:/srv/project` into existing `agent-b:/srv/backup`
+For example, copying `workstation:/srv/project` into existing `server:/srv/backup`
 targets `/srv/backup/project`. To merge into that resulting directory, use
 `--on-existing merge`. Copying into an existing directory named `project` instead
 targets its child `project`, following the same basename rule.
@@ -153,7 +159,7 @@ are never saved or buffered in full. Only regular files and directories are
 supported inside recursive copies; links and special files fail. File permission
 bits are retained in recursive archives, but this is not a full metadata backup
 (directory modes, ownership and timestamps are not guaranteed across directions).
-Agent-to-agent copies use `POST /api/v1/copy`: payloads never traverse the CLI.
+Device-to-device copies use `POST /api/v1/copy`: payloads never traverse the CLI.
 
 Commands wait for destination completion. Human progress and completion go to
 stderr; successful non-JSON copies have empty stdout. `--quiet` suppresses those
@@ -165,8 +171,8 @@ failure):
 {
   "status": "completed",
   "source": "./report.csv",
-  "destination": "agent-a:/srv",
-  "resolved_destination": "agent-a:/srv/report.csv",
+  "destination": "workstation:/srv",
+  "resolved_destination": "workstation:/srv/report.csv",
   "bytes_transferred": 1234,
   "error": null
 }
@@ -175,7 +181,7 @@ failure):
 Failures use `status: "failed"`, a non-null `error`, and exit code **1**; interrupted
 copies also return **1**. Failed results have a null `resolved_destination`.
 Byte counts are transport counts: raw bytes for files, plain-tar bytes for
-recursive uploads and agent copies, compressed HTTP bytes for directory downloads.
+recursive uploads and device-to-device copies, compressed HTTP bytes for directory downloads.
 They are progress measurements rather than a content-size comparison.
 
 SIGINT/Ctrl-C and SIGTERM cancel streaming requests and explicitly cancel active
@@ -220,7 +226,7 @@ and existing clients that omit the header retain their existing behavior.
 
 ```text
 redoor remote exec [--cwd /absolute/path] [--env KEY=VALUE]...
-                   [--timeout DURATION] [--json] <AGENT> -- <COMMAND> [ARGS...]
+                   [--timeout DURATION] [--json] <DEVICE> -- <COMMAND> [ARGS...]
 ```
 
 The `--` separator is required. Argument boundaries, empty arguments, spaces,
@@ -228,9 +234,9 @@ and shell metacharacters are preserved. There is no implicit shell, expansion,
 pipeline, or redirection. Invoke a shell explicitly when needed:
 
 ```sh
-redoor remote exec agent-a -- printf '%s' 'literal $HOME; *.txt'
-redoor remote exec --env MODE=test --env TOKEN='a=b' agent-a -- printenv MODE TOKEN
-redoor remote exec agent-a -- sh -lc 'df -h | sort -k 5'
+redoor remote exec workstation -- printf '%s' 'literal $HOME; *.txt'
+redoor remote exec --env MODE=test --env TOKEN='a=b' workstation -- printenv MODE TOKEN
+redoor remote exec workstation -- sh -lc 'df -h | sort -k 5'
 ```
 
 `--cwd` selects an absolute remote working directory; otherwise the process
@@ -281,7 +287,7 @@ Authenticated `POST /api/v1/agents/{agent}/exec` accepts `ExecRequest`:
 
 The response is `application/x-ndjson`, streaming `ExecEvent` records with the
 same shape as CLI JSON. Invalid argv/cwd/environment/deadline inputs return 400;
-missing agents return 404. `X-Redoor-Execution-Id` identifies the stream for
+missing devices return 404. `X-Redoor-Execution-Id` identifies the stream for
 explicit cancellation through the existing `DELETE /api/v1/transfers/{id}`.
 Dropping the response cancels automatically. Transport truncation without a
 terminal event must be treated as an unknown exit status, never success. This
