@@ -7,6 +7,8 @@ Start with login; subsequent invocations use the selected server automatically.
 redoor remote login https://redoor.example.com
 redoor remote agents
 redoor remote agents --json
+redoor remote start agent-a
+redoor remote stop agent-a --json
 redoor remote cp ./report.csv agent-a:/srv/report.csv
 redoor remote cp agent-a:/srv/report.csv ./report.csv
 redoor remote cp -r agent-a:/srv/project agent-b:/srv/project
@@ -28,6 +30,14 @@ redoor remote logout
   `No agents available.` and succeeds.
 - `remote agents --json` prints the full API response object, shaped as
   `{ "agents": [...] }`, preserving agent details and a successful empty array.
+- `remote start <AGENT>` starts a server-managed agent, including SSH agents.
+  Use an ID from `remote agents`. The request is idempotent and returns immediately
+  after the supervisor accepts it; check `remote agents` for connection progress.
+- `remote stop <AGENT>` intentionally stops a server-managed agent, waits for
+  shutdown cleanup, and disables automatic reconnects until it is started again.
+  Both commands print the agent ID and current status. With `--json`, they print
+  the complete API response shaped as `{ "agent": {...} }`. Unknown IDs and
+  externally managed agents fail with the server's error message.
 - `remote logout` calls the existing server logout API and removes local session
   state. It succeeds when already logged out or when authentication has expired.
   If a transport/API failure prevents remote invalidation, local credentials are

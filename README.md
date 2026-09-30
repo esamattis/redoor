@@ -79,6 +79,8 @@ Log in once, then list agents, copy files, and execute commands from separate in
 redoor remote login https://redoor.example.com
 redoor remote agents
 redoor remote agents --json
+redoor remote start agent-a
+redoor remote stop agent-a
 redoor remote cp ./report.csv agent-a:/srv/report.csv
 redoor remote cp agent-a:/srv/report.csv ./report.csv
 redoor remote cp -r agent-a:/srv/project agent-b:/srv/project

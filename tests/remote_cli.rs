@@ -48,6 +48,8 @@ async fn remote_cli_persistent_session_namespace_and_output() {
     let url = reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
     let app = Router::new()
         .route("/api/v1/agents", get(agents))
+        .route("/api/v1/agents/{agent}/start", post(lifecycle_fixture))
+        .route("/api/v1/agents/{agent}/shutdown", post(lifecycle_fixture))
         .route("/api/v1/agents/a/exec", post(exec_fixture))
         .route("/api/v1/logout", post(logout));
     let server = tokio::spawn(async move {
@@ -93,6 +95,60 @@ async fn remote_cli_persistent_session_namespace_and_output() {
         String::from_utf8(output.stdout).unwrap().trim(),
         "No agents available."
     );
+    for (command, expected_status) in [("start", "starting"), ("stop", "stopped")] {
+        let output = cli(
+            root.path(),
+            &[
+                "--app-name",
+                "isolated",
+                "remote",
+                command,
+                "ssh agent?#",
+                "--json",
+            ],
+        )
+        .await;
+        // Authenticated POSTs must retain special characters as one ID and expose the full snapshot.
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["agent"]["id"], "ssh agent?#");
+        assert_eq!(response["agent"]["status"], expected_status);
+        assert_eq!(response["agent"]["ssh_target"], "user@host");
+        let output = cli(
+            root.path(),
+            &["--app-name", "isolated", "remote", command, "ssh agent?#"],
+        )
+        .await;
+        // Human output reports actual state instead of claiming an asynchronous start connected.
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            format!("ssh agent?#: {expected_status}")
+        );
+        for (id, error) in [
+            ("missing", "Agent not found"),
+            ("external", "Agent is external"),
+        ] {
+            let output = cli(
+                root.path(),
+                &["--app-name", "isolated", "remote", command, id],
+            )
+            .await;
+            // Lifecycle failures must remain failures, with no successful snapshot on stdout.
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(error));
+        }
+        let output = cli(root.path(), &["remote", command, "ssh agent?#"]).await;
+        // Lifecycle control shares the same namespace authentication boundary as inventory.
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("remote login"));
+    }
     let output = cli(root.path(), &["remote", "agents"]).await;
     // A different namespace must not borrow credentials, even with the same HOME.
     assert!(!output.status.success());
@@ -183,10 +239,52 @@ async fn remote_cli_persistent_session_namespace_and_output() {
             && help.contains("logout")
             && help.contains("agents")
             && help.contains("cp")
+            && help.contains("start")
+            && help.contains("stop")
             && help.contains("exec"),
         "Remote help must document the implemented login, inventory and copy commands"
     );
     server.abort();
+}
+
+/// Mirrors lifecycle acceptance while checking real HTTP method, authentication, and encoded IDs.
+async fn lifecycle_fixture(
+    headers: HeaderMap,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    if headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        != Some("redoor_session=cli-session")
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if agent != "ssh agent?#" {
+        let (status, error) = if agent == "external" {
+            (
+                StatusCode::CONFLICT,
+                "Agent is external and cannot be managed",
+            )
+        } else {
+            (StatusCode::NOT_FOUND, "Agent not found")
+        };
+        return (status, Json(serde_json::json!({"error": error}))).into_response();
+    }
+    let status = if uri.path().ends_with("/start") {
+        "starting"
+    } else {
+        "stopped"
+    };
+    Json(serde_json::json!({"agent": {
+        "id": agent, "name": "SSH agent", "cwd": null, "managed": true,
+        "configuration_editable": true, "ssh_target": "user@host", "status": status,
+        "connected_at": null, "connection_id": null, "last_seen_at": null,
+        "connection_issue": null, "provisioning_status": [], "binary": null,
+        "supports_self_exec": false, "supports_native_open": false,
+        "supports_move_to_trash": false, "supports_trash": false
+    }}))
+    .into_response()
 }
 
 /// Produces a valid HTTP stream or clean truncation to separate transport status from process status.

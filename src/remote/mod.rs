@@ -4,6 +4,7 @@ mod archive;
 pub mod client;
 mod copy;
 mod exec;
+mod lifecycle;
 pub mod session;
 
 use anyhow::Result;
@@ -24,6 +25,10 @@ pub struct RemoteArgs {
 /// Login-first operations reuse the server's existing cookie authentication APIs.
 #[derive(Subcommand)]
 enum RemoteCommand {
+    /// Start a server-managed agent, including SSH agents, without waiting for connection.
+    Start(lifecycle::LifecycleArgs),
+    /// Stop a server-managed agent and wait for shutdown cleanup.
+    Stop(lifecycle::LifecycleArgs),
     /// Execute argv without a shell, streaming output until the remote process exits.
     Exec(exec::ExecArgs),
     /// Stream files or recursively copy directories between local and agent paths.
@@ -44,6 +49,8 @@ enum RemoteCommand {
 pub async fn run(args: RemoteArgs) -> Result<i32> {
     let store = SessionStore::for_current_namespace()?;
     match args.command {
+        RemoteCommand::Start(args) => lifecycle::run(store, args, true).await?,
+        RemoteCommand::Stop(args) => lifecycle::run(store, args, false).await?,
         RemoteCommand::Exec(args) => return Ok(exec::run(store, args).await),
         RemoteCommand::Cp(args) => copy::run(store, args).await?,
         RemoteCommand::Login { server_url } => {
