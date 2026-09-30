@@ -68,5 +68,6 @@ objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "FoundationErrors", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
 
 [dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util"] }
 rcgen = "0.14.5"
 tokio-rustls = "0.26.4"

@@ -101,7 +101,7 @@ impl ExecWorker {
     async fn execute(
         &mut self,
         request: ExecRequest,
-        mut cancel: watch::Receiver<bool>,
+        cancel: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<ExecEvent> {
         request.validate().map_err(anyhow::Error::msg)?;
         if *cancel.borrow() {
@@ -141,6 +141,29 @@ impl ExecWorker {
         let _ = child.wait().await;
         event
     }
+
+    /// Preserves normal completion under backpressure without retaining workers during teardown.
+    async fn terminal(
+        &mut self,
+        event: ExecEvent,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        if matches!(event, ExecEvent::Canceled | ExecEvent::TimedOut) {
+            // These paths must finish so generation shutdown can join the worker even with a full lane.
+            return tokio::time::timeout(std::time::Duration::from_secs(5), self.send(event, true))
+                .await?;
+        }
+        // execute may already have observed the watch update, so changed() alone is insufficient.
+        anyhow::ensure!(
+            !*cancel.borrow() && cancel.has_changed().is_ok(),
+            "Execution canceled before terminal delivery"
+        );
+        tokio::select! {
+            biased;
+            _ = cancel.changed() => anyhow::bail!("Execution canceled during terminal delivery"),
+            result = self.send(event, true) => result,
+        }
+    }
 }
 
 /// Emits a terminal event even for spawn failures; generation teardown drops the process guard.
@@ -148,7 +171,7 @@ pub(super) async fn run(
     request_id: RequestId,
     request: ExecRequest,
     write: mpsc::Sender<Message>,
-    cancel: watch::Receiver<bool>,
+    mut cancel: watch::Receiver<bool>,
     control: mpsc::Sender<Message>,
     agent_id: redoor::types::AgentId,
 ) {
@@ -158,15 +181,12 @@ pub(super) async fn run(
         index: ChunkIndex::new(0),
     };
     let event = worker
-        .execute(request, cancel)
+        .execute(request, &mut cancel)
         .await
         .unwrap_or_else(|error| ExecEvent::Error {
             message: error.to_string(),
         });
-    if !matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(5), worker.send(event, true)).await,
-        Ok(Ok(()))
-    ) {
+    if worker.terminal(event, &mut cancel).await.is_err() {
         // If the payload lane cannot deliver completion, the independent control lane closes server ownership.
         let result = redoor::commands::CommandResult::error(
             redoor::commands::CommandErrorKind::ServiceUnavailable,
@@ -177,5 +197,194 @@ pub(super) async fn run(
             super::AgentActor.send_command_response(&control, &agent_id, request_id, result),
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::poll;
+    use redoor::{
+        commands::{CommandErrorKind, CommandResult},
+        streaming::StreamChunk,
+        types::AgentId,
+    };
+    use std::time::Duration;
+
+    /// Uses a real nonzero exit so delivery cannot accidentally substitute a local success or failure.
+    fn exit_request() -> ExecRequest {
+        ExecRequest {
+            argv: vec!["sh".into(), "-c".into(), "exit 37".into()],
+            cwd: None,
+            env: Default::default(),
+            timeout_ms: None,
+        }
+    }
+
+    /// Saturates the actual framed-payload sender without involving socket buffer sizes or wall time.
+    async fn blocked_worker() -> (ExecWorker, mpsc::Receiver<Message>) {
+        let (write, receiver) = mpsc::channel(1);
+        write.send(Message::binary(vec![0])).await.unwrap();
+        (
+            ExecWorker {
+                request_id: RequestId::new(41),
+                write,
+                index: ChunkIndex::new(0),
+            },
+            receiver,
+        )
+    }
+
+    /// A completed and reaped process must retain its remote status for arbitrarily slow consumers.
+    #[tokio::test]
+    async fn normal_exit_waits_beyond_five_seconds_and_preserves_control_lane() {
+        let (mut worker, mut payload) = blocked_worker().await;
+        let (_cancel_sender, mut cancel) = watch::channel(false);
+        let event = worker.execute(exit_request(), &mut cancel).await.unwrap();
+        // This also synchronizes with child reaping before testing terminal-only backpressure.
+        assert!(matches!(
+            event,
+            ExecEvent::Exit {
+                code: Some(37),
+                signal: None
+            }
+        ));
+        tokio::time::pause();
+        let terminal = worker.terminal(event, &mut cancel);
+        tokio::pin!(terminal);
+        // Polling installs the blocked enqueue before advancing virtual time.
+        assert!(poll!(&mut terminal).is_pending());
+        tokio::time::advance(Duration::from_secs(60)).await;
+        // Normal completion has no five-second fallback (or other delivery deadline).
+        assert!(poll!(&mut terminal).is_pending());
+
+        let (control, mut responses) = mpsc::channel(1);
+        super::super::AgentActor
+            .send_command_response(
+                &control,
+                &AgentId::from("terminal-test"),
+                RequestId::new(42),
+                CommandResult::error(CommandErrorKind::ServiceUnavailable, "independent response"),
+            )
+            .await;
+        // Control delivery remains independent while the shared binary lane is full.
+        assert!(matches!(responses.try_recv(), Ok(Message::Text(_))));
+        payload.recv().await.unwrap();
+        terminal.await.unwrap();
+        let Message::Binary(bytes) = payload.recv().await.unwrap() else {
+            panic!("Expected framed terminal event");
+        };
+        let chunk = StreamChunk::from_bytes(&bytes).unwrap();
+        // Resuming the consumer must deliver the last frame and the actual nonzero remote exit.
+        assert!(chunk.is_last);
+        assert!(matches!(
+            serde_json::from_slice::<ExecEvent>(&chunk.data).unwrap(),
+            ExecEvent::Exit {
+                code: Some(37),
+                signal: None
+            }
+        ));
+    }
+
+    /// Cancellation and both disconnect signals must release a normal terminal enqueue immediately.
+    #[tokio::test(start_paused = true)]
+    async fn blocked_normal_terminal_observes_cancel_and_disconnect() {
+        for mode in 0..3 {
+            let (mut worker, payload) = blocked_worker().await;
+            let (sender, mut cancel) = watch::channel(false);
+            let terminal = worker.terminal(
+                ExecEvent::Exit {
+                    code: Some(37),
+                    signal: None,
+                },
+                &mut cancel,
+            );
+            tokio::pin!(terminal);
+            // All cases start blocked on the same saturated lane.
+            assert!(poll!(&mut terminal).is_pending());
+            match mode {
+                0 => sender.send(true).unwrap(),
+                1 => drop(sender), // Generation teardown clears the local cancellation registry.
+                _ => drop(payload), // Transfer disconnection closes the payload sender.
+            }
+            // No clock advancement is needed to release cancellation/disconnection.
+            assert!(matches!(
+                poll!(&mut terminal),
+                std::task::Poll::Ready(Err(_))
+            ));
+        }
+    }
+
+    /// Already-observed cancellation must not be lost when execute hands ownership back to run.
+    #[tokio::test(start_paused = true)]
+    async fn observed_cancel_releases_terminal() {
+        let (mut worker, _payload) = blocked_worker().await;
+        let (sender, mut cancel) = watch::channel(false);
+        sender.send(true).unwrap();
+        cancel.changed().await.unwrap();
+        // changed() has consumed this version, but the current true value still cancels delivery.
+        assert!(
+            worker
+                .terminal(
+                    ExecEvent::Exit {
+                        code: Some(37),
+                        signal: None
+                    },
+                    &mut cancel
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    /// Teardown may wait briefly for terminal delivery, but even blocked control cannot prevent joining.
+    #[tokio::test(start_paused = true)]
+    async fn teardown_fallback_is_bounded_on_both_lanes() {
+        let (worker, _payload) = blocked_worker().await;
+        let (_sender, cancel) = watch::channel(true);
+        let (control, mut responses) = mpsc::channel(1);
+        let task = run(
+            worker.request_id,
+            exit_request(),
+            worker.write,
+            cancel,
+            control,
+            AgentId::from("terminal-test"),
+        );
+        tokio::pin!(task);
+        // An already canceled request takes the bounded terminal path without spawning a process.
+        assert!(poll!(&mut task).is_pending());
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // The independent fallback closes router ownership when terminal delivery is impossible.
+        assert!(poll!(&mut task).is_ready());
+        let Message::Text(text) = responses.recv().await.unwrap() else {
+            panic!("Expected control fallback");
+        };
+        // The fallback must name the affected execution, rather than abandoning server ownership.
+        assert!(
+            matches!(serde_json::from_str::<redoor::types::Message>(&text).unwrap(), redoor::types::Message::CommandResponse { request_id, .. } if request_id == RequestId::new(41))
+        );
+
+        let (worker, _payload) = blocked_worker().await;
+        let (_sender, cancel) = watch::channel(true);
+        let (control, _responses) = mpsc::channel(1);
+        control.send(Message::text("occupied")).await.unwrap();
+        let task = run(
+            worker.request_id,
+            exit_request(),
+            worker.write,
+            cancel,
+            control,
+            AgentId::from("terminal-test"),
+        );
+        tokio::pin!(task);
+        // Saturating control as well exercises the second cleanup deadline.
+        assert!(poll!(&mut task).is_pending());
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // The fallback is now blocked, but retains its own finite cleanup budget.
+        assert!(poll!(&mut task).is_pending());
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // Joining the worker cannot hang even when neither lane drains.
+        assert!(poll!(&mut task).is_ready());
     }
 }
