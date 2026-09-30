@@ -1,4 +1,4 @@
-//! Checks extension sizes before tar's normal iterator can allocate their bodies.
+//! Bounds extension allocation and requires complete framing before an upload can be published.
 
 use std::io::{self, Read};
 
@@ -10,6 +10,11 @@ pub(super) const MAX_METADATA_BYTES: u64 = 64 * 1024;
 #[error("{0}")]
 pub(super) struct InvalidMetadata(pub String);
 
+/// Distinguishes incomplete or trailing archive data from filesystem extraction failures.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid tar termination: {0}")]
+pub(super) struct InvalidTermination(pub &'static str);
+
 /// Preserves tar's GNU/PAX interpretation while preventing extension read_to_end from growing unchecked.
 pub(super) struct BoundedTarReader<R> {
     inner: R,
@@ -19,7 +24,7 @@ pub(super) struct BoundedTarReader<R> {
     padding: u64,
     local_pax: Option<Vec<u8>>,
     collecting_pax: bool,
-    ended: bool,
+    zero_blocks: u8,
 }
 
 impl<R: Read> BoundedTarReader<R> {
@@ -33,8 +38,20 @@ impl<R: Read> BoundedTarReader<R> {
             padding: 0,
             local_pax: None,
             collecting_pax: false,
-            ended: false,
+            zero_blocks: 0,
         }
+    }
+
+    /// Tar stops at the first zero header; publication must also wait for the second and producer EOF.
+    pub(super) fn finish(mut self) -> io::Result<()> {
+        if self.zero_blocks == 0 || self.header_offset != 512 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                InvalidTermination("archive iteration did not reach a complete terminator"),
+            ));
+        }
+        io::copy(&mut self, &mut io::sink())?;
+        Ok(())
     }
 
     /// Mirrors tar 0.4's first valid size record, including its handling of malformed records.
@@ -107,14 +124,15 @@ impl<R: Read> Read for BoundedTarReader<R> {
                 self.header_offset += count;
                 return Ok(count);
             }
-            if self.ended {
-                // Retain the existing iterator's termination behavior. A future
-                // strict-termination check can replace this pass-through phase.
-                return self.inner.read(buf);
-            }
             if self.remaining > 0 {
                 let limit = self.remaining.min(buf.len() as u64) as usize;
                 let count = self.inner.read(&mut buf[..limit])?;
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        InvalidTermination("truncated member payload"),
+                    ));
+                }
                 self.remaining -= count as u64;
                 if self.collecting_pax
                     && let Some(pax) = self.local_pax.as_mut()
@@ -126,17 +144,46 @@ impl<R: Read> Read for BoundedTarReader<R> {
             if self.padding > 0 {
                 let limit = self.padding.min(buf.len() as u64) as usize;
                 let count = self.inner.read(&mut buf[..limit])?;
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        InvalidTermination("truncated member padding"),
+                    ));
+                }
                 self.padding -= count as u64;
                 return Ok(count);
             }
-            // Allow clean EOF as before, but don't hide a partial header.
+            // EOF is only valid after two complete zero blocks, even at a member boundary.
             if self.inner.read(&mut self.header[..1])? == 0 {
-                return Ok(0);
+                return if self.zero_blocks >= 2 {
+                    Ok(0)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        InvalidTermination("missing two zero terminator blocks"),
+                    ))
+                };
             }
-            self.inner.read_exact(&mut self.header[1..])?;
+            self.inner
+                .read_exact(&mut self.header[1..])
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::UnexpectedEof {
+                        io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            InvalidTermination("truncated header or terminator block"),
+                        )
+                    } else {
+                        error
+                    }
+                })?;
             if self.header == [0; 512] {
-                self.ended = true;
+                self.zero_blocks = (self.zero_blocks + 1).min(2);
                 self.header_offset = 0;
+            } else if self.zero_blocks > 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    InvalidTermination("nonzero data after first terminator block"),
+                ));
             } else {
                 self.prepare_header()?;
             }
@@ -147,6 +194,100 @@ impl<R: Read> Read for BoundedTarReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercises the actual iterator and its completion check with fragmented transport reads.
+    fn validate(bytes: &[u8]) -> io::Result<()> {
+        /// Tiny reads expose framing bugs that a contiguous slice can conceal.
+        struct Fragmented<'a>(&'a [u8]);
+        impl Read for Fragmented<'_> {
+            /// Simulates arbitrary upload chunk boundaries without timing dependencies.
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let limit = buf.len().min(7);
+                self.0.read(&mut buf[..limit])
+            }
+        }
+        let mut archive = tar::Archive::new(BoundedTarReader::new(Fragmented(bytes)));
+        for entry in archive.entries()? {
+            io::copy(&mut entry?, &mut io::sink())?;
+        }
+        archive.into_inner().finish()
+    }
+
+    /// Truncation at a member boundary is as invalid as truncation within a payload or terminator.
+    #[test]
+    fn rejects_incomplete_archives_and_nonzero_trailing_data() {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(513);
+        builder
+            .append_data(&mut header, "file", &[b'a'; 513][..])
+            .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        for end in [0, 511, 512, 1024, 1025, 1535, 1536, 2047, 2048, 2559] {
+            assert!(
+                validate(&bytes[..end]).is_err(),
+                "cut at {end} must not validate an incomplete archive"
+            );
+        }
+        for end in [2048, 2560] {
+            let mut garbage = bytes[..end].to_vec();
+            garbage.extend_from_slice(&[b'x'; 512]);
+            assert!(
+                validate(&garbage).is_err(),
+                "nonzero data after either terminator must not be silently ignored"
+            );
+        }
+        let mut partial_padding = bytes.clone();
+        partial_padding.push(0);
+        assert!(
+            validate(&partial_padding).is_err(),
+            "trailing zero padding must consist of complete tar blocks"
+        );
+        assert!(
+            validate(&bytes).is_ok(),
+            "a fully terminated member must retain successful parsing"
+        );
+    }
+
+    /// Empty trees are valid only when terminated; record-sized zero padding is interoperable with tar tools.
+    #[test]
+    fn accepts_terminated_empty_archives_and_trailing_zero_blocks() {
+        for blocks in [2, 3, 20] {
+            assert!(
+                validate(&vec![0; blocks * 512]).is_ok(),
+                "{blocks} full zero blocks must describe a valid empty archive"
+            );
+        }
+        assert!(
+            validate(&[0; 512]).is_err(),
+            "one zero block alone must not authorize empty-tree publication"
+        );
+    }
+
+    /// Even complete terminators cannot hide a later transport failure or permit early producer success.
+    #[test]
+    fn completion_reads_past_terminators_to_producer_eof() {
+        /// Represents a producer that fails after sending an otherwise valid empty archive.
+        struct FailedProducer;
+        impl Read for FailedProducer {
+            /// A completion check must observe this failure instead of stopping at the zero headers.
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("producer failed after terminators"))
+            }
+        }
+        let source = io::Cursor::new([0; 1024]).chain(FailedProducer);
+        let mut archive = tar::Archive::new(BoundedTarReader::new(source));
+        assert!(
+            archive.entries().unwrap().next().is_none(),
+            "the dependency itself stops before checking the producer"
+        );
+        let error = archive.into_inner().finish().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "producer failed after terminators",
+            "publication validation must drain through actual producer EOF"
+        );
+    }
 
     /// The documented bound is inclusive and must not accidentally limit ordinary file bodies.
     #[test]
@@ -187,6 +328,8 @@ mod tests {
             entries.next().is_none(),
             "the reader must preserve payload padding and the following terminator"
         );
+        drop(entries);
+        archive.into_inner().finish().unwrap();
     }
 
     /// Makes a huge body available without allocating it, recording exactly how far tar reads.

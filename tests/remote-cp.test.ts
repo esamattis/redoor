@@ -461,6 +461,162 @@ describe("Remote cp and streaming archive upload", () => {
         ).toBeNull();
     });
 
+    it("requires complete tar termination before creating or overriding destinations", async () => {
+        const source = files.tempDirectory();
+        await fs.writeFile(path.join(source, "file.txt"), "payload");
+        const tarPath = files.tempFile({ suffix: ".tar" });
+        await $({ quiet: true })`tar -cf ${tarPath} -C ${source} file.txt`;
+        const tar = await fs.readFile(tarPath);
+        const invalidBodies = [
+            Buffer.alloc(0),
+            tar.subarray(0, 1024), // Complete member, no terminators.
+            tar.subarray(0, 1536), // Missing second zero terminator.
+            tar.subarray(0, 515), // Truncated payload.
+            tar.subarray(0, 700), // Truncated member padding.
+            tar.subarray(0, 1800), // Truncated second terminator.
+            Buffer.concat([tar, Buffer.from("trailing garbage")]),
+            Buffer.concat([tar, Buffer.alloc(512, 120)]),
+            Buffer.concat([tar, Buffer.alloc(1)]),
+        ];
+        for (const existing of [false, true]) {
+            for (const body of invalidBodies) {
+                const parent = files.tempDirectory();
+                const destination = path.join(parent, "result");
+                if (existing) {
+                    await fs.mkdir(destination);
+                    await fs.writeFile(
+                        path.join(destination, "keep.txt"),
+                        "original",
+                    );
+                }
+                const response = await fetch(
+                    archiveUrl(destination, "override"),
+                    {
+                        method: "PUT",
+                        headers: setup.apiClient.getAuthHeaders(),
+                        body,
+                    },
+                );
+                // Even a complete extracted member must not authorize publication without valid termination.
+                expect(
+                    response.ok,
+                    `existing=${existing}, bytes=${body.length}`,
+                ).toBe(false);
+                await response.text();
+                await waitForValue({
+                    description: "invalid archive staging removed",
+                    predicate: async () =>
+                        (await fs.readdir(parent)).every(
+                            (name) => name === "result",
+                        ),
+                });
+                // Failed overrides must preserve the entire old tree and failed new uploads must publish nothing.
+                expect(await fs.readdir(parent)).toEqual(
+                    existing ? ["result"] : [],
+                );
+                if (existing) {
+                    expect(await fs.readdir(destination)).toEqual(["keep.txt"]);
+                    expect(
+                        await fs.readFile(
+                            path.join(destination, "keep.txt"),
+                            "utf8",
+                        ),
+                    ).toBe("original");
+                }
+            }
+        }
+        for (const body of [
+            tar,
+            tar.subarray(0, 2048),
+            Buffer.alloc(1024),
+            Buffer.alloc(10240),
+        ]) {
+            const parent = files.tempDirectory();
+            const destination = path.join(parent, "result");
+            await fs.mkdir(destination);
+            await fs.writeFile(path.join(destination, "old.txt"), "old");
+            const response = await fetch(archiveUrl(destination, "override"), {
+                method: "PUT",
+                headers: setup.apiClient.getAuthHeaders(),
+                body,
+            });
+            // Both minimal and record-padded termination must permit legitimate replacement, including empty trees.
+            expect(response.status).toBe(200);
+            expect((await response.json()).bytes_written).toBe(body.length);
+            expect(await fs.readdir(parent)).toEqual(["result"]);
+            const hasFile = body === tar || body.length === 2048;
+            expect(await fs.readdir(destination)).toEqual(
+                hasFile ? ["file.txt"] : [],
+            );
+            if (hasFile) {
+                expect(
+                    await fs.readFile(
+                        path.join(destination, "file.txt"),
+                        "utf8",
+                    ),
+                ).toBe("payload");
+            }
+        }
+    });
+
+    it("keeps a terminated archive reversible until the producer ends and validates late bytes", async () => {
+        const parent = files.tempDirectory();
+        const destination = path.join(parent, "result");
+        await fs.mkdir(destination);
+        await fs.writeFile(path.join(destination, "keep.txt"), "original");
+        const abort = new AbortController();
+        onTestFinished(() => abort.abort());
+        let producer: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+                producer = controller;
+                controller.enqueue(Buffer.alloc(1024));
+            },
+        });
+        const request: RequestInit & { duplex: "half" } = {
+            method: "PUT",
+            headers: setup.apiClient.getAuthHeaders(),
+            body,
+            duplex: "half",
+            signal: abort.signal,
+        };
+        const uploading = fetch(archiveUrl(destination, "override"), request);
+        await waitForValue({
+            description: "terminated archive still receiving producer bytes",
+            predicate: async () =>
+                (await setup.apiClient.getTransferProgress()).transfers.find(
+                    (entry) =>
+                        entry.path === destination &&
+                        entry.transferred_bytes === 1024 &&
+                        entry.state === "active",
+                ),
+        });
+        // A complete terminator cannot make publication irreversible while the HTTP producer is still active.
+        expect(
+            await fs.readFile(path.join(destination, "keep.txt"), "utf8"),
+        ).toBe("original");
+        expect((await setup.testAgent.echo("draining archive")).message).toBe(
+            "draining archive",
+        );
+        if (producer === undefined) throw new Error("Missing archive producer");
+        producer.enqueue(Buffer.alloc(512, 120));
+        producer.close();
+        const response = await uploading;
+        // Garbage arriving in a later transport chunk must invalidate the otherwise complete empty archive.
+        expect(response.ok).toBe(false);
+        await response.text();
+        await waitForValue({
+            description: "late invalid archive staging removed",
+            predicate: async () => (await fs.readdir(parent)).length === 1,
+        });
+        // Cleanup and rejection must preserve the previous destination even after valid terminators were sent.
+        expect(await fs.readdir(parent)).toEqual(["result"]);
+        expect(await fs.readdir(destination)).toEqual(["keep.txt"]);
+        expect(
+            await fs.readFile(path.join(destination, "keep.txt"), "utf8"),
+        ).toBe("original");
+    });
+
     it("rejects oversized GNU and PAX metadata declarations without publishing a tree", async () => {
         const source = files.tempDirectory();
         await fs.writeFile(path.join(source, "file.txt"), "payload");

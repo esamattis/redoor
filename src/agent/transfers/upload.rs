@@ -1,5 +1,5 @@
 use super::super::{ActiveUploads, AgentActor, AgentCommandError, UploadSessionHandle};
-use super::bounded_tar::{BoundedTarReader, InvalidMetadata};
+use super::bounded_tar::{BoundedTarReader, InvalidMetadata, InvalidTermination};
 use super::destination::{
     DestinationPlaceError, check_existing_destination, place_temp_at_destination,
 };
@@ -40,6 +40,8 @@ pub(crate) enum TarUploadError {
     ReadTarEntry,
     #[error("{0}")]
     InvalidTarMetadata(String),
+    #[error("{0}")]
+    InvalidTarTermination(String),
     #[error("Unsupported tar entry type: {0:?}")]
     UnsupportedTarEntryType(tar::EntryType),
     #[error("Failed to read tar entry path")]
@@ -64,6 +66,7 @@ impl TarUploadError {
             Self::EscapingTarEntryPath(_)
             | Self::EmptyTarEntryPath
             | Self::InvalidTarMetadata(_)
+            | Self::InvalidTarTermination(_)
             | Self::DestinationParentNotFound(_)
             | Self::UnsupportedTarEntryType(_) => CommandErrorKind::InvalidInput,
             Self::ReadTarEntries
@@ -235,7 +238,13 @@ fn unpack_tar_stream_into_directory(
                 .and_then(|source| source.downcast_ref::<InvalidMetadata>())
             {
                 Some(error) => TarUploadError::InvalidTarMetadata(error.to_string()),
-                None => TarUploadError::ReadTarEntry,
+                None => match error
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<InvalidTermination>())
+                {
+                    Some(error) => TarUploadError::InvalidTarTermination(error.to_string()),
+                    None => TarUploadError::ReadTarEntry,
+                },
             }
         })?;
 
@@ -266,7 +275,10 @@ fn unpack_tar_stream_into_directory(
             .map_err(|_| TarUploadError::UnpackTarEntry(output_path.display().to_string()))?;
     }
 
-    Ok(())
+    archive
+        .into_inner()
+        .finish()
+        .map_err(|error| TarUploadError::InvalidTarTermination(error.to_string()))
 }
 
 /// Streams tar bytes into a blocking unpack worker that extracts into a temp directory.
