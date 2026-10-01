@@ -1,5 +1,8 @@
 # Flaky tests
 
+- 2026-10-01 `pn test` integration (full-window pinned editor work): `remote-cp.test.ts` failed in `cancels CLI copy on interruption and removes incomplete output` because `.result.bin.redoor-upload-3657595513438930064` still existed at the cleanup assertion. The exact test passed on immediate rerun.
+- 2026-10-01 `pn test` integration (pinned-tab close actions): `remote-cp.test.ts` failed in `cancels CLI copy on interruption and removes incomplete output` and `keeps control requests responsive during chunked archives and cleans up canceled uploads` because upload staging entries remained at cleanup assertions. All 10 tests in the file passed on immediate rerun.
+
 - 2026-10-01 `pn test` integration: `remote-cp.test.ts` failed in `cancels CLI copy on interruption and removes incomplete output` because a remote upload staging file still existed at the cleanup assertion. The exact test passed on immediate rerun.
 
 - 2026-08-25 `pn test` Playwright: `git-browser.spec.ts` failed after the test web server exited (`server exited unexpectedly with code null`), then later Playwright files failed with `ERR_CONNECTION_REFUSED` / `fetch failed`. Passed on a later full `pn test` run.
