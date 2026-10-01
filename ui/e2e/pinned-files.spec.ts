@@ -178,6 +178,132 @@ test.describe.serial("Pinned files", () => {
         await expect(pinnedFiles).toHaveCount(0);
     });
 
+    test("switches pinned files above the toolbar while keeping the editor full window", async ({
+        page,
+    }) => {
+        const firstUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`;
+        const secondUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file2.txt"))}`;
+        await page.goto(firstUrl);
+        await page
+            .getByRole("button", { name: "Pin file", exact: true })
+            .click();
+        await page.goto(secondUrl);
+        await page
+            .getByRole("button", { name: "Pin file", exact: true })
+            .click();
+        await page
+            .getByRole("button", { name: "Expand editor to full window" })
+            .click();
+
+        const panel = page.getByRole("article", { name: "Editing panel" });
+        const pins = panel.getByRole("navigation", {
+            name: "Editor pinned files",
+        });
+        const firstLink = pins.getByRole("link", {
+            name: "file1.txt",
+            exact: true,
+        });
+        const secondLink = pins.getByRole("link", {
+            name: "file2.txt",
+            exact: true,
+        });
+        // Both destinations must be visible on a single row above the editing actions.
+        await expect(firstLink).toBeVisible();
+        await expect(secondLink).toBeVisible();
+        const firstBox = await firstLink.boundingBox();
+        const secondBox = await secondLink.boundingBox();
+        const saveBox = await panel
+            .getByRole("button", { name: "Save file" })
+            .boundingBox();
+        if (!firstBox || !secondBox || !saveBox) {
+            throw new Error("Expected pinned row and toolbar measurements");
+        }
+        expect(firstBox.y).toBe(secondBox.y);
+        expect(secondBox.x).toBeGreaterThan(firstBox.x);
+        expect(firstBox.y + firstBox.height).toBeLessThanOrEqual(saveBox.y);
+
+        await firstLink.click();
+        // Navigating must replace the file content while retaining the full-window presentation.
+        await expect(page).toHaveURL(firstUrl);
+        await expect(panel.getByLabel("File editor")).toHaveText("content1");
+        await expect(firstLink).toHaveAttribute("aria-current", "page");
+        await expect(panel).toHaveCSS("position", "fixed");
+        await expect(
+            panel.getByRole("button", { name: "Restore editor size" }),
+        ).toBeVisible();
+
+        await secondLink.click();
+        // Switching back proves the row remains usable after the keyed editor remounts.
+        await expect(page).toHaveURL(secondUrl);
+        await expect(panel.getByLabel("File editor")).toHaveText("content2");
+        await expect(secondLink).toHaveAttribute("aria-current", "page");
+        await expect(panel).toHaveCSS("position", "fixed");
+        await panel
+            .getByRole("button", { name: "Restore editor size" })
+            .click();
+        // Restoring the editor returns pinned navigation to the normal sidebar presentation.
+        await expect(panel).toHaveCSS("position", "static");
+        await expect(pins).toHaveCount(0);
+    });
+
+    test("closes full-window pins with the close button and middle click", async ({
+        page,
+    }) => {
+        const firstUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`;
+        const secondUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file2.txt"))}`;
+        await page.goto(firstUrl);
+        await page
+            .getByRole("button", { name: "Pin file", exact: true })
+            .click();
+        await page.goto(secondUrl);
+        await page
+            .getByRole("button", { name: "Pin file", exact: true })
+            .click();
+        await page
+            .getByRole("button", { name: "Expand editor to full window" })
+            .click();
+
+        const panel = page.getByRole("article", { name: "Editing panel" });
+        const pins = panel.getByRole("navigation", {
+            name: "Editor pinned files",
+        });
+        await pins
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click({ button: "middle" });
+        // Middle-click must unpin the destination without navigating or opening another browser tab.
+        await expect(
+            pins.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toHaveCount(0);
+        await expect(page).toHaveURL(secondUrl);
+        expect(page.context().pages()).toHaveLength(1);
+        await expect(panel).toHaveCSS("position", "fixed");
+
+        const editor = panel.getByLabel("File editor");
+        await editor.click();
+        await page.keyboard.press("ControlOrMeta+End");
+        await page.keyboard.type(" draft");
+        await pins
+            .getByRole("button", {
+                name: "Close pinned file file2.txt",
+                exact: true,
+            })
+            .click();
+        // Closing the active pin must preserve its unsaved contents and expanded editor.
+        await expect(pins).toHaveCount(0);
+        await expect(editor).toHaveText("content2 draft");
+        await expect(page).toHaveURL(secondUrl);
+        await expect(panel).toHaveCSS("position", "fixed");
+        await expect(
+            panel.getByRole("button", { name: "Pin file", exact: true }),
+        ).toBeVisible();
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        // Both closing gestures must persist removal in the shared user state.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ pinnedFiles: [] });
+    });
+
     test("pins a file on its first edit and explains that in the pin tooltip", async ({
         page,
     }) => {

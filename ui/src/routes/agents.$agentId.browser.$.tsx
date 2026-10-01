@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { z } from "zod";
 import {
     type ApiClient,
@@ -375,6 +375,8 @@ function FileBrowser() {
     const navigate = Route.useNavigate();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
     const search = Route.useSearch();
+    // Keep the presentation mode while keyed editors reset their per-file buffers.
+    const [isEditorFullWindow, setIsEditorFullWindow] = useState(false);
     useBrowserRefreshTriggers();
 
     const parentPath = getImmediateParentPath(path);
@@ -493,6 +495,10 @@ function FileBrowser() {
             ) : activeView === "view" && editable ? (
                 <FileEditView
                     key={`${agentId}:${lsResult.path}`}
+                    isFullWindow={isEditorFullWindow}
+                    onToggleFullWindow={() =>
+                        setIsEditorFullWindow((current) => !current)
+                    }
                     agent={agent}
                     fileName={fileName}
                     filePath={lsResult.path}
