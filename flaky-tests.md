@@ -1,5 +1,6 @@
 # Flaky tests
 
+- 2026-10-01 `pn test` Playwright (whole-row dragging): `pinned-files.spec.ts` failed in `reorders editor pins horizontally without resetting the draft` when the next keyboard move read the DOM before the prior optimistic Query update repainted. The workflow passed three focused repetitions after waiting for the committed row position between gestures.
 - 2026-10-01 `pn test` Playwright (drag ordering): `pinned-files.spec.ts` failed in `reorders pins from the keyboard and cancels without writing` because Escape raced dnd-kit's deferred keyboard listener attachment. The focused rerun passed after synchronizing pickup with browser animation frames; keyboard workflows now share that synchronization.
 - 2026-10-01 `pn test` integration (drag ordering): `remote-cp.test.ts` failed in `cancels CLI copy on interruption and removes incomplete output` because `.result.bin.redoor-upload-11760459535884571767` still existed at the cleanup assertion. The file passed on immediate rerun.
 - 2026-10-01 `pn test` integration (full-window pinned editor work): `remote-cp.test.ts` failed in `cancels CLI copy on interruption and removes incomplete output` because `.result.bin.redoor-upload-3657595513438930064` still existed at the cleanup assertion. The exact test passed on immediate rerun.

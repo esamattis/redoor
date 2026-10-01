@@ -13,7 +13,7 @@ export async function waitForKeyboardSensor(page: Page) {
 }
 
 /** Drives the mouse sensor across its distance threshold instead of using native drag-and-drop. */
-export async function dragReorderHandle(
+export async function dragReorderRow(
     page: Page,
     handle: Locator,
     target: Locator,
@@ -39,7 +39,7 @@ export async function dragReorderHandle(
     await page.mouse.down();
     await page.mouse.move(startX + 8, startY);
     // The drag listeners attach after activation, so wait before the real move.
-    await expect(handle).toHaveAttribute("aria-pressed", "true");
+    await expect(handle).toHaveAttribute("data-dragging", "true");
     const steps = 24;
     for (let step = 1; step <= steps; step += 1) {
         await page.mouse.move(
@@ -66,9 +66,15 @@ export async function keyboardReorder(
         times: number;
     },
 ) {
+    let position = await handle.evaluate((element) => {
+        const row = element.closest("li");
+        return row?.parentElement
+            ? Array.from(row.parentElement.children).indexOf(row) + 1
+            : 0;
+    });
     await handle.focus();
     await page.keyboard.press("Space");
-    await expect(handle).toHaveAttribute("aria-pressed", "true");
+    await expect(handle).toHaveAttribute("data-dragging", "true");
     // Wait for pickup feedback before sending keys to the asynchronously attached sensor.
     const announcement = page
         .getByLabel(/reorder announcement$/)
@@ -77,11 +83,22 @@ export async function keyboardReorder(
     await expect(announcement).toBeAttached();
     await waitForKeyboardSensor(page);
     for (let step = 0; step < move.times; step += 1) {
-        const previous = await announcement.textContent();
+        position += move.key === "ArrowUp" || move.key === "ArrowLeft" ? -1 : 1;
         await page.keyboard.press(move.key);
         // Wait for the destination preview so dropping cannot race its collision update.
-        await expect(announcement).not.toHaveText(previous ?? "");
+        await expect(announcement).toContainText(`position ${position} of`);
     }
     await page.keyboard.press("Space");
-    await expect(handle).not.toHaveAttribute("aria-pressed", "true");
+    await expect(handle).toHaveAttribute("data-dragging", "false");
+    // Query subscribers repaint after the drag state resets; the next gesture needs the committed order.
+    await expect
+        .poll(() =>
+            handle.evaluate((element) => {
+                const row = element.closest("li");
+                return row?.parentElement
+                    ? Array.from(row.parentElement.children).indexOf(row) + 1
+                    : 0;
+            }),
+        )
+        .toBe(position);
 }

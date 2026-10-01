@@ -12,11 +12,7 @@ import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { SideMenu } from "#ui/components/side-menu";
 import { AddButton } from "#ui/components/add-button";
 import { IconButton } from "#ui/components/icon-button";
-import {
-    SortableDragHandle,
-    SortableItem,
-    SortableList,
-} from "#ui/components/sortable-list";
+import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     commitDeviceOrder,
@@ -193,6 +189,7 @@ function DeviceBlock(props: {
         <SortableItem id={props.agent.id}>
             {(item) => (
                 <li
+                    {...item.dragProps}
                     ref={item.setNodeRef}
                     style={item.style}
                     aria-label={`Device ${props.agent.name}`}
@@ -205,9 +202,6 @@ function DeviceBlock(props: {
                     <div
                         className={`group flex items-center rounded-md border text-sm ${isActive ? "border-blue-500/40 bg-blue-500/10" : "border-transparent hover:bg-white/5"}`}
                     >
-                        <SortableDragHandle
-                            label={`Reorder device ${props.agent.name}`}
-                        />
                         <Link
                             to={target}
                             onClick={props.onClose}
@@ -325,6 +319,8 @@ function BookmarkRow(props: {
         <SortableItem id={getBookmarkKey(props.bookmark)}>
             {(item) => (
                 <li
+                    {...item.dragProps}
+                    aria-label={`Bookmark ${props.bookmark.name} on ${props.agent.name}`}
                     ref={item.setNodeRef}
                     style={item.style}
                     className={`group flex w-full min-w-0 items-center rounded-md ${
@@ -339,9 +335,6 @@ function BookmarkRow(props: {
                             : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
                     }`}
                 >
-                    <SortableDragHandle
-                        label={`Reorder bookmark ${props.bookmark.name} on ${props.agent.name}`}
-                    />
                     <Tooltip
                         className="min-w-0 flex-1"
                         content={`Open ${props.bookmark.path}`}

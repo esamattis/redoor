@@ -4,11 +4,7 @@ import { X } from "lucide-react";
 
 import { getBrowserUrl } from "#ui/api-client";
 import { IconButton } from "#ui/components/icon-button";
-import {
-    SortableDragHandle,
-    SortableItem,
-    SortableList,
-} from "#ui/components/sortable-list";
+import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     getPinnedFileKey,
@@ -99,6 +95,8 @@ function EditorPin(props: {
         <SortableItem id={getPinnedFileKey(props.file)}>
             {(item) => (
                 <li
+                    {...item.dragProps}
+                    aria-label={`Pinned file ${props.file.name} on ${props.file.agentName}`}
                     ref={item.setNodeRef}
                     style={item.style}
                     className={`flex items-center rounded ${
@@ -120,9 +118,6 @@ function EditorPin(props: {
                         }
                     }}
                 >
-                    <SortableDragHandle
-                        label={`Reorder pinned file ${props.file.name} on ${props.file.agentName}`}
-                    />
                     <Tooltip
                         content={`Open ${props.file.path} on ${props.file.agentName}`}
                     >

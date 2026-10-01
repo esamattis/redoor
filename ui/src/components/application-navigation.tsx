@@ -17,11 +17,7 @@ import { IconButton } from "#ui/components/icon-button";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { SidebarModeToggle } from "#ui/components/sidebar-mode-toggle";
 import { SideMenu } from "#ui/components/side-menu";
-import {
-    SortableDragHandle,
-    SortableItem,
-    SortableList,
-} from "#ui/components/sortable-list";
+import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions, serverInfoQueryOptions } from "#ui/queries";
 import {
@@ -275,7 +271,7 @@ function PinnedFiles(props: {
     );
 }
 
-/** Keeps the grip outside the link so reordering cannot be mistaken for navigation. */
+/** Lets the row sort after a deliberate drag while a normal click still opens the file. */
 function PinnedFileRow(props: {
     file: PinnedFile;
     pathname: string;
@@ -290,6 +286,8 @@ function PinnedFileRow(props: {
         <SortableItem id={itemId}>
             {(item) => (
                 <li
+                    {...item.dragProps}
+                    aria-label={`Pinned file ${props.file.name} on ${props.deviceName}`}
                     ref={item.setNodeRef}
                     style={item.style}
                     className={`group flex w-full min-w-0 items-start rounded ${
@@ -304,9 +302,6 @@ function PinnedFileRow(props: {
                             : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
                     }`}
                 >
-                    <SortableDragHandle
-                        label={`Reorder pinned file ${props.file.name} on ${props.deviceName}`}
-                    />
                     <Tooltip
                         className="min-w-0 flex-1"
                         content={`Open ${props.file.path}`}

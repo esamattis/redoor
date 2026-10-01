@@ -22,18 +22,8 @@ import {
     verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS, type Transform } from "@dnd-kit/utilities";
-import { GripVertical } from "lucide-react";
-
-import { IconButton } from "#ui/components/icon-button";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import type { ItemMove } from "#ui/utils/reorder";
-
-const reorderTooltip = {
-    vertical:
-        "Drag to reorder. Press Space to pick up, Up or Down to move, Space to drop, and Escape to cancel.",
-    horizontal:
-        "Drag to reorder. Press Space to pick up, Left or Right to move, Space to drop, and Escape to cancel.",
-} as const;
 
 let activeSortableDrags = 0;
 
@@ -47,6 +37,7 @@ type SortableOrientation = "vertical" | "horizontal";
 /** Bindings a row needs without learning about sensors or user state. */
 export type SortableItemState = {
     setNodeRef: (element: HTMLElement | null) => void;
+    dragProps: React.HTMLAttributes<HTMLElement> & { "data-dragging": boolean };
     style: React.CSSProperties;
     isDragging: boolean;
     isOver: boolean;
@@ -55,24 +46,11 @@ export type SortableItemState = {
 type SortableListContextValue = {
     orientation: SortableOrientation;
     canReorder: boolean;
-    registerHandle: (itemId: string, element: HTMLButtonElement | null) => void;
+    registerHandle: (itemId: string, element: HTMLElement | null) => void;
 };
 
 const SortableListContext =
     React.createContext<SortableListContextValue | null>(null);
-
-type ActivatorBindings = {
-    itemId: string;
-    setActivatorNodeRef: (element: HTMLElement | null) => void;
-    attributes: React.HTMLAttributes<HTMLButtonElement>;
-    onKeyDown?: (event: React.SyntheticEvent) => void;
-    onMouseDown?: (event: React.SyntheticEvent) => void;
-    onTouchStart?: (event: React.SyntheticEvent) => void;
-};
-
-const SortableActivatorContext = React.createContext<ActivatorBindings | null>(
-    null,
-);
 
 /** Keeps a pointer drag from selecting a row after the dragged row has left the list. */
 function visibleBounds(element: HTMLElement) {
@@ -237,11 +215,13 @@ function collectionAnnouncements(
 /** Tracks active child sorting even when a drawer's Escape listener runs first. */
 function useDragSession() {
     const draggingRef = React.useRef(false);
+    const suppressClickRef = React.useRef(false);
     const markActive = React.useCallback(() => {
         if (draggingRef.current) {
             return;
         }
         draggingRef.current = true;
+        suppressClickRef.current = true;
         activeSortableDrags += 1;
     }, []);
     const markInactive = React.useCallback(() => {
@@ -252,6 +232,42 @@ function useDragSession() {
         activeSortableDrags -= 1;
     }, []);
     React.useEffect(() => markInactive, [markInactive]);
+    React.useEffect(() => {
+        // Register before sensors: dnd-kit stops click propagation but does not cancel native links.
+        const suppressDragClick = (event: MouseEvent) => {
+            if (suppressClickRef.current) {
+                event.preventDefault();
+                suppressClickRef.current = false;
+            }
+        };
+        const resetForNextInteraction = () => {
+            if (!draggingRef.current) {
+                suppressClickRef.current = false;
+            }
+        };
+        document.addEventListener("click", suppressDragClick, true);
+        document.addEventListener("mousedown", resetForNextInteraction, true);
+        document.addEventListener("touchstart", resetForNextInteraction, true);
+        document.addEventListener("keydown", resetForNextInteraction, true);
+        return () => {
+            document.removeEventListener("click", suppressDragClick, true);
+            document.removeEventListener(
+                "mousedown",
+                resetForNextInteraction,
+                true,
+            );
+            document.removeEventListener(
+                "touchstart",
+                resetForNextInteraction,
+                true,
+            );
+            document.removeEventListener(
+                "keydown",
+                resetForNextInteraction,
+                true,
+            );
+        };
+    }, []);
     return { markActive, markInactive };
 }
 
@@ -313,7 +329,7 @@ export function SortableList(props: {
     const [announcement, setAnnouncement] = React.useState("");
     const [libraryContainer, setLibraryContainer] =
         React.useState<HTMLElement | null>(null);
-    const handles = React.useRef(new Map<string, HTMLButtonElement>());
+    const handles = React.useRef(new Map<string, HTMLElement>());
     const pendingFocusId = React.useRef<string | null>(null);
     const itemIdsRef = React.useRef(props.itemIds);
     const dragIdsRef = useDragScope(props.itemIds);
@@ -393,7 +409,7 @@ export function SortableList(props: {
         onMoveRef.current({ activeId: active, overId: over });
     };
     const registerHandle = React.useCallback(
-        (itemIdToRegister: string, element: HTMLButtonElement | null) => {
+        (itemIdToRegister: string, element: HTMLElement | null) => {
             if (element) {
                 handles.current.set(itemIdToRegister, element);
                 return;
@@ -500,101 +516,64 @@ export function SortableList(props: {
     );
 }
 
-/** Adapts library activators to the shared button's React event contract. */
-function bindListener(
-    listeners: ReturnType<typeof useSortable>["listeners"],
-    name: "onKeyDown" | "onMouseDown" | "onTouchStart",
-) {
-    const handler = listeners?.[name];
-    if (!handler) {
-        return undefined;
-    }
-    return (event: React.SyntheticEvent) => {
-        handler(event);
-    };
-}
-
-/** Exposes only grip activation so the row's ordinary controls remain independent. */
-function activatorFromSortable(
-    itemId: string,
-    sortable: ReturnType<typeof useSortable>,
-): ActivatorBindings {
-    return {
-        itemId,
-        setActivatorNodeRef: sortable.setActivatorNodeRef,
-        attributes: sortable.attributes,
-        onKeyDown: bindListener(sortable.listeners, "onKeyDown"),
-        onMouseDown: bindListener(sortable.listeners, "onMouseDown"),
-        onTouchStart: bindListener(sortable.listeners, "onTouchStart"),
-    };
-}
-
 /**
- * Connects an existing row to sortable measurement without taking over its markup.
- * The render callback keeps links and buttons outside the grip.
+ * Makes the whole row sortable without changing its list semantics or ordinary clicks.
+ * Keyboard sorting starts only with the row itself focused, leaving child controls alone.
  */
 export function SortableItem(props: {
     id: string;
     children: (item: SortableItemState) => React.ReactNode;
 }) {
+    const list = React.useContext(SortableListContext);
     const reducedMotion = usePrefersReducedMotion();
     const sortable = useSortable({
         id: props.id,
+        disabled: !list?.canReorder,
         transition: reducedMotion ? null : undefined,
     });
-    const activator = activatorFromSortable(props.id, sortable);
     const item: SortableItemState = {
-        setNodeRef: sortable.setNodeRef,
-        style: sortableStyle(
-            sortable.transform,
-            sortable.transition,
-            sortable.isDragging,
-        ),
+        setNodeRef: (element) => {
+            sortable.setNodeRef(element);
+            sortable.setActivatorNodeRef(element);
+            list?.registerHandle(props.id, element);
+        },
+        dragProps: {
+            tabIndex: list?.canReorder ? 0 : undefined,
+            "aria-roledescription": list?.canReorder ? "sortable" : undefined,
+            "aria-describedby": sortable.attributes["aria-describedby"],
+            "data-dragging": sortable.isDragging,
+            onMouseDown: (event) => {
+                sortable.listeners?.onMouseDown?.(event);
+            },
+            onTouchStart: (event) => {
+                sortable.listeners?.onTouchStart?.(event);
+            },
+            onDragStart: (event) => event.preventDefault(),
+            onKeyDown: (event) => {
+                if (
+                    event.target !== event.currentTarget ||
+                    shouldIgnoreKeyboardShortcut(event.nativeEvent)
+                ) {
+                    return;
+                }
+                sortable.listeners?.onKeyDown?.(event);
+            },
+        },
+        style: {
+            ...sortableStyle(
+                sortable.transform,
+                sortable.transition,
+                sortable.isDragging,
+            ),
+            cursor: list?.canReorder
+                ? sortable.isDragging
+                    ? "grabbing"
+                    : "grab"
+                : undefined,
+            userSelect: list?.canReorder ? "none" : undefined,
+        },
         isDragging: sortable.isDragging,
         isOver: sortable.isOver,
     };
-    return (
-        <SortableActivatorContext.Provider value={activator}>
-            {props.children(item)}
-        </SortableActivatorContext.Provider>
-    );
-}
-
-/**
- * Starts sorting only from the grip so links and remove buttons keep their own clicks.
- * Hidden below two items so a lone row does not advertise a move it cannot make.
- */
-export function SortableDragHandle(props: { label: string }) {
-    const list = React.useContext(SortableListContext);
-    const activator = React.useContext(SortableActivatorContext);
-    if (!list || !activator || !list.canReorder) {
-        return null;
-    }
-    return (
-        <IconButton
-            ref={(element) => {
-                activator.setActivatorNodeRef(element);
-                list.registerHandle(activator.itemId, element);
-            }}
-            type="button"
-            label={props.label}
-            tooltip={reorderTooltip[list.orientation]}
-            className="min-h-8 min-w-8 shrink-0 touch-none rounded text-slate-500 hover:bg-white/10 hover:text-slate-200"
-            {...activator.attributes}
-            onKeyDown={(event) => {
-                if (shouldIgnoreKeyboardShortcut(event.nativeEvent)) {
-                    return;
-                }
-                activator.onKeyDown?.(event);
-            }}
-            onMouseDown={(event) => {
-                activator.onMouseDown?.(event);
-            }}
-            onTouchStart={(event) => {
-                activator.onTouchStart?.(event);
-            }}
-        >
-            <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
-        </IconButton>
-    );
+    return props.children(item);
 }

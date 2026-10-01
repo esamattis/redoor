@@ -1,7 +1,7 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
-    dragReorderHandle,
+    dragReorderRow,
     keyboardReorder,
     waitForKeyboardSensor,
 } from "./reorder";
@@ -382,14 +382,19 @@ test.describe.serial("Pinned files", () => {
             );
         // Three entries prove insertion shifts the middle item instead of swapping two.
         await expect.poll(linkNames).toEqual(names);
-        const lastHandle = pinnedFiles.getByRole("button", {
-            name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+        const lastHandle = pinnedFiles.getByRole("listitem", {
+            name: `Pinned file file3.txt on ${ctx.agentName}`,
         });
         await lastHandle.focus();
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Drag to reorder. Press Space to pick up, Up or Down to move, Space to drop, and Escape to cancel.",
+        // The row itself is the keyboard sorting surface, with no separate grip button.
+        await expect(lastHandle).toHaveAttribute(
+            "aria-roledescription",
+            "sortable",
         );
-        await dragReorderHandle(page, lastHandle, links.first());
+        await expect(
+            lastHandle.getByRole("button", { name: /Reorder/ }),
+        ).toHaveCount(0);
+        await dragReorderRow(page, lastHandle, links.first());
         await expect
             .poll(linkNames)
             .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
@@ -481,10 +486,10 @@ test.describe.serial("Pinned files", () => {
         const pins = panel.getByRole("navigation", {
             name: "Editor pinned files",
         });
-        await dragReorderHandle(
+        await dragReorderRow(
             page,
-            pins.getByRole("button", {
-                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            pins.getByRole("listitem", {
+                name: `Pinned file file3.txt on ${ctx.agentName}`,
             }),
             pins.getByRole("link", { name: "file2.txt", exact: true }),
         );
@@ -496,15 +501,15 @@ test.describe.serial("Pinned files", () => {
         ]);
         await keyboardReorder(
             page,
-            pins.getByRole("button", {
-                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            pins.getByRole("listitem", {
+                name: `Pinned file file3.txt on ${ctx.agentName}`,
             }),
             { key: "ArrowRight", times: 1 },
         );
         await keyboardReorder(
             page,
-            pins.getByRole("button", {
-                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            pins.getByRole("listitem", {
+                name: `Pinned file file3.txt on ${ctx.agentName}`,
             }),
             { key: "ArrowLeft", times: 1 },
         );
@@ -555,8 +560,8 @@ test.describe.serial("Pinned files", () => {
         const pinnedFiles = page
             .getByRole("navigation", { name: "Application" })
             .getByRole("list", { name: "Pinned files" });
-        const handle = pinnedFiles.getByRole("button", {
-            name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+        const handle = pinnedFiles.getByRole("listitem", {
+            name: `Pinned file file3.txt on ${ctx.agentName}`,
         });
         let puts = 0;
         page.on("request", (request) => {
@@ -569,13 +574,13 @@ test.describe.serial("Pinned files", () => {
         });
         await handle.focus();
         await page.keyboard.press("Space");
-        await expect(handle).toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toHaveAttribute("data-dragging", "true");
         await expect(
             page.getByLabel("Pinned files reorder announcement"),
         ).toContainText("Picked up file3.txt");
         await waitForKeyboardSensor(page);
         await page.keyboard.press("Escape");
-        await expect(handle).not.toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toHaveAttribute("data-dragging", "false");
         await expect(handle).toBeFocused();
         const linkNames = () =>
             pinnedFiles

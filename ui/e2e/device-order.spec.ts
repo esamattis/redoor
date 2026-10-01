@@ -10,7 +10,7 @@ import {
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
-import { dragReorderHandle, waitForKeyboardSensor } from "./reorder";
+import { dragReorderRow, waitForKeyboardSensor } from "./reorder";
 
 test.describe.serial("Device order", () => {
     let ctx: TestContext;
@@ -112,11 +112,9 @@ test.describe.serial("Device order", () => {
         await expect(
             tall.getByRole("link", { name: "mark-7.txt" }),
         ).toBeVisible();
-        await dragReorderHandle(
+        await dragReorderRow(
             page,
-            devices
-                .last()
-                .getByRole("button", { name: `Reorder device ${extraName}` }),
+            devices.last(),
             devices.nth(0).getByRole("link").first(),
         );
         await expect(devices.nth(0)).toHaveAccessibleName(
@@ -161,11 +159,11 @@ test.describe.serial("Device order", () => {
         await trigger.click();
         const dialog = page.getByRole("dialog", { name: "Device menu" });
         const handle = dialog
-            .getByRole("button", { name: /^Reorder device / })
+            .getByRole("listitem", { name: /^Device / })
             .first();
         await handle.focus();
         await page.keyboard.press("Space");
-        await expect(handle).toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toHaveAttribute("data-dragging", "true");
         // The keyboard sensor attaches after pickup, so wait for its announcement before cancelling.
         await expect(
             dialog.getByLabel("Devices reorder announcement"),
@@ -174,7 +172,7 @@ test.describe.serial("Device order", () => {
         await page.keyboard.press("Escape");
         // The first Escape cancels sorting and must leave the modal open.
         await expect(dialog).toBeVisible();
-        await expect(handle).not.toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toHaveAttribute("data-dragging", "false");
         await page.keyboard.press("Escape");
         await expect(dialog).toBeHidden();
         await expect(trigger).toBeFocused();

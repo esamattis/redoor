@@ -2,6 +2,15 @@
 
 ## Goal
 
+### Follow-up interaction decision
+
+After completing and verifying the initial grip-based implementation, remove the
+drag handles. Pins, editor pins, devices, and bookmarks are draggable across their
+row surfaces, including links. Normal clicks, close/remove actions, middle-click,
+and nested bookmark ownership remain independent of sorting. Focus the sortable
+row itself for keyboard pickup, movement, drop, and cancellation. This decision
+supersedes the grip-specific interaction details below.
+
 Let users arrange their navigation by dragging:
 
 1. Pinned files in the left application panel.

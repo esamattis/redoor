@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import path from "node:path";
-import { dragReorderHandle } from "./reorder";
+import { dragReorderRow } from "./reorder";
 import { ApiClient } from "#ui/api-client";
 import {
     setupTestDir,
@@ -241,8 +241,8 @@ test.describe.serial("Bookmarks", () => {
                 puts += 1;
             }
         });
-        const handle = firstBookmarks.getByRole("button", {
-            name: `Reorder bookmark ${thirdName} on ${ctx.agentName}`,
+        const handle = firstBookmarks.getByRole("listitem", {
+            name: `Bookmark ${thirdName} on ${ctx.agentName}`,
         });
         const otherList = secondBookmarks;
         await page.mouse.move(0, 0);
@@ -257,7 +257,7 @@ test.describe.serial("Bookmarks", () => {
         );
         await page.mouse.down();
         await page.mouse.move(outside.x + 8, outside.y + 8, { steps: 12 });
-        await expect(handle).toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toHaveAttribute("data-dragging", "true");
         await page.mouse.up();
         // A drop on another device must cancel instead of changing ownership.
         await expect(firstBookmarks.getByRole("link")).toHaveText([
@@ -267,7 +267,7 @@ test.describe.serial("Bookmarks", () => {
         ]);
         expect(puts).toBe(0);
 
-        await dragReorderHandle(
+        await dragReorderRow(
             page,
             handle,
             firstBookmarks.getByRole("link", {

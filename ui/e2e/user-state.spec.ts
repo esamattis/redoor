@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
-import { dragReorderHandle } from "./reorder";
+import { dragReorderRow } from "./reorder";
 import { ApiClient } from "#ui/api-client";
 import {
     setupTestDir,
@@ -279,10 +279,10 @@ test.describe.serial("User state", () => {
         const pinnedFiles = page
             .getByRole("navigation", { name: "Application" })
             .getByRole("list", { name: "Pinned files" });
-        await dragReorderHandle(
+        await dragReorderRow(
             page,
-            pinnedFiles.getByRole("button", {
-                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            pinnedFiles.getByRole("listitem", {
+                name: `Pinned file file3.txt on ${ctx.agentName}`,
             }),
             pinnedFiles.getByRole("link", { name: "file1.txt", exact: true }),
         );
