@@ -36,7 +36,7 @@ export function BrowserPageHeader(props: {
     viewToggle: React.ReactNode;
 }) {
     return (
-        <header className="mb-4">
+        <header>
             <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
                 <div className="flex w-max min-w-full items-center gap-3">
                     <Tooltip content="Open device home directory">
@@ -60,7 +60,7 @@ export function BrowserPageHeader(props: {
                 </div>
             </div>
             {props.viewToggle ? (
-                <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800">
+                <div className="-mx-2 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800 px-2 lg:-mx-4 lg:px-4">
                     {props.viewToggle}
                 </div>
             ) : null}

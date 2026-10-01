@@ -162,7 +162,7 @@ export function FileList(props: {
     };
 
     return (
-        <div className="overflow-hidden rounded-lg border border-slate-800 bg-[#11141b]">
+        <div className="overflow-hidden bg-[#11141b]">
             {props.actions}
             <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800 bg-slate-900/35 p-1.5 sm:gap-2 sm:p-2">
                 <label className="relative min-w-0 flex-1">

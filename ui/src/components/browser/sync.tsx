@@ -6,6 +6,7 @@ import {
     FolderInput,
     GitCompareArrows,
     LoaderCircle,
+    RefreshCw,
 } from "lucide-react";
 import type { ApiClient, Agent, CopyExistingMode } from "#ui/api-client";
 import { Button } from "#ui/components/button";
@@ -720,7 +721,7 @@ function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
         return (
             <p
                 role="status"
-                className="border-t border-slate-800 p-6 text-sm text-emerald-300 md:p-8"
+                className="border-t border-slate-800 p-4 text-sm text-emerald-300 sm:p-5"
             >
                 {workspace.transferLabel} completed successfully.{" "}
                 {formatSize(workspace.transfer.transferred_bytes)} transferred
@@ -737,7 +738,7 @@ function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
         return (
             <p
                 role="alert"
-                className="border-t border-slate-800 p-6 text-sm text-red-300 md:p-8"
+                className="border-t border-slate-800 p-4 text-sm text-red-300 sm:p-5"
             >
                 {workspace.transferLabel} failed:{" "}
                 {workspace.transfer?.state === "errored"
@@ -766,7 +767,7 @@ function SyncDiffSection(props: { workspace: SyncWorkspace }) {
         return (
             <p
                 role="alert"
-                className="border-t border-slate-800 p-6 text-sm text-red-300 md:p-8"
+                className="border-t border-slate-800 p-4 text-sm text-red-300 sm:p-5"
             >
                 {getErrorMessage(
                     workspace.diffMutation.error,
@@ -781,7 +782,7 @@ function SyncDiffSection(props: { workspace: SyncWorkspace }) {
     return (
         <section
             aria-label="File diff"
-            className="file-diff-host w-full min-w-0 overflow-x-auto border-t border-slate-800 p-4 md:p-6"
+            className="file-diff-host w-full min-w-0 overflow-x-auto border-t border-slate-800 p-4 sm:p-5"
         >
             <UnifiedDiff
                 unifiedDiff={workspace.diffMutation.data.unified_diff}
@@ -818,13 +819,23 @@ export function SyncView(props: {
 
     return (
         <BrowserViewCard>
-            <header className="border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
-                    Sync {entryLabel}
-                </p>
-                <h1 className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl">
-                    {props.sourcePath.split("/").filter(Boolean).pop() ?? "/"}
-                </h1>
+            <header className="border-b border-slate-800 p-4 sm:p-5">
+                <div className="flex min-w-0 items-start gap-2">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center text-blue-400">
+                        <RefreshCw className="h-5 w-5" aria-hidden="true" />
+                    </div>
+                    <div className="min-w-0 flex-1 pt-0.5">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                            Sync {entryLabel}
+                        </p>
+                        <h1 className="break-all text-lg font-semibold text-slate-50">
+                            {props.sourcePath
+                                .split("/")
+                                .filter(Boolean)
+                                .pop() ?? "/"}
+                        </h1>
+                    </div>
+                </div>
                 <p className="mt-3 max-w-3xl text-sm text-slate-400">
                     {props.entryType === "file"
                         ? "Choose an absolute path or use ~ for the home directory on a connected device, then copy, move, or compare in either direction."
@@ -832,7 +843,7 @@ export function SyncView(props: {
                 </p>
             </header>
 
-            <div className="grid gap-6 p-6 md:p-8">
+            <div className="grid gap-4 p-4 sm:p-5">
                 <SyncDirectionFields
                     workspace={workspace}
                     currentAgent={props.sourceAgent}

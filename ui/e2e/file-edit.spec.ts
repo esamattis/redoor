@@ -1035,10 +1035,14 @@ gamma
         await editor.focus();
         await expect(editor).toBeFocused();
         // A focused editor must show the same blue frame as a focused shell.
-        await expect(editorViewport).toHaveCSS(
-            "border-color",
-            "oklch(0.623 0.214 259.815)",
-        );
+        await expect
+            .poll(() =>
+                editorViewport.evaluate(
+                    (element) =>
+                        getComputedStyle(element, "::after").borderColor,
+                ),
+            )
+            .toBe("oklch(0.623 0.214 259.815)");
 
         await page.keyboard.press("ControlOrMeta+a");
         await page.keyboard.type("t");
@@ -1078,10 +1082,14 @@ gamma
         await page.keyboard.press("Alt+e");
         // Alt+e from the terminal must return keyboard ownership to CodeMirror.
         await expect(editor).toBeFocused();
-        await expect(editorViewport).toHaveCSS(
-            "border-color",
-            "oklch(0.623 0.214 259.815)",
-        );
+        await expect
+            .poll(() =>
+                editorViewport.evaluate(
+                    (element) =>
+                        getComputedStyle(element, "::after").borderColor,
+                ),
+            )
+            .toBe("oklch(0.623 0.214 259.815)");
         await expectEditorText(editor, "t");
     });
 });

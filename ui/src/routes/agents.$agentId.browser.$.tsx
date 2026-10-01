@@ -357,11 +357,11 @@ function BrowserRouteShell(props: {
                 startEditingPath={props.startEditingPath}
             />
             <div
-                className={`w-full ${
+                className={
                     props.fillAvailableHeight === true
-                        ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-                        : ""
-                }`}
+                        ? "-mx-2 -mb-2 flex min-h-0 flex-1 flex-col overflow-hidden lg:-mx-4 lg:-mb-4"
+                        : "-mx-2 -mb-2 lg:-mx-4 lg:-mb-4"
+                }
             >
                 {props.children}
             </div>

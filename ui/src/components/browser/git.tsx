@@ -73,21 +73,27 @@ function GitHeader(props: {
     description: string;
 }) {
     return (
-        <header className="border-b border-slate-800 bg-linear-to-br from-emerald-500/10 via-transparent to-transparent p-4 sm:p-5">
-            <p className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-400">
-                <GitBranch className="h-4 w-4" aria-hidden="true" />
-                {props.reference}
-            </p>
-            <h1 className="break-all text-xl font-bold tracking-tight text-slate-50 sm:text-2xl">
-                {props.title}
-            </h1>
-            <p className="mt-1.5 max-w-3xl text-sm text-slate-400">
+        <header className="border-b border-slate-800 p-4 sm:p-5">
+            <div className="flex min-w-0 items-start gap-2">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center text-blue-400">
+                    <GitBranch className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1 pt-0.5">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                        {props.reference}
+                    </p>
+                    <h1 className="break-all text-lg font-semibold text-slate-50">
+                        {props.title}
+                    </h1>
+                </div>
+            </div>
+            <p className="mt-3 max-w-3xl text-sm text-slate-400">
                 {props.description}
             </p>
             <Link
                 to={props.agent.getBrowserUrl(props.repositoryRoot)}
                 search={{ view: "git" }}
-                className="mt-1.5 block break-all font-mono text-xs text-blue-300 hover:underline"
+                className="mt-3 block break-all font-mono text-sm text-blue-300 hover:underline"
             >
                 Repository: {props.repositoryRoot}
             </Link>
@@ -279,7 +285,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                         : "Changes below this directory, compared with HEAD and the index."
                 }
             />
-            <div className="grid gap-4 p-3 sm:p-5">
+            <div className="grid gap-4 p-4 sm:p-5">
                 {status.entries.length === 0 ? (
                     <div
                         role="status"
@@ -444,28 +450,33 @@ export function GitFileView(props: {
             : null;
     return (
         <BrowserViewCard>
-            <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-800 px-3 py-1.5 sm:px-4">
-                <div className="flex min-w-0 items-center gap-2 text-sm text-slate-300">
-                    <GitBranch
-                        className="h-4 w-4 shrink-0 text-emerald-400"
-                        aria-hidden="true"
-                    />
-                    <span className="min-w-0">
-                        <span className="block truncate font-medium">
-                            {mode === "staged"
-                                ? "Staged changes"
-                                : "All changes"}
-                        </span>
-                        {repositoryRoot === null ? null : (
-                            <Link
-                                to={props.agent.getBrowserUrl(repositoryRoot)}
-                                search={{ view: "git" }}
-                                className="block truncate font-mono text-[11px] leading-3.5 text-blue-300 hover:underline"
-                            >
-                                Repository: {repositoryRoot}
-                            </Link>
-                        )}
-                    </span>
+            <header className="flex items-start justify-between gap-3 border-b border-slate-800 p-4 sm:p-5">
+                <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-start gap-2">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center text-blue-400">
+                            <GitBranch className="h-5 w-5" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 flex-1 pt-0.5">
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">
+                                {mode === "staged"
+                                    ? "Staged changes"
+                                    : "All changes"}
+                            </p>
+                            <h1 className="break-all text-lg font-semibold text-slate-50">
+                                {props.path.split("/").filter(Boolean).pop() ??
+                                    "/"}
+                            </h1>
+                        </div>
+                    </div>
+                    {repositoryRoot === null ? null : (
+                        <Link
+                            to={props.agent.getBrowserUrl(repositoryRoot)}
+                            search={{ view: "git" }}
+                            className="mt-3 block break-all font-mono text-sm text-blue-300 hover:underline"
+                        >
+                            Repository: {repositoryRoot}
+                        </Link>
+                    )}
                 </div>
                 <ActionMenu
                     label="Git diff options"
@@ -492,7 +503,7 @@ export function GitFileView(props: {
             </header>
             <section
                 aria-label={`${mode === "full" ? "Full" : "Staged"} Git diff`}
-                className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden bg-slate-950/30"
+                className="file-diff-host git-file-diff w-full min-w-0 overflow-x-hidden bg-slate-950/30 [&>p]:p-4 sm:[&>p]:p-5"
             >
                 {diffQuery.isPending ? (
                     <p role="status" className="p-4 text-sm text-slate-400">

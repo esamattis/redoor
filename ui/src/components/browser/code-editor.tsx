@@ -239,6 +239,12 @@ export function CodeEditor(props: {
                 ".cm-scroller": {
                     overflow: "auto",
                 },
+                ".cm-content": {
+                    padding: "0",
+                },
+                ".cm-line": {
+                    padding: "0",
+                },
             }),
             Prec.highest(
                 keymap.of([
@@ -285,7 +291,7 @@ export function CodeEditor(props: {
                 data-wrap-lines={props.wrapLines ? "true" : "false"}
                 role="region"
                 aria-label="Editor viewport"
-                className="min-h-0 flex-1 overflow-hidden rounded-md border border-transparent p-1.5 focus-within:border-blue-500"
+                className="relative min-h-0 flex-1 overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:z-20 after:border after:border-transparent focus-within:after:border-blue-500"
             >
                 {caretLine === null ? null : (
                     <span className="sr-only" aria-label="Editor caret line">

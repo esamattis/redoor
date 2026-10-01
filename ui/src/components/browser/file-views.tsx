@@ -553,11 +553,11 @@ function FileEditHeader(props: {
     onReload: () => void;
 }) {
     return (
-        <header className="shrink-0 border-b border-slate-800 p-4">
+        <header className="shrink-0 border-b border-slate-800 p-3">
             <h1 aria-label="File name" className="sr-only">
                 {props.fileName}
             </h1>
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-1">
                 <div className="flex flex-wrap items-center justify-start gap-2">
                     <FileEditActions
                         statusMessage={props.statusMessage}
@@ -702,10 +702,8 @@ export function FileEditView(props: FileEditViewProps) {
             <article
                 aria-label="Editing panel"
                 data-editor-full-window={isFullWindow}
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20 ${
-                    isFullWindow
-                        ? "fixed inset-0 z-[60] rounded-none"
-                        : "rounded-lg"
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-[#11141b] shadow-2xl shadow-black/20 ${
+                    isFullWindow ? "fixed inset-0 z-[60]" : ""
                 }`}
             >
                 <FileEditHeader

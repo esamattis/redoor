@@ -474,7 +474,7 @@ function FilesystemMetadataSections(props: {
     const headingIdPrefix = props.headingPrefix.toLowerCase();
 
     return (
-        <div className="grid gap-8 p-6 md:p-8 lg:grid-cols-[minmax(0,1fr)_minmax(21rem,0.72fr)]">
+        <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_minmax(21rem,0.72fr)]">
             <section aria-labelledby={`${headingIdPrefix}-metadata-heading`}>
                 <div className="mb-4">
                     <h2
@@ -597,14 +597,13 @@ function PathDetailHeader(props: {
     const typeLabel = isDirectory ? "Directory" : "File";
 
     return (
-        <header className="relative overflow-hidden border-b border-slate-800 bg-linear-to-br from-blue-500/10 via-transparent to-transparent p-6 md:p-8">
-            <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-500/5 blur-3xl" />
-            <div className="relative flex min-w-0 items-start gap-4">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/15 shadow-inner shadow-blue-400/10">
+        <header className="overflow-hidden border-b border-slate-800 p-4 sm:p-5">
+            <div className="flex min-w-0 items-start gap-2">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center text-blue-400">
                     {isDirectory ? (
-                        <Folder className="h-7 w-7 text-blue-400" />
+                        <Folder className="h-5 w-5" />
                     ) : (
-                        <File className="h-7 w-7 text-blue-400" />
+                        <File className="h-5 w-5" />
                     )}
                 </div>
                 <div className="min-w-0 flex-1 pt-0.5">
@@ -614,7 +613,7 @@ function PathDetailHeader(props: {
                     <div className="flex flex-wrap items-center gap-3">
                         <h1
                             aria-label={`${typeLabel} name`}
-                            className="break-all text-2xl font-bold tracking-tight text-slate-50 md:text-3xl"
+                            className="break-all text-lg font-semibold text-slate-50"
                         >
                             {props.name}
                         </h1>
@@ -626,7 +625,7 @@ function PathDetailHeader(props: {
                     </div>
                 </div>
             </div>
-            <div className="relative mt-6">
+            <div className="mt-3">
                 <div className="mb-2 flex items-center justify-between gap-3">
                     <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
                         Full Path
@@ -648,7 +647,7 @@ function PathDetailHeader(props: {
                         </Button>
                     ) : null}
                 </div>
-                <code className="block overflow-x-auto whitespace-nowrap rounded-xl border border-slate-800/80 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-300">
+                <code className="block overflow-x-auto whitespace-nowrap rounded-md border border-slate-800/80 bg-slate-950/60 px-2 py-1.5 font-mono text-sm text-slate-300">
                     {props.path}
                 </code>
             </div>
@@ -849,7 +848,7 @@ function ShareableLinksSection(props: {
     return (
         <section
             aria-labelledby="shareable-links-heading"
-            className="border-t border-slate-800 bg-slate-950/15 p-6 md:p-8"
+            className="border-t border-slate-800 bg-slate-950/15 p-4 sm:p-5"
         >
             <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>

@@ -565,11 +565,11 @@ export function SelectedFilesCard(props: {
                         {(moveTrigger) => (
                             <section
                                 aria-label="Selected files actions"
-                                className="mb-3 flex h-14 min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-blue-500/25 bg-blue-500/5 px-2 sm:gap-3 sm:px-3"
+                                className="flex min-w-0 items-center gap-2 overflow-hidden border-b border-slate-800 bg-[#11141b] p-4 sm:p-5"
                             >
-                                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-300">
+                                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center text-blue-400">
                                     <Files
-                                        className="h-4 w-4"
+                                        className="h-5 w-5"
                                         aria-hidden="true"
                                     />
                                 </span>
