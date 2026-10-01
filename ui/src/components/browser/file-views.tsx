@@ -701,6 +701,7 @@ export function FileEditView(props: FileEditViewProps) {
         <div className="flex min-h-0 flex-1 flex-col">
             <article
                 aria-label="Editing panel"
+                data-editor-full-window={isFullWindow}
                 className={`flex min-h-0 flex-1 flex-col overflow-hidden border border-slate-800 bg-[#11141b] shadow-2xl shadow-black/20 ${
                     isFullWindow
                         ? "fixed inset-0 z-[60] rounded-none"

@@ -11,7 +11,7 @@ export function OverlayChromeLayout(props: {
     const touchChrome = useTouchChromeVisibility();
 
     return (
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="group/editor-layout relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
                 ref={touchChrome.topChromeRef}
                 className="touch-hide-top-shell absolute inset-x-0 top-0 z-20 translate-y-0 transition-transform duration-200 ease-out motion-reduce:transition-none"
@@ -29,9 +29,10 @@ export function OverlayChromeLayout(props: {
             >
                 {props.children}
             </main>
+            {/* Keep tools above the full-window editor, but below modal dialogs. */}
             <div
                 ref={touchChrome.bottomChromeRef}
-                className={`touch-hide-bottom-stack flex flex-col transition-transform duration-200 ease-out motion-reduce:transition-none ${props.isBottomChromeFullWindow ? "fixed inset-0 z-[60]" : "absolute inset-x-0 bottom-0 z-20 translate-y-0"}`}
+                className={`touch-hide-bottom-stack z-[65] flex flex-col transition-transform duration-200 ease-out motion-reduce:transition-none ${props.isBottomChromeFullWindow ? "fixed inset-0" : "absolute inset-x-0 bottom-0 translate-y-0 group-has-[[data-editor-full-window=true]]/editor-layout:fixed"}`}
             >
                 {props.bottomChrome}
             </div>
