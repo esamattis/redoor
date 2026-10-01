@@ -3,7 +3,6 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     getRouteApi,
-    Link,
     type ShouldBlockFn,
     useBlocker,
     useLocation,
@@ -21,7 +20,7 @@ import {
     Terminal,
     X,
 } from "lucide-react";
-import { getBrowserUrl, type Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import {
     bottomDrawerActiveTabAtom,
     bottomDrawerCollapsedAtom,
@@ -48,6 +47,7 @@ import { getErrorMessage } from "#ui/components/browser/utils";
 import { Checkbox } from "#ui/components/checkbox";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
+import { EditorPinnedFiles } from "#ui/components/browser/editor-pinned-files";
 import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
@@ -55,7 +55,7 @@ import { ToggleButton } from "#ui/components/toggle-button";
 import { fileContentQueryOptions } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
-import { getPinnedFileKey, unpinFile, useUserState } from "#ui/user-state";
+import { useUserState } from "#ui/user-state";
 import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 
@@ -564,74 +564,6 @@ type FileEditViewProps = {
     isFullWindow: boolean;
     onToggleFullWindow: () => void;
 };
-
-/** Keeps pinned destinations reachable when the full-window editor covers the sidebar. */
-function EditorPinnedFiles(props: { agentId: string; filePath: string }) {
-    const [userState, setUserState] = useUserState();
-    if (userState.pinnedFiles.length === 0) {
-        return null;
-    }
-    return (
-        <nav
-            aria-label="Editor pinned files"
-            className="shrink-0 overflow-x-auto border-b border-slate-800 px-3 py-2"
-        >
-            <ul className="flex w-max min-w-full items-center gap-2">
-                {userState.pinnedFiles.map((file) => {
-                    const isActive =
-                        file.agentId === props.agentId &&
-                        file.path === props.filePath;
-                    // Closing a pin leaves the open editor and its unsaved buffer intact.
-                    const closePin = () => {
-                        setUserState((current) => ({
-                            ...current,
-                            pinnedFiles: unpinFile(current.pinnedFiles, file),
-                        }));
-                    };
-                    return (
-                        <li
-                            key={getPinnedFileKey(file)}
-                            className={`flex items-center rounded ${
-                                isActive
-                                    ? "bg-white/10 text-slate-100"
-                                    : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                            }`}
-                            onAuxClick={(event) => {
-                                if (event.button === 1) {
-                                    // Suppress the link's new-tab action when middle-click closes a pin.
-                                    event.preventDefault();
-                                    closePin();
-                                }
-                            }}
-                        >
-                            <Tooltip
-                                content={`Open ${file.path} on ${file.agentName}`}
-                            >
-                                <Link
-                                    to={getBrowserUrl(file.agentId, file.path)}
-                                    aria-label={file.name}
-                                    aria-current={isActive ? "page" : undefined}
-                                    className="block px-3 py-1 text-sm whitespace-nowrap"
-                                >
-                                    {file.name}
-                                </Link>
-                            </Tooltip>
-                            <IconButton
-                                type="button"
-                                label={`Close pinned file ${file.name}`}
-                                tooltip={`Unpin ${file.name}`}
-                                onClick={closePin}
-                                className="mr-1 shrink-0 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-slate-200"
-                            >
-                                <X className="h-3 w-3" aria-hidden="true" />
-                            </IconButton>
-                        </li>
-                    );
-                })}
-            </ul>
-        </nav>
-    );
-}
 
 /** Groups editor toolbar actions so the edit view can stay focused on buffer state. */
 function FileEditHeader(props: {

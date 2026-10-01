@@ -62,7 +62,10 @@ test.describe.serial("File Edit View", () => {
         ).toHaveAttribute("aria-current", "page");
         await expect(page).not.toHaveURL(/[?&]view=/);
         // The editor should contain the on-disk contents so edits start from truth.
-        await expectEditorText(page.getByLabel("File editor"), "content1");
+        await expectEditorText(
+            page.getByLabel("File editor", { exact: true }),
+            "content1",
+        );
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toBeDisabled();
@@ -114,7 +117,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`,
         );
         // Phone-width editor type must match the 9px git diff so more of each line stays on screen.
-        await expect(page.getByLabel("File editor")).toHaveCSS(
+        await expect(page.getByLabel("File editor", { exact: true })).toHaveCSS(
             "font-size",
             "9px",
         );
@@ -164,7 +167,7 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "content1");
 
         const downloadsAfterOpen = rawGets.length;
@@ -214,7 +217,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         const editorViewport = page.getByRole("region", {
             name: "Editor viewport",
         });
@@ -299,7 +302,9 @@ test.describe.serial("File Edit View", () => {
         await page.keyboard.press("Escape");
         await expect(editorOptions).toBeHidden();
 
-        await page.getByLabel("File editor").press("ControlOrMeta+f");
+        await page
+            .getByLabel("File editor", { exact: true })
+            .press("ControlOrMeta+f");
         // Search remains inside the expanded panel rather than behind the overlay.
         await expect(editorPanel.getByLabel("Find in file")).toBeVisible();
 
@@ -309,9 +314,9 @@ test.describe.serial("File Edit View", () => {
         await restoreButton.click();
         // Restoring returns the card to the route layout without replacing the editor.
         await expect(editorPanel).toHaveCSS("position", "static");
-        await expect(page.getByLabel("File editor")).toHaveText(
-            "full window content",
-        );
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toHaveText("full window content");
     });
 
     test("should select the open file from the editor options menu", async ({
@@ -320,7 +325,10 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
-        await expectEditorText(page.getByLabel("File editor"), "content1");
+        await expectEditorText(
+            page.getByLabel("File editor", { exact: true }),
+            "content1",
+        );
 
         await page.getByRole("button", { name: "Editor options" }).click();
         const editorOptions = page.getByRole("dialog", {
@@ -373,7 +381,10 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByRole("textbox", {
+            name: "File editor",
+            exact: true,
+        });
         await expectEditorText(editor, "original buffer");
 
         await fs.writeFile(filePath, "changed on disk");
@@ -391,7 +402,7 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
         await fillEditor(editor, "unsaved local edit");
 
@@ -422,7 +433,10 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByRole("textbox", {
+            name: "File editor",
+            exact: true,
+        });
         await expectEditorText(editor, "original buffer");
         await page.waitForLoadState("networkidle");
         const downloadsAfterOpen = rawGets;
@@ -456,7 +470,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "content1");
 
         await fillEditor(editor, "temporary unsaved text");
@@ -489,7 +503,7 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
 
         await fs.writeFile(filePath, "manually reloaded");
@@ -508,7 +522,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "content1");
         await fillEditor(editor, "saved from ui");
         // Wait until React marks the buffer dirty so Save is actually clickable.
@@ -544,7 +558,7 @@ test.describe.serial("File Edit View", () => {
         await page.goto(
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(linkPath)}`,
         );
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "symlink original");
         await fillEditor(editor, "saved through symlink");
         await expect(
@@ -688,7 +702,7 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "shortcut original");
         await fillEditor(editor, "saved with shortcut");
         // The shortcut must wait for a dirty buffer just like the Save button.
@@ -714,7 +728,9 @@ test.describe.serial("File Edit View", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/file1.txt`)}`,
         );
 
-        await expect(page.getByLabel("File editor")).toBeVisible();
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toBeVisible();
         await page.getByRole("button", { name: "Save file" }).hover();
         // The tooltip keeps the accessible name as Save file while advertising Ctrl+S.
         await expect(page.getByRole("tooltip")).toHaveText(
@@ -740,7 +756,7 @@ gamma`,
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         const copyReferenceButton = page.getByRole("button", {
             name: "Copy selection with file reference",
         });
@@ -784,7 +800,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         const searchSelectionButton = page.getByRole("button", {
             name: "Search selected text",
         });
@@ -837,8 +853,13 @@ gamma
         );
 
         // Filename-based shell mapping must still produce an editable File editor.
-        await expect(page.getByLabel("File editor")).toBeVisible();
-        await expectEditorText(page.getByLabel("File editor"), "export FOO=1");
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toBeVisible();
+        await expectEditorText(
+            page.getByLabel("File editor", { exact: true }),
+            "export FOO=1",
+        );
     });
 
     test("should keep the editor focused draft when Backspace is pressed", async ({
@@ -850,7 +871,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
         await fillEditor(editor, "keep this draft");
         await editor.click();
@@ -874,7 +895,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
         await fillEditor(editor, "keep this draft");
         await expect(
@@ -906,7 +927,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
         await fillEditor(editor, "throw this draft away");
         await expect(
@@ -947,7 +968,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await fillEditor(editor, "temporary draft");
         const editorOptions = await openEditorOptions(page);
         await editorOptions
@@ -984,7 +1005,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         await expectEditorText(editor, "original buffer");
         await fillEditor(editor, "do not lose this");
         await expect(
@@ -1027,7 +1048,7 @@ gamma
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        const editor = page.getByLabel("File editor");
+        const editor = page.getByLabel("File editor", { exact: true });
         const editorViewport = page.getByRole("region", {
             name: "Editor viewport",
         });

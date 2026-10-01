@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import {
@@ -9,7 +10,6 @@ import {
     Users,
     X,
 } from "lucide-react";
-import type * as React from "react";
 
 import { getBrowserUrl, type ApiClient } from "#ui/api-client";
 import { Button } from "#ui/components/button";
@@ -17,10 +17,16 @@ import { IconButton } from "#ui/components/icon-button";
 import { RestartButton, waitForRestart } from "#ui/components/restart-button";
 import { SidebarModeToggle } from "#ui/components/sidebar-mode-toggle";
 import { SideMenu } from "#ui/components/side-menu";
+import {
+    SortableDragHandle,
+    SortableItem,
+    SortableList,
+} from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import { agentsQueryOptions, serverInfoQueryOptions } from "#ui/queries";
 import {
     getPinnedFileKey,
+    reorderPinnedFiles,
     unpinFile,
     useUserState,
     type PinnedFile,
@@ -130,6 +136,18 @@ function ApplicationMenu(props: {
                             pinnedFiles: unpinFile(current.pinnedFiles, file),
                         }));
                     }}
+                    onMove={(move) => {
+                        setUserState((current) => {
+                            const pinnedFiles = reorderPinnedFiles(
+                                current.pinnedFiles,
+                                move,
+                            );
+                            if (pinnedFiles === current.pinnedFiles) {
+                                return current;
+                            }
+                            return { ...current, pinnedFiles };
+                        });
+                    }}
                     onClear={() => {
                         setUserState((current) => ({
                             ...current,
@@ -200,7 +218,9 @@ function PinnedFiles(props: {
     onClose: () => void;
     onRemove: (file: PinnedFile) => void;
     onClear: () => void;
+    onMove: (move: { activeId: string; overId: string }) => void;
 }) {
+    const listRef = React.useRef<HTMLUListElement>(null);
     return (
         <div className="mt-2 flex min-h-0 flex-1 flex-col">
             <div className="flex items-center justify-between gap-2 px-3 py-1">
@@ -217,58 +237,107 @@ function PinnedFiles(props: {
                     Clear
                 </Button>
             </div>
-            <ul
-                aria-label="Pinned files"
-                className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto"
+            <SortableList
+                itemIds={props.pinnedFiles.map((file) =>
+                    getPinnedFileKey(file),
+                )}
+                orientation="vertical"
+                label="Pinned files"
+                listRef={listRef}
+                getItemLabel={(itemId) =>
+                    props.pinnedFiles.find(
+                        (file) => getPinnedFileKey(file) === itemId,
+                    )?.name ?? itemId
+                }
+                onMove={props.onMove}
             >
-                {props.pinnedFiles.map((file) => {
-                    const href = getBrowserUrl(file.agentId, file.path);
-                    const isActive = props.pathname === href;
-                    const deviceName =
-                        props.deviceNameByAgentId.get(file.agentId) ??
-                        file.agentName;
-                    return (
-                        <li
+                <ul
+                    ref={listRef}
+                    aria-label="Pinned files"
+                    className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto"
+                >
+                    {props.pinnedFiles.map((file) => (
+                        <PinnedFileRow
                             key={getPinnedFileKey(file)}
-                            className={`group flex w-full min-w-0 items-start rounded ${
-                                isActive
-                                    ? "bg-white/5 text-slate-100"
-                                    : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
-                            }`}
-                        >
-                            <Tooltip
-                                className="min-w-0 flex-1"
-                                content={`Open ${file.path}`}
-                            >
-                                <Link
-                                    to={href}
-                                    aria-label={file.name}
-                                    aria-current={isActive ? "page" : undefined}
-                                    onClick={props.onClose}
-                                    className="block w-full min-w-0 px-3 py-1"
-                                >
-                                    <span className="block truncate text-sm">
-                                        {file.name}
-                                    </span>
-                                    <span className="block truncate text-[10px] leading-tight text-slate-500">
-                                        {deviceName}
-                                    </span>
-                                </Link>
-                            </Tooltip>
-                            <IconButton
-                                type="button"
-                                label="Remove pinned file"
-                                tooltip={`Remove ${file.name}`}
-                                onClick={() => props.onRemove(file)}
-                                className="mt-1 mr-1 shrink-0 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-slate-200"
-                            >
-                                <X className="h-3 w-3" aria-hidden="true" />
-                            </IconButton>
-                        </li>
-                    );
-                })}
-            </ul>
+                            file={file}
+                            pathname={props.pathname}
+                            deviceName={
+                                props.deviceNameByAgentId.get(file.agentId) ??
+                                file.agentName
+                            }
+                            onClose={props.onClose}
+                            onRemove={props.onRemove}
+                        />
+                    ))}
+                </ul>
+            </SortableList>
         </div>
+    );
+}
+
+/** Keeps the grip outside the link so reordering cannot be mistaken for navigation. */
+function PinnedFileRow(props: {
+    file: PinnedFile;
+    pathname: string;
+    deviceName: string;
+    onClose: () => void;
+    onRemove: (file: PinnedFile) => void;
+}) {
+    const href = getBrowserUrl(props.file.agentId, props.file.path);
+    const isActive = props.pathname === href;
+    const itemId = getPinnedFileKey(props.file);
+    return (
+        <SortableItem id={itemId}>
+            {(item) => (
+                <li
+                    ref={item.setNodeRef}
+                    style={item.style}
+                    className={`group flex w-full min-w-0 items-start rounded ${
+                        item.isDragging ? "opacity-70" : ""
+                    } ${
+                        item.isOver && !item.isDragging
+                            ? "ring-1 ring-blue-400/60"
+                            : ""
+                    } ${
+                        isActive
+                            ? "bg-white/5 text-slate-100"
+                            : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+                    }`}
+                >
+                    <SortableDragHandle
+                        label={`Reorder pinned file ${props.file.name} on ${props.deviceName}`}
+                    />
+                    <Tooltip
+                        className="min-w-0 flex-1"
+                        content={`Open ${props.file.path}`}
+                    >
+                        <Link
+                            to={href}
+                            aria-label={props.file.name}
+                            aria-current={isActive ? "page" : undefined}
+                            onClick={props.onClose}
+                            className="block w-full min-w-0 px-3 py-1"
+                        >
+                            <span className="block truncate text-sm">
+                                {props.file.name}
+                            </span>
+                            <span className="block truncate text-[10px] leading-tight text-slate-500">
+                                {props.deviceName}
+                            </span>
+                        </Link>
+                    </Tooltip>
+                    <IconButton
+                        type="button"
+                        label="Remove pinned file"
+                        tooltip={`Remove ${props.file.name}`}
+                        onClick={() => props.onRemove(props.file)}
+                        className="mt-1 mr-1 shrink-0 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                    >
+                        <X className="h-3 w-3" aria-hidden="true" />
+                    </IconButton>
+                </li>
+            )}
+        </SortableItem>
     );
 }
 

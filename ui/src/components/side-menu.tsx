@@ -1,6 +1,7 @@
 import * as React from "react";
 import { X } from "lucide-react";
 import { IconButton } from "#ui/components/icon-button";
+import { isSortableDragActive } from "#ui/components/sortable-list";
 import { usePersistentSideMenus } from "#ui/side-menu-state";
 
 const focusableSelector =
@@ -31,6 +32,10 @@ export function SideMenu(props: {
         /** Keeps keyboard interaction inside the modal drawer and supports conventional dismissal. */
         const handleDrawerKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
+                // The sortable sensor cancels in a later bubble listener, so a live drag must win.
+                if (event.defaultPrevented || isSortableDragActive()) {
+                    return;
+                }
                 event.preventDefault();
                 props.onClose();
                 return;

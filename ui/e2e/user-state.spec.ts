@@ -1,6 +1,7 @@
-import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { test, expect } from "@playwright/test";
+import { dragReorderHandle } from "./reorder";
 import { ApiClient } from "#ui/api-client";
 import {
     setupTestDir,
@@ -35,6 +36,7 @@ test.describe.serial("User state", () => {
                 recursiveSearchTimeoutSeconds: 5,
                 recursiveSearchIncludeHidden: false,
                 recursiveSearchRespectGitignore: true,
+                deviceOrder: [],
             },
         });
     });
@@ -242,5 +244,62 @@ test.describe.serial("User state", () => {
         await expect(
             page.getByRole("button", { name: "Color theme: Light" }),
         ).toBeVisible();
+    });
+
+    test("keeps a reordered pin when saving settings fails", async ({
+        page,
+    }) => {
+        const names = ["file1.txt", "file2.txt", "file3.txt"];
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await api.updateUserState({
+            state: {
+                pinnedFiles: names.map((name) => ({
+                    agentId: ctx.agentId,
+                    path: path.join(ctx.testDirPath, name),
+                    name,
+                    agentName: ctx.agentName,
+                })),
+                theme: "system",
+                deviceOrder: [],
+            },
+        });
+        await page.route("**/api/v1/user/state", async (route) => {
+            if (route.request().method() !== "PUT") {
+                await route.continue();
+                return;
+            }
+            await route.fulfill({
+                status: 500,
+                contentType: "application/json",
+                body: JSON.stringify({ error: "Could not write settings" }),
+            });
+        });
+        await page.goto(`${WEB_BASE_URL}/`);
+        const pinnedFiles = page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("list", { name: "Pinned files" });
+        await dragReorderHandle(
+            page,
+            pinnedFiles.getByRole("button", {
+                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            }),
+            pinnedFiles.getByRole("link", { name: "file1.txt", exact: true }),
+        );
+        // The optimistic order stays visible even though the write failed.
+        await expect(page.getByRole("alert")).toHaveText(
+            "Could not write settings",
+        );
+        await expect
+            .poll(() =>
+                pinnedFiles
+                    .getByRole("link")
+                    .evaluateAll((elements) =>
+                        elements.map((element) =>
+                            element.getAttribute("aria-label"),
+                        ),
+                    ),
+            )
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
     });
 });

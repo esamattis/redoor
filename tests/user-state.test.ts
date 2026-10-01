@@ -113,6 +113,47 @@ describe("user state", () => {
         // Reloads and other browsers restore exactly what was posted.
         expect(readBack.state).toEqual(document);
 
+        const ordered = {
+            pinnedFiles: [
+                {
+                    agentId: "b",
+                    path: "/b",
+                    name: "b",
+                    agentName: "Device B",
+                },
+                {
+                    agentId: "a",
+                    path: "/a",
+                    name: "a",
+                    agentName: "Device A",
+                },
+            ],
+            bookmarks: [
+                {
+                    agentId: "a",
+                    path: "/a1",
+                    name: "a1",
+                    entryType: "file",
+                },
+                {
+                    agentId: "b",
+                    path: "/b1",
+                    name: "b1",
+                    entryType: "directory",
+                },
+                {
+                    agentId: "a",
+                    path: "/a2",
+                    name: "a2",
+                    entryType: "file",
+                },
+            ],
+            deviceOrder: ["b", "missing", "a"],
+        };
+        await api.updateUserState({ state: ordered });
+        // Array order is the contract; the server must not sort pins, bookmarks, or devices.
+        expect((await api.getUserState()).state).toEqual(ordered);
+
         const replacement = { only: "this" };
         await api.updateUserState({ state: replacement });
         // A later PUT replaces the whole document instead of merging server-side.

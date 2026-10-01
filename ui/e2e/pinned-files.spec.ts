@@ -1,5 +1,10 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import {
+    dragReorderHandle,
+    keyboardReorder,
+    waitForKeyboardSensor,
+} from "./reorder";
 
 import { ApiClient } from "#ui/api-client";
 import {
@@ -45,6 +50,7 @@ test.describe.serial("Pinned files", () => {
                 recursiveSearchTimeoutSeconds: 5,
                 recursiveSearchIncludeHidden: false,
                 recursiveSearchRespectGitignore: true,
+                deviceOrder: [],
             },
         });
     }
@@ -345,5 +351,257 @@ test.describe.serial("Pinned files", () => {
         await page.keyboard.type("y");
         // Later keystrokes in the same edit must not put back a pin the operator removed.
         await expect(pinnedFiles).toHaveCount(0);
+    });
+
+    test("reorders sidebar pins by insertion and restores that order in the editor", async ({
+        page,
+        browser,
+    }) => {
+        const names = ["file1.txt", "file2.txt", "file3.txt"];
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await api.updateUserState({
+            state: {
+                pinnedFiles: names.map((name) => ({
+                    agentId: ctx.agentId,
+                    path: path.join(ctx.testDirPath, name),
+                    name,
+                    agentName: ctx.agentName,
+                })),
+                deviceOrder: [],
+            },
+        });
+        await page.goto(`${WEB_BASE_URL}/`);
+        const pinnedFiles = page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("list", { name: "Pinned files" });
+        const links = pinnedFiles.getByRole("link");
+        const linkNames = () =>
+            links.evaluateAll((elements) =>
+                elements.map((element) => element.getAttribute("aria-label")),
+            );
+        // Three entries prove insertion shifts the middle item instead of swapping two.
+        await expect.poll(linkNames).toEqual(names);
+        const lastHandle = pinnedFiles.getByRole("button", {
+            name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+        });
+        await lastHandle.focus();
+        await expect(page.getByRole("tooltip")).toHaveText(
+            "Drag to reorder. Press Space to pick up, Up or Down to move, Space to drop, and Escape to cancel.",
+        );
+        await dragReorderHandle(page, lastHandle, links.first());
+        await expect
+            .poll(linkNames)
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
+        await expect(page).toHaveURL(`${WEB_BASE_URL}/`);
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({
+                pinnedFiles: [
+                    {
+                        name: "file3.txt",
+                        path: path.join(ctx.testDirPath, "file3.txt"),
+                    },
+                    {
+                        name: "file1.txt",
+                        path: path.join(ctx.testDirPath, "file1.txt"),
+                    },
+                    {
+                        name: "file2.txt",
+                        path: path.join(ctx.testDirPath, "file2.txt"),
+                    },
+                ],
+            });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`,
+        );
+        await page
+            .getByRole("button", { name: "Expand editor to full window" })
+            .click();
+        const editorPins = page
+            .getByRole("article", { name: "Editing panel" })
+            .getByRole("navigation", { name: "Editor pinned files" });
+        // The editor strip reads the same account order as the sidebar.
+        await expect(editorPins.getByRole("link")).toHaveText([
+            "file3.txt",
+            "file1.txt",
+            "file2.txt",
+        ]);
+
+        await page.reload();
+        // Full-window mode is local, so reload restores the shared order in the sidebar.
+        await expect
+            .poll(linkNames)
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
+        const fresh = await browser.newPage();
+        await fresh.goto(`${WEB_BASE_URL}/`);
+        await expect
+            .poll(() =>
+                fresh
+                    .getByRole("navigation", { name: "Application" })
+                    .getByRole("list", { name: "Pinned files" })
+                    .getByRole("link")
+                    .evaluateAll((elements) =>
+                        elements.map((element) =>
+                            element.getAttribute("aria-label"),
+                        ),
+                    ),
+            )
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
+        await fresh.close();
+    });
+
+    test("reorders editor pins horizontally without resetting the draft", async ({
+        page,
+    }) => {
+        const names = ["file1.txt", "file2.txt", "file3.txt"];
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await api.updateUserState({
+            state: {
+                pinnedFiles: names.map((name) => ({
+                    agentId: ctx.agentId,
+                    path: path.join(ctx.testDirPath, name),
+                    name,
+                    agentName: ctx.agentName,
+                })),
+            },
+        });
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`;
+        await page.goto(fileUrl);
+        const panel = page.getByRole("article", { name: "Editing panel" });
+        const editor = panel.getByLabel("File editor");
+        await editor.click();
+        await page.keyboard.press("ControlOrMeta+End");
+        await page.keyboard.type(" draft");
+        await page
+            .getByRole("button", { name: "Expand editor to full window" })
+            .click();
+        const pins = panel.getByRole("navigation", {
+            name: "Editor pinned files",
+        });
+        await dragReorderHandle(
+            page,
+            pins.getByRole("button", {
+                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            }),
+            pins.getByRole("link", { name: "file2.txt", exact: true }),
+        );
+        // The horizontal pointer move must insert the pin without navigating away from the draft.
+        await expect(pins.getByRole("link")).toHaveText([
+            "file1.txt",
+            "file3.txt",
+            "file2.txt",
+        ]);
+        await keyboardReorder(
+            page,
+            pins.getByRole("button", {
+                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            }),
+            { key: "ArrowRight", times: 1 },
+        );
+        await keyboardReorder(
+            page,
+            pins.getByRole("button", {
+                name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+            }),
+            { key: "ArrowLeft", times: 1 },
+        );
+        // Sorting must not navigate, exit full window, or drop the unsaved buffer.
+        await expect(page).toHaveURL(fileUrl);
+        await expect(panel).toHaveCSS("position", "fixed");
+        await expect(editor).toHaveText("content1 draft");
+        await expect(pins.getByRole("link")).toHaveText([
+            "file1.txt",
+            "file3.txt",
+            "file2.txt",
+        ]);
+        await panel
+            .getByRole("button", { name: "Restore editor size" })
+            .click();
+        await expect
+            .poll(() =>
+                page
+                    .getByRole("navigation", { name: "Application" })
+                    .getByRole("list", { name: "Pinned files" })
+                    .getByRole("link")
+                    .evaluateAll((elements) =>
+                        elements.map((element) =>
+                            element.getAttribute("aria-label"),
+                        ),
+                    ),
+            )
+            .toEqual(["file1.txt", "file3.txt", "file2.txt"]);
+    });
+
+    test("reorders pins from the keyboard and cancels without writing", async ({
+        page,
+    }) => {
+        const names = ["file1.txt", "file2.txt", "file3.txt"];
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await api.updateUserState({
+            state: {
+                pinnedFiles: names.map((name) => ({
+                    agentId: ctx.agentId,
+                    path: path.join(ctx.testDirPath, name),
+                    name,
+                    agentName: ctx.agentName,
+                })),
+            },
+        });
+        await page.goto(`${WEB_BASE_URL}/`);
+        const pinnedFiles = page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("list", { name: "Pinned files" });
+        const handle = pinnedFiles.getByRole("button", {
+            name: `Reorder pinned file file3.txt on ${ctx.agentName}`,
+        });
+        let puts = 0;
+        page.on("request", (request) => {
+            if (
+                request.method() === "PUT" &&
+                request.url().includes("/api/v1/user/state")
+            ) {
+                puts += 1;
+            }
+        });
+        await handle.focus();
+        await page.keyboard.press("Space");
+        await expect(handle).toHaveAttribute("aria-pressed", "true");
+        await expect(
+            page.getByLabel("Pinned files reorder announcement"),
+        ).toContainText("Picked up file3.txt");
+        await waitForKeyboardSensor(page);
+        await page.keyboard.press("Escape");
+        await expect(handle).not.toHaveAttribute("aria-pressed", "true");
+        await expect(handle).toBeFocused();
+        const linkNames = () =>
+            pinnedFiles
+                .getByRole("link")
+                .evaluateAll((elements) =>
+                    elements.map((element) =>
+                        element.getAttribute("aria-label"),
+                    ),
+                );
+        await expect.poll(linkNames).toEqual(names);
+        expect(puts).toBe(0);
+
+        await keyboardReorder(page, handle, { key: "ArrowUp", times: 2 });
+        await expect
+            .poll(linkNames)
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
+        await expect(handle).toBeFocused();
+        const editor = page.getByLabel("File editor");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`,
+        );
+        await editor.click();
+        await page.keyboard.press("ArrowUp");
+        // Editor arrows must type or move the caret, not reorder pins.
+        await expect
+            .poll(linkNames)
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
     });
 });

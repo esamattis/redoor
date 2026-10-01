@@ -740,7 +740,7 @@ test.describe.serial("File Operations", () => {
             page.getByRole("dialog", { name: "Delete this file?" }),
         ).toBeVisible();
         // This keeps accidental-delete protection intact by ensuring the cancel action closes the dialog.
-        await page.getByRole("button", { name: "Cancel" }).click();
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
         await expect(
             page.getByRole("dialog", { name: "Delete this file?" }),
         ).toBeHidden();

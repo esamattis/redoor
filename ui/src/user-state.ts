@@ -4,6 +4,11 @@ import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import type { ApiClient } from "#ui/api-client";
 import { queryKeys } from "#ui/queries";
+import {
+    moveKeyedItems,
+    moveKeyedSubsequence,
+    type ItemMove,
+} from "#ui/utils/reorder";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -38,6 +43,7 @@ export const userStateSchema = z.object({
     recursiveSearchTimeoutSeconds: z.number().int().min(1).max(60).catch(5),
     recursiveSearchIncludeHidden: z.boolean().catch(false),
     recursiveSearchRespectGitignore: z.boolean().catch(true),
+    deviceOrder: z.array(z.string()).catch([]),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
@@ -52,6 +58,7 @@ export const defaultUserState: UserState = {
     recursiveSearchTimeoutSeconds: 5,
     recursiveSearchIncludeHidden: false,
     recursiveSearchRespectGitignore: true,
+    deviceOrder: [],
 };
 
 /** Identifies one bookmarked path so the same file cannot be stored twice. */
@@ -100,6 +107,103 @@ export function unpinFile(
 ) {
     const targetKey = getPinnedFileKey(target);
     return pinnedFiles.filter((file) => getPinnedFileKey(file) !== targetKey);
+}
+
+/** Shares pin order between the sidebar and the full-window editor strip. */
+export function reorderPinnedFiles(pinnedFiles: PinnedFile[], move: ItemMove) {
+    return moveKeyedItems(pinnedFiles, getPinnedFileKey, move);
+}
+
+/**
+ * Reorders one device's bookmarks inside the global list.
+ * Other devices keep their slots so a local drag cannot transfer ownership.
+ */
+export function reorderBookmarks(
+    bookmarks: Bookmark[],
+    agentId: string,
+    move: ItemMove,
+) {
+    return moveKeyedSubsequence(
+        bookmarks,
+        {
+            keyOf: getBookmarkKey,
+            inScope: (bookmark) => bookmark.agentId === agentId,
+        },
+        move,
+    );
+}
+
+/** Drops repeated saved ids so the first remembered placement wins. */
+function dedupeIds(ids: string[]) {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const id of ids) {
+        if (seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        ordered.push(id);
+    }
+    return ordered;
+}
+
+/**
+ * Shows saved devices first, then inventory devices that have no saved slot.
+ * Unavailable ids stay out of the render list without being forgotten by a later move.
+ */
+export function resolveDeviceOrder(savedIds: string[], inventoryIds: string[]) {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const id of dedupeIds(savedIds)) {
+        seen.add(id);
+        if (inventoryIds.includes(id)) {
+            ordered.push(id);
+        }
+    }
+    for (const id of inventoryIds) {
+        if (seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        ordered.push(id);
+    }
+    return ordered;
+}
+
+/**
+ * Records a visible device move without normalizing a cancelled gesture.
+ * Unavailable ids stay in their saved slots so a returning device keeps its place.
+ */
+export function commitDeviceOrder(
+    savedIds: string[],
+    inventoryIds: string[],
+    move: ItemMove,
+) {
+    if (
+        !inventoryIds.includes(move.activeId) ||
+        !inventoryIds.includes(move.overId)
+    ) {
+        return savedIds;
+    }
+    const complete = dedupeIds(savedIds);
+    for (const id of inventoryIds) {
+        if (!complete.includes(id)) {
+            complete.push(id);
+        }
+    }
+    const inventory = new Set(inventoryIds);
+    const next = moveKeyedSubsequence(
+        complete,
+        {
+            keyOf: (id) => id,
+            inScope: (id) => inventory.has(id),
+        },
+        move,
+    );
+    if (next === complete) {
+        return savedIds;
+    }
+    return next;
 }
 
 /** Bookmarking is a toggle so the same menu item can add or remove. */
