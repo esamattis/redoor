@@ -22,7 +22,7 @@ import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { Button } from "#ui/components/button";
-import { BookmarkButton } from "#ui/components/browser/bookmark-action";
+import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import {
     PinButton,
     usePinOnFirstEdit,
@@ -126,7 +126,6 @@ ${props.selection.text}
                     <ScanText className="h-4 w-4" aria-hidden="true" />
                 </ToggleButton>
             ) : null}
-            <BookmarkButton bookmark={props.bookmark} />
             <IconButton
                 type="button"
                 label="Toggle search and replace"
@@ -268,6 +267,15 @@ function EditorOptionsMenu(props: {
                         path={props.path}
                         fileName={props.fileName}
                         entryType="file"
+                        close={close}
+                    />
+                    <BookmarkMenuButton
+                        bookmark={{
+                            agentId: props.agent.id,
+                            path: props.path,
+                            name: props.fileName,
+                            entryType: "file",
+                        }}
                         close={close}
                     />
                     <div className="my-1 border-t border-slate-800" />

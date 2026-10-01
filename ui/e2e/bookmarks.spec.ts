@@ -135,7 +135,7 @@ test.describe.serial("Bookmarks", () => {
         await expect(agentBookmarks).toHaveCount(0);
     });
 
-    test("should bookmark and remove the open file from the editor toolbar", async ({
+    test("should bookmark and remove the open file from the editor options menu", async ({
         page,
     }) => {
         const fileName = "file1.txt";
@@ -144,21 +144,32 @@ test.describe.serial("Bookmarks", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
         );
 
-        await page
+        // Bookmark belongs in the overflow menu so the toolbar stays focused on editing.
+        await expect(
+            page.getByRole("button", { name: "Bookmark", exact: true }),
+        ).toHaveCount(0);
+        await page.getByRole("button", { name: "Editor options" }).click();
+        const editorOptions = page.getByRole("dialog", {
+            name: "Editor options",
+        });
+        await editorOptions
             .getByRole("button", { name: "Bookmark", exact: true })
             .click();
         const agentBookmarks = page.getByRole("list", {
             name: `${ctx.agentName} bookmarks`,
         });
-        // The persistent editor action must add the same file represented by path menus.
+        // The editor menu must add the same file represented by the details path menu.
         await expect(
             agentBookmarks.getByRole("link", { name: fileName, exact: true }),
         ).toBeVisible();
 
-        await page
+        // Selecting the action closes the menu, matching the details view workflow.
+        await expect(editorOptions).not.toBeVisible();
+        await page.getByRole("button", { name: "Editor options" }).click();
+        await editorOptions
             .getByRole("button", { name: "Remove bookmark", exact: true })
             .click();
-        // The active toolbar state must remove the bookmark without opening a menu.
+        // Reopening the menu exposes the removal action for the bookmarked file.
         await expect(agentBookmarks).toHaveCount(0);
     });
 });

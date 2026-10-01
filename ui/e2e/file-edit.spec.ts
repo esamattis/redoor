@@ -70,14 +70,8 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toHaveText("");
-        await expect(
-            page.getByRole("button", { name: "Bookmark", exact: true }),
-        ).toHaveText("");
         const saveBox = await page
             .getByRole("button", { name: "Save file" })
-            .boundingBox();
-        const bookmarkBox = await page
-            .getByRole("button", { name: "Bookmark", exact: true })
             .boundingBox();
         const copyReferenceButton = page.getByRole("button", {
             name: "Copy selection with file reference",
@@ -88,42 +82,23 @@ test.describe.serial("File Edit View", () => {
         const copyReferenceBox = await copyReferenceButton.boundingBox();
         const searchSelectionBox = await searchSelectionButton.boundingBox();
         expect(saveBox).not.toBeNull();
-        expect(bookmarkBox).not.toBeNull();
         expect(copyReferenceBox).not.toBeNull();
         expect(searchSelectionBox).not.toBeNull();
         if (
             saveBox === null ||
-            bookmarkBox === null ||
             copyReferenceBox === null ||
             searchSelectionBox === null
         ) {
             throw new Error("expected editor action measurements");
         }
-        // Bookmark follows Save so persistent path actions stay beside editing controls.
-        expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
-        // Copy reference follows Bookmark and stays unavailable without selected editor text.
-        expect(copyReferenceBox.x).toBeGreaterThan(bookmarkBox.x);
+        // Copy reference follows Save and stays unavailable without selected editor text.
+        expect(copyReferenceBox.x).toBeGreaterThan(saveBox.x);
         // Search selection follows Copy reference so the same selection can be grepped from git root.
         expect(searchSelectionBox.x).toBeGreaterThan(copyReferenceBox.x);
         await expect(copyReferenceButton).toBeDisabled();
         await expect(searchSelectionButton).toBeDisabled();
         await expect(copyReferenceButton).toHaveText("");
         await expect(searchSelectionButton).toHaveText("");
-        await page
-            .getByRole("button", { name: "Bookmark", exact: true })
-            .click();
-        await expect(
-            page.getByRole("button", {
-                name: "Remove bookmark",
-                exact: true,
-            }),
-        ).toHaveText("");
-        await page
-            .getByRole("button", {
-                name: "Remove bookmark",
-                exact: true,
-            })
-            .click();
         const editorOptions = await openEditorOptions(page);
         await expect(
             editorOptions.getByRole("button", { name: "Reload", exact: true }),
@@ -457,7 +432,7 @@ test.describe.serial("File Edit View", () => {
         expect(downloadsAfterOpen).toBeGreaterThan(0);
         expect(downloadsAfterOpen).toBeLessThanOrEqual(2);
         await page
-            .getByRole("button", { name: "Bookmark", exact: true })
+            .getByRole("button", { name: "Editor options", exact: true })
             .focus();
         await fs.writeFile(filePath, "changed before refocus");
         await editor.focus();
