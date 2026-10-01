@@ -183,7 +183,7 @@ function AgentBookmarks(props: {
     return (
         <ul
             aria-label={`${props.agent.name} bookmarks`}
-            className="mt-0.5 mb-1 ml-4 flex flex-col gap-0.5 border-l border-slate-800 pl-2"
+            className="mt-0.5 mb-1 ml-4 flex min-w-0 flex-col gap-0.5 border-l border-slate-800 pl-2"
         >
             {props.bookmarks.map((bookmark) => {
                 const href = props.agent.getBrowserUrl(bookmark.path);
@@ -193,18 +193,21 @@ function AgentBookmarks(props: {
                 return (
                     <li
                         key={getBookmarkKey(bookmark)}
-                        className="group flex min-w-0 items-center"
+                        className={`group flex w-full min-w-0 items-center rounded-md ${
+                            isActive
+                                ? "bg-blue-500/10 text-blue-300"
+                                : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
+                        }`}
                     >
-                        <Tooltip content={`Open ${bookmark.path}`}>
+                        <Tooltip
+                            className="min-w-0 flex-1"
+                            content={`Open ${bookmark.path}`}
+                        >
                             <Link
                                 to={href}
                                 onClick={props.onClose}
                                 aria-current={isActive ? "page" : undefined}
-                                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs ${
-                                    isActive
-                                        ? "bg-blue-500/10 text-blue-300"
-                                        : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
-                                }`}
+                                className="flex w-full min-w-0 items-center gap-1.5 px-1.5 py-1 text-xs"
                             >
                                 <Bookmark
                                     className="h-3 w-3 shrink-0"
@@ -220,7 +223,7 @@ function AgentBookmarks(props: {
                             label={`Remove bookmark ${bookmark.name}`}
                             tooltip={`Remove ${bookmark.name}`}
                             onClick={() => props.onRemove(bookmark)}
-                            className="rounded p-1 text-slate-600 opacity-0 hover:bg-white/10 hover:text-slate-200 group-hover:opacity-100 group-focus-within:opacity-100"
+                            className="mr-0.5 shrink-0 rounded p-1 text-slate-600 opacity-0 hover:bg-white/10 hover:text-slate-200 group-hover:opacity-100 group-focus-within:opacity-100"
                         >
                             <X className="h-3 w-3" aria-hidden="true" />
                         </IconButton>
