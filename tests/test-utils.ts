@@ -634,6 +634,7 @@ export async function waitForLogMessage(
     return promise;
 }
 
+/** Polls until a value or successful boolean condition is available instead of racing async cleanup. */
 export async function waitForValue<T>(options: {
     predicate: () => Promise<T | undefined>;
     timeoutMs?: number;
@@ -648,7 +649,7 @@ export async function waitForValue<T>(options: {
     while (Date.now() - start < timeoutMs) {
         try {
             const value = await options.predicate();
-            if (value !== undefined) {
+            if (value !== undefined && value !== false) {
                 return value;
             }
             lastError = undefined;
